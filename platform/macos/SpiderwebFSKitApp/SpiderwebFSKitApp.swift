@@ -8,7 +8,7 @@ The app's top-level SwiftUI body.
 import SwiftUI
 
 @main
-struct PassthroughApp: App {
+struct SpiderwebFSKitApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

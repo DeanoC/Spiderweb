@@ -13,38 +13,38 @@ import OSLog
 let maxSymlinkSize: Int = 4096
 let modeAllBits: Int32 = 0o7777
 
-/// A PassthroughFSVolume represents a volume in the passthrough file system.
-class PassthroughFSVolume: FSVolume,
+/// A SpiderwebFSVolume represents a volume in the passthrough file system.
+class SpiderwebFSVolume: FSVolume,
                            FSVolume.ReadWriteOperations,
                            FSVolume.RenameOperations,
                            FSVolume.PreallocateOperations,
                            FSVolume.OpenCloseOperations {
 
-    /// The default UUID for the PassthroughFSVolume.
+    /// The default UUID for the SpiderwebFSVolume.
     static let defaultVolumeUUID = UUID()
 
     /// The root item of the volume.
-    var rootItem: PassthroughFSItem
+    var rootItem: SpiderwebFSItem
 
     /// The item cache stores items previously looked up or created;
     /// items are removed from the dictionary when the volume reclaims or removes the item.
-    var itemCache: [UInt64: PassthroughFSItem]
+    var itemCache: [UInt64: SpiderwebFSItem]
 
     /// The item cache is accessed concurrently so the volume needs to serialize access to it.
     var itemCacheQueue: DispatchQueue
 
-    /// Creates a new PassthroughFSVolume.
+    /// Creates a new SpiderwebFSVolume.
     /// - Parameter rootPath: The path to the root directory of the volume.
     init(rootPath: String) throws {
         let rootFD      = try throwErrno { Darwin.open(rootPath, O_RDONLY) }
-        self.rootItem   = PassthroughFSItem(name: ".", fileDescriptor: rootFD, type: .directory, openFlags: .readOnly)
+        self.rootItem   = SpiderwebFSItem(name: ".", fileDescriptor: rootFD, type: .directory, openFlags: .readOnly)
         self.itemCache = [:]
         self.itemCacheQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.itemcache.queue")
-        super.init(volumeID: FSVolume.Identifier(uuid: PassthroughFSVolume.defaultVolumeUUID), volumeName: createVolumeNameFromPath(rootPath))
+        super.init(volumeID: FSVolume.Identifier(uuid: SpiderwebFSVolume.defaultVolumeUUID), volumeName: createVolumeNameFromPath(rootPath))
         Logger.passthroughfs.info("\(#function): Created a new volume with ID(\(self.volumeID)) and name(\(self.name)) on path(\(rootPath))")
     }
 
-    /// The PassthroughFS file system doesn't support setting a volume name, so this method does nothing and invokes its reply handler.
+    /// The SpiderwebFSKit file system doesn't support setting a volume name, so this method does nothing and invokes its reply handler.
     public func setVolumeName(_ name: FSFileName, replyHandler: @escaping (FSFileName?, (any Error)?) -> Void) {
         return replyHandler(name, nil)
     }
@@ -61,7 +61,7 @@ class PassthroughFSVolume: FSVolume,
                                  length: Int,
                                  flags: FSVolume.PreallocateFlags,
                                  replyHandler: @escaping (Int, (any Error)?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(0, POSIXError(.EINVAL))
         }
@@ -106,7 +106,7 @@ class PassthroughFSVolume: FSVolume,
                      length: Int,
                      into buffer: FSMutableFileDataBuffer,
                      replyHandler: @escaping (Int, Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(0, POSIXError(.EINVAL))
         }
@@ -145,7 +145,7 @@ class PassthroughFSVolume: FSVolume,
                       to item: FSItem,
                       at offset: off_t,
                       replyHandler: @escaping (Int, (any Error)?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(0, POSIXError(.EINVAL))
         }
@@ -178,7 +178,7 @@ class PassthroughFSVolume: FSVolume,
     public func openItem(_ item: FSItem,
                          modes: FSVolume.OpenModes,
                          replyHandler: @escaping ((any Error)?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(POSIXError(.EINVAL))
         }
@@ -187,7 +187,7 @@ class PassthroughFSVolume: FSVolume,
             return replyHandler(nil)
         }
 
-        var ptfsMode: PassthroughFSItemOpenMode = .close
+        var ptfsMode: SpiderwebFSItemOpenMode = .close
         if modes.contains(.read) {
             ptfsMode = .readOnly
         }
@@ -206,12 +206,12 @@ class PassthroughFSVolume: FSVolume,
     /// Performs a `close` operation on the given file item.
     /// - Parameters:
     ///   - item: The file item to close.
-    ///   - modes: The open modes (ignored for PassthroughFS).
+    ///   - modes: The open modes (ignored for SpiderwebFSKit).
     ///   - replyHandler: The reply handler to invoke with the result.
     public func closeItem(_ item: FSItem,
                           modes: FSVolume.OpenModes,
                           replyHandler: @escaping ((any Error)?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(POSIXError(.EINVAL))
         }
@@ -259,13 +259,13 @@ class PassthroughFSVolume: FSVolume,
     }
 }
 
-private struct SpiderwebOpenState {
+private struct SpiderwebBridgeOpenState {
     var handleID: UInt64
     var modes: FSVolume.OpenModes
     var retainCount: Int
 }
 
-final class SpiderwebFSItem: FSItem {
+final class SpiderwebBridgeItem: FSItem {
     var path: String
     let itemIdentifier: FSItem.Identifier
     var cachedAttr: SpiderwebRemoteAttr?
@@ -278,7 +278,7 @@ final class SpiderwebFSItem: FSItem {
     }
 }
 
-final class SpiderwebFSVolume:
+final class SpiderwebBridgeVolume:
     FSVolume,
     FSVolume.Operations,
     FSVolume.OpenCloseOperations,
@@ -289,13 +289,13 @@ final class SpiderwebFSVolume:
     private let stateLock = NSLock()
     private let failFastCooldownMS = spiderwebFailFastCooldownMS
 
-    private var pathToItem: [String: SpiderwebFSItem] = [:]
+    private var pathToItem: [String: SpiderwebBridgeItem] = [:]
     private var nextItemIdentifier: UInt64 = 1024
-    private var openStates: [UInt64: SpiderwebOpenState] = [:]
+    private var openStates: [UInt64: SpiderwebBridgeOpenState] = [:]
     private var volumeStatsCache = syntheticStatFS
     private var blockedPaths: [String: Date] = [:]
 
-    private let rootItem: SpiderwebFSItem
+    private let rootItem: SpiderwebBridgeItem
 
     let supportedVolumeCapabilities: FSVolume.SupportedCapabilities = {
         let capabilities = FSVolume.SupportedCapabilities()
@@ -317,7 +317,7 @@ final class SpiderwebFSVolume:
         runtime = try SpiderwebMountRuntime(requestURL: requestURL)
         let bridge = try runtime.ensureBridge()
         let rootAttr = try bridge.getattr(path: "/")
-        rootItem = SpiderwebFSItem(path: "/", itemIdentifier: .rootDirectory, cachedAttr: rootAttr)
+        rootItem = SpiderwebBridgeItem(path: "/", itemIdentifier: .rootDirectory, cachedAttr: rootAttr)
         super.init(volumeID: FSVolume.Identifier(), volumeName: FSFileName(string: runtime.request.volumeNameOrDefault))
         pathToItem["/"] = rootItem
         try refreshVolumeStatistics()
@@ -416,7 +416,7 @@ final class SpiderwebFSVolume:
             let child = itemForPath(childPath, attr: attr)
             reply(child, FSFileName(string: name.string ?? ""), nil)
         } catch {
-            if let directoryItem = directory as? SpiderwebFSItem,
+            if let directoryItem = directory as? SpiderwebBridgeItem,
                let childPath = try? append(name: name, toDirectoryPath: directoryItem.path)
             {
                 noteFailure(for: childPath, error: error)
@@ -429,7 +429,7 @@ final class SpiderwebFSVolume:
         stateLock.lock()
         defer { stateLock.unlock() }
 
-        guard let bridgeItem = item as? SpiderwebFSItem else {
+        guard let bridgeItem = item as? SpiderwebBridgeItem else {
             reply(nil)
             return
         }
@@ -526,7 +526,7 @@ final class SpiderwebFSVolume:
             }
             reply(FSDirectoryVerifier(rawValue: listing.directoryGeneration), nil)
         } catch {
-            if let directoryItem = directory as? SpiderwebFSItem {
+            if let directoryItem = directory as? SpiderwebBridgeItem {
                 noteFailure(for: directoryItem.path, error: error)
             }
             reply(verifier, error)
@@ -539,7 +539,7 @@ final class SpiderwebFSVolume:
             _ = try ensureHandle(for: bridgeItem, modes: modes)
             reply(nil)
         } catch {
-            if let bridgeItem = item as? SpiderwebFSItem {
+            if let bridgeItem = item as? SpiderwebBridgeItem {
                 noteFailure(for: bridgeItem.path, error: error)
             }
             reply(error)
@@ -574,7 +574,7 @@ final class SpiderwebFSVolume:
             }
             reply(data.count, nil)
         } catch {
-            if let bridgeItem = item as? SpiderwebFSItem {
+            if let bridgeItem = item as? SpiderwebBridgeItem {
                 noteFailure(for: bridgeItem.path, error: error)
             }
             reply(0, error)
@@ -588,8 +588,8 @@ final class SpiderwebFSVolume:
         reply(0, readOnlyError(message: "Spiderweb native sample is read-only for now"))
     }
 
-    private func requireBridgeItem(_ item: FSItem) throws -> SpiderwebFSItem {
-        guard let bridgeItem = item as? SpiderwebFSItem else {
+    private func requireBridgeItem(_ item: FSItem) throws -> SpiderwebBridgeItem {
+        guard let bridgeItem = item as? SpiderwebBridgeItem else {
             throw SpiderwebBridgeError.invalidMountedResourceType("unexpected FSItem subclass")
         }
         return bridgeItem
@@ -604,14 +604,14 @@ final class SpiderwebFSVolume:
         stateLock.unlock()
     }
 
-    private func currentAttributes(for item: SpiderwebFSItem) throws -> SpiderwebRemoteAttr {
+    private func currentAttributes(for item: SpiderwebBridgeItem) throws -> SpiderwebRemoteAttr {
         if let cached = item.cachedAttr {
             return cached
         }
         return try refreshAttributes(for: item)
     }
 
-    private func refreshAttributes(for item: SpiderwebFSItem) throws -> SpiderwebRemoteAttr {
+    private func refreshAttributes(for item: SpiderwebBridgeItem) throws -> SpiderwebRemoteAttr {
         try ensurePathIsNotBlocked(item.path)
         let attr = try runtime.ensureBridge().getattr(path: item.path)
         item.cachedAttr = attr
@@ -619,7 +619,7 @@ final class SpiderwebFSVolume:
         return attr
     }
 
-    private func itemForPath(_ path: String, attr: SpiderwebRemoteAttr?) -> SpiderwebFSItem {
+    private func itemForPath(_ path: String, attr: SpiderwebRemoteAttr?) -> SpiderwebBridgeItem {
         let normalizedPath = normalize(path: path)
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -640,12 +640,12 @@ final class SpiderwebFSVolume:
             identifier = FSItem.Identifier(rawValue: rawValue) ?? .invalid
         }
 
-        let item = SpiderwebFSItem(path: normalizedPath, itemIdentifier: identifier, cachedAttr: attr)
+        let item = SpiderwebBridgeItem(path: normalizedPath, itemIdentifier: identifier, cachedAttr: attr)
         pathToItem[normalizedPath] = item
         return item
     }
 
-    private func ensureHandle(for item: SpiderwebFSItem, modes: FSVolume.OpenModes) throws -> SpiderwebOpenState {
+    private func ensureHandle(for item: SpiderwebBridgeItem, modes: FSVolume.OpenModes) throws -> SpiderwebBridgeOpenState {
         stateLock.lock()
         if var existing = openStates[item.itemIdentifier.rawValue] {
             existing.retainCount += 1
@@ -658,7 +658,7 @@ final class SpiderwebFSVolume:
 
         try ensurePathIsNotBlocked(item.path)
         let response = try runtime.ensureBridge().open(path: item.path, flags: openFlags(for: modes))
-        let state = SpiderwebOpenState(handleID: response.handleID, modes: modes, retainCount: 1)
+        let state = SpiderwebBridgeOpenState(handleID: response.handleID, modes: modes, retainCount: 1)
 
         stateLock.lock()
         openStates[item.itemIdentifier.rawValue] = state
@@ -667,7 +667,7 @@ final class SpiderwebFSVolume:
         return state
     }
 
-    private func releaseHandle(for item: SpiderwebFSItem) throws {
+    private func releaseHandle(for item: SpiderwebBridgeItem) throws {
         stateLock.lock()
         guard var existing = openStates[item.itemIdentifier.rawValue] else {
             stateLock.unlock()
@@ -706,7 +706,7 @@ final class SpiderwebFSVolume:
         return UInt32(O_RDONLY)
     }
 
-    private func makeAttributes(for item: SpiderwebFSItem, attr: SpiderwebRemoteAttr) -> FSItem.Attributes {
+    private func makeAttributes(for item: SpiderwebBridgeItem, attr: SpiderwebRemoteAttr) -> FSItem.Attributes {
         let attributes = FSItem.Attributes()
         attributes.type = itemType(for: attr)
         attributes.mode = attr.mode

@@ -11,7 +11,7 @@ import FSKit
 import OSLog
 
 /// Defined item open modes.
-enum PassthroughFSItemOpenMode: Int32 {
+enum SpiderwebFSItemOpenMode: Int32 {
     /// Close mode
     case close = -1
     /// Read-only mode
@@ -20,31 +20,31 @@ enum PassthroughFSItemOpenMode: Int32 {
     case readWrite = 1
 }
 
-/// A PassthroughFSItem represents a file system item.
-class PassthroughFSItem: FSItem {
+/// A SpiderwebFSItem represents a file system item.
+class SpiderwebFSItem: FSItem {
 
     /// File descriptor of the item
     var fileDescriptor: Int32
     /// Open mode of the item
-    var openMode: PassthroughFSItemOpenMode
+    var openMode: SpiderwebFSItemOpenMode
     /// Parent item (for a root item, the parent is nil)
-    var parent: PassthroughFSItem?
+    var parent: SpiderwebFSItem?
     /// Name of the item
     var name: String
     /// Item type
     var itemType: FSItem.ItemType
-    /// Inode of the item (used to cache items in PassthroughFSVolume)
+    /// Inode of the item (used to cache items in SpiderwebFSVolume)
     var inode: UInt64
-    /// Dispatch queue for changing the item's PassthroughFSItemOpenMode
+    /// Dispatch queue for changing the item's SpiderwebFSItemOpenMode
     var openModeQueue: DispatchQueue
 
-    /// Creates a new instance of PassthroughFSItem, to create the root item.
+    /// Creates a new instance of SpiderwebFSItem, to create the root item.
     /// - Parameters:
     ///   - name: The name of the item.
     ///   - fileDescriptor: The file descriptor of the item.
     ///   - type: The type of the item.
     ///   - openFlags: The open mode of the item.
-    init(name: String, fileDescriptor: Int32, type: FSItem.ItemType, openFlags: PassthroughFSItemOpenMode) {
+    init(name: String, fileDescriptor: Int32, type: FSItem.ItemType, openFlags: SpiderwebFSItemOpenMode) {
         self.name           = name
         self.parent         = nil
         self.fileDescriptor = fileDescriptor
@@ -56,12 +56,12 @@ class PassthroughFSItem: FSItem {
         try? self.initInode()
     }
 
-    /// Creates a new instance of PassthroughFSItem.
+    /// Creates a new instance of SpiderwebFSItem.
     /// - Parameters:
     ///   - name: The name of the item.
     ///   - parent: The parent item.
     ///   - type: The type of the item.
-    init(name: String, parent: PassthroughFSItem, type: FSItem.ItemType) throws {
+    init(name: String, parent: SpiderwebFSItem, type: FSItem.ItemType) throws {
         self.name           = name
         self.parent         = parent
         self.openMode       = .close
@@ -87,7 +87,7 @@ class PassthroughFSItem: FSItem {
     /// In order for `openat` to work, the file system needs the parent's item file descriptor. If the parent doesn't have one,
     /// this method opens the parent item to get its file descriptor. After opening the item,
     /// this closes the parent item file descriptor, if it wasn't open before.
-    private func openWithMode(mode: PassthroughFSItemOpenMode) throws -> Int32 {
+    private func openWithMode(mode: SpiderwebFSItemOpenMode) throws -> Int32 {
         guard let parent = self.parent else {
             Logger.passthroughfs.error("\(#function): The parent is nil, can't open the item (\(self.name))")
             return -1
@@ -101,7 +101,7 @@ class PassthroughFSItem: FSItem {
             parentFD = parent.fileDescriptor
         }
 
-        // Convert PassthroughFSItemOpenMode to O_RDONLY/O_RDWR.
+        // Convert SpiderwebFSItemOpenMode to O_RDONLY/O_RDWR.
         var convertedMode = O_RDONLY
         if mode == .readWrite {
             convertedMode = O_RDWR
@@ -123,7 +123,7 @@ class PassthroughFSItem: FSItem {
     /// Upgrade means that the item can go from .close to .readOnly to .readWrite.
     /// If the item was opened to a .readOnly and needs to upgrade to .readWrite, this method creates a new file descriptor for the .readWrite mode,
     /// and closes the old .readOnly file descriptor.
-    func upgradeOpenMode(mode: PassthroughFSItemOpenMode) throws {
+    func upgradeOpenMode(mode: SpiderwebFSItemOpenMode) throws {
         if mode == .close {
             Logger.passthroughfs.error("\(#function): Can't pass .close as mode")
             throw POSIXError(.EINVAL)

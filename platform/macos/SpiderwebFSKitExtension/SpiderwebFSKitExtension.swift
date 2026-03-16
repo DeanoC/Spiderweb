@@ -10,11 +10,11 @@ import Foundation
 import FSKit
 
 @main
-struct PassthroughAppEx: UnaryFileSystemExtension {
+struct SpiderwebFSKitExtension: UnaryFileSystemExtension {
 
     typealias FileSystem = FSUnaryFileSystem & FSUnaryFileSystemOperations
 
     var fileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
-        PassthroughFileSystem()
+        SpiderwebFileSystem()
     }
 }

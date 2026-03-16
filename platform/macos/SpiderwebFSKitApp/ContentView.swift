@@ -10,7 +10,7 @@ import SwiftUI
 struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Passthrough FS Sample")
+            Text("Spiderweb FSKit")
                 .font(.headline)
 
             Text("Local directory mode")

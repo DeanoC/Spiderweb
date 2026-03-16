@@ -27,7 +27,7 @@ private struct CommonAttributes {
 }
 
 /// Implementing FSVolume.Operations.
-extension PassthroughFSVolume: FSVolume.Operations {
+extension SpiderwebFSVolume: FSVolume.Operations {
 
     /// Returns volume statistics using `fstatfs`.
     public var volumeStatistics: FSStatFSResult {
@@ -49,7 +49,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
         return res
     }
 
-    /// Activates the volume, but PassthroughFS volume activation doesn't need to do anything, so this method just replies with the root item.
+    /// Activates the volume, but SpiderwebFSKit volume activation doesn't need to do anything, so this method just replies with the root item.
     ///
     /// - Parameters
     ///   - options: The activation options.
@@ -69,7 +69,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
         return replyHandler(nil)
     }
 
-    /// Mount in PassthroughFSVolume doesn't need to do anything; implementation just replies with nil error.
+    /// Mount in SpiderwebFSVolume doesn't need to do anything; implementation just replies with nil error.
     public func mount(options: FSTaskOptions,
                       replyHandler: @escaping (Error?) -> Void) {
         return replyHandler(nil)
@@ -81,7 +81,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
         return replyHandler()
     }
 
-    /// Performs synchronize using `fsync` on the root item, ignoring the FSSyncFlags flags, which PassthroughFS doesn't support.
+    /// Performs synchronize using `fsync` on the root item, ignoring the FSSyncFlags flags, which SpiderwebFSKit doesn't support.
     /// - Parameters
     ///   - flags: The sync flags.
     ///   - reply: The reply handler to invoke when the sync is complete.
@@ -95,7 +95,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
         return reply(nil)
     }
 
-    private func getCommonAttributes(ptItem: PassthroughFSItem,
+    private func getCommonAttributes(ptItem: SpiderwebFSItem,
                                      desiredAttributes: FSItem.GetAttributesRequest) throws -> CommonAttributes {
 
         var attrgroupFlags: Int32 = 0
@@ -126,7 +126,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
     public func getAttributes(_ desiredAttributes: FSItem.GetAttributesRequest,
                               of item: FSItem,
                               replyHandler: @escaping (FSItem.Attributes?, Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(nil, POSIXError(.EINVAL))
         }
@@ -249,7 +249,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                               on item: FSItem,
                               creatingNewFile: Bool,
                               replyHandler: @escaping (FSItem.Attributes?, Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(nil, POSIXError(.EINVAL))
         }
@@ -428,7 +428,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
     public func lookupItem(named name: FSFileName,
                            inDirectory directory: FSItem,
                            replyHandler: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast directory")
             return replyHandler(nil, nil, POSIXError(.EINVAL))
         }
@@ -451,7 +451,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                 try? dirItem.closeItem()
             }
             let inode = statResult.st_ino
-            var val: PassthroughFSItem?
+            var val: SpiderwebFSItem?
             self.itemCacheQueue.sync {
                 val = self.itemCache[inode]
             }
@@ -471,9 +471,9 @@ extension PassthroughFSVolume: FSVolume.Operations {
         }
 
         // Item isn't in the item cache, create a new item, update the cache,  and return it.
-        var newItem: PassthroughFSItem
+        var newItem: SpiderwebFSItem
         do {
-            newItem = try PassthroughFSItem(name: nameString, parent: dirItem, type: type)
+            newItem = try SpiderwebFSItem(name: nameString, parent: dirItem, type: type)
         } catch {
             Logger.passthroughfs.error("\(#function): Can't create new item (\(name.debugDescription)) error (\(error)")
             return replyHandler(nil, nil, error)
@@ -492,7 +492,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
     ///   - item: The item to be reclaimed.
     ///   - replyHandler: The reply handler to invoke.
     public func reclaimItem(_ item: FSItem, replyHandler: @escaping (Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(POSIXError(.EINVAL))
         }
@@ -514,7 +514,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
     ///   - replyHandler: The reply handler to invoke.
     public func readSymbolicLink(_ item: FSItem,
                                  replyHandler: @escaping (FSFileName?, Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(nil, POSIXError(.EINVAL))
         }
@@ -552,7 +552,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                            inDirectory directory: FSItem,
                            attributes newAttributes: FSItem.SetAttributesRequest,
                            replyHandler: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast dirItem")
             return replyHandler(nil, nil, POSIXError(.EINVAL))
         }
@@ -572,7 +572,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
             try? dirItem.upgradeOpenMode(mode: .readOnly)
         }
 
-        var newItem: PassthroughFSItem
+        var newItem: SpiderwebFSItem
         var error: Int32 = -1
         var fileDescriptor: Int32 = -1
         nameString.withCString({ namePtr in
@@ -603,7 +603,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
         }
 
         do {
-            try newItem = PassthroughFSItem(name: nameString, parent: dirItem, type: type)
+            try newItem = SpiderwebFSItem(name: nameString, parent: dirItem, type: type)
         } catch {
             return replyHandler(nil, nil, error)
         }
@@ -635,7 +635,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
             Logger.passthroughfs.error("\(#function): got invalid contents")
             return replyHandler(nil, nil, POSIXError(.EINVAL))
         }
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast dirItem")
             return replyHandler(nil, nil, POSIXError(.EINVAL))
         }
@@ -652,7 +652,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
             return replyHandler(nil, nil, POSIXError(.EINVAL))
         }
 
-        var newItem: PassthroughFSItem
+        var newItem: SpiderwebFSItem
         var error: Int32 = -1
         nameString.withCString({ namePtr in
             let contentsString = String(decoding: contents.data, as: Unicode.UTF8.self)
@@ -663,7 +663,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
         }
 
         do {
-            try newItem = PassthroughFSItem(name: nameString, parent: dirItem, type: FSItem.ItemType.symlink)
+            try newItem = SpiderwebFSItem(name: nameString, parent: dirItem, type: FSItem.ItemType.symlink)
         } catch {
             return replyHandler(nil, nil, error)
         }
@@ -679,7 +679,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
         })
     }
 
-    /// Creation of hard links aren't support for PassthroughFS.
+    /// Creation of hard links aren't support for SpiderwebFSKit.
     public func createLink(to item: FSItem,
                            named name: FSFileName,
                            inDirectory directory: FSItem,
@@ -697,11 +697,11 @@ extension PassthroughFSVolume: FSVolume.Operations {
                            named name: FSFileName,
                            fromDirectory directory: FSItem,
                            replyHandler: @escaping (Error?) -> Void) {
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast dirItem")
             return replyHandler(POSIXError(.EINVAL))
         }
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast item")
             return replyHandler(POSIXError(.EINVAL))
         }
@@ -754,15 +754,15 @@ extension PassthroughFSVolume: FSVolume.Operations {
                            inDirectory destinationDirectory: FSItem,
                            overItem: FSItem?,
                            replyHandler: @escaping (FSFileName?, Error?) -> Void) {
-        guard let fromItem = item as? PassthroughFSItem else {
+        guard let fromItem = item as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast sourceName")
             return replyHandler(nil, POSIXError(.EINVAL))
         }
-        guard let fromDir = sourceDirectory as? PassthroughFSItem else {
+        guard let fromDir = sourceDirectory as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast sourceDirectory")
             return replyHandler(nil, POSIXError(.EINVAL))
         }
-        guard let toDir = destinationDirectory as? PassthroughFSItem else {
+        guard let toDir = destinationDirectory as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast destinationDirectory")
             return replyHandler(nil, POSIXError(.EINVAL))
         }
@@ -771,7 +771,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
 
         var toItemInode: UInt64 = 0
         if overItem != nil {
-            guard let toItem = overItem as? PassthroughFSItem else {
+            guard let toItem = overItem as? SpiderwebFSItem else {
                 Logger.passthroughfs.error("\(#function): Can't cast toItem")
                 return replyHandler(nil, POSIXError(.EINVAL))
             }
@@ -827,7 +827,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                                    attributes: FSItem.GetAttributesRequest?,
                                    packer: FSDirectoryEntryPacker,
                                    replyHandler: @escaping (FSDirectoryVerifier, Error?) -> Void) {
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SpiderwebFSItem else {
             Logger.passthroughfs.error("\(#function): Can't cast directory")
             return replyHandler(FSDirectoryVerifier(0), POSIXError(.EINVAL))
         }

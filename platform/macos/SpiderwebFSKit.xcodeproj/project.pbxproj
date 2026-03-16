@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D3BA958B2D9D753400FAF4A2 /* PassthroughAppEx.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = D3BA95812D9D753400FAF4A2 /* PassthroughAppEx.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D3BA958B2D9D753400FAF4A2 /* SpiderwebFSKitExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = D3BA95812D9D753400FAF4A2 /* SpiderwebFSKitExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		D3BA95932D9D754E00FAF4A2 /* FSKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3BA95922D9D754E00FAF4A2 /* FSKit.framework */; };
 /* End PBXBuildFile section */
 
@@ -28,7 +28,7 @@
 			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
 			dstSubfolderSpec = 16;
 			files = (
-				D3BA958B2D9D753400FAF4A2 /* PassthroughAppEx.appex in Embed ExtensionKit Extensions */,
+				D3BA958B2D9D753400FAF4A2 /* SpiderwebFSKitExtension.appex in Embed ExtensionKit Extensions */,
 			);
 			name = "Embed ExtensionKit Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -38,8 +38,8 @@
 /* Begin PBXFileReference section */
 		00B0E1AF6A384C132E16037B /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		5BABA0E0E129553F626097AC /* SampleCode.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
-		D3BA956E2D9D74FC00FAF4A2 /* Passthrough.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Passthrough.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D3BA95812D9D753400FAF4A2 /* PassthroughAppEx.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = PassthroughAppEx.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		D3BA956E2D9D74FC00FAF4A2 /* SpiderwebFSKit.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SpiderwebFSKit.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D3BA95812D9D753400FAF4A2 /* SpiderwebFSKitExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = SpiderwebFSKitExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D3BA95922D9D754E00FAF4A2 /* FSKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = FSKit.framework; path = System/Library/Frameworks/FSKit.framework; sourceTree = SDKROOT; };
 		D6F6ABACB66D801BACAE8B33 /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -57,7 +57,7 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		D3BA95702D9D74FC00FAF4A2 /* Passthrough */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Passthrough;
+			path = SpiderwebFSKitApp;
 			sourceTree = "<group>";
 		};
 		D3BA95822D9D753400FAF4A2 /* PassthroughAppEx */ = {
@@ -65,7 +65,7 @@
 			exceptions = (
 				D3BA958C2D9D753400FAF4A2 /* Exceptions for "PassthroughAppEx" folder in "PassthroughAppEx" target */,
 			);
-			path = PassthroughAppEx;
+			path = SpiderwebFSKitExtension;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -113,8 +113,8 @@
 		D3BA956F2D9D74FC00FAF4A2 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				D3BA956E2D9D74FC00FAF4A2 /* Passthrough.app */,
-				D3BA95812D9D753400FAF4A2 /* PassthroughAppEx.appex */,
+				D3BA956E2D9D74FC00FAF4A2 /* SpiderwebFSKit.app */,
+				D3BA95812D9D753400FAF4A2 /* SpiderwebFSKitExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -141,7 +141,7 @@
 /* Begin PBXNativeTarget section */
 		D3BA956D2D9D74FC00FAF4A2 /* Passthrough */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = D3BA957A2D9D74FD00FAF4A2 /* Build configuration list for PBXNativeTarget "Passthrough" */;
+			buildConfigurationList = D3BA957A2D9D74FD00FAF4A2 /* Build configuration list for PBXNativeTarget "SpiderwebFSKit" */;
 			buildPhases = (
 				D3BA956A2D9D74FC00FAF4A2 /* Sources */,
 				D3BA956B2D9D74FC00FAF4A2 /* Frameworks */,
@@ -156,14 +156,14 @@
 			fileSystemSynchronizedGroups = (
 				D3BA95702D9D74FC00FAF4A2 /* Passthrough */,
 			);
-			name = Passthrough;
-			productName = Passthrough;
-			productReference = D3BA956E2D9D74FC00FAF4A2 /* Passthrough.app */;
+			name = SpiderwebFSKit;
+			productName = SpiderwebFSKit;
+			productReference = D3BA956E2D9D74FC00FAF4A2 /* SpiderwebFSKit.app */;
 			productType = "com.apple.product-type.application";
 		};
 		D3BA95802D9D753400FAF4A2 /* PassthroughAppEx */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = D3BA958D2D9D753400FAF4A2 /* Build configuration list for PBXNativeTarget "PassthroughAppEx" */;
+			buildConfigurationList = D3BA958D2D9D753400FAF4A2 /* Build configuration list for PBXNativeTarget "SpiderwebFSKitExtension" */;
 			buildPhases = (
 				D3BA957D2D9D753400FAF4A2 /* Sources */,
 				D3BA957E2D9D753400FAF4A2 /* Frameworks */,
@@ -176,9 +176,9 @@
 			fileSystemSynchronizedGroups = (
 				D3BA95822D9D753400FAF4A2 /* PassthroughAppEx */,
 			);
-			name = PassthroughAppEx;
+			name = SpiderwebFSKitExtension;
 			productName = appex;
-			productReference = D3BA95812D9D753400FAF4A2 /* PassthroughAppEx.appex */;
+			productReference = D3BA95812D9D753400FAF4A2 /* SpiderwebFSKitExtension.appex */;
 			productType = "com.apple.product-type.extensionkit-extension";
 		};
 /* End PBXNativeTarget section */
@@ -200,7 +200,7 @@
 					};
 				};
 			};
-			buildConfigurationList = D3BA95692D9D74FC00FAF4A2 /* Build configuration list for PBXProject "Passthrough" */;
+			buildConfigurationList = D3BA95692D9D74FC00FAF4A2 /* Build configuration list for PBXProject "SpiderwebFSKit" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -388,7 +388,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = Passthrough/Passthrough.entitlements;
+				CODE_SIGN_ENTITLEMENTS = SpiderwebFSKitApp/SpiderwebFSKit.entitlements;
 				CODE_SIGN_IDENTITY = "Mac Developer";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -418,7 +418,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = Passthrough/Passthrough.entitlements;
+				CODE_SIGN_ENTITLEMENTS = SpiderwebFSKitApp/SpiderwebFSKit.entitlements;
 				CODE_SIGN_IDENTITY = "Mac Developer";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -446,15 +446,15 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 5BABA0E0E129553F626097AC /* SampleCode.xcconfig */;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = PassthroughAppEx/PassthroughAppEx.entitlements;
+				CODE_SIGN_ENTITLEMENTS = SpiderwebFSKitExtension/SpiderwebFSKitExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Mac Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = H6PZ8M39DM;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = PassthroughAppEx/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Passthrough file system";
+				INFOPLIST_FILE = SpiderwebFSKitExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Spiderweb file system";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -476,15 +476,15 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 5BABA0E0E129553F626097AC /* SampleCode.xcconfig */;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = PassthroughAppEx/PassthroughAppEx.entitlements;
+				CODE_SIGN_ENTITLEMENTS = SpiderwebFSKitExtension/SpiderwebFSKitExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Mac Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = H6PZ8M39DM;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = PassthroughAppEx/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Passthrough file system";
+				INFOPLIST_FILE = SpiderwebFSKitExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Spiderweb file system";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -505,7 +505,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		D3BA95692D9D74FC00FAF4A2 /* Build configuration list for PBXProject "Passthrough" */ = {
+		D3BA95692D9D74FC00FAF4A2 /* Build configuration list for PBXProject "SpiderwebFSKit" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D3BA95782D9D74FD00FAF4A2 /* Debug */,
@@ -514,7 +514,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		D3BA957A2D9D74FD00FAF4A2 /* Build configuration list for PBXNativeTarget "Passthrough" */ = {
+		D3BA957A2D9D74FD00FAF4A2 /* Build configuration list for PBXNativeTarget "SpiderwebFSKit" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D3BA957B2D9D74FD00FAF4A2 /* Debug */,
@@ -523,7 +523,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		D3BA958D2D9D753400FAF4A2 /* Build configuration list for PBXNativeTarget "PassthroughAppEx" */ = {
+		D3BA958D2D9D753400FAF4A2 /* Build configuration list for PBXNativeTarget "SpiderwebFSKitExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D3BA958E2D9D753400FAF4A2 /* Debug */,

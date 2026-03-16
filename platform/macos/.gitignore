@@ -6,7 +6,7 @@
 .DS_Store
 
 # Local build outputs
-.deriveddata-sample/
+.deriveddata*/
 build/
 
 # Xcode - User files

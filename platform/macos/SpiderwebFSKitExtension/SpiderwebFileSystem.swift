@@ -11,8 +11,8 @@ import FSKit
 import OSLog
 
 extension Logger {
-    static let passthroughfs = Logger(subsystem: "com.apple.fskit.PassthroughFS", category: "default")
-    static let spiderwebfs = Logger(subsystem: "com.apple.fskit.PassthroughFS", category: "spiderweb")
+    static let passthroughfs = Logger(subsystem: "com.apple.fskit.SpiderwebFSKit", category: "default")
+    static let spiderwebfs = Logger(subsystem: "com.apple.fskit.SpiderwebFSKit", category: "spiderweb")
 }
 
 /// Returns the current `errno` value as a `POSIXError`.
@@ -67,7 +67,7 @@ private func withSecurityScopedAccess<T>(to url: URL, _ body: () throws -> T) th
 
 /// A file system that either passes through a local directory or mounts a Spiderweb request JSON.
 @objc
-class PassthroughFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
+class SpiderwebFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
     private var passthroughResource: FSPathURLResource?
 
     public override init() {
@@ -95,12 +95,12 @@ class PassthroughFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
                 }
                 passthroughResource = urlResource
                 containerStatus = .ready
-                replyHandler(try PassthroughFSVolume(rootPath: urlResource.url.path), nil)
+                replyHandler(try SpiderwebFSVolume(rootPath: urlResource.url.path), nil)
 
             case .spiderwebRequest:
                 passthroughResource = nil
                 containerStatus = .ready
-                replyHandler(try SpiderwebFSVolume(requestURL: urlResource.url), nil)
+                replyHandler(try SpiderwebBridgeVolume(requestURL: urlResource.url), nil)
             }
         } catch {
             passthroughResource?.url.stopAccessingSecurityScopedResource()
@@ -138,7 +138,7 @@ class PassthroughFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
             let name: String
             switch try classifyMountedResource(urlResource.url) {
             case .passthroughDirectory:
-                name = createVolumeNameFromPath(urlResource.url.path).string ?? "Passthrough"
+                name = createVolumeNameFromPath(urlResource.url.path).string ?? "Spiderweb FSKit"
             case .spiderwebRequest:
                 name = try withSecurityScopedAccess(to: urlResource.url) {
                     try SpiderwebMountRequest.load(from: urlResource.url).volumeNameOrDefault

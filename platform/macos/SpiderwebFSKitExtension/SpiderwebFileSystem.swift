@@ -140,9 +140,11 @@ class SpiderwebFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
             case .passthroughDirectory:
                 name = createVolumeNameFromPath(urlResource.url.path).string ?? "Spiderweb FSKit"
             case .spiderwebRequest:
-                name = try withSecurityScopedAccess(to: urlResource.url) {
-                    try SpiderwebMountRequest.load(from: urlResource.url).volumeNameOrDefault
-                }
+                // Keep probe cheap and deterministic. The real request file is loaded in
+                // `loadResource`; reading/parsing it here has proven fragile in FSKit's
+                // synchronous probe callback.
+                let basename = urlResource.url.deletingPathExtension().lastPathComponent
+                name = basename.isEmpty ? "Spiderweb" : basename
             }
 
             let containerUUID = NSUUID()
@@ -520,6 +522,12 @@ actor SpiderwebNamespaceSession {
         }
     }
 
+    func write(handleID: UInt64, offset: UInt64, data: Data) async throws -> UInt32 {
+        try await withReconnect { session in
+            try await session.writeHandle(handleID: handleID, offset: offset, data: data)
+        }
+    }
+
     private func withReconnect<T>(_ operation: (SpiderwebNamespaceSession) async throws -> T) async throws -> T {
         do {
             try await launchIfNeeded()
@@ -765,7 +773,7 @@ actor SpiderwebNamespaceSession {
         let listingData = try await readAll(fid: fid, initialOffset: 0, maxBytes: 1_048_576)
         let listingText = String(data: listingData, encoding: .utf8) ?? ""
 
-        var names = [".", ".."]
+        var names: [String] = []
         for line in listingText.split(separator: "\n", omittingEmptySubsequences: true) {
             names.append(String(line))
         }
@@ -815,6 +823,7 @@ actor SpiderwebNamespaceSession {
         guard let state = openHandles.removeValue(forKey: handleID) else {
             return
         }
+        try await flushNamespaceWrites()
         try await clunk(fid: state.fid)
     }
 
@@ -823,6 +832,18 @@ actor SpiderwebNamespaceSession {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(EBADF), userInfo: [NSLocalizedDescriptionKey: "Unknown Spiderweb handle"])
         }
         return try await readFid(fid: state.fid, offset: offset, count: length)
+    }
+
+    private func writeHandle(handleID: UInt64, offset: UInt64, data: Data) async throws -> UInt32 {
+        guard let state = openHandles[handleID] else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EBADF), userInfo: [NSLocalizedDescriptionKey: "Unknown Spiderweb handle"])
+        }
+        guard state.writable else {
+            throw readOnlyError(message: "Spiderweb path \(state.path) is read-only")
+        }
+        let written = try await writeFid(fid: state.fid, offset: offset, data: data)
+        try await flushNamespaceWrites()
+        return written
     }
 
     private func walkPathToNewFid(_ path: String) async throws -> UInt32 {
@@ -868,6 +889,14 @@ actor SpiderwebNamespaceSession {
         )
     }
 
+    private func flushNamespaceWrites() async throws {
+        _ = try await sendAcheronRequest(
+            type: "acheron.t_flush",
+            expectedType: "acheron.r_flush",
+            fields: [:]
+        )
+    }
+
     private func readAll(fid: UInt32, initialOffset: UInt64, maxBytes: Int) async throws -> Data {
         var result = Data()
         var offset = initialOffset
@@ -905,6 +934,25 @@ actor SpiderwebNamespaceSession {
             throw SpiderwebProtocolFailure.invalidEnvelope
         }
         return data
+    }
+
+    private func writeFid(fid: UInt32, offset: UInt64, data: Data) async throws -> UInt32 {
+        let envelope = try await sendAcheronRequest(
+            type: "acheron.t_write",
+            expectedType: "acheron.r_write",
+            fields: [
+                "fid": fid,
+                "offset": offset,
+                "data_b64": data.base64EncodedString(),
+            ]
+        )
+        guard
+            let payload = envelope["payload"] as? [String: Any],
+            let count = uint32Value(payload["n"] ?? payload["count"])
+        else {
+            throw SpiderwebProtocolFailure.invalidEnvelope
+        }
+        return count
     }
 
     private func parseNamespaceStat(payload: [String: Any]) throws -> SpiderwebNamespaceStat {
@@ -1036,6 +1084,12 @@ final class SpiderwebNamespaceBridge {
     func release(handleID: UInt64) throws {
         try perform(operationName: "release(handle:\(handleID))") { [session] in
             try await session.release(handleID: handleID)
+        }
+    }
+
+    func write(handleID: UInt64, offset: UInt64, data: Data) throws -> UInt32 {
+        try perform(operationName: "write(handle:\(handleID))") { [session] in
+            try await session.write(handleID: handleID, offset: offset, data: data)
         }
     }
 

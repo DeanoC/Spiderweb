@@ -1306,15 +1306,15 @@ fn readControlPayloadFor(self: *NamespaceClient, expected_id: []const u8, expect
     while (true) {
         var parsed = try readMessageUntil(self, deadline_ms);
         defer parsed.deinit();
-        if (parsed.value != .object) return error.InvalidResponse;
+        if (parsed.value != .object) continue;
 
-        const channel = getRequiredString(parsed.value.object, "channel") orelse return error.InvalidResponse;
+        const channel = getRequiredString(parsed.value.object, "channel") orelse continue;
         if (!std.mem.eql(u8, channel, "control")) continue;
 
         const id = getRequiredString(parsed.value.object, "id") orelse continue;
         if (!std.mem.eql(u8, id, expected_id)) continue;
 
-        const msg_type = getRequiredString(parsed.value.object, "type") orelse return error.InvalidResponse;
+        const msg_type = getRequiredString(parsed.value.object, "type") orelse continue;
         if (std.mem.eql(u8, msg_type, "control.error")) return mapControlError(parsed.value.object);
         if (!std.mem.eql(u8, msg_type, expected_type)) return error.UnexpectedControlResponse;
 
@@ -1328,15 +1328,15 @@ fn readAcheronPayloadFor(self: *NamespaceClient, expected_tag: u32, expected_typ
     while (true) {
         var parsed = try readMessageUntil(self, deadline_ms);
         defer parsed.deinit();
-        if (parsed.value != .object) return error.InvalidResponse;
+        if (parsed.value != .object) continue;
 
-        const channel = getRequiredString(parsed.value.object, "channel") orelse return error.InvalidResponse;
+        const channel = getRequiredString(parsed.value.object, "channel") orelse continue;
         if (!std.mem.eql(u8, channel, "acheron")) continue;
 
-        const tag = getRequiredTag(parsed.value.object) orelse return error.InvalidResponse;
+        const tag = getRequiredTag(parsed.value.object) orelse continue;
         if (tag != expected_tag) continue;
 
-        const msg_type = getRequiredString(parsed.value.object, "type") orelse return error.InvalidResponse;
+        const msg_type = getRequiredString(parsed.value.object, "type") orelse continue;
         if (std.mem.eql(u8, msg_type, "acheron.error")) return mapAcheronError(parsed.value.object);
         if (!std.mem.eql(u8, msg_type, unified.acheronTypeName(expected_type))) return error.ProtocolError;
 

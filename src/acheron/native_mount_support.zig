@@ -13,6 +13,18 @@ pub const filesystem_bundle_id = "com.deanoc.spiderweb.filesystems.fs.spiderweb"
 pub const mount_helper_name = "mount_" ++ module_short_name;
 pub const shared_app_group_id = "group.com.deanoc.spiderweb.fskit";
 const minimum_macos_native_version = std.SemanticVersion{ .major = 15, .minor = 4, .patch = 0 };
+const status_snapshot_max_age_ms: i64 = 24 * 60 * 60 * 1000;
+
+const NativeFsStatusSnapshot = struct {
+    version: u8 = 1,
+    registered: bool,
+    module_enabled: bool,
+    ready: bool,
+    filesystem_bundle_present: bool = false,
+    mount_helper_present: bool = false,
+    runtime_ready: bool = false,
+    updated_at_ms: i64 = 0,
+};
 
 pub const InstallStatus = struct {
     supported_os: bool,
@@ -116,7 +128,7 @@ pub fn detectInstallStatus(allocator: std.mem.Allocator) !InstallStatus {
     else
         false;
     const module_enabled = if (builtin.os.tag == .macos and extension_registered)
-        fskitModuleEnabled(allocator)
+        cachedModuleEnabled(allocator, extension_registered)
     else
         false;
 
@@ -206,28 +218,19 @@ fn defaultSharedContainerDirectory(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn defaultRequestDirectory(allocator: std.mem.Allocator) ![]u8 {
-    const base_dir = if (builtin.os.tag == .macos)
-        try defaultSharedContainerDirectory(allocator)
-    else
-        try defaultSupportDirectory(allocator);
+    const base_dir = try defaultSupportDirectory(allocator);
     defer allocator.free(base_dir);
     return std.fs.path.join(allocator, &.{ base_dir, "Requests" });
 }
 
 pub fn defaultStatusSnapshotPath(allocator: std.mem.Allocator) ![]u8 {
-    const base_dir = if (builtin.os.tag == .macos)
-        try defaultSharedContainerDirectory(allocator)
-    else
-        try defaultSupportDirectory(allocator);
+    const base_dir = try defaultSupportDirectory(allocator);
     defer allocator.free(base_dir);
     return std.fs.path.join(allocator, &.{ base_dir, "native-status.json" });
 }
 
 pub fn defaultActiveRequestPath(allocator: std.mem.Allocator) ![]u8 {
-    const base_dir = if (builtin.os.tag == .macos)
-        try defaultSharedContainerDirectory(allocator)
-    else
-        try defaultSupportDirectory(allocator);
+    const base_dir = try defaultSupportDirectory(allocator);
     defer allocator.free(base_dir);
     return std.fs.path.join(allocator, &.{ base_dir, "current-request.json" });
 }
@@ -399,6 +402,7 @@ pub fn writeLaunchRequest(allocator: std.mem.Allocator, config: native_protocol.
 
 pub fn requestNativeMount(allocator: std.mem.Allocator, config: native_protocol.LaunchConfig, timeout_ms: u64) !void {
     try probeNativeBackend(allocator);
+    try makePathAny(config.mountpoint);
     const request_path = try writeLaunchRequest(allocator, config);
     defer allocator.free(request_path);
     try issueMountRequest(allocator, request_path, config.mountpoint);
@@ -506,6 +510,52 @@ fn fskitModuleEnabled(allocator: std.mem.Allocator) bool {
         return nativeMountProbeShowsEnabled(output, value.term);
     }
     return false;
+}
+
+fn cachedModuleEnabled(allocator: std.mem.Allocator, extension_registered: bool) bool {
+    if (!extension_registered) return false;
+    const snapshot = loadNativeFsStatusSnapshot(allocator) catch null;
+    return moduleEnabledFromSnapshot(snapshot, extension_registered, std.time.milliTimestamp());
+}
+
+fn loadNativeFsStatusSnapshot(allocator: std.mem.Allocator) !?NativeFsStatusSnapshot {
+    const snapshot_path = try defaultStatusSnapshotPath(allocator);
+    defer allocator.free(snapshot_path);
+    if (!pathExists(snapshot_path)) return null;
+
+    const payload = if (std.fs.path.isAbsolute(snapshot_path)) blk: {
+        var file = try std.fs.openFileAbsolute(snapshot_path, .{});
+        defer file.close();
+        break :blk try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    } else try std.fs.cwd().readFileAlloc(allocator, snapshot_path, std.math.maxInt(usize));
+    defer allocator.free(payload);
+
+    const parsed = try std.json.parseFromSlice(NativeFsStatusSnapshot, allocator, payload, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+    return parsed.value;
+}
+
+fn moduleEnabledFromSnapshot(snapshot: ?NativeFsStatusSnapshot, extension_registered: bool, now_ms: i64) bool {
+    if (!extension_registered) return false;
+    if (snapshot) |value| {
+        if (value.version == 1 and value.registered) {
+            if (value.updated_at_ms > 0) {
+                const age = now_ms - value.updated_at_ms;
+                if (age >= 0 and age <= status_snapshot_max_age_ms) {
+                    // A stale or false-negative snapshot should not block the real mount path.
+                    // The actual `mount -t spiderweb ...` call is the authoritative check.
+                    if (value.module_enabled) return true;
+                    return extension_registered;
+                }
+            } else {
+                if (value.module_enabled) return true;
+                return extension_registered;
+            }
+        }
+    }
+    return true;
 }
 
 fn nativeMountProbeShowsEnabled(output: []const u8, term: std.process.Child.Term) bool {
@@ -666,11 +716,7 @@ test "native_mount_support: resolves install path under applications" {
 
     try std.testing.expect(std.mem.endsWith(u8, app_path, "SpiderwebFSKit.app"));
     try std.testing.expect(std.mem.eql(u8, filesystem_bundle_path, "/Library/Filesystems/spiderweb.fs"));
-    if (builtin.os.tag == .macos) {
-        try std.testing.expect(std.mem.indexOf(u8, request_dir, "Group Containers/group.com.deanoc.spiderweb.fskit/Requests") != null);
-    } else {
-        try std.testing.expect(std.mem.indexOf(u8, request_dir, "Application Support/SpiderwebFSKit/Requests") != null);
-    }
+    try std.testing.expect(std.mem.indexOf(u8, request_dir, "Application Support/SpiderwebFSKit/Requests") != null);
 }
 
 test "native_mount_support: runtime gating requires macos 15.4 or newer" {
@@ -715,4 +761,32 @@ test "native_mount_support: parses native mount probe disabled output" {
     try std.testing.expect(!nativeMountProbeShowsEnabled("Module com.deanoc.spiderweb.fskit.app.extension is disabled!\n", .{ .Exited = 22 }));
     try std.testing.expect(!nativeMountProbeShowsEnabled("Module com.example.apple-samplecode.PassthroughH6PZ8M39DM.AppEx is disabled!\n", .{ .Exited = 22 }));
     try std.testing.expect(!nativeMountProbeShowsEnabled("mount: File system extension requires approval\n", .{ .Exited = 69 }));
+}
+
+test "native_mount_support: trusts fresh enabled status snapshots" {
+    const now_ms: i64 = 2_000_000;
+    try std.testing.expect(moduleEnabledFromSnapshot(.{
+        .registered = true,
+        .module_enabled = true,
+        .ready = true,
+        .updated_at_ms = now_ms - 500,
+    }, true, now_ms));
+    try std.testing.expect(moduleEnabledFromSnapshot(.{
+        .registered = true,
+        .module_enabled = false,
+        .ready = false,
+        .updated_at_ms = now_ms - 500,
+    }, true, now_ms));
+}
+
+test "native_mount_support: falls back to registration when snapshot is stale or missing" {
+    const now_ms: i64 = status_snapshot_max_age_ms + 3_000_000;
+    try std.testing.expect(moduleEnabledFromSnapshot(null, true, now_ms));
+    try std.testing.expect(moduleEnabledFromSnapshot(.{
+        .registered = true,
+        .module_enabled = false,
+        .ready = false,
+        .updated_at_ms = now_ms - status_snapshot_max_age_ms - 1,
+    }, true, now_ms));
+    try std.testing.expect(!moduleEnabledFromSnapshot(null, false, now_ms));
 }

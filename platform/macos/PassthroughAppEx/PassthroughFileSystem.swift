@@ -1,11 +1,403 @@
+/*
+See the LICENSE.txt file for this sample’s licensing information.
+
+Abstract:
+The custom class that implements a simplified file system.
+*/
+
 import Darwin
 import Foundation
+import FSKit
 import OSLog
+
+extension Logger {
+    static let passthroughfs = Logger(subsystem: "com.apple.fskit.PassthroughFS", category: "default")
+    static let spiderwebfs = Logger(subsystem: "com.apple.fskit.PassthroughFS", category: "spiderweb")
+}
+
+/// Returns the current `errno` value as a `POSIXError`.
+var posixErrno: POSIXError {
+    POSIXError(POSIXError.Code(rawValue: errno) ?? .EINVAL)
+}
+
+/// Returns the result of the given block, or throws an error if `errno` is nonzero.
+/// - Parameter block: The block to execute.
+func throwErrno<T: SignedInteger>(_ block: () throws -> T) throws -> T {
+    let ret = try block()
+    guard ret >= 0 else {
+        guard errno != 0 else {
+            Logger.passthroughfs.error("Call to block failed, and errno is not set")
+            return ret
+        }
+        throw posixErrno
+    }
+    return ret
+}
+
+/// Returns a volume name made from the directory name of given path with a `_passthroughfs` suffix.
+/// - Parameter path: The path to use to generate a volume name.
+func createVolumeNameFromPath(_ path: String) -> FSFileName {
+    let dirName = (path as NSString).lastPathComponent
+    return FSFileName(string: dirName + "_passthrough")
+}
+
+private enum MountedResourceKind {
+    case passthroughDirectory
+    case spiderwebRequest
+}
+
+private func classifyMountedResource(_ url: URL) throws -> MountedResourceKind {
+    let values = try url.resourceValues(forKeys: [.isDirectoryKey])
+    if values.isDirectory == true {
+        return .passthroughDirectory
+    }
+    if url.pathExtension.lowercased() == "json" {
+        return .spiderwebRequest
+    }
+    throw POSIXError(.ENOTSUP)
+}
+
+private func withSecurityScopedAccess<T>(to url: URL, _ body: () throws -> T) throws -> T {
+    guard url.startAccessingSecurityScopedResource() else {
+        throw POSIXError(.EACCES)
+    }
+    defer { url.stopAccessingSecurityScopedResource() }
+    return try body()
+}
+
+/// A file system that either passes through a local directory or mounts a Spiderweb request JSON.
+@objc
+class PassthroughFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
+    private var passthroughResource: FSPathURLResource?
+
+    public override init() {
+        Logger.passthroughfs.debug("\(#function): init")
+    }
+
+    public func loadResource(resource: FSResource, options: FSTaskOptions, replyHandler: @escaping (FSVolume?, (any Error)?) -> Void) {
+        guard let urlResource = resource as? FSPathURLResource else {
+            Logger.passthroughfs.debug("\(#function): Invalid resource type")
+            return replyHandler(nil, POSIXError(.EINVAL))
+        }
+
+        for opt in options.taskOptions {
+            if opt.contains("-f") {
+                return replyHandler(nil, POSIXError(.ENOTSUP))
+            }
+        }
+
+        do {
+            switch try classifyMountedResource(urlResource.url) {
+            case .passthroughDirectory:
+                guard urlResource.url.startAccessingSecurityScopedResource() else {
+                    Logger.passthroughfs.error("\(#function): Can't start accessing security scoped resource")
+                    return replyHandler(nil, POSIXError(.EACCES))
+                }
+                passthroughResource = urlResource
+                containerStatus = .ready
+                replyHandler(try PassthroughFSVolume(rootPath: urlResource.url.path), nil)
+
+            case .spiderwebRequest:
+                passthroughResource = nil
+                containerStatus = .ready
+                replyHandler(try SpiderwebFSVolume(requestURL: urlResource.url), nil)
+            }
+        } catch {
+            passthroughResource?.url.stopAccessingSecurityScopedResource()
+            passthroughResource = nil
+            replyHandler(nil, error)
+        }
+    }
+
+    public func unloadResource(resource: FSResource, options: FSTaskOptions, replyHandler reply: @escaping ((any Error)?) -> Void) {
+        _ = options
+        guard let urlResource = resource as? FSPathURLResource else {
+            Logger.passthroughfs.error("\(#function): Can't cast resource")
+            return reply(POSIXError(.EINVAL))
+        }
+
+        if let loadedResource = passthroughResource {
+            guard loadedResource.url == urlResource.url else {
+                Logger.passthroughfs.error("\(#function): Invalid resource was given to unload")
+                return reply(POSIXError(.EINVAL))
+            }
+            loadedResource.url.stopAccessingSecurityScopedResource()
+            passthroughResource = nil
+        }
+
+        reply(nil)
+    }
+
+    public func probeResource(resource: FSResource, replyHandler: @escaping (FSProbeResult?, (any Error)?) -> Void) {
+        guard let urlResource = resource as? FSPathURLResource else {
+            Logger.passthroughfs.debug("\(#function): Can't cast resource")
+            return replyHandler(nil, POSIXError(.ENODEV))
+        }
+
+        do {
+            let name: String
+            switch try classifyMountedResource(urlResource.url) {
+            case .passthroughDirectory:
+                name = createVolumeNameFromPath(urlResource.url.path).string ?? "Passthrough"
+            case .spiderwebRequest:
+                name = try withSecurityScopedAccess(to: urlResource.url) {
+                    try SpiderwebMountRequest.load(from: urlResource.url).volumeNameOrDefault
+                }
+            }
+
+            let containerUUID = NSUUID()
+            let containerIdentifier = FSContainerIdentifier(uuid: containerUUID as UUID)
+            replyHandler(FSProbeResult.usable(name: name, containerID: containerIdentifier), nil)
+        } catch {
+            replyHandler(nil, error)
+        }
+    }
+}
+
+struct SpiderwebMountRequest: Codable {
+    struct LaunchConfig: Codable {
+        struct Endpoint: Codable {
+            let name: String
+            let url: String
+            let exportName: String?
+            let mountPath: String
+            let authToken: String?
+
+            private enum CodingKeys: String, CodingKey {
+                case name
+                case url
+                case exportName = "export_name"
+                case mountPath = "mount_path"
+                case authToken = "auth_token"
+            }
+        }
+
+        struct Namespace: Codable {
+            let namespaceURL: String
+            let authToken: String?
+            let projectID: String
+            let agentID: String
+            let sessionKey: String
+            let projectToken: String?
+
+            private enum CodingKeys: String, CodingKey {
+                case namespaceURL = "namespace_url"
+                case authToken = "auth_token"
+                case projectID = "project_id"
+                case agentID = "agent_id"
+                case sessionKey = "session_key"
+                case projectToken = "project_token"
+            }
+        }
+
+        let schema: Int
+        let mountpoint: String
+        let workspaceSyncIntervalMS: UInt64
+        let namespaceKeepaliveIntervalMS: UInt64
+        let endpoints: [Endpoint]
+        let namespace: Namespace?
+
+        private enum CodingKeys: String, CodingKey {
+            case schema
+            case mountpoint
+            case workspaceSyncIntervalMS = "workspace_sync_interval_ms"
+            case namespaceKeepaliveIntervalMS = "namespace_keepalive_interval_ms"
+            case endpoints
+            case namespace
+        }
+    }
+
+    let schema: Int
+    let volumeName: String?
+    let launchConfig: LaunchConfig
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case volumeName = "volume_name"
+        case launchConfig = "launch_config"
+    }
+
+    static func load(from url: URL) throws -> SpiderwebMountRequest {
+        try JSONDecoder().decode(SpiderwebMountRequest.self, from: Data(contentsOf: url))
+    }
+
+    var volumeNameOrDefault: String {
+        if let volumeName, !volumeName.isEmpty {
+            return volumeName
+        }
+        let trimmed = launchConfig.mountpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let base = URL(fileURLWithPath: "/" + trimmed).lastPathComponent
+        return base.isEmpty ? "Spiderweb" : base
+    }
+}
+
+struct SpiderwebRemoteAttr: Codable {
+    let id: UInt64
+    let kindCode: UInt8
+    let mode: UInt32
+    let linkCount: UInt32
+    let uid: UInt32
+    let gid: UInt32
+    let size: UInt64
+    let accessTimeNS: Int64
+    let modifyTimeNS: Int64
+    let changeTimeNS: Int64
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kindCode = "k"
+        case mode = "m"
+        case linkCount = "n"
+        case uid = "u"
+        case gid = "g"
+        case size = "sz"
+        case accessTimeNS = "at"
+        case modifyTimeNS = "mt"
+        case changeTimeNS = "ct"
+    }
+}
+
+struct SpiderwebRemoteDirectoryListing: Decodable {
+    struct Entry: Decodable {
+        let name: String
+        let attr: SpiderwebRemoteAttr?
+    }
+
+    let entries: [Entry]
+    let nextCookie: UInt64
+    let eof: Bool
+    let directoryGeneration: UInt64
+
+    private enum CodingKeys: String, CodingKey {
+        case entries = "ents"
+        case next
+        case nextCookie = "next_cookie"
+        case eof
+        case directoryGeneration = "dir_gen"
+    }
+
+    init(entries: [Entry], nextCookie: UInt64, eof: Bool, directoryGeneration: UInt64) {
+        self.entries = entries
+        self.nextCookie = nextCookie
+        self.eof = eof
+        self.directoryGeneration = directoryGeneration
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        entries = try container.decodeIfPresent([Entry].self, forKey: .entries) ?? []
+        nextCookie = try container.decodeIfPresent(UInt64.self, forKey: .nextCookie)
+            ?? container.decodeIfPresent(UInt64.self, forKey: .next)
+            ?? 0
+        eof = try container.decodeIfPresent(Bool.self, forKey: .eof) ?? (nextCookie == 0)
+        directoryGeneration = try container.decodeIfPresent(UInt64.self, forKey: .directoryGeneration) ?? 1
+    }
+}
+
+struct SpiderwebRemoteStatFS: Codable {
+    let blockSize: UInt64
+    let fragmentSize: UInt64
+    let totalBlocks: UInt64
+    let freeBlocks: UInt64
+    let availableBlocks: UInt64
+    let totalFiles: UInt64
+    let freeFiles: UInt64
+    let availableFiles: UInt64
+    let maximumNameLength: UInt64
+
+    private enum CodingKeys: String, CodingKey {
+        case blockSize = "bsize"
+        case fragmentSize = "frsize"
+        case totalBlocks = "blocks"
+        case freeBlocks = "bfree"
+        case availableBlocks = "bavail"
+        case totalFiles = "files"
+        case freeFiles = "ffree"
+        case availableFiles = "favail"
+        case maximumNameLength = "namemax"
+    }
+}
+
+struct SpiderwebOpenHandleResponse {
+    let handleID: UInt64
+    let writable: Bool
+}
+
+enum SpiderwebBridgeError: LocalizedError {
+    case invalidURL(String)
+    case invalidEnvelope
+    case invalidFilenameEncoding
+    case invalidMountedResourceType(String)
+    case unexpectedMessage(String)
+    case missingNamespaceBinding
+    case unsupportedFrame
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL(let value):
+            return "Invalid Spiderweb namespace URL: \(value)"
+        case .invalidEnvelope:
+            return "Spiderweb returned an invalid envelope"
+        case .invalidFilenameEncoding:
+            return "SpiderwebFS currently requires UTF-8 path components"
+        case .invalidMountedResourceType(let value):
+            return "Unsupported mounted resource type \(value)"
+        case .unexpectedMessage(let value):
+            return "Unexpected Spiderweb message: \(value)"
+        case .missingNamespaceBinding:
+            return "Spiderweb mount request is missing launch_config.namespace"
+        case .unsupportedFrame:
+            return "Spiderweb returned an unsupported websocket frame"
+        }
+    }
+}
+
+final class SpiderwebMountRuntime {
+    let request: SpiderwebMountRequest
+
+    private let requestURL: URL
+    private let bridge: SpiderwebNamespaceBridge
+    private var scopedAccessActive = false
+
+    init(requestURL: URL) throws {
+        self.requestURL = requestURL
+        guard requestURL.startAccessingSecurityScopedResource() else {
+            throw POSIXError(.EACCES)
+        }
+        scopedAccessActive = true
+        do {
+            request = try SpiderwebMountRequest.load(from: requestURL)
+            bridge = SpiderwebNamespaceBridge(request: request)
+        } catch {
+            requestURL.stopAccessingSecurityScopedResource()
+            scopedAccessActive = false
+            throw error
+        }
+    }
+
+    deinit {
+        shutdown()
+    }
+
+    func ensureBridge() throws -> SpiderwebNamespaceBridge {
+        try bridge.launchIfNeeded()
+        try bridge.requireMountedRPCBridge()
+        return bridge
+    }
+
+    func shutdown() {
+        bridge.stop()
+        if scopedAccessActive {
+            requestURL.stopAccessingSecurityScopedResource()
+            scopedAccessActive = false
+        }
+    }
+}
 
 private let spiderwebControlProtocol = "unified-v2"
 private let spiderwebAcheronRuntimeVersion = "acheron-1"
 
-private let syntheticStatFS = SpiderwebRemoteStatFS(
+let syntheticStatFS = SpiderwebRemoteStatFS(
     blockSize: 65_536,
     fragmentSize: 65_536,
     totalBlocks: 1,
@@ -61,7 +453,7 @@ private enum SpiderwebProtocolFailure: LocalizedError {
 }
 
 actor SpiderwebNamespaceSession {
-    private let logger = Logger(subsystem: "com.deanoc.spiderweb.fskit.app", category: "namespace")
+    private let logger = Logger.spiderwebfs
     private let request: SpiderwebMountRequest
 
     private var urlSession: URLSession?
@@ -128,72 +520,6 @@ actor SpiderwebNamespaceSession {
         }
     }
 
-    func create(path: String, mode: UInt32, flags: UInt32) async throws -> SpiderwebOpenHandleResponse {
-        _ = path
-        _ = mode
-        _ = flags
-        throw readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet")
-    }
-
-    func write(handleID: UInt64, offset: UInt64, contents: Data) async throws -> UInt32 {
-        _ = handleID
-        _ = offset
-        _ = contents
-        throw readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet")
-    }
-
-    func truncate(path: String, size: UInt64) async throws {
-        _ = path
-        _ = size
-        throw readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet")
-    }
-
-    func unlink(path: String) async throws {
-        _ = path
-        throw readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet")
-    }
-
-    func mkdir(path: String) async throws {
-        _ = path
-        throw readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet")
-    }
-
-    func rmdir(path: String) async throws {
-        _ = path
-        throw readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet")
-    }
-
-    func rename(oldPath: String, newPath: String) async throws {
-        _ = oldPath
-        _ = newPath
-        throw readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet")
-    }
-
-    func symlink(target: String, linkPath: String) async throws {
-        _ = target
-        _ = linkPath
-        throw readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet")
-    }
-
-    func getXattr(path: String, name: String) async throws -> Data {
-        _ = path
-        _ = name
-        throw noAttributeError(message: "No extended attributes available")
-    }
-
-    func listXattrs(path: String) async throws -> [String] {
-        _ = path
-        return []
-    }
-
-    func setXattr(path: String, name: String, value: Data?, policy: UInt32) async throws {
-        _ = path
-        _ = name
-        _ = value
-        _ = policy
-        throw readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet")
-    }
-
     private func withReconnect<T>(_ operation: (SpiderwebNamespaceSession) async throws -> T) async throws -> T {
         do {
             try await launchIfNeeded()
@@ -246,7 +572,9 @@ actor SpiderwebNamespaceSession {
         var restored: [UInt64: SpiderwebNamespaceHandleState] = [:]
         for (handleID, state) in existingHandles {
             let response = try await openFile(path: state.path, flags: state.flags)
-            guard let refreshed = openHandles.removeValue(forKey: response.handleID) else { continue }
+            guard let refreshed = openHandles.removeValue(forKey: response.handleID) else {
+                continue
+            }
             restored[handleID] = refreshed
         }
         openHandles = restored
@@ -444,7 +772,7 @@ actor SpiderwebNamespaceSession {
 
         let startIndex = Int(clamping: cookie)
         if startIndex >= names.count {
-            return SpiderwebRemoteDirectoryListing(entries: [], nextCookie: 0, eof: true, directoryGeneration: 0)
+            return SpiderwebRemoteDirectoryListing(entries: [], nextCookie: 0, eof: true, directoryGeneration: 1)
         }
 
         let maxCount = maxEntries == 0 ? 0 : Int(maxEntries)
@@ -509,7 +837,7 @@ actor SpiderwebNamespaceSession {
             .map(String.init)
 
         let fid = nextFid()
-        let envelope = try await sendAcheronRequest(
+        _ = try await sendAcheronRequest(
             type: "acheron.t_walk",
             expectedType: "acheron.r_walk",
             fields: [
@@ -518,7 +846,6 @@ actor SpiderwebNamespaceSession {
                 "path": segments,
             ]
         )
-        _ = envelope
         return fid
     }
 
@@ -655,7 +982,7 @@ final class SpiderwebNamespaceBridge {
     private let session: SpiderwebNamespaceSession
 
     init(request: SpiderwebMountRequest) {
-        self.session = SpiderwebNamespaceSession(request: request)
+        session = SpiderwebNamespaceSession(request: request)
     }
 
     func launchIfNeeded() throws {
@@ -700,81 +1027,15 @@ final class SpiderwebNamespaceBridge {
         }
     }
 
-    func create(path: String, mode: UInt32, flags: UInt32) throws -> SpiderwebOpenHandleResponse {
-        try perform(operationName: "create(\(path))") { [session] in
-            try await session.create(path: path, mode: mode, flags: flags)
-        }
-    }
-
     func read(handleID: UInt64, offset: UInt64, length: UInt32) throws -> Data {
         try perform(operationName: "read(handle:\(handleID))") { [session] in
             try await session.read(handleID: handleID, offset: offset, length: length)
         }
     }
 
-    func write(handleID: UInt64, offset: UInt64, contents: Data) throws -> UInt32 {
-        try perform(operationName: "write(handle:\(handleID))") { [session] in
-            try await session.write(handleID: handleID, offset: offset, contents: contents)
-        }
-    }
-
     func release(handleID: UInt64) throws {
         try perform(operationName: "release(handle:\(handleID))") { [session] in
             try await session.release(handleID: handleID)
-        }
-    }
-
-    func truncate(path: String, size: UInt64) throws {
-        try perform(operationName: "truncate(\(path))") { [session] in
-            try await session.truncate(path: path, size: size)
-        }
-    }
-
-    func unlink(path: String) throws {
-        try perform(operationName: "unlink(\(path))") { [session] in
-            try await session.unlink(path: path)
-        }
-    }
-
-    func mkdir(path: String) throws {
-        try perform(operationName: "mkdir(\(path))") { [session] in
-            try await session.mkdir(path: path)
-        }
-    }
-
-    func rmdir(path: String) throws {
-        try perform(operationName: "rmdir(\(path))") { [session] in
-            try await session.rmdir(path: path)
-        }
-    }
-
-    func rename(oldPath: String, newPath: String) throws {
-        try perform(operationName: "rename(\(oldPath))") { [session] in
-            try await session.rename(oldPath: oldPath, newPath: newPath)
-        }
-    }
-
-    func symlink(target: String, linkPath: String) throws {
-        try perform(operationName: "symlink(\(linkPath))") { [session] in
-            try await session.symlink(target: target, linkPath: linkPath)
-        }
-    }
-
-    func getXattr(path: String, name: String) throws -> Data {
-        try perform(operationName: "getxattr(\(path))") { [session] in
-            try await session.getXattr(path: path, name: name)
-        }
-    }
-
-    func listXattrs(path: String) throws -> [String] {
-        try perform(operationName: "listxattr(\(path))") { [session] in
-            try await session.listXattrs(path: path)
-        }
-    }
-
-    func setXattr(path: String, name: String, value: Data?, policy: UInt32) throws {
-        try perform(operationName: "setxattr(\(path))") { [session] in
-            try await session.setXattr(path: path, name: name, value: value, policy: policy)
         }
     }
 
@@ -810,17 +1071,18 @@ let spiderwebFailFastCooldownMS: UInt64 = {
 
 private func runBlocking<T>(operationName: String, _ operation: @escaping @Sendable () async throws -> T) throws -> T {
     let semaphore = DispatchSemaphore(value: 0)
-    let outcomeQueue = DispatchQueue(label: "com.deanoc.spiderweb.fskit.bridge-outcome")
+    let lock = NSLock()
     var outcome: Result<T, Error>?
     let task = Task {
-        let result: Result<T, Error>
         do {
-            result = .success(try await operation())
+            let value = try await operation()
+            lock.lock()
+            outcome = .success(value)
+            lock.unlock()
         } catch {
-            result = .failure(error)
-        }
-        outcomeQueue.sync {
-            outcome = result
+            lock.lock()
+            outcome = .failure(error)
+            lock.unlock()
         }
         semaphore.signal()
     }
@@ -831,13 +1093,12 @@ private func runBlocking<T>(operationName: String, _ operation: @escaping @Senda
         throw timeoutError(operationName: operationName, timeoutMS: spiderwebBridgeTimeoutMS)
     }
 
-    let resolvedOutcome: Result<T, Error>? = outcomeQueue.sync {
-        outcome
-    }
-    return try resolvedOutcome!.get()
+    lock.lock()
+    defer { lock.unlock() }
+    return try outcome!.get()
 }
 
-private func join(directoryPath: String, childName: String) -> String {
+func join(directoryPath: String, childName: String) -> String {
     let normalizedDirectory = normalizeAbsolutePath(directoryPath)
     if normalizedDirectory == "/" {
         return "/" + childName
@@ -845,7 +1106,7 @@ private func join(directoryPath: String, childName: String) -> String {
     return normalizedDirectory + "/" + childName
 }
 
-private func normalizeAbsolutePath(_ path: String) -> String {
+func normalizeAbsolutePath(_ path: String) -> String {
     if path.isEmpty || path == "/" {
         return "/"
     }
@@ -903,7 +1164,11 @@ private func mapControlError(_ envelope: [String: Any]) -> NSError {
 private func mapAcheronError(_ envelope: [String: Any]) -> NSError {
     let details = envelope["error"] as? [String: Any]
     if let errno = (details?["errno"] as? NSNumber)?.int32Value {
-        return NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: stringValue(details?["message"]) ?? "Spiderweb filesystem request failed"])
+        return NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(errno),
+            userInfo: [NSLocalizedDescriptionKey: stringValue(details?["message"]) ?? "Spiderweb filesystem request failed"]
+        )
     }
     let code = stringValue(details?["code"]) ?? "acheron_error"
     let message = stringValue(details?["message"]) ?? "Spiderweb acheron request failed"
@@ -947,10 +1212,6 @@ private func mapCodeToNSError(code: String, message: String) -> NSError {
 
 func readOnlyError(message: String) -> NSError {
     NSError(domain: NSPOSIXErrorDomain, code: Int(EROFS), userInfo: [NSLocalizedDescriptionKey: message])
-}
-
-func noAttributeError(message: String) -> NSError {
-    NSError(domain: NSPOSIXErrorDomain, code: Int(ENODATA), userInfo: [NSLocalizedDescriptionKey: message])
 }
 
 func timeoutError(operationName: String, timeoutMS: UInt64) -> NSError {

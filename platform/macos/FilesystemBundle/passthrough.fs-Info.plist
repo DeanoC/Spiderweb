@@ -3,26 +3,32 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>SpiderwebFSKit</string>
-	<key>CFBundleExecutable</key>
-	<string>$(EXECUTABLE_NAME)</string>
+	<string>Passthrough</string>
 	<key>CFBundleIdentifier</key>
-	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<string>com.example.apple-samplecode.passthrough.filesystems.fs.passthrough</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>passthrough</string>
 	<key>CFBundlePackageType</key>
-	<string>APPL</string>
+	<string>fs  </string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>LSUIElement</key>
-	<true/>
-	<key>NSSystemExtensionUsageDescription</key>
-	<string>SpiderwebFSKit installs a file system extension to mount Spiderweb workspaces.</string>
+	<key>FSPersonalities</key>
+	<dict>
+		<key>Passthrough</key>
+		<dict>
+			<key>FSName</key>
+			<string>Passthrough</string>
+			<key>FSSubType</key>
+			<integer>0</integer>
+		</dict>
+	</dict>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.4</string>
 </dict>
 </plist>

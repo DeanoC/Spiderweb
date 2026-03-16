@@ -1,7 +1,7 @@
 import Darwin
 
 private let mountExecutable = "/sbin/mount"
-private let filesystemType = "spiderweb"
+private let filesystemType = "passthrough"
 
 @inline(__always)
 private func printError(_ message: String) {
@@ -13,7 +13,7 @@ private func printError(_ message: String) {
 
 @inline(__always)
 private func fail(_ message: String, exitCode: Int32 = 64) -> Never {
-    printError("mount_spiderweb: \(message)")
+    printError("mount_passthrough: \(message)")
     Darwin.exit(exitCode)
 }
 
@@ -31,7 +31,7 @@ private func appendMountOptionArgument(_ option: String, from arguments: [String
     }
 }
 
-private func parseInvocation(_ arguments: [String]) -> (passthrough: [String], requestPath: String, mountpoint: String) {
+private func parseInvocation(_ arguments: [String]) -> (passthrough: [String], resourcePath: String, mountpoint: String) {
     if arguments.count == 4, arguments[1] == "--direct" {
         return ([], arguments[2], arguments[3])
     }
@@ -56,17 +56,17 @@ private func parseInvocation(_ arguments: [String]) -> (passthrough: [String], r
     }
 
     guard positional.count >= 2 else {
-        fail("expected request path and mountpoint")
+        fail("expected resource path and mountpoint")
     }
     let mountpoint = positional[positional.count - 1]
-    let requestPath = positional[positional.count - 2]
-    return (passthrough, requestPath, mountpoint)
+    let resourcePath = positional[positional.count - 2]
+    return (passthrough, resourcePath, mountpoint)
 }
 
-private func execMount(passthrough: [String], requestPath: String, mountpoint: String) -> Never {
+private func execMount(passthrough: [String], resourcePath: String, mountpoint: String) -> Never {
     var argvStrings = [mountExecutable, "-F", "-t", filesystemType]
     argvStrings.append(contentsOf: passthrough)
-    argvStrings.append(requestPath)
+    argvStrings.append(resourcePath)
     argvStrings.append(mountpoint)
 
     var argv = argvStrings.map { strdup($0) }
@@ -85,4 +85,4 @@ private func execMount(passthrough: [String], requestPath: String, mountpoint: S
 }
 
 let parsed = parseInvocation(CommandLine.arguments)
-execMount(passthrough: parsed.passthrough, requestPath: parsed.requestPath, mountpoint: parsed.mountpoint)
+execMount(passthrough: parsed.passthrough, resourcePath: parsed.resourcePath, mountpoint: parsed.mountpoint)

@@ -14,11 +14,11 @@ struct ContentView: View {
                 .font(.headline)
 
             Text("Local directory mode")
-            Text("mount -t passthrough ~/Documents ~/passthrough-fs")
+            Text("mount -t spiderweb ~/Documents ~/spiderweb-fs")
                 .font(.system(.body, design: .monospaced))
 
             Text("Spiderweb request mode")
-            Text("mount -t passthrough <spiderweb-request.json> <mountpoint>")
+            Text("mount -t spiderweb <spiderweb-request.json> <mountpoint>")
                 .font(.system(.body, design: .monospaced))
                 .textSelection(.enabled)
         }

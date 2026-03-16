@@ -13,7 +13,7 @@ private func printError(_ message: String) {
 
 @inline(__always)
 private func fail(_ message: String, exitCode: Int32 = 64) -> Never {
-    printError("mount_passthrough: \(message)")
+    printError("mount_spiderweb: \(message)")
     Darwin.exit(exitCode)
 }
 

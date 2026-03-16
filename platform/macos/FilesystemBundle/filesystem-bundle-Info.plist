@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>Spiderweb FSKit</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.example.apple-samplecode.passthrough.filesystems.fs.passthrough</string>
+	<string>com.deanoc.spiderweb.filesystems.fs.spiderweb</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

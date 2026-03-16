@@ -9,7 +9,8 @@ This is the working Apple sample, transplanted into `Spiderweb` and gradually re
 The app and extension are now Spiderweb-branded, but this stage intentionally preserves the working sample mount activation shape:
 
 - the mount type is still `passthrough`
-- the filesystem bundle is still `/Library/Filesystems/passthrough.fs`
+- the filesystem bundle path is still `/Library/Filesystems/passthrough.fs`
+- the filesystem now presents itself to macOS and Finder as `Spiderweb`
 - the Apple-managed sample bundle identifiers remain in place for now
 
 After running and installing the prototype, you can use a Terminal command like `mount -t passthrough ~/Documents ~/passthrough-fs` to present the contents of your Documents directory as another file system, mounted at `passthrough-fs`.

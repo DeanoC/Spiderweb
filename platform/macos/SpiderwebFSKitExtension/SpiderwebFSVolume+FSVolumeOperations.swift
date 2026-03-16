@@ -32,7 +32,7 @@ extension SpiderwebFSVolume: FSVolume.Operations {
     /// Returns volume statistics using `fstatfs`.
     public var volumeStatistics: FSStatFSResult {
         var statfsResult = statfs()
-        let res = FSStatFSResult(fileSystemTypeName: String("passthroughfs"))
+        let res = FSStatFSResult(fileSystemTypeName: String("spiderwebfs"))
         if fstatfs(self.rootItem.fileDescriptor, &statfsResult) == -1 {
             return res
         }

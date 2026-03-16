@@ -34,11 +34,11 @@ func throwErrno<T: SignedInteger>(_ block: () throws -> T) throws -> T {
     return ret
 }
 
-/// Returns a volume name made from the directory name of given path with a `_passthroughfs` suffix.
+/// Returns a volume name made from the directory name of given path with a Spiderweb suffix.
 /// - Parameter path: The path to use to generate a volume name.
 func createVolumeNameFromPath(_ path: String) -> FSFileName {
     let dirName = (path as NSString).lastPathComponent
-    return FSFileName(string: dirName + "_passthrough")
+    return FSFileName(string: dirName + "_spiderweb")
 }
 
 private enum MountedResourceKind {

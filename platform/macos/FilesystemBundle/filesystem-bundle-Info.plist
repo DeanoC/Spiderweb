@@ -5,13 +5,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Passthrough</string>
+	<string>Spiderweb FSKit</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.example.apple-samplecode.passthrough.filesystems.fs.passthrough</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>passthrough</string>
+	<string>spiderweb</string>
 	<key>CFBundlePackageType</key>
 	<string>fs  </string>
 	<key>CFBundleShortVersionString</key>
@@ -20,10 +20,10 @@
 	<string>1</string>
 	<key>FSPersonalities</key>
 	<dict>
-		<key>Passthrough</key>
+		<key>Spiderweb</key>
 		<dict>
 			<key>FSName</key>
-			<string>Passthrough</string>
+			<string>Spiderweb</string>
 			<key>FSSubType</key>
 			<integer>0</integer>
 		</dict>

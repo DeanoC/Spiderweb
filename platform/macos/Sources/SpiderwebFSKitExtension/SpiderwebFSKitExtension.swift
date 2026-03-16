@@ -2,6 +2,7 @@ import Darwin
 import ExtensionFoundation
 import Foundation
 import FSKit
+import OSLog
 
 @available(macOS 15.4, *)
 @main
@@ -15,60 +16,69 @@ final class SpiderwebUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperat
 
     func probeResource(resource: FSResource, replyHandler: @escaping (FSProbeResult?, (any Error)?) -> Void) {
         do {
-            _ = try runtime.ensureBridge(for: resource)
-            replyHandler(.usableButLimited, nil)
+            let request = try runtime.currentRequest(resource: resource)
+            SpiderwebFSKitDebug.log("probeResource succeeded for \(NSStringFromClass(type(of: resource as AnyObject)))")
+            replyHandler(.usable(name: request.volumeNameOrDefault, containerID: FSContainerIdentifier(uuid: UUID())), nil)
         } catch {
+            SpiderwebFSKitDebug.log("probeResource failed for \(NSStringFromClass(type(of: resource as AnyObject))): \(error.localizedDescription)")
             replyHandler(nil, error)
         }
     }
 
     func loadResource(resource: FSResource, options: FSTaskOptions, replyHandler: @escaping (FSVolume?, (any Error)?) -> Void) {
+        _ = options
         do {
             let volume = try SpiderwebFSKitVolume(runtime: runtime, volumeName: runtime.currentVolumeName(resource: resource))
+            SpiderwebFSKitDebug.log("loadResource succeeded for \(NSStringFromClass(type(of: resource as AnyObject)))")
             replyHandler(volume, nil)
         } catch {
+            SpiderwebFSKitDebug.log("loadResource failed for \(NSStringFromClass(type(of: resource as AnyObject))): \(error.localizedDescription)")
             replyHandler(nil, error)
         }
     }
 
     func unloadResource(resource: FSResource, options: FSTaskOptions, replyHandler reply: @escaping ((any Error)?) -> Void) {
+        _ = resource
+        _ = options
+        SpiderwebFSKitDebug.log("unloadResource called for \(NSStringFromClass(type(of: resource as AnyObject)))")
         runtime.shutdown()
         reply(nil)
     }
 
     func didFinishLoading() {
+        SpiderwebFSKitDebug.log("extension finished loading")
         NSLog("SpiderwebFSKit extension loaded.")
     }
 }
 
 @available(macOS 15.4, *)
 final class SpiderwebFSKitRuntime {
-    private let fileManager = FileManager.default
     private let lock = NSLock()
     private var activeRequest: SpiderwebMountRequest?
-    private var activeBridge: SpiderwebFSHelperBridge?
-    private var activeConfigURL: URL?
+    private var activeNamespaceBridge: SpiderwebNamespaceBridge?
+    private var scopedResourceURL: URL?
+    private var scopedAccessActive = false
 
-    func ensureBridge(for resource: FSResource? = nil) throws -> SpiderwebFSHelperBridge {
+    func ensureNamespaceBridge(for resource: FSResource? = nil) throws -> SpiderwebNamespaceBridge {
         lock.lock()
         defer { lock.unlock() }
 
-        if let activeBridge {
-            try activeBridge.launchIfNeeded()
-            try activeBridge.requireMountedRPCBridge()
-            return activeBridge
+        if let activeNamespaceBridge {
+            SpiderwebFSKitDebug.log("reusing active Spiderweb namespace bridge")
+            try activeNamespaceBridge.launchIfNeeded()
+            try activeNamespaceBridge.requireMountedRPCBridge()
+            return activeNamespaceBridge
         }
 
         let request = try resolveRequest(resource: resource)
-        let configURL = try stageLaunchConfig(for: request)
-        let helperURL = try bundledHelperExecutableURL()
-        let bridge = SpiderwebFSHelperBridge(helperExecutableURL: helperURL, launchConfigURL: configURL)
+        SpiderwebFSKitDebug.log("resolved request for mountpoint \(request.launchConfig.mountpoint)")
+        let bridge = SpiderwebNamespaceBridge(request: request)
         try bridge.launchIfNeeded()
         try bridge.requireMountedRPCBridge()
 
+        SpiderwebFSKitDebug.log("swift namespace bridge ready for mountpoint \(request.launchConfig.mountpoint)")
         activeRequest = request
-        activeConfigURL = configURL
-        activeBridge = bridge
+        activeNamespaceBridge = bridge
         return bridge
     }
 
@@ -85,56 +95,51 @@ final class SpiderwebFSKitRuntime {
     }
 
     func currentVolumeName(resource: FSResource? = nil) throws -> String {
-        let request = try currentRequest(resource: resource)
-        let trimmed = request.mountpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let base = URL(fileURLWithPath: "/" + trimmed).lastPathComponent
-        return base.isEmpty ? "Spiderweb" : base
+        try currentRequest(resource: resource).volumeNameOrDefault
     }
 
     func shutdown() {
         lock.lock()
         defer { lock.unlock() }
 
-        activeBridge?.stop()
-        activeBridge = nil
+        SpiderwebFSKitDebug.log("runtime shutdown")
+        activeNamespaceBridge?.stop()
+        activeNamespaceBridge = nil
         activeRequest = nil
-        if let activeConfigURL, fileManager.fileExists(atPath: activeConfigURL.path) {
-            try? fileManager.removeItem(at: activeConfigURL)
+        if scopedAccessActive, let scopedResourceURL {
+            scopedResourceURL.stopAccessingSecurityScopedResource()
         }
-        activeConfigURL = nil
+        scopedResourceURL = nil
+        scopedAccessActive = false
     }
 
     private func resolveRequest(resource: FSResource?) throws -> SpiderwebMountRequest {
         if let activeRequest {
             return activeRequest
         }
-        if let resource {
-            return try SpiderwebMountRequest.load(from: resource)
+        guard let resource else {
+            throw SpiderwebFSKitBridgeError.invalidMountedResourceType("missing resource")
         }
-        return try SpiderwebMountRequest.load(from: SpiderwebFSKitPaths.sharedContainerURL().appendingPathComponent(SpiderwebFSKitPaths.activeRequestFileName))
-    }
+        let resourceURL = try mountedResourceURL(from: resource)
 
-    private func stageLaunchConfig(for request: SpiderwebMountRequest) throws -> URL {
-        let configURL = fileManager.temporaryDirectory
-            .appendingPathComponent("spiderweb-fskit-\(UUID().uuidString)", isDirectory: false)
-            .appendingPathExtension("json")
-        let encoded = try JSONEncoder().encode(request)
-        try encoded.write(to: configURL, options: .atomic)
-        return configURL
-    }
-
-    private func bundledHelperExecutableURL() throws -> URL {
-        let bundleURL = Bundle.main.bundleURL
-        let appContentsURL = bundleURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let helperURL = appContentsURL
-            .appendingPathComponent("MacOS", isDirectory: true)
-            .appendingPathComponent("spiderweb-fs-helper", isDirectory: false)
-        guard fileManager.isExecutableFile(atPath: helperURL.path) else {
-            throw SpiderwebFSKitBridgeError.helperExecutableMissing(helperURL)
+        if !scopedAccessActive {
+            guard resourceURL.startAccessingSecurityScopedResource() else {
+                throw POSIXError(.EACCES)
+            }
+            scopedResourceURL = resourceURL
+            scopedAccessActive = true
         }
-        return helperURL
+
+        let request: SpiderwebMountRequest
+        if resourceURL.pathExtension == "json" {
+            request = try SpiderwebMountRequest.load(from: resourceURL)
+        } else {
+            let activeRequestURL = SpiderwebFSKitPaths.sharedContainerURL()
+                .appendingPathComponent("current-request.json", isDirectory: false)
+            request = try SpiderwebMountRequest.load(from: activeRequestURL)
+        }
+        activeRequest = request
+        return request
     }
 }
 
@@ -154,12 +159,15 @@ final class SpiderwebFSKitVolume:
     FSVolume.ReadWriteOperations,
     FSVolume.XattrOperations
 {
+    private let logger = Logger(subsystem: "com.deanoc.spiderweb.fskit.app", category: "spiderwebfs")
     private let runtime: SpiderwebFSKitRuntime
     private let stateLock = NSLock()
+    private let failFastCooldownMS = spiderwebFailFastCooldownMS
 
     private var pathToItem: [String: SpiderwebFSKitItem] = [:]
     private var nextItemIdentifier: UInt64 = 1024
     private var openStates: [UInt64: SpiderwebOpenState] = [:]
+    private var blockedPaths: [String: Date] = [:]
     private var volumeStatsCache = SpiderwebRemoteStatFS(
         blockSize: 4096,
         fragmentSize: 4096,
@@ -184,7 +192,7 @@ final class SpiderwebFSKitVolume:
     }()
 
     var volumeStatistics: FSStatFSResult {
-        let stats = FSStatFSResult(fileSystemTypeName: "spiderweb")
+        let stats = FSStatFSResult(fileSystemTypeName: "spiderwebfs")
         stateLock.lock()
         let cached = volumeStatsCache
         stateLock.unlock()
@@ -210,7 +218,7 @@ final class SpiderwebFSKitVolume:
 
     init(runtime: SpiderwebFSKitRuntime, volumeName: String) throws {
         self.runtime = runtime
-        let bridge = try runtime.ensureBridge()
+        let bridge = try runtime.ensureNamespaceBridge()
         let rootAttr = try bridge.getattr(path: "/")
         let rootID = FSItem.Identifier.rootDirectory
         self.rootItem = SpiderwebFSKitItem(path: "/", itemIdentifier: rootID, cachedAttr: rootAttr)
@@ -254,29 +262,26 @@ final class SpiderwebFSKitVolume:
     }
 
     func setAttributes(_ newAttributes: FSItem.SetAttributesRequest, on item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, (any Error)?) -> Void) {
-        do {
-            let bridgeItem = try requireBridgeItem(item)
-            if newAttributes.isValid(.size) {
-                try runtime.ensureBridge().truncate(path: bridgeItem.path, size: newAttributes.size)
-                newAttributes.consumedAttributes = [.size]
-            } else {
-                newAttributes.consumedAttributes = []
-            }
-            let attr = try refreshAttributes(for: bridgeItem)
-            reply(makeAttributes(for: bridgeItem, attr: attr), nil)
-        } catch {
-            reply(nil, error)
-        }
+        _ = newAttributes
+        _ = item
+        reply(nil, readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet"))
     }
 
     func lookupItem(named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSItem?, FSFileName?, (any Error)?) -> Void) {
         do {
             let directoryItem = try requireBridgeItem(directory)
             let childPath = try append(name: name, toDirectoryPath: directoryItem.path)
-            let attr = try runtime.ensureBridge().getattr(path: childPath)
+            try ensurePathIsNotBlocked(childPath)
+            let attr = try runtime.ensureNamespaceBridge().getattr(path: childPath)
+            clearBlockedPath(childPath)
             let child = itemForPath(childPath, attr: attr)
             reply(child, FSFileName(string: name.string ?? ""), nil)
         } catch {
+            if let directoryItem = directory as? SpiderwebFSKitItem,
+               let childPath = try? append(name: name, toDirectoryPath: directoryItem.path)
+            {
+                noteFailure(for: childPath, error: error)
+            }
             reply(nil, nil, error)
         }
     }
@@ -301,45 +306,19 @@ final class SpiderwebFSKitVolume:
     }
 
     func createItem(named name: FSFileName, type: FSItem.ItemType, inDirectory directory: FSItem, attributes newAttributes: FSItem.SetAttributesRequest, replyHandler reply: @escaping (FSItem?, FSFileName?, (any Error)?) -> Void) {
-        do {
-            let directoryItem = try requireBridgeItem(directory)
-            let path = try append(name: name, toDirectoryPath: directoryItem.path)
-            switch type {
-            case .file:
-                let handle = try runtime.ensureBridge().create(
-                    path: path,
-                    mode: normalizedCreateMode(from: newAttributes, defaultMode: 0o100644),
-                    flags: UInt32(O_RDWR | O_CREAT | O_EXCL)
-                )
-                try runtime.ensureBridge().release(handleID: handle.handleID)
-            case .directory:
-                try runtime.ensureBridge().mkdir(path: path)
-            default:
-                throw CocoaError(.featureUnsupported)
-            }
-            let attr = try runtime.ensureBridge().getattr(path: path)
-            let child = itemForPath(path, attr: attr)
-            reply(child, FSFileName(string: name.string ?? ""), nil)
-        } catch {
-            reply(nil, nil, error)
-        }
+        _ = name
+        _ = type
+        _ = directory
+        _ = newAttributes
+        reply(nil, nil, readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet"))
     }
 
     func createSymbolicLink(named name: FSFileName, inDirectory directory: FSItem, attributes newAttributes: FSItem.SetAttributesRequest, linkContents contents: FSFileName, replyHandler reply: @escaping (FSItem?, FSFileName?, (any Error)?) -> Void) {
         _ = newAttributes
-        do {
-            guard let target = contents.string else {
-                throw SpiderwebFSKitBridgeError.invalidFilenameEncoding
-            }
-            let directoryItem = try requireBridgeItem(directory)
-            let path = try append(name: name, toDirectoryPath: directoryItem.path)
-            try runtime.ensureBridge().symlink(target: target, linkPath: path)
-            let attr = try runtime.ensureBridge().getattr(path: path)
-            let child = itemForPath(path, attr: attr)
-            reply(child, FSFileName(string: name.string ?? ""), nil)
-        } catch {
-            reply(nil, nil, error)
-        }
+        _ = name
+        _ = directory
+        _ = contents
+        reply(nil, nil, readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet"))
     }
 
     func createLink(to item: FSItem, named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
@@ -350,67 +329,56 @@ final class SpiderwebFSKitVolume:
     }
 
     func removeItem(_ item: FSItem, named name: FSFileName, fromDirectory directory: FSItem, replyHandler reply: @escaping ((any Error)?) -> Void) {
+        _ = item
         _ = name
         _ = directory
-        do {
-            let bridgeItem = try requireBridgeItem(item)
-            let attr = try currentAttributes(for: bridgeItem)
-            if itemType(for: attr) == .directory {
-                try runtime.ensureBridge().rmdir(path: bridgeItem.path)
-            } else {
-                try runtime.ensureBridge().unlink(path: bridgeItem.path)
-            }
-            stateLock.lock()
-            pathToItem.removeValue(forKey: bridgeItem.path)
-            openStates.removeValue(forKey: bridgeItem.itemIdentifier.rawValue)
-            stateLock.unlock()
-            reply(nil)
-        } catch {
-            reply(error)
-        }
+        reply(readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet"))
     }
 
     func renameItem(_ item: FSItem, inDirectory sourceDirectory: FSItem, named sourceName: FSFileName, to destinationName: FSFileName, inDirectory destinationDirectory: FSItem, overItem: FSItem?, replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
+        _ = item
         _ = sourceDirectory
         _ = sourceName
+        _ = destinationName
+        _ = destinationDirectory
         _ = overItem
-        do {
-            let bridgeItem = try requireBridgeItem(item)
-            let destinationDirectoryItem = try requireBridgeItem(destinationDirectory)
-            let destinationPath = try append(name: destinationName, toDirectoryPath: destinationDirectoryItem.path)
-            try runtime.ensureBridge().rename(oldPath: bridgeItem.path, newPath: destinationPath)
-            stateLock.lock()
-            pathToItem.removeValue(forKey: bridgeItem.path)
-            bridgeItem.path = destinationPath
-            pathToItem[destinationPath] = bridgeItem
-            stateLock.unlock()
-            let attr = try runtime.ensureBridge().getattr(path: destinationPath)
-            bridgeItem.cachedAttr = attr
-            reply(FSFileName(string: destinationName.string ?? ""), nil)
-        } catch {
-            reply(nil, error)
-        }
+        reply(nil, readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet"))
     }
 
     func enumerateDirectory(_ directory: FSItem, startingAt cookie: FSDirectoryCookie, verifier: FSDirectoryVerifier, attributes: FSItem.GetAttributesRequest?, packer: FSDirectoryEntryPacker, replyHandler reply: @escaping (FSDirectoryVerifier, (any Error)?) -> Void) {
         _ = verifier
         do {
             let directoryItem = try requireBridgeItem(directory)
-            let listing = try runtime.ensureBridge().readdir(
+            try ensurePathIsNotBlocked(directoryItem.path)
+            let listing = try runtime.ensureNamespaceBridge().readdir(
                 path: directoryItem.path,
                 cookie: UInt64(cookie.rawValue),
                 maxEntries: 256
             )
-            for entry in listing.entries {
+            clearBlockedPath(directoryItem.path)
+
+            for (index, entry) in listing.entries.enumerated() {
                 let childPath = join(directoryPath: directoryItem.path, childName: entry.name)
                 let child = itemForPath(childPath, attr: entry.attr)
-                let itemAttributes = entry.attr.map { makeAttributes(for: child, attr: $0) }
+                let resolvedAttr: SpiderwebRemoteAttr
+                do {
+                    resolvedAttr = try currentAttributes(for: child)
+                } catch {
+                    if let fallbackAttr = entry.attr ?? child.cachedAttr {
+                        logger.warning("enumerateDirectory falling back to cached attrs for \(childPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        resolvedAttr = fallbackAttr
+                    } else {
+                        logger.warning("enumerateDirectory skipping stalled entry \(childPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        continue
+                    }
+                }
+                let nextCookieRaw = UInt64(cookie.rawValue) + UInt64(index) + 1
                 let packed = packer.packEntry(
                     name: FSFileName(string: entry.name),
-                    itemType: itemType(for: try currentAttributes(for: child)),
+                    itemType: itemType(for: resolvedAttr),
                     itemID: child.itemIdentifier,
-                    nextCookie: FSDirectoryCookie(rawValue: listing.nextCookie),
-                    attributes: attributes == nil ? nil : itemAttributes
+                    nextCookie: FSDirectoryCookie(rawValue: listing.eof && index == listing.entries.count - 1 ? 0 : nextCookieRaw),
+                    attributes: attributes == nil ? nil : makeAttributes(for: child, attr: resolvedAttr)
                 )
                 if !packed {
                     break
@@ -418,6 +386,9 @@ final class SpiderwebFSKitVolume:
             }
             reply(FSDirectoryVerifier(rawValue: listing.directoryGeneration), nil)
         } catch {
+            if let directoryItem = directory as? SpiderwebFSKitItem {
+                noteFailure(for: directoryItem.path, error: error)
+            }
             reply(verifier, error)
         }
     }
@@ -425,7 +396,7 @@ final class SpiderwebFSKitVolume:
     func activate(options: FSTaskOptions, replyHandler reply: @escaping (FSItem?, (any Error)?) -> Void) {
         _ = options
         do {
-            _ = try runtime.ensureBridge()
+            _ = try runtime.ensureNamespaceBridge()
             let attr = try refreshAttributes(for: rootItem)
             rootItem.cachedAttr = attr
             reply(rootItem, nil)
@@ -447,6 +418,9 @@ final class SpiderwebFSKitVolume:
             _ = try ensureHandle(for: bridgeItem, modes: modes)
             reply(nil)
         } catch {
+            if let bridgeItem = item as? SpiderwebFSKitItem {
+                noteFailure(for: bridgeItem.path, error: error)
+            }
             reply(error)
         }
     }
@@ -466,89 +440,65 @@ final class SpiderwebFSKitVolume:
         do {
             let bridgeItem = try requireBridgeItem(item)
             let openState = try ensureHandle(for: bridgeItem, modes: [.read])
-            let data = try runtime.ensureBridge().read(
+            let data = try runtime.ensureNamespaceBridge().read(
                 handleID: openState.handleID,
                 offset: UInt64(offset),
                 length: UInt32(clamping: length)
             )
             try buffer.withUnsafeMutableBytes { rawBuffer in
                 guard data.count <= rawBuffer.count else {
-                    throw SpiderwebFSKitBridgeError.helperProtocolFailure("Read buffer too small for helper response")
+                    throw SpiderwebFSKitBridgeError.bridgeFailure("Read buffer too small for Spiderweb response")
                 }
                 rawBuffer.copyBytes(from: data)
             }
             reply(data.count, nil)
         } catch {
+            if let bridgeItem = item as? SpiderwebFSKitItem {
+                noteFailure(for: bridgeItem.path, error: error)
+            }
             reply(0, error)
         }
     }
 
     func write(contents: Data, to item: FSItem, at offset: off_t, replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
-        do {
-            let bridgeItem = try requireBridgeItem(item)
-            let openState = try ensureHandle(for: bridgeItem, modes: [.read, .write])
-            let written = try runtime.ensureBridge().write(
-                handleID: openState.handleID,
-                offset: UInt64(offset),
-                contents: contents
-            )
-            let attr = try refreshAttributes(for: bridgeItem)
-            bridgeItem.cachedAttr = attr
-            reply(Int(written), nil)
-        } catch {
-            reply(0, error)
-        }
+        _ = contents
+        _ = item
+        _ = offset
+        reply(0, readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet"))
     }
 
     func getXattr(named name: FSFileName, of item: FSItem, replyHandler reply: @escaping (Data?, (any Error)?) -> Void) {
-        do {
-            let bridgeItem = try requireBridgeItem(item)
-            let value = try runtime.ensureBridge().getXattr(
-                path: bridgeItem.path,
-                name: try fsNameString(name)
-            )
-            reply(value, nil)
-        } catch {
-            reply(nil, error)
-        }
+        _ = name
+        _ = item
+        reply(nil, noAttributeError(message: "No extended attributes available"))
     }
 
     func setXattr(named name: FSFileName, to value: Data?, on item: FSItem, policy: FSVolume.SetXattrPolicy, replyHandler reply: @escaping ((any Error)?) -> Void) {
-        do {
-            let bridgeItem = try requireBridgeItem(item)
-            try runtime.ensureBridge().setXattr(
-                path: bridgeItem.path,
-                name: try fsNameString(name),
-                value: value,
-                policy: UInt32(policy.rawValue)
-            )
-            reply(nil)
-        } catch {
-            reply(error)
-        }
+        _ = name
+        _ = value
+        _ = item
+        _ = policy
+        reply(readOnlyError(message: "Native Spiderweb FSKit writes are not enabled yet"))
     }
 
     func listXattrs(of item: FSItem, replyHandler reply: @escaping ([FSFileName]?, (any Error)?) -> Void) {
-        do {
-            let bridgeItem = try requireBridgeItem(item)
-            let names = try runtime.ensureBridge().listXattrs(path: bridgeItem.path)
-            reply(names.map(FSFileName.init(string:)), nil)
-        } catch {
-            reply(nil, error)
-        }
+        _ = item
+        reply([], nil)
     }
 
     private func requireBridgeItem(_ item: FSItem) throws -> SpiderwebFSKitItem {
         guard let bridgeItem = item as? SpiderwebFSKitItem else {
-            throw SpiderwebFSKitBridgeError.helperProtocolFailure("Received unexpected FSItem subclass")
+            throw SpiderwebFSKitBridgeError.bridgeFailure("Received unexpected FSItem subclass")
         }
         return bridgeItem
     }
 
     private func refreshVolumeStatistics() throws {
-        let stats = try runtime.ensureBridge().statfs(path: "/")
+        try ensurePathIsNotBlocked("/")
+        let stats = try runtime.ensureNamespaceBridge().statfs(path: "/")
         stateLock.lock()
         volumeStatsCache = stats
+        blockedPaths.removeValue(forKey: "/")
         stateLock.unlock()
     }
 
@@ -560,8 +510,10 @@ final class SpiderwebFSKitVolume:
     }
 
     private func refreshAttributes(for item: SpiderwebFSKitItem) throws -> SpiderwebRemoteAttr {
-        let attr = try runtime.ensureBridge().getattr(path: item.path)
+        try ensurePathIsNotBlocked(item.path)
+        let attr = try runtime.ensureNamespaceBridge().getattr(path: item.path)
         item.cachedAttr = attr
+        clearBlockedPath(item.path)
         return attr
     }
 
@@ -604,11 +556,13 @@ final class SpiderwebFSKitVolume:
         }
         stateLock.unlock()
 
-        let response = try runtime.ensureBridge().open(path: item.path, flags: openFlags(for: modes))
+        try ensurePathIsNotBlocked(item.path)
+        let response = try runtime.ensureNamespaceBridge().open(path: item.path, flags: openFlags(for: modes))
         let state = SpiderwebOpenState(handleID: response.handleID, modes: modes, retainCount: 1, writable: response.writable)
 
         stateLock.lock()
         openStates[item.itemIdentifier.rawValue] = state
+        blockedPaths.removeValue(forKey: normalize(path: item.path))
         stateLock.unlock()
         return state
     }
@@ -628,7 +582,7 @@ final class SpiderwebFSKitVolume:
         openStates.removeValue(forKey: item.itemIdentifier.rawValue)
         stateLock.unlock()
 
-        try runtime.ensureBridge().release(handleID: existing.handleID)
+        try runtime.ensureNamespaceBridge().release(handleID: existing.handleID)
     }
 
     private func releaseAllOpenHandles() {
@@ -638,7 +592,7 @@ final class SpiderwebFSKitVolume:
         stateLock.unlock()
 
         for handle in handles {
-            try? runtime.ensureBridge().release(handleID: handle.handleID)
+            try? runtime.ensureNamespaceBridge().release(handleID: handle.handleID)
         }
     }
 
@@ -757,6 +711,39 @@ final class SpiderwebFSKitVolume:
         }
         let parent = URL(fileURLWithPath: normalized).deletingLastPathComponent().path
         return parent.isEmpty ? "/" : parent
+    }
+
+    private func ensurePathIsNotBlocked(_ path: String) throws {
+        let normalized = normalize(path: path)
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        guard let blockedUntil = blockedPaths[normalized] else {
+            return
+        }
+        if blockedUntil <= Date() {
+            blockedPaths.removeValue(forKey: normalized)
+            return
+        }
+        let remainingMS = max(1, Int(blockedUntil.timeIntervalSinceNow * 1000))
+        throw timeoutError(operationName: normalized, timeoutMS: UInt64(remainingMS))
+    }
+
+    private func clearBlockedPath(_ path: String) {
+        stateLock.lock()
+        blockedPaths.removeValue(forKey: normalize(path: path))
+        stateLock.unlock()
+    }
+
+    private func noteFailure(for path: String, error: Error) {
+        guard isBridgeTimeoutError(error), failFastCooldownMS > 0 else {
+            return
+        }
+        let normalized = normalize(path: path)
+        stateLock.lock()
+        blockedPaths[normalized] = Date().addingTimeInterval(Double(failFastCooldownMS) / 1000.0)
+        stateLock.unlock()
+        logger.warning("Fail-fast blocking \(normalized, privacy: .public) for \(self.failFastCooldownMS)ms after timeout")
     }
 
     private func makeTimespec(fromNanoseconds value: Int64) -> timespec {

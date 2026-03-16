@@ -3,26 +3,32 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>SpiderwebFSKit</string>
-	<key>CFBundleExecutable</key>
-	<string>$(EXECUTABLE_NAME)</string>
+	<string>Spiderweb</string>
 	<key>CFBundleIdentifier</key>
-	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<string>com.deanoc.spiderweb.filesystems.fs.spiderweb</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>spiderweb</string>
 	<key>CFBundlePackageType</key>
-	<string>APPL</string>
+	<string>fs  </string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>LSUIElement</key>
-	<true/>
-	<key>NSSystemExtensionUsageDescription</key>
-	<string>SpiderwebFSKit installs a file system extension to mount Spiderweb workspaces.</string>
+	<key>FSPersonalities</key>
+	<dict>
+		<key>Spiderweb</key>
+		<dict>
+			<key>FSName</key>
+			<string>Spiderweb</string>
+			<key>FSSubType</key>
+			<integer>0</integer>
+		</dict>
+	</dict>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.4</string>
 </dict>
 </plist>

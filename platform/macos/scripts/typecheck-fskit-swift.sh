@@ -18,11 +18,14 @@ swiftc -typecheck \
   -sdk "$SDK_PATH" \
   -target arm64-apple-macos15.4 \
   "$MACOS_DIR/Sources/Shared/SpiderwebMountRequest.swift" \
+  "$MACOS_DIR/Sources/Shared/SpiderwebNamespaceClient.swift" \
   "$MACOS_DIR/Sources/SpiderwebFSKitExtension/SpiderwebFSKitExtension.swift"
 
 swiftc -typecheck \
   -sdk "$SDK_PATH" \
   -target arm64-apple-macos15.4 \
   "$MACOS_DIR/Sources/Shared/SpiderwebMountRequest.swift" \
+  "$MACOS_DIR/Sources/Shared/SpiderwebNamespaceClient.swift" \
   "$MACOS_DIR/Sources/SpiderwebFSKitApp/SpiderwebFSKitAppMain.swift" \
-  "$MACOS_DIR/Sources/SpiderwebFSKitApp/SpiderwebFSKitAppController.swift"
+  "$MACOS_DIR/Sources/SpiderwebFSKitApp/SpiderwebFSKitAppController.swift" \
+  "$MACOS_DIR/Sources/SpiderwebFSKitApp/ContentView.swift"

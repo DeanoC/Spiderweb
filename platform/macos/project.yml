@@ -9,7 +9,10 @@ settings:
     SWIFT_VERSION: 5.10
     MACOSX_DEPLOYMENT_TARGET: "15.4"
     CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "Mac Developer"
+    DEVELOPMENT_TEAM: H6PZ8M39DM
     ENABLE_APP_SANDBOX: YES
+    PROVISIONING_PROFILE_SPECIFIER: ""
 
 targets:
   SpiderwebFSKit:
@@ -21,8 +24,12 @@ targets:
       - path: Sources/SpiderwebFSKitApp
     info:
       path: Config/SpiderwebFSKit-Info.plist
+      properties:
+        CFBundleDisplayName: SpiderwebFSKit
+        LSUIElement: true
+        NSSystemExtensionUsageDescription: SpiderwebFSKit installs a file system extension to mount Spiderweb workspaces.
     entitlements:
-      path: build/generated/SpiderwebFSKit.entitlements
+      path: Config/SpiderwebFSKit.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.deanoc.spiderweb.fskit.app
@@ -44,25 +51,24 @@ targets:
     info:
       path: Config/SpiderwebFSKitExtension-Info.plist
       properties:
-        FSSupportedSchemes:
-          - spiderweb
+        CFBundleDisplayName: SpiderwebFSKitExtension
+        CFBundlePackageType: XPC!
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.fskit.fsmodule
           FSActivateOptionSyntax:
-            shortOptions: "m:n:w:"
+            shortOptions: "u:g:m:o:"
+          FSCheckOptionSyntax:
+            shortOptions: "nqy"
+          FSFormatOptionSyntax:
+            shortOptions: "v"
           FSMediaTypes: {}
-          FSPersonalities:
-            SpiderwebPersonality:
-              FSName: Spiderweb
-              FSfileObjectsAreCaseSensitive: true
-          FSRequiresSecurityScopedPathURLResources: false
-          FSShortName: spiderweb
+          FSPersonalities: {}
+          FSRequiresSecurityScopedPathURLResources: true
+          FSShortName: spiderwebnative
           FSSupportsBlockResources: false
-          FSSupportsGenericURLResources: true
-          FSSupportsPathURLs: false
-          FSSupportsServerURLs: true
+          FSSupportsPathURLs: true
     entitlements:
-      path: build/generated/SpiderwebFSKitExtension.entitlements
+      path: Config/SpiderwebFSKitExtension.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.deanoc.spiderweb.fskit.app.extension

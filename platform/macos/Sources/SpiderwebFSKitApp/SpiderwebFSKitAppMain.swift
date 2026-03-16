@@ -1,18 +1,13 @@
-import Darwin
-import Foundation
+import SwiftUI
 
+@available(macOS 15.4, *)
 @main
-enum SpiderwebFSKitAppMain {
-    static func main() {
-        let controller = SpiderwebFSKitAppController(bundle: .main)
-        do {
-            let keepRunning = try controller.bootstrap(arguments: CommandLine.arguments)
-            if keepRunning {
-                RunLoop.main.run()
-            }
-        } catch {
-            fputs("SpiderwebFSKit failed to start: \(error.localizedDescription)\n", stderr)
-            Darwin.exit(1)
+struct SpiderwebFSKitAppMain: App {
+    @StateObject private var controller = SpiderwebFSKitAppController()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView(controller: controller)
         }
     }
 }

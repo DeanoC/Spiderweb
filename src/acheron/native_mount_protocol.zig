@@ -28,6 +28,12 @@ pub const LaunchConfig = struct {
     namespace: ?NamespaceBinding = null,
 };
 
+pub const MountRequest = struct {
+    schema: u32 = schema_version,
+    volume_name: ?[]const u8 = null,
+    launch_config: LaunchConfig,
+};
+
 pub const OwnedLaunchConfig = struct {
     mountpoint: []u8,
     workspace_sync_interval_ms: u64,
@@ -286,6 +292,13 @@ pub const ErrorResponse = struct {
 
 pub fn encodeLaunchConfig(allocator: std.mem.Allocator, config: LaunchConfig) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, config, .{
+        .emit_null_optional_fields = false,
+        .whitespace = .indent_2,
+    });
+}
+
+pub fn encodeMountRequest(allocator: std.mem.Allocator, request: MountRequest) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, request, .{
         .emit_null_optional_fields = false,
         .whitespace = .indent_2,
     });

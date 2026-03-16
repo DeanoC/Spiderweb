@@ -1,51 +1,113 @@
 import Foundation
+import FSKit
+import SwiftUI
 
-final class SpiderwebFSKitAppController {
-    private let bundle: Bundle
+private enum SpiderwebStatusProbe {
+    case yes
+    case no
+    case unknown(String)
+
+    var label: String {
+        switch self {
+        case .yes:
+            return "Yes"
+        case .no:
+            return "No"
+        case .unknown(let detail):
+            return "Unknown (\(detail))"
+        }
+    }
+}
+
+@MainActor
+final class SpiderwebFSKitAppController: ObservableObject {
+    @Published private(set) var recentRequests: [SpiderwebRequestSummary] = []
+    @Published private(set) var extensionRegisteredStatus = "Checking..."
+    @Published private(set) var fsKitVisibilityStatus = "Checking..."
+    @Published private(set) var extensionPath = ""
+    @Published private(set) var filesystemBundlePresent = false
+    @Published private(set) var filesystemBundlePath = ""
+    @Published private(set) var mountHelperPresent = false
+    @Published private(set) var mountHelperPath = ""
+
     private let stateStore: SpiderwebFSKitStateStore
 
-    init(bundle: Bundle, stateStore: SpiderwebFSKitStateStore = SpiderwebFSKitStateStore()) {
-        self.bundle = bundle
+    init(stateStore: SpiderwebFSKitStateStore = SpiderwebFSKitStateStore()) {
         self.stateStore = stateStore
+        refresh()
     }
 
-    func bootstrap(arguments: [String]) throws -> Bool {
-        guard let requestURL = parseRequestURL(arguments: arguments) else {
-            NSLog("SpiderwebFSKit running without a mount request; waiting for extension startup.")
-            return true
-        }
-
-        let activeRequestURL = try stateStore.activateRequest(from: requestURL)
-        let request = try SpiderwebMountRequest.load(from: activeRequestURL)
-        _ = try stateStore.installHelper(from: bundledHelperExecutableURL())
-
-        NSLog(
-            "SpiderwebFSKit staged mount request for %@ with %ld endpoint(s).",
-            request.mountpoint,
-            request.endpoints.count
-        )
-        return false
-    }
-
-    private func parseRequestURL(arguments: [String]) -> URL? {
-        guard let commandIndex = arguments.firstIndex(of: "mount-request") else {
-            return nil
-        }
-        let valueIndex = arguments.index(after: commandIndex)
-        guard valueIndex < arguments.endIndex else {
-            return nil
-        }
-        return URL(fileURLWithPath: arguments[valueIndex])
-    }
-
-    private func bundledHelperExecutableURL() throws -> URL {
-        let url = bundle.bundleURL
+    func refresh() {
+        recentRequests = stateStore.recentRequests()
+        extensionPath = Bundle.main.bundleURL
             .appendingPathComponent("Contents", isDirectory: true)
-            .appendingPathComponent("MacOS", isDirectory: true)
-            .appendingPathComponent("spiderweb-fs-helper", isDirectory: false)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw SpiderwebFSKitBridgeError.helperExecutableMissing(url)
+            .appendingPathComponent("Extensions", isDirectory: true)
+            .appendingPathComponent("SpiderwebFSKitExtension.appex", isDirectory: false)
+            .path
+        filesystemBundlePath = "/Library/Filesystems/spiderweb.fs"
+        mountHelperPath = filesystemBundlePath + "/Contents/Resources/mount_spiderweb"
+        filesystemBundlePresent = FileManager.default.fileExists(atPath: filesystemBundlePath)
+        mountHelperPresent = FileManager.default.fileExists(atPath: mountHelperPath)
+        if let snapshot = stateStore.nativeStatusSnapshot() {
+            extensionRegisteredStatus = snapshot.registered ? "Yes" : "No"
+        } else {
+            extensionRegisteredStatus = "Checking..."
         }
-        return url
+        fsKitVisibilityStatus = "Checking..."
+        Task {
+            async let visibilityStatus = detectFSKitVisibility()
+            if stateStore.nativeStatusSnapshot() == nil {
+                extensionRegisteredStatus = await detectPlugInKitRegistration().label
+            }
+            fsKitVisibilityStatus = await visibilityStatus.label
+        }
+    }
+
+    var requestDirectoryPath: String {
+        stateStore.requestsDirectoryURL.path
+    }
+
+    private func detectPlugInKitRegistration() async -> SpiderwebStatusProbe {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
+        process.arguments = ["-m", "-i", "com.deanoc.spiderweb.fskit.app.extension"]
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+        } catch {
+            return .unknown("pluginkit unavailable")
+        }
+
+        process.waitUntilExit()
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        let output = String(decoding: outputData, as: UTF8.self)
+        let errorOutput = String(decoding: errorData, as: UTF8.self)
+
+        if process.terminationStatus == 0 || !output.isEmpty {
+            return output.contains("com.deanoc.spiderweb.fskit.app.extension") ? .yes : .no
+        }
+
+        if !errorOutput.isEmpty {
+            return .unknown(errorOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        return .unknown("pluginkit probe failed")
+    }
+
+    private func detectFSKitVisibility() async -> SpiderwebStatusProbe {
+        await withCheckedContinuation { continuation in
+            FSClient.shared.fetchInstalledExtensions { modules, _ in
+                let visible = modules?.contains { module in
+                    module.bundleIdentifier == "com.deanoc.spiderweb.fskit.app.extension" && module.isEnabled
+                } ?? false
+                continuation.resume(returning: visible ? .yes : .no)
+            }
+        }
     }
 }

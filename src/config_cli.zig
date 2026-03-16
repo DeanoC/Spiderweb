@@ -17,6 +17,17 @@ const AuthStatusSnapshot = struct {
     }
 };
 
+const NativeFsStatusSnapshot = struct {
+    version: u8 = 1,
+    registered: bool,
+    module_enabled: bool,
+    ready: bool,
+    filesystem_bundle_present: bool,
+    mount_helper_present: bool,
+    runtime_ready: bool,
+    updated_at_ms: i64,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -285,10 +296,27 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
         std.log.err("Could not find a built SpiderwebFSKit.app. Build it from platform/macos first.", .{});
         return error.NativeFsExtensionNotInstalled;
     };
-    if (std.fs.path.dirname(status.app_path)) |dir| try makePathAny(dir);
+    const requires_privileged_install = builtin.os.tag == .macos and isSystemApplicationsPath(status.app_path);
+    if (!requires_privileged_install) {
+        if (std.fs.path.dirname(status.app_path)) |dir| try makePathAny(dir);
+    }
 
-    _ = try deleteTreeIfExistsAny(status.app_path);
-    try runCommandSuccess(allocator, &.{ "ditto", source_app_path, status.app_path });
+    stopNativeFsExtensionProcesses(allocator);
+    try installBundleTreeFromSource(allocator, source_app_path, status.app_path, requires_privileged_install, null);
+    if (pathExists(status.filesystem_bundle_path)) {
+        try privilegedDeleteTreeIfExists(allocator, status.filesystem_bundle_path);
+    }
+
+    if (try runCommandBestEffort(allocator, &.{
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+        "-f",
+        "-R",
+        "-trusted",
+        status.app_path,
+    })) |result| {
+        var owned = result;
+        owned.deinit(allocator);
+    }
 
     if (pathExists(status.extension_path)) {
         if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-a", status.extension_path })) |result| {
@@ -300,11 +328,15 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
             owned.deinit(allocator);
         }
     }
-    if (try runCommandBestEffort(allocator, &.{ "open", "-a", status.app_path })) |result| {
+    if (try runCommandBestEffort(allocator, &.{ "open", "-n", "-a", status.app_path })) |result| {
         var owned = result;
         owned.deinit(allocator);
     }
     native_mount_support.openSystemSettingsForFsExtension();
+
+    var refreshed = try native_mount_support.detectInstallStatus(allocator);
+    defer refreshed.deinit(allocator);
+    try writeNativeFsStatusSnapshot(allocator, refreshed);
 
     std.log.info("Installed SpiderwebFSKit.app to {s}", .{status.app_path});
     std.log.info("If macOS prompts for approval, enable the file system extension in System Settings -> General -> Login Items & Extensions.", .{});
@@ -316,16 +348,54 @@ fn uninstallFsExtension(allocator: std.mem.Allocator) !void {
     var status = try native_mount_support.detectInstallStatus(allocator);
     defer status.deinit(allocator);
 
+    stopNativeFsExtensionProcesses(allocator);
     if (pathExists(status.extension_path)) {
         if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-r", status.extension_path })) |result| {
             var owned = result;
             owned.deinit(allocator);
         }
     }
-    _ = try deleteTreeIfExistsAny(status.app_path);
+    if (pathExists(status.app_path)) {
+        if (try runCommandBestEffort(allocator, &.{
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+            "-u",
+            status.app_path,
+        })) |result| {
+            var owned = result;
+            owned.deinit(allocator);
+        }
+    }
+    if (builtin.os.tag == .macos and isSystemApplicationsPath(status.app_path)) {
+        try privilegedDeleteTreeIfExists(allocator, status.app_path);
+    } else {
+        _ = try deleteTreeIfExistsAny(status.app_path);
+    }
+    if (pathExists(status.filesystem_bundle_path)) {
+        try privilegedDeleteTreeIfExists(allocator, status.filesystem_bundle_path);
+    }
     _ = try deleteTreeIfExistsAny(status.request_dir);
+    const snapshot_path = try native_mount_support.defaultStatusSnapshotPath(allocator);
+    defer allocator.free(snapshot_path);
+    _ = try deleteTreeIfExistsAny(snapshot_path);
 
     std.log.info("Removed SpiderwebFSKit.app from {s}", .{status.app_path});
+}
+
+fn stopNativeFsExtensionProcesses(allocator: std.mem.Allocator) void {
+    const command_sets = [_][]const []const u8{
+        &.{ "pkill", "-x", native_mount_support.app_name },
+        &.{ "pkill", "-f", native_mount_support.app_bundle_id },
+        &.{ "pkill", "-f", native_mount_support.extension_bundle_id },
+    };
+
+    for (command_sets) |argv| {
+        if (runCommandBestEffort(allocator, argv)) |maybe_result| {
+            if (maybe_result) |result| {
+                var owned = result;
+                owned.deinit(allocator);
+            }
+        } else |_| {}
+    }
 }
 
 fn printFsExtensionStatus(allocator: std.mem.Allocator) !void {
@@ -333,23 +403,24 @@ fn printFsExtensionStatus(allocator: std.mem.Allocator) !void {
 
     var status = try native_mount_support.detectInstallStatus(allocator);
     defer status.deinit(allocator);
+    try writeNativeFsStatusSnapshot(allocator, status);
 
     const out = try std.fmt.allocPrint(
         allocator,
-        "FS extension manager: native-fskit\n  supported_os:             {s}\n  installed_app:            {s}\n  built_app_source:         {s}\n  extension_bundle:         {s}\n  helper_executable:        {s}\n  runtime_manifest:         {s}\n  extension_present:        {s}\n  helper_present:           {s}\n  runtime_ready:            {s}\n  signing_identity:         {s}\n  app_group_entitlements:   {s}\n  extension_fs_entitlement: {s}\n  registered:               {s}\n  module_enabled:           {s}\n  ready:                    {s}\n  request_dir:              {s}\n",
+        "FS extension manager: native-fskit\n  supported_os:             {s}\n  installed_app:            {s}\n  built_app_source:         {s}\n  extension_bundle:         {s}\n  runtime_manifest:         {s}\n  extension_present:        {s}\n  runtime_ready:            {s}\n  signing_identity:         {s}\n  app_group_entitlements:   {s}\n  extension_fs_entitlement: {s}\n  app_provisioned:          {s}\n  extension_provisioned:    {s}\n  registered:               {s}\n  module_enabled:           {s}\n  ready:                    {s}\n  request_dir:              {s}\n",
         .{
             if (status.supported_os) "yes" else "no",
             status.app_path,
             status.source_app_path orelse "(not found)",
             status.extension_path,
-            status.helper_path,
             status.runtime_ready_manifest_path,
             if (status.extension_present) "yes" else "no",
-            if (status.helper_present) "yes" else "no",
             if (status.runtime_ready) "yes" else "no",
             if (status.signing_identity_available) "yes" else "no",
             if (status.app_group_entitled) "yes" else "no",
             if (status.extension_fskit_entitled) "yes" else "no",
+            if (status.app_provisioned) "yes" else "no",
+            if (status.extension_provisioned) "yes" else "no",
             if (status.extension_registered) "yes" else "no",
             if (status.module_enabled) "yes" else "no",
             if (status.ready()) "yes" else "no",
@@ -358,6 +429,33 @@ fn printFsExtensionStatus(allocator: std.mem.Allocator) !void {
     );
     defer allocator.free(out);
     try std.fs.File.stdout().writeAll(out);
+    if (!status.app_provisioned or !status.extension_provisioned) {
+        try std.fs.File.stdout().writeAll(
+            "  note: launch is currently blocked because the app/extension are missing provisioning profiles for their restricted FSKit/App Group entitlements.\n",
+        );
+    }
+}
+
+fn writeNativeFsStatusSnapshot(allocator: std.mem.Allocator, status: native_mount_support.InstallStatus) !void {
+    const snapshot_path = try native_mount_support.defaultStatusSnapshotPath(allocator);
+    defer allocator.free(snapshot_path);
+
+    if (std.fs.path.dirname(snapshot_path)) |dir| try makePathAny(dir);
+
+    const payload = try std.json.Stringify.valueAlloc(allocator, NativeFsStatusSnapshot{
+        .registered = status.extension_registered,
+        .module_enabled = status.module_enabled,
+        .ready = status.ready(),
+        .filesystem_bundle_present = status.filesystem_bundle_installed,
+        .mount_helper_present = status.mount_helper_present,
+        .runtime_ready = status.runtime_ready,
+        .updated_at_ms = std.time.milliTimestamp(),
+    }, .{});
+    defer allocator.free(payload);
+
+    var file = try createFileAny(snapshot_path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(payload);
 }
 
 fn detectServiceManager() ServiceManager {
@@ -876,6 +974,121 @@ fn createFileAny(path: []const u8, flags: std.fs.File.CreateFlags) !std.fs.File 
         return std.fs.createFileAbsolute(path, flags);
     }
     return std.fs.cwd().createFile(path, flags);
+}
+
+fn isSystemApplicationsPath(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, "/Applications/");
+}
+
+fn shellQuotePosix(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var list = std.ArrayListUnmanaged(u8){};
+    errdefer list.deinit(allocator);
+
+    try list.append(allocator, '\'');
+    for (value) |ch| {
+        if (ch == '\'') {
+            try list.appendSlice(allocator, "'\"'\"'");
+        } else {
+            try list.append(allocator, ch);
+        }
+    }
+    try list.append(allocator, '\'');
+    return list.toOwnedSlice(allocator);
+}
+
+fn runMacosPrivilegedShellCommand(allocator: std.mem.Allocator, shell_command: []const u8) !void {
+    try runCommandSuccess(allocator, &.{
+        "osascript",
+        "-e",
+        "on run argv",
+        "-e",
+        "do shell script (item 1 of argv) with administrator privileges",
+        "-e",
+        "end run",
+        shell_command,
+    });
+}
+
+fn privilegedReplaceApplicationBundle(allocator: std.mem.Allocator, source_path: []const u8, target_path: []const u8) !void {
+    try privilegedReplaceTreeOwnedByRoot(allocator, source_path, target_path, null);
+}
+
+fn privilegedReplaceTreeOwnedByRoot(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    target_path: []const u8,
+    setuid_binary_path: ?[]const u8,
+) !void {
+    const target_dir = std.fs.path.dirname(target_path) orelse return error.InvalidArguments;
+    const quoted_source = try shellQuotePosix(allocator, source_path);
+    defer allocator.free(quoted_source);
+    const quoted_target = try shellQuotePosix(allocator, target_path);
+    defer allocator.free(quoted_target);
+    const quoted_target_dir = try shellQuotePosix(allocator, target_dir);
+    defer allocator.free(quoted_target_dir);
+
+    const shell_command = if (setuid_binary_path) |binary_path| blk: {
+        const quoted_binary = try shellQuotePosix(allocator, binary_path);
+        defer allocator.free(quoted_binary);
+        break :blk try std.fmt.allocPrint(
+            allocator,
+            "mkdir -p {s} && rm -rf {s} && /usr/bin/ditto {s} {s} && /usr/sbin/chown -R root:wheel {s} && /usr/sbin/chown root:wheel {s} && /bin/chmod 4755 {s}",
+            .{ quoted_target_dir, quoted_target, quoted_source, quoted_target, quoted_target, quoted_binary, quoted_binary },
+        );
+    } else try std.fmt.allocPrint(
+        allocator,
+        "mkdir -p {s} && rm -rf {s} && /usr/bin/ditto {s} {s} && /usr/sbin/chown -R root:wheel {s}",
+        .{ quoted_target_dir, quoted_target, quoted_source, quoted_target, quoted_target },
+    );
+    defer allocator.free(shell_command);
+    try runMacosPrivilegedShellCommand(allocator, shell_command);
+}
+
+fn installBundleTreeFromSource(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    target_path: []const u8,
+    privileged: bool,
+    setuid_binary_path: ?[]const u8,
+) !void {
+    if (!privileged) {
+        if (std.fs.path.dirname(target_path)) |dir| try makePathAny(dir);
+    }
+
+    if (std.mem.endsWith(u8, source_path, ".zip")) {
+        const temp_root = try std.fs.path.join(allocator, &.{ "/tmp", "spiderweb-native-install" });
+        defer allocator.free(temp_root);
+        _ = try deleteTreeIfExistsAny(temp_root);
+        try makePathAny(temp_root);
+        defer _ = deleteTreeIfExistsAny(temp_root) catch false;
+
+        try runCommandSuccess(allocator, &.{ "ditto", "-x", "-k", source_path, temp_root });
+        const unpacked_path = try std.fs.path.join(allocator, &.{ temp_root, std.fs.path.basename(target_path) });
+        defer allocator.free(unpacked_path);
+        if (privileged) {
+            try privilegedReplaceTreeOwnedByRoot(allocator, unpacked_path, target_path, setuid_binary_path);
+        } else {
+            _ = try deleteTreeIfExistsAny(target_path);
+            try runCommandSuccess(allocator, &.{ "ditto", unpacked_path, target_path });
+        }
+        return;
+    }
+
+    if (privileged) {
+        try privilegedReplaceTreeOwnedByRoot(allocator, source_path, target_path, setuid_binary_path);
+    } else {
+        _ = try deleteTreeIfExistsAny(target_path);
+        try runCommandSuccess(allocator, &.{ "ditto", source_path, target_path });
+    }
+}
+
+fn privilegedDeleteTreeIfExists(allocator: std.mem.Allocator, path: []const u8) !void {
+    if (!pathExists(path)) return;
+    const quoted_path = try shellQuotePosix(allocator, path);
+    defer allocator.free(quoted_path);
+    const shell_command = try std.fmt.allocPrint(allocator, "rm -rf {s}", .{quoted_path});
+    defer allocator.free(shell_command);
+    try runMacosPrivilegedShellCommand(allocator, shell_command);
 }
 
 fn deleteFileIfExistsAny(path: []const u8) !bool {

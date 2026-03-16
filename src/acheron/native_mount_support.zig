@@ -4,16 +4,14 @@ const native_protocol = @import("native_mount_protocol.zig");
 
 pub const app_name = "SpiderwebFSKit";
 pub const app_bundle_name = app_name ++ ".app";
-pub const app_bundle_id = "com.deanoc.spiderweb.fskit.app";
+pub const app_bundle_id = "com.example.apple-samplecode.PassthroughH6PZ8M39DM";
 pub const extension_bundle_name = "SpiderwebFSKitExtension.appex";
-pub const extension_bundle_id = "com.deanoc.spiderweb.fskit.app.extension";
-pub const module_short_name = "spiderwebnative";
+pub const extension_bundle_id = app_bundle_id ++ ".AppEx";
+pub const module_short_name = "spiderweb";
 pub const filesystem_bundle_name = module_short_name ++ ".fs";
 pub const filesystem_bundle_id = "com.deanoc.spiderweb.filesystems.fs.spiderweb";
 pub const mount_helper_name = "mount_" ++ module_short_name;
 pub const shared_app_group_id = "group.com.deanoc.spiderweb.fskit";
-pub const runtime_ready_manifest_name = "SpiderwebFSKit.runtime-ready";
-
 const minimum_macos_native_version = std.SemanticVersion{ .major = 15, .minor = 4, .patch = 0 };
 
 pub const InstallStatus = struct {
@@ -54,13 +52,12 @@ pub const InstallStatus = struct {
     pub fn ready(self: InstallStatus) bool {
         return self.supported_os and
             self.app_installed and
+            self.filesystem_bundle_installed and
+            self.mount_helper_present and
             self.extension_present and
             self.runtime_ready and
             self.signing_identity_available and
-            self.app_group_entitled and
             self.extension_fskit_entitled and
-            self.app_provisioned and
-            self.extension_provisioned and
             self.extension_registered and
             self.module_enabled;
     }
@@ -73,6 +70,9 @@ pub fn isCurrentMacosNativeSupported() bool {
 }
 
 pub fn detectInstallStatus(allocator: std.mem.Allocator) !InstallStatus {
+    const source_app_path = try resolveBuiltAppSourcePath(allocator);
+    errdefer if (source_app_path) |value| allocator.free(value);
+
     const app_path = try installedAppPath(allocator);
     errdefer allocator.free(app_path);
     const filesystem_bundle_path = try installedFilesystemBundlePath(allocator);
@@ -81,7 +81,7 @@ pub fn detectInstallStatus(allocator: std.mem.Allocator) !InstallStatus {
     errdefer allocator.free(mount_helper_path);
     const extension_path = try std.fs.path.join(allocator, &.{ app_path, "Contents", "Extensions", extension_bundle_name });
     errdefer allocator.free(extension_path);
-    const runtime_ready_manifest_path = try std.fs.path.join(allocator, &.{ app_path, "Contents", "Resources", runtime_ready_manifest_name });
+    const runtime_ready_manifest_path = try allocator.dupe(u8, app_path);
     errdefer allocator.free(runtime_ready_manifest_path);
     const request_dir = try defaultRequestDirectory(allocator);
     errdefer allocator.free(request_dir);
@@ -90,9 +90,9 @@ pub fn detectInstallStatus(allocator: std.mem.Allocator) !InstallStatus {
     const filesystem_bundle_installed = pathExists(filesystem_bundle_path);
     const mount_helper_present = pathExists(mount_helper_path);
     const extension_present = pathExists(extension_path);
-    const runtime_ready = pathExists(runtime_ready_manifest_path);
+    const runtime_ready = app_installed and extension_present;
     const extension_registered = if (builtin.os.tag == .macos and app_installed)
-        extensionRegistered(allocator)
+        extensionRegistered(allocator, app_path)
     else
         false;
     const signing_identity_available = if (builtin.os.tag == .macos)
@@ -104,7 +104,7 @@ pub fn detectInstallStatus(allocator: std.mem.Allocator) !InstallStatus {
     else
         false;
     const extension_fskit_entitled = if (builtin.os.tag == .macos and extension_present)
-        bundleHasEntitlement(allocator, extension_path, "com.apple.developer.fskit.fsmodule", null) and bundleHasEntitlement(allocator, extension_path, "com.apple.security.application-groups", shared_app_group_id)
+        bundleHasEntitlement(allocator, extension_path, "com.apple.developer.fskit.fsmodule", null)
     else
         false;
     const app_provisioned = if (builtin.os.tag == .macos and app_installed)
@@ -123,7 +123,7 @@ pub fn detectInstallStatus(allocator: std.mem.Allocator) !InstallStatus {
     return .{
         .supported_os = isCurrentMacosNativeSupported(),
         .app_path = app_path,
-        .source_app_path = try resolveBuiltAppSourcePath(allocator),
+        .source_app_path = source_app_path,
         .filesystem_bundle_path = filesystem_bundle_path,
         .source_filesystem_bundle_path = try resolveBuiltFilesystemBundleSourcePath(allocator),
         .mount_helper_path = mount_helper_path,
@@ -150,18 +150,15 @@ pub fn probeNativeBackend(allocator: std.mem.Allocator) !void {
     defer status.deinit(allocator);
 
     if (!status.supported_os) return error.UnsupportedMacosVersion;
-    if (!status.app_installed or !status.extension_present) {
+    if (!status.app_installed or !status.extension_present or !status.filesystem_bundle_installed or !status.mount_helper_present) {
         return error.NativeFsExtensionNotInstalled;
     }
     if (!status.runtime_ready) return error.NativeFsExtensionNotReady;
     if (!status.signing_identity_available) {
         return error.NativeFsExtensionSigningRequired;
     }
-    if (!status.app_group_entitled or !status.extension_fskit_entitled) {
+    if (!status.extension_fskit_entitled) {
         return error.NativeFsExtensionCapabilitiesMissing;
-    }
-    if (!status.app_provisioned or !status.extension_provisioned) {
-        return error.NativeFsExtensionProvisioningRequired;
     }
     if (!status.extension_registered) return error.NativeFsExtensionApprovalRequired;
     if (!status.module_enabled) return error.NativeFsExtensionDisabled;
@@ -174,6 +171,14 @@ pub fn validateNativeMountRequest(mountpoint: []const u8) !void {
 }
 
 pub fn installedAppPath(allocator: std.mem.Allocator) ![]u8 {
+    if (try resolveBuiltAppSourcePath(allocator)) |built_path| {
+        return built_path;
+    }
+
+    return legacyInstalledAppPath(allocator);
+}
+
+fn legacyInstalledAppPath(allocator: std.mem.Allocator) ![]u8 {
     const system_path = try std.fs.path.join(allocator, &.{ "/Applications", app_bundle_name });
     errdefer allocator.free(system_path);
     if (pathExists(system_path)) return system_path;
@@ -234,19 +239,45 @@ pub fn resolveBuiltAppSourcePath(allocator: std.mem.Allocator) !?[]u8 {
         allocator.free(env_path);
     } else |_| {}
 
-    const cwd = try std.process.getCwdAlloc(allocator);
-    defer allocator.free(cwd);
-
-    const candidates = [_][]const u8{
-        "platform/macos/build/install-source/SpiderwebFSKit.install-source.zip",
+    if (try findRepoBuildPath(allocator, &.{
+        "platform/macos/.deriveddata-spiderwebfskit/Build/Products/Debug/SpiderwebFSKit.app",
+        "platform/macos/.deriveddata-spiderwebfskit/Build/Products/Release/SpiderwebFSKit.app",
         "platform/macos/build/Build/Products/Release/SpiderwebFSKit.app",
         "platform/macos/build/DerivedData/Build/Products/Release/SpiderwebFSKit.app",
         "zig-out/SpiderwebFSKit.app",
-    };
-    for (candidates) |candidate| {
-        const joined = try std.fs.path.join(allocator, &.{ cwd, candidate });
-        if (pathExists(joined)) return joined;
-        allocator.free(joined);
+    })) |path| {
+        return path;
+    }
+    return findBuiltAppInUserDerivedData(allocator);
+}
+
+fn findBuiltAppInUserDerivedData(allocator: std.mem.Allocator) !?[]u8 {
+    if (builtin.os.tag != .macos) return null;
+
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return null;
+    defer allocator.free(home);
+    const derived_data_root = try std.fs.path.join(allocator, &.{ home, "Library", "Developer", "Xcode", "DerivedData" });
+    defer allocator.free(derived_data_root);
+    if (!pathExists(derived_data_root)) return null;
+
+    var result = try runCommandBestEffort(allocator, &.{
+        "find",
+        derived_data_root,
+        "-maxdepth",
+        "5",
+        "-type",
+        "d",
+        "-name",
+        app_bundle_name,
+    });
+    defer if (result) |*value| value.deinit(allocator);
+    if (result) |value| {
+        if (!commandExitedSuccessfully(value)) return null;
+        var lines = std.mem.tokenizeAny(u8, value.stdout, "\r\n");
+        while (lines.next()) |line| {
+            if (!std.mem.containsAtLeast(u8, line, 1, "/Build/Products/")) continue;
+            return try allocator.dupe(u8, line);
+        }
     }
     return null;
 }
@@ -258,20 +289,81 @@ pub fn resolveBuiltFilesystemBundleSourcePath(allocator: std.mem.Allocator) !?[]
         allocator.free(env_path);
     } else |_| {}
 
-    const cwd = try std.process.getCwdAlloc(allocator);
-    defer allocator.free(cwd);
-
-    const candidates = [_][]const u8{
+    return findRepoBuildPath(allocator, &.{
+        "platform/macos/build/spiderweb.fs",
         "platform/macos/build/install-source/spiderweb.fs.install-source.zip",
         "platform/macos/build/install-source/spiderweb.fs",
         "platform/macos/build/Release/spiderweb.fs",
-    };
-    for (candidates) |candidate| {
-        const joined = try std.fs.path.join(allocator, &.{ cwd, candidate });
-        if (pathExists(joined)) return joined;
-        allocator.free(joined);
+    });
+}
+
+fn findRepoBuildPath(allocator: std.mem.Allocator, candidates: []const []const u8) !?[]u8 {
+    if (try resolveSpiderwebRepoRoot(allocator)) |repo_root| {
+        defer allocator.free(repo_root);
+        for (candidates) |candidate| {
+            const joined = try std.fs.path.join(allocator, &.{ repo_root, candidate });
+            if (pathExists(joined)) return joined;
+            allocator.free(joined);
+        }
     }
     return null;
+}
+
+pub fn resolveFilesystemBundleInstallScriptPath(allocator: std.mem.Allocator) !?[]u8 {
+    if (std.process.getEnvVarOwned(allocator, "SPIDERWEB_FSKIT_INSTALL_SCRIPT")) |env_path| {
+        errdefer allocator.free(env_path);
+        if (pathExists(env_path)) return env_path;
+        allocator.free(env_path);
+    } else |_| {}
+
+    if (try findRepoBuildPath(allocator, &.{"platform/macos/scripts/install-spiderweb-fskit-filesystem-bundle.sh"})) |path| {
+        return path;
+    }
+    return null;
+}
+
+fn resolveSpiderwebRepoRoot(allocator: std.mem.Allocator) !?[]u8 {
+    const cwd = try std.process.getCwdAlloc(allocator);
+    defer allocator.free(cwd);
+    if (try findSpiderwebRepoRootFromBase(allocator, cwd)) |path| return path;
+
+    const exe_path = std.fs.selfExePathAlloc(allocator) catch return null;
+    defer allocator.free(exe_path);
+    const exe_dir = std.fs.path.dirname(exe_path) orelse return null;
+    return findSpiderwebRepoRootFromBase(allocator, exe_dir);
+}
+
+fn findSpiderwebRepoRootFromBase(allocator: std.mem.Allocator, base: []const u8) !?[]u8 {
+    var current = try allocator.dupe(u8, base);
+    errdefer allocator.free(current);
+
+    while (true) {
+        if (hasSpiderwebMacosProjectAt(allocator, current)) {
+            return current;
+        }
+
+        const nested_root = try std.fs.path.join(allocator, &.{ current, "Spiderweb" });
+        if (hasSpiderwebMacosProjectAt(allocator, nested_root)) {
+            allocator.free(current);
+            return nested_root;
+        }
+        allocator.free(nested_root);
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (parent.len == current.len and std.mem.eql(u8, parent, current)) break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+
+    allocator.free(current);
+    return null;
+}
+
+fn hasSpiderwebMacosProjectAt(allocator: std.mem.Allocator, root: []const u8) bool {
+    const project_path = std.fs.path.join(allocator, &.{ root, "platform", "macos", "SpiderwebFSKit.xcodeproj" }) catch return false;
+    defer allocator.free(project_path);
+    return pathExists(project_path);
 }
 
 pub fn writeLaunchRequest(allocator: std.mem.Allocator, config: native_protocol.LaunchConfig) ![]u8 {
@@ -309,9 +401,7 @@ pub fn requestNativeMount(allocator: std.mem.Allocator, config: native_protocol.
     try probeNativeBackend(allocator);
     const request_path = try writeLaunchRequest(allocator, config);
     defer allocator.free(request_path);
-    const request_source_path = try defaultRequestDirectory(allocator);
-    defer allocator.free(request_source_path);
-    try issueMountRequest(allocator, request_source_path, config.mountpoint);
+    try issueMountRequest(allocator, request_path, config.mountpoint);
     try waitForMountpoint(config.mountpoint, timeout_ms);
 }
 
@@ -348,7 +438,8 @@ fn isMountedPath(allocator: std.mem.Allocator, mountpoint: []const u8) !bool {
     return true;
 }
 
-fn extensionRegistered(allocator: std.mem.Allocator) bool {
+fn extensionRegistered(allocator: std.mem.Allocator, app_path: []const u8) bool {
+    _ = app_path;
     var result = runCommandBestEffort(allocator, &.{ "pluginkit", "-m", "-A", "-D", "-i", extension_bundle_id }) catch return false;
     defer if (result) |*value| value.deinit(allocator);
     if (result) |value| {
@@ -408,7 +499,7 @@ fn fskitModuleEnabled(allocator: std.mem.Allocator) bool {
     makePathAny(mountpoint) catch return false;
     defer std.fs.deleteDirAbsolute(mountpoint) catch {};
 
-    var result = runCommandBestEffort(allocator, &.{ "mount", "-F", "-t", module_short_name, request_path, mountpoint }) catch return false;
+    var result = runCommandBestEffort(allocator, &.{ "mount", "-t", module_short_name, request_path, mountpoint }) catch return false;
     defer if (result) |*value| value.deinit(allocator);
     if (result) |value| {
         const output = if (value.stderr.len > 0) value.stderr else value.stdout;
@@ -573,7 +664,7 @@ test "native_mount_support: resolves install path under applications" {
     const request_dir = try defaultRequestDirectory(allocator);
     defer allocator.free(request_dir);
 
-    try std.testing.expect(std.mem.endsWith(u8, app_path, "Applications/SpiderwebFSKit.app"));
+    try std.testing.expect(std.mem.endsWith(u8, app_path, "SpiderwebFSKit.app"));
     try std.testing.expect(std.mem.eql(u8, filesystem_bundle_path, "/Library/Filesystems/spiderweb.fs"));
     if (builtin.os.tag == .macos) {
         try std.testing.expect(std.mem.indexOf(u8, request_dir, "Group Containers/group.com.deanoc.spiderweb.fskit/Requests") != null);
@@ -601,6 +692,13 @@ test "native_mount_support: parses fsck_fskit disabled output" {
     ));
 }
 
+test "native_mount_support: parses sample-backed fsck_fskit disabled output" {
+    try std.testing.expect(!nativeMountProbeShowsEnabled(
+        "Module com.example.apple-samplecode.PassthroughH6PZ8M39DM.AppEx is disabled!\n",
+        .{ .Exited = 22 },
+    ));
+}
+
 test "native_mount_support: parses native mount probe enabled output" {
     try std.testing.expect(nativeMountProbeShowsEnabled(
         "mount: Unable to invoke task\n",
@@ -615,5 +713,6 @@ test "native_mount_support: parses native mount probe enabled output" {
 test "native_mount_support: parses native mount probe disabled output" {
     try std.testing.expect(!nativeMountProbeShowsEnabled("mount: /tmp/probe: invalid file system.\n", .{ .Exited = 1 }));
     try std.testing.expect(!nativeMountProbeShowsEnabled("Module com.deanoc.spiderweb.fskit.app.extension is disabled!\n", .{ .Exited = 22 }));
+    try std.testing.expect(!nativeMountProbeShowsEnabled("Module com.example.apple-samplecode.PassthroughH6PZ8M39DM.AppEx is disabled!\n", .{ .Exited = 22 }));
     try std.testing.expect(!nativeMountProbeShowsEnabled("mount: File system extension requires approval\n", .{ .Exited = 69 }));
 }

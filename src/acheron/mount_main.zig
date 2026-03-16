@@ -586,11 +586,11 @@ fn reportMountCommandError(
             return;
         },
         error.NativeFsExtensionNotInstalled => {
-            std.log.err("macOS native mounts require the SpiderwebFSKit app. Build it under platform/macos, then run `spiderweb-config config install-fs-extension`.", .{});
+            std.log.err("macOS native mounts require a current SpiderwebFSKit Xcode build plus the installed spiderweb.fs wrapper. Build under platform/macos, then run `spiderweb-config config install-fs-extension`.", .{});
             return;
         },
         error.NativeFsExtensionNotReady => {
-            std.log.err("macOS native mounts require a rebuilt SpiderwebFSKit app bundle with the runtime-ready manifest. Rebuild under platform/macos, reinstall the FS extension, then retry.", .{});
+            std.log.err("macOS native mounts require a current SpiderwebFSKit build output. Rebuild under platform/macos, reinstall the FS extension, then retry.", .{});
             return;
         },
         error.NativeFsExtensionSigningRequired => {
@@ -598,11 +598,11 @@ fn reportMountCommandError(
             return;
         },
         error.NativeFsExtensionCapabilitiesMissing => {
-            std.log.err("macOS native mounts require SpiderwebFSKit to be signed with preserved FSKit and app-group entitlements. The current signing team/profile is stripping them, so the module stays disabled.", .{});
+            std.log.err("macOS native mounts require SpiderwebFSKitExtension to carry the FSKit entitlement. Rebuild the sample-based app from Xcode with the selected team and retry.", .{});
             return;
         },
         error.NativeFsExtensionProvisioningRequired => {
-            std.log.err("macOS native mounts require provisioning profiles that authorize the FSKit and App Group entitlements. The current SpiderwebFSKit build has the entitlements but no eligible provisioning profile, so AMFI refuses to launch it.", .{});
+            std.log.err("macOS native mounts require a signed SpiderwebFSKit build from Xcode. Rebuild the app with your selected team and retry.", .{});
             return;
         },
         error.NativeFsExtensionApprovalRequired => {
@@ -658,23 +658,27 @@ fn emitNativeStatusDiagnostic(allocator: std.mem.Allocator) bool {
     }
 
     if (!status.app_installed) {
-        std.log.warn("local macOS native mount backend unavailable: install SpiderwebFSKit with `spiderweb-config config install-fs-extension`", .{});
+        std.log.warn("local macOS native mount backend unavailable: build SpiderwebFSKit in Xcode under platform/macos, then run `spiderweb-config config install-fs-extension`", .{});
         return false;
     }
     if (!status.extension_present) {
-        std.log.warn("local macOS native mount backend unavailable: installed SpiderwebFSKit.app is missing the FSKit extension payload", .{});
+        std.log.warn("local macOS native mount backend unavailable: the current SpiderwebFSKit build is missing the FSKit extension payload", .{});
+        return false;
+    }
+    if (!status.filesystem_bundle_installed or !status.mount_helper_present) {
+        std.log.warn("local macOS native mount backend unavailable: the spiderweb.fs wrapper is not installed; run `spiderweb-config config install-fs-extension`", .{});
         return false;
     }
     if (!status.runtime_ready) {
-        std.log.warn("local macOS native mount backend scaffold detected, but the runtime-ready manifest is missing; rebuild SpiderwebFSKit from platform/macos", .{});
+        std.log.warn("local macOS native mount backend scaffold detected, but no current SpiderwebFSKit build is available; rebuild from platform/macos", .{});
         return false;
     }
     if (!status.signing_identity_available) {
         std.log.warn("local macOS native mount backend needs Xcode signing setup: no valid Apple development code-signing identities were found", .{});
         return false;
     }
-    if (!status.app_group_entitled or !status.extension_fskit_entitled) {
-        std.log.warn("local macOS native mount backend is signed, but the current team/profile is stripping app-group or FSKit entitlements; native mounts will stay disabled until those capabilities are preserved", .{});
+    if (!status.extension_fskit_entitled) {
+        std.log.warn("local macOS native mount backend is signed, but the current build is missing the FSKit entitlement; native mounts will stay disabled until that capability is preserved", .{});
         return false;
     }
     if (!status.extension_registered) {

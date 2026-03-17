@@ -1774,6 +1774,10 @@ final class SpiderwebMountedBridge {
         try endpointMounts[oldRoute.endpointIndex].bridge.rename(oldPath: oldRoute.relativePath, newPath: newRoute.relativePath)
     }
 
+    func isWritablePath(_ path: String) -> Bool {
+        routeForPath(path) != nil
+    }
+
     private func routeForPath(_ path: String) -> SpiderwebMountedPathRoute? {
         let normalizedPath = normalizeAbsolutePath(path)
         for (index, endpoint) in endpointMounts.enumerated() {

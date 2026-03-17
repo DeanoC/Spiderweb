@@ -404,9 +404,27 @@ final class SpiderwebBridgeVolume:
     func setAttributes(_ newAttributes: FSItem.SetAttributesRequest, on item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
+            let bridge = try runtime.ensureBridge()
+
+            if requestedUnsupportedAttributeMutation(newAttributes) {
+                reply(nil, POSIXError(.EINVAL))
+                return
+            }
 
             if newAttributes.isValid(.size) {
-                try runtime.ensureBridge().truncate(path: bridgeItem.path, size: newAttributes.size)
+                try bridge.truncate(path: bridgeItem.path, size: newAttributes.size)
+                invalidateCachedPath(bridgeItem.path)
+                let attr = try refreshAttributes(for: bridgeItem)
+                reply(makeAttributes(for: bridgeItem, attr: attr, desiredAttributes: attributeSnapshotRequest()), nil)
+                return
+            }
+
+            if requestedSoftMetadataMutation(newAttributes) {
+                guard bridge.isWritablePath(bridgeItem.path) else {
+                    reply(nil, readOnlyError(message: "Spiderweb path \(bridgeItem.path) is read-only"))
+                    return
+                }
+                logger.notice("Ignoring metadata-only update for writable Spiderweb path \(bridgeItem.path, privacy: .public)")
                 invalidateCachedPath(bridgeItem.path)
                 let attr = try refreshAttributes(for: bridgeItem)
                 reply(makeAttributes(for: bridgeItem, attr: attr, desiredAttributes: attributeSnapshotRequest()), nil)
@@ -781,6 +799,27 @@ final class SpiderwebBridgeVolume:
             .addedTime,
         ]
         return request
+    }
+
+    private func requestedUnsupportedAttributeMutation(_ newAttributes: FSItem.SetAttributesRequest) -> Bool {
+        newAttributes.isValid(.type) ||
+            newAttributes.isValid(.linkCount) ||
+            newAttributes.isValid(.allocSize) ||
+            newAttributes.isValid(.fileID) ||
+            newAttributes.isValid(.parentID) ||
+            newAttributes.isValid(.changeTime)
+    }
+
+    private func requestedSoftMetadataMutation(_ newAttributes: FSItem.SetAttributesRequest) -> Bool {
+        newAttributes.isValid(.mode) ||
+            newAttributes.isValid(.accessTime) ||
+            newAttributes.isValid(.modifyTime) ||
+            newAttributes.isValid(.uid) ||
+            newAttributes.isValid(.gid) ||
+            newAttributes.isValid(.flags) ||
+            newAttributes.isValid(.birthTime) ||
+            newAttributes.isValid(.backupTime) ||
+            newAttributes.isValid(.addedTime)
     }
 
     private func invalidateCachedPath(_ path: String) {

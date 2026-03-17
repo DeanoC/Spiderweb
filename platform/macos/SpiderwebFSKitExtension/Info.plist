@@ -28,7 +28,7 @@
 		<key>FSRequiresSecurityScopedPathURLResources</key>
 		<true/>
 		<key>FSShortName</key>
-		<string>passthrough</string>
+		<string>spiderweb</string>
 		<key>FSSupportsBlockResources</key>
 		<false/>
 		<key>FSSupportsPathURLs</key>

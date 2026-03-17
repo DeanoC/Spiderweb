@@ -296,6 +296,7 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
         std.log.err("Could not find a built SpiderwebFSKit.app. Build it from Xcode or with `xcodebuild` under platform/macos first.", .{});
         return error.NativeFsExtensionNotInstalled;
     };
+    const target_app_path = status.app_path;
     const install_script_path = try native_mount_support.resolveFilesystemBundleInstallScriptPath(allocator) orelse {
         std.log.err("Could not find install-spiderweb-fskit-filesystem-bundle.sh under platform/macos/scripts.", .{});
         return error.NativeFsExtensionNotInstalled;
@@ -321,17 +322,30 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
         }
     }
 
+    try installBundleTreeFromSource(
+        allocator,
+        source_app_path,
+        target_app_path,
+        isSystemApplicationsPath(target_app_path),
+        null,
+    );
     try runCommandSuccess(allocator, &.{ "/bin/bash", install_script_path });
     try runCommandSuccess(allocator, &.{
         "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
         "-f",
         "-R",
         "-trusted",
-        source_app_path,
+        target_app_path,
     });
 
-    if (pathExists(status.extension_path)) {
-        if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-a", status.extension_path })) |result| {
+    const installed_extension_path = try std.fs.path.join(
+        allocator,
+        &.{ target_app_path, "Contents", "Extensions", native_mount_support.extension_bundle_name },
+    );
+    defer allocator.free(installed_extension_path);
+
+    if (pathExists(installed_extension_path)) {
+        if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-a", installed_extension_path })) |result| {
             var owned = result;
             owned.deinit(allocator);
         }
@@ -340,7 +354,7 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
             owned.deinit(allocator);
         }
     }
-    if (try runCommandBestEffort(allocator, &.{ "open", "-n", "-a", source_app_path })) |result| {
+    if (try runCommandBestEffort(allocator, &.{ "open", "-n", "-a", target_app_path })) |result| {
         var owned = result;
         owned.deinit(allocator);
     }
@@ -350,7 +364,7 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
     defer refreshed.deinit(allocator);
     try writeNativeFsStatusSnapshot(allocator, refreshed);
 
-    std.log.info("Registered SpiderwebFSKit.app from {s}", .{source_app_path});
+    std.log.info("Installed SpiderwebFSKit.app from {s} to {s}", .{ source_app_path, target_app_path });
     std.log.info("Installed spiderweb.fs to {s}", .{status.filesystem_bundle_path});
     std.log.info("If macOS prompts for approval, enable the file system extension in System Settings -> General -> Login Items & Extensions.", .{});
 }
@@ -496,6 +510,14 @@ fn printFsExtensionStatus(allocator: std.mem.Allocator) !void {
     if (!status.extension_fskit_entitled) {
         try std.fs.File.stdout().writeAll(
             "  note: launch is currently blocked because the extension build is missing the FSKit entitlement.\n",
+        );
+    }
+    if (status.ready()) {
+        try std.fs.File.stdout().writeAll(
+            "  note: current native macOS mounts still present as noowners, so chown/owner-group changes are unsupported.\n",
+        );
+        try std.fs.File.stdout().writeAll(
+            "  note: advisory locks currently apply inside the mounted Spiderweb view only and are not mirrored back to the host path.\n",
         );
     }
 }

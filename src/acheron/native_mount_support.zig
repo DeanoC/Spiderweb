@@ -4,9 +4,9 @@ const native_protocol = @import("native_mount_protocol.zig");
 
 pub const app_name = "SpiderwebFSKit";
 pub const app_bundle_name = app_name ++ ".app";
-pub const app_bundle_id = "com.example.apple-samplecode.PassthroughH6PZ8M39DM";
+pub const app_bundle_id = "com.deanoc.spiderweb.fskit.app";
 pub const extension_bundle_name = "SpiderwebFSKitExtension.appex";
-pub const extension_bundle_id = app_bundle_id ++ ".AppEx";
+pub const extension_bundle_id = "com.deanoc.spiderweb.fskit.app.extension";
 pub const module_short_name = "spiderweb";
 pub const filesystem_bundle_name = module_short_name ++ ".fs";
 pub const filesystem_bundle_id = "com.deanoc.spiderweb.filesystems.fs.spiderweb";
@@ -183,22 +183,11 @@ pub fn validateNativeMountRequest(mountpoint: []const u8) !void {
 }
 
 pub fn installedAppPath(allocator: std.mem.Allocator) ![]u8 {
-    if (try resolveBuiltAppSourcePath(allocator)) |built_path| {
-        return built_path;
-    }
-
     return legacyInstalledAppPath(allocator);
 }
 
 fn legacyInstalledAppPath(allocator: std.mem.Allocator) ![]u8 {
-    const system_path = try std.fs.path.join(allocator, &.{ "/Applications", app_bundle_name });
-    errdefer allocator.free(system_path);
-    if (pathExists(system_path)) return system_path;
-    allocator.free(system_path);
-
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, "Applications", app_bundle_name });
+    return std.fs.path.join(allocator, &.{ "/Applications", app_bundle_name });
 }
 
 pub fn installedFilesystemBundlePath(allocator: std.mem.Allocator) ![]u8 {
@@ -454,7 +443,7 @@ fn extensionRegistered(allocator: std.mem.Allocator, app_path: []const u8) bool 
 }
 
 fn issueMountRequest(allocator: std.mem.Allocator, request_path: []const u8, mountpoint: []const u8) !void {
-    try runCommandSuccess(allocator, &.{ "mount", "-t", module_short_name, request_path, mountpoint });
+    try runCommandSuccess(allocator, &.{ "mount", "-o", "owners", "-t", module_short_name, request_path, mountpoint });
 }
 
 fn hasCodeSigningIdentity(allocator: std.mem.Allocator) bool {
@@ -738,13 +727,6 @@ test "native_mount_support: parses fsck_fskit disabled output" {
     ));
 }
 
-test "native_mount_support: parses sample-backed fsck_fskit disabled output" {
-    try std.testing.expect(!nativeMountProbeShowsEnabled(
-        "Module com.example.apple-samplecode.PassthroughH6PZ8M39DM.AppEx is disabled!\n",
-        .{ .Exited = 22 },
-    ));
-}
-
 test "native_mount_support: parses native mount probe enabled output" {
     try std.testing.expect(nativeMountProbeShowsEnabled(
         "mount: Unable to invoke task\n",
@@ -759,7 +741,6 @@ test "native_mount_support: parses native mount probe enabled output" {
 test "native_mount_support: parses native mount probe disabled output" {
     try std.testing.expect(!nativeMountProbeShowsEnabled("mount: /tmp/probe: invalid file system.\n", .{ .Exited = 1 }));
     try std.testing.expect(!nativeMountProbeShowsEnabled("Module com.deanoc.spiderweb.fskit.app.extension is disabled!\n", .{ .Exited = 22 }));
-    try std.testing.expect(!nativeMountProbeShowsEnabled("Module com.example.apple-samplecode.PassthroughH6PZ8M39DM.AppEx is disabled!\n", .{ .Exited = 22 }));
     try std.testing.expect(!nativeMountProbeShowsEnabled("mount: File system extension requires approval\n", .{ .Exited = 69 }));
 }
 

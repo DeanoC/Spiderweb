@@ -1,26 +1,31 @@
-# Spiderweb FSKit Prototype
+# Spiderweb FSKit
 
 Expose an existing path as its own file system by using the FSKit framework.
 
 ## Overview
 
-This is the working Apple sample, transplanted into `Spiderweb` and gradually rebranded.
+This is the working Apple FSKit sample, transplanted into `Spiderweb` and then converted into the native Spiderweb mount path.
 
 The app and extension are now Spiderweb-branded, and this stage keeps the working sample runtime shape while exposing a Spiderweb wrapper around the known-good sample mount activation path:
 
 - the user-facing mount command is now `mount -t spiderweb ...`
 - the filesystem bundle path is now `/Library/Filesystems/spiderweb.fs`
 - the filesystem presents itself to macOS and Finder as `Spiderweb`
-- the Apple-managed sample app and extension bundle identifiers remain in place for now
-- the internal FSKit short name still rides the sample `passthrough` path for stability
+- the app and extension bundle identifiers now live under `com.deanoc.spiderweb.fskit.*`
+- the internal FSKit short name is now `spiderweb`
 
-After running and installing the prototype, you can use a Terminal command like `mount -t spiderweb ~/Documents ~/spiderweb-fs` to present the contents of your Documents directory as another file system, mounted at `spiderweb-fs`.
-The `-t spiderweb` flag tells `mount` to use the Spiderweb filesystem bundle installed into `/Library/Filesystems`.
+After running and installing the native mount, you can use a Terminal command like `mount -t spiderweb /path/to/spiderweb-request.json ~/spiderweb-native`.
+The `-t spiderweb` flag tells `mount` to use the Spiderweb filesystem bundle installed into `/Library/Filesystems`, and the mounted resource must be a Spiderweb request JSON.
 
-This checkout now also has an in-place Spiderweb experiment that keeps the same sample-derived FSKit runtime while exposing it as `spiderweb` to macOS.
+This checkout now has an in-place Spiderweb native mount that keeps the proven sample-derived FSKit runtime while exposing it as `spiderweb` to macOS.
 
-- If the mounted resource is a local directory, the original sample behavior is unchanged.
-- If the mounted resource is a JSON file, the extension treats it as a Spiderweb mount request and serves a read-only Spiderweb namespace through the same FSKit sample extension.
+- The mounted resource is a Spiderweb request JSON.
+- The extension treats that file as a Spiderweb mount request and serves the Spiderweb namespace through the same FSKit runtime.
+- Browse/read works across the projected namespace.
+- Mutating filesystem operations currently work on mounted export paths such as `/nodes/local/fs`.
+- Symbolic link creation now works on writable mounted exports; hard links remain unsupported.
+- Owner/group changes are still unsupported on the native macOS mount because the volume is currently mounted as `noowners`.
+- Advisory locks currently only apply inside the mounted Spiderweb view; they are not mirrored back to the underlying host path.
 
 Example:
 
@@ -28,7 +33,7 @@ Example:
 mount -t spiderweb /path/to/spiderweb-request.json ~/spiderweb-native
 ```
 
-The Spiderweb experiment now has a fail-fast layer to reduce reboot-worthy hangs while the read path is still being debugged:
+The Spiderweb experiment now has a fail-fast layer to reduce reboot-worthy hangs while the deeper path semantics are still being debugged:
 
 - `SPIDERWEB_FSKIT_TIMEOUT_MS`
   Per-operation timeout for Spiderweb bridge calls. Default: `2000`.
@@ -58,4 +63,4 @@ The request file uses the existing Spiderweb native request shape:
 }
 ```
 
-For more information, see the full article, [Building a passthrough file system](https://developer.apple.com/documentation/fskit/building-a-passthrough-file-system).
+For background on Apple’s starting point, see [Building a passthrough file system](https://developer.apple.com/documentation/fskit/building-a-passthrough-file-system).

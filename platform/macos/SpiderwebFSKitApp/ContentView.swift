@@ -13,12 +13,13 @@ struct ContentView: View {
             Text("Spiderweb FSKit")
                 .font(.headline)
 
-            Text("Local directory mode")
-            Text("mount -t spiderweb ~/Documents ~/spiderweb-fs")
-                .font(.system(.body, design: .monospaced))
-
-            Text("Spiderweb request mode")
+            Text("Native Spiderweb request mount")
             Text("mount -t spiderweb <spiderweb-request.json> <mountpoint>")
+                .font(.system(.body, design: .monospaced))
+                .textSelection(.enabled)
+
+            Text("Recommended CLI")
+            Text("spiderweb-fs-mount --mount-backend native ... mount <mountpoint>")
                 .font(.system(.body, design: .monospaced))
                 .textSelection(.enabled)
         }

@@ -2,263 +2,15 @@
 See the LICENSE.txt file for this sample’s licensing information.
 
 Abstract:
-A class defines a custom volume for use by the passthrough file system.
+The Spiderweb-backed FSKit bridge volume used by native request mounts.
 */
 
 import Darwin
 import Foundation
-import ExtensionFoundation
 import FSKit
 import OSLog
 
-let maxSymlinkSize: Int = 4096
 let modeAllBits: Int32 = 0o7777
-
-/// A SpiderwebFSVolume represents a volume in the passthrough file system.
-class SpiderwebFSVolume: FSVolume,
-                           FSVolume.ReadWriteOperations,
-                           FSVolume.RenameOperations,
-                           FSVolume.PreallocateOperations,
-                           FSVolume.OpenCloseOperations {
-
-    /// The default UUID for the SpiderwebFSVolume.
-    static let defaultVolumeUUID = UUID()
-
-    /// The root item of the volume.
-    var rootItem: SpiderwebFSItem
-
-    /// The item cache stores items previously looked up or created;
-    /// items are removed from the dictionary when the volume reclaims or removes the item.
-    var itemCache: [UInt64: SpiderwebFSItem]
-
-    /// The item cache is accessed concurrently so the volume needs to serialize access to it.
-    var itemCacheQueue: DispatchQueue
-
-    /// Creates a new SpiderwebFSVolume.
-    /// - Parameter rootPath: The path to the root directory of the volume.
-    init(rootPath: String) throws {
-        let rootFD      = try throwErrno { Darwin.open(rootPath, O_RDONLY) }
-        self.rootItem   = SpiderwebFSItem(name: ".", fileDescriptor: rootFD, type: .directory, openFlags: .readOnly)
-        self.itemCache = [:]
-        self.itemCacheQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.itemcache.queue")
-        super.init(volumeID: FSVolume.Identifier(uuid: SpiderwebFSVolume.defaultVolumeUUID), volumeName: createVolumeNameFromPath(rootPath))
-        Logger.passthroughfs.info("\(#function): Created a new volume with ID(\(self.volumeID)) and name(\(self.name)) on path(\(rootPath))")
-    }
-
-    /// The SpiderwebFSKit file system doesn't support setting a volume name, so this method does nothing and invokes its reply handler.
-    public func setVolumeName(_ name: FSFileName, replyHandler: @escaping (FSFileName?, (any Error)?) -> Void) {
-        return replyHandler(name, nil)
-    }
-
-    /// Prealocates disk space for the given item using `fcntl`.
-    /// - Parameters:
-    ///   - item: The item to preallocate space for.
-    ///   - offset: The file offset at which to preallocate space.
-    ///   - length: The length of the preallocated space.
-    ///   - flags: The preallocation flags.
-    ///   - replyHandler: The reply handler to invoke with the result.
-    public func preallocateSpace(for item: FSItem,
-                                 at offset: off_t,
-                                 length: Int,
-                                 flags: FSVolume.PreallocateFlags,
-                                 replyHandler: @escaping (Int, (any Error)?) -> Void) {
-        guard let ptItem = item as? SpiderwebFSItem else {
-            Logger.passthroughfs.error("\(#function): Can't cast item")
-            return replyHandler(0, POSIXError(.EINVAL))
-        }
-        guard ptItem.itemType == .file else {
-            Logger.passthroughfs.error("\(#function): Can only preallocate a file")
-            return replyHandler(0, POSIXError(.EPERM))
-        }
-
-        var preallocStruct = fstore_t()
-        preallocStruct.fst_bytesalloc = 0
-        preallocStruct.fst_flags = UInt32(flags.rawValue)
-        preallocStruct.fst_length = Int64(length)
-        preallocStruct.fst_offset = Int64(offset)
-        preallocStruct.fst_posmode = F_PEOFPOSMODE
-
-        let oldFD = ptItem.fileDescriptor
-        if oldFD < 0 {
-            try? ptItem.upgradeOpenMode(mode: .readWrite)
-        }
-        var err: Error?
-        if fcntl(ptItem.fileDescriptor, F_PREALLOCATE, &preallocStruct) == -1 {
-            err = posixErrno
-        }
-        if oldFD < 0 {
-            try? ptItem.closeItem()
-        }
-        guard err == nil else {
-            return replyHandler(0, err)
-        }
-        return replyHandler(Int(preallocStruct.fst_bytesalloc), nil)
-    }
-
-    /// Reads the contents of the given file item using `pread`.
-    /// - Parameters:
-    ///   - item: The file item to read from.
-    ///   - offset: The file offset at which to begin reading.
-    ///   - length: The number of bytes to read.
-    ///   - buffer: The buffer into which to read the data.
-    ///   - replyHandler: The reply handler to invoke with the result.
-    public func read(from item: FSItem,
-                     at offset: off_t,
-                     length: Int,
-                     into buffer: FSMutableFileDataBuffer,
-                     replyHandler: @escaping (Int, Error?) -> Void) {
-        guard let ptItem = item as? SpiderwebFSItem else {
-            Logger.passthroughfs.error("\(#function): Can't cast item")
-            return replyHandler(0, POSIXError(.EINVAL))
-        }
-        let oldFD = ptItem.fileDescriptor
-        if oldFD < 0 {
-            try? ptItem.upgradeOpenMode(mode: .readOnly)
-        }
-        var err: Error?
-        var actuallyRead = 0
-        buffer.withUnsafeMutableBytes { rawBufferPointer in
-            actuallyRead = pread(ptItem.fileDescriptor, rawBufferPointer.baseAddress, length, offset)
-
-            // Check if the read operation was successful.
-            if actuallyRead == -1 {
-                err = posixErrno
-            }
-        }
-
-        if oldFD < 0 {
-            try? ptItem.closeItem()
-        }
-        guard err == nil else {
-            return replyHandler(0, err)
-        }
-        return replyHandler(actuallyRead, nil)
-
-    }
-
-    /// Writes contents to the given file item using `pwrite`.
-    /// - Parameters:
-    ///   - contents: The data to write to the file item.
-    ///   - item: The file item to write to.
-    ///   - offset: The file offset at which to begin writing.
-    ///   - replyHandler: The reply handler to invoke with the result.
-    public func write(contents: Data,
-                      to item: FSItem,
-                      at offset: off_t,
-                      replyHandler: @escaping (Int, (any Error)?) -> Void) {
-        guard let ptItem = item as? SpiderwebFSItem else {
-            Logger.passthroughfs.error("\(#function): Can't cast item")
-            return replyHandler(0, POSIXError(.EINVAL))
-        }
-
-        guard ptItem.itemType != .directory else {
-            Logger.passthroughfs.error("\(#function): Can't write to a folder")
-            return replyHandler(0, POSIXError(.EISDIR))
-        }
-
-        let bytesPtr: UnsafeMutablePointer<UInt8> = UnsafeMutablePointer<UInt8>.allocate(capacity: contents.count)
-        contents.copyBytes(to: bytesPtr, count: contents.count)
-
-        var err: Error?
-        let actuallyWritten = pwrite(ptItem.fileDescriptor, bytesPtr, contents.count, off_t(offset))
-        bytesPtr.deallocate()
-        if actuallyWritten == -1 {
-            err = posixErrno
-        }
-        guard err == nil else {
-            return replyHandler(0, err)
-        }
-        return replyHandler(actuallyWritten, nil)
-    }
-
-    /// Performs an `open` operation on the given file item.
-    /// - Parameters:
-    ///   - item: The file item to open.
-    ///   - modes: The open modes.
-    ///   - replyHandler: The reply handler to invoke with the result.
-    public func openItem(_ item: FSItem,
-                         modes: FSVolume.OpenModes,
-                         replyHandler: @escaping ((any Error)?) -> Void) {
-        guard let ptItem = item as? SpiderwebFSItem else {
-            Logger.passthroughfs.error("\(#function): Can't cast item")
-            return replyHandler(POSIXError(.EINVAL))
-        }
-        guard ptItem != self.rootItem else {
-            // root item is opened when creating the volume.
-            return replyHandler(nil)
-        }
-
-        var ptfsMode: SpiderwebFSItemOpenMode = .close
-        if modes.contains(.read) {
-            ptfsMode = .readOnly
-        }
-        if modes.contains(.write) {
-            ptfsMode = .readWrite
-        }
-
-        do {
-            try ptItem.upgradeOpenMode(mode: ptfsMode)
-        } catch {
-            return replyHandler(error)
-        }
-        return replyHandler(nil)
-    }
-
-    /// Performs a `close` operation on the given file item.
-    /// - Parameters:
-    ///   - item: The file item to close.
-    ///   - modes: The open modes (ignored for SpiderwebFSKit).
-    ///   - replyHandler: The reply handler to invoke with the result.
-    public func closeItem(_ item: FSItem,
-                          modes: FSVolume.OpenModes,
-                          replyHandler: @escaping ((any Error)?) -> Void) {
-        guard let ptItem = item as? SpiderwebFSItem else {
-            Logger.passthroughfs.error("\(#function): Can't cast item")
-            return replyHandler(POSIXError(.EINVAL))
-        }
-        guard ptItem != self.rootItem else {
-            // Root item is closed in deactivate volume.
-            return replyHandler(nil)
-        }
-
-        do {
-            try ptItem.closeItem()
-        } catch {
-            return replyHandler(error)
-        }
-        return replyHandler(nil)
-    }
-
-    /// Get maximum link count using `fpathconf`.
-    public var maximumLinkCount: Int {
-        return Int(fpathconf(self.rootItem.fileDescriptor, _PC_LINK_MAX))
-    }
-
-    /// Get maximum name length using `fpathconf`.
-    public var maximumNameLength: Int {
-        return Int(fpathconf(self.rootItem.fileDescriptor, _PC_NAME_MAX))
-    }
-
-    /// Get whether the volume restricts ownership changes based on authorization using `fpathconf`.
-    public var restrictsOwnershipChanges: Bool {
-        return fpathconf(self.rootItem.fileDescriptor, _PC_CHOWN_RESTRICTED) == 1
-    }
-
-    /// Get whether the volume truncates files longer than its maximum supported length using `fpathconf`.
-    public var truncatesLongNames: Bool {
-        return fpathconf(self.rootItem.fileDescriptor, _PC_NO_TRUNC) == 0
-    }
-
-    /// Get the maximum file size in bits using `fpathconf`.
-    public var maximumFileSizeInBits: Int {
-        return Int(fpathconf(self.rootItem.fileDescriptor, _PC_FILESIZEBITS))
-    }
-
-    /// Get the maximum extended attribute size in bits using `fpathconf`.
-    public var maximumXattrSizeInBits: Int {
-        return Int(fpathconf(self.rootItem.fileDescriptor, _PC_XATTR_SIZE_BITS))
-    }
-}
 
 private struct SpiderwebBridgeOpenState {
     var handleID: UInt64
@@ -270,12 +22,18 @@ private struct SpiderwebBridgeOpenState {
 final class SpiderwebBridgeItem: FSItem {
     var path: String
     let itemIdentifier: FSItem.Identifier
-    var cachedAttr: SpiderwebRemoteAttr?
+    var cachedAttr: SpiderwebRemoteAttr? {
+        didSet {
+            cachedAttrFetchedAt = cachedAttr == nil ? nil : Date()
+        }
+    }
+    private(set) var cachedAttrFetchedAt: Date?
 
     init(path: String, itemIdentifier: FSItem.Identifier, cachedAttr: SpiderwebRemoteAttr?) {
         self.path = path
         self.itemIdentifier = itemIdentifier
         self.cachedAttr = cachedAttr
+        self.cachedAttrFetchedAt = cachedAttr == nil ? nil : Date()
         super.init()
     }
 }
@@ -283,13 +41,17 @@ final class SpiderwebBridgeItem: FSItem {
 final class SpiderwebBridgeVolume:
     FSVolume,
     FSVolume.Operations,
+    FSVolume.PathConfOperations,
+    FSVolume.AccessCheckOperations,
     FSVolume.OpenCloseOperations,
-    FSVolume.ReadWriteOperations
+    FSVolume.ReadWriteOperations,
+    FSVolume.XattrOperations
 {
     private let logger = Logger.spiderwebfs
     private let runtime: SpiderwebMountRuntime
     private let stateLock = NSLock()
     private let failFastCooldownMS = spiderwebFailFastCooldownMS
+    private let writableAttributeCacheTTL: TimeInterval = 1.0
 
     private var pathToItem: [String: SpiderwebBridgeItem] = [:]
     private var nextItemIdentifier: UInt64 = 1024
@@ -303,6 +65,7 @@ final class SpiderwebBridgeVolume:
         let capabilities = FSVolume.SupportedCapabilities()
         capabilities.supportsPersistentObjectIDs = true
         capabilities.supportsSymbolicLinks = true
+        capabilities.supportsHardLinks = false
         capabilities.supportsSparseFiles = false
         capabilities.supportsHiddenFiles = true
         capabilities.supportsFastStatFS = true
@@ -391,6 +154,20 @@ final class SpiderwebBridgeVolume:
         }
     }
 
+    func checkAccess(to item: FSItem, requestedAccess access: FSVolume.AccessMask, replyHandler reply: @escaping (Bool, Error?) -> Void) {
+        do {
+            let bridgeItem = try requireBridgeItem(item)
+            if access.intersection(writeLikeAccessMask).isEmpty {
+                reply(true, nil)
+                return
+            }
+            let allowWrites = try runtime.ensureBridge().isWritablePath(bridgeItem.path)
+            reply(allowWrites, nil)
+        } catch {
+            reply(false, error)
+        }
+    }
+
     func getAttributes(_ desiredAttributes: FSItem.GetAttributesRequest, of item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
@@ -424,15 +201,18 @@ final class SpiderwebBridgeVolume:
                     reply(nil, readOnlyError(message: "Spiderweb path \(bridgeItem.path) is read-only"))
                     return
                 }
-                if requestedUnsupportedMetadataMutation(newAttributes) {
-                    logger.warning("Unsupported metadata update for \(bridgeItem.path, privacy: .public): \(self.describeSetAttributesRequest(newAttributes), privacy: .public)")
-                    reply(nil, CocoaError(.featureUnsupported))
-                    return
+                if hasIgnoredMetadataMutation(newAttributes) {
+                    logger.notice("Ignoring unsupported metadata fields for \(bridgeItem.path, privacy: .public): \(self.describeIgnoredMetadataRequest(newAttributes), privacy: .public)")
                 }
                 let request = makeSetAttrRequest(newAttributes)
+                if newAttributes.isValid(.flags) {
+                    logger.notice(
+                        "Applying FSKit flags request for \(bridgeItem.path, privacy: .public): raw=\(newAttributes.flags) mapped=\(request.flags ?? 0) request=\(self.describeSetAttributesRequest(newAttributes), privacy: .public)"
+                    )
+                }
                 let attr: SpiderwebRemoteAttr
                 if request.isEmpty {
-                    logger.notice("Ignoring metadata-only no-op for writable Spiderweb path \(bridgeItem.path, privacy: .public)")
+                    logger.notice("Ignoring metadata-only no-op for writable Spiderweb path \(bridgeItem.path, privacy: .public): \(self.describeSetAttributesRequest(newAttributes), privacy: .public)")
                     attr = try currentAttributes(for: bridgeItem)
                 } else {
                     attr = try bridge.setattr(path: bridgeItem.path, request: request)
@@ -444,6 +224,65 @@ final class SpiderwebBridgeVolume:
             }
 
             reply(nil, CocoaError(.featureUnsupported))
+        } catch {
+            if let bridgeItem = item as? SpiderwebBridgeItem {
+                noteFailure(for: bridgeItem.path, error: error)
+            }
+            reply(nil, error)
+        }
+    }
+
+    func getXattr(named name: FSFileName, of item: FSItem, replyHandler reply: @escaping (Data?, Error?) -> Void) {
+        do {
+            let bridgeItem = try requireBridgeItem(item)
+            let xattrName = try requireXattrName(name)
+            let value = try runtime.ensureBridge().getxattr(path: bridgeItem.path, name: xattrName)
+            reply(value, nil)
+        } catch {
+            if let bridgeItem = item as? SpiderwebBridgeItem {
+                noteFailure(for: bridgeItem.path, error: error)
+            }
+            reply(nil, error)
+        }
+    }
+
+    func setXattr(named name: FSFileName, to value: Data?, on item: FSItem, policy: FSVolume.SetXattrPolicy, replyHandler reply: @escaping (Error?) -> Void) {
+        do {
+            let bridgeItem = try requireBridgeItem(item)
+            let xattrName = try requireXattrName(name)
+            switch policy {
+            case .delete:
+                try runtime.ensureBridge().removexattr(path: bridgeItem.path, name: xattrName)
+            case .alwaysSet, .mustCreate, .mustReplace:
+                guard let value else {
+                    reply(POSIXError(.EINVAL))
+                    return
+                }
+                try runtime.ensureBridge().setxattr(
+                    path: bridgeItem.path,
+                    name: xattrName,
+                    value: value,
+                    flags: linuxXattrFlags(for: policy)
+                )
+            @unknown default:
+                reply(POSIXError(.EINVAL))
+                return
+            }
+            invalidateCachedPath(bridgeItem.path)
+            reply(nil)
+        } catch {
+            if let bridgeItem = item as? SpiderwebBridgeItem {
+                noteFailure(for: bridgeItem.path, error: error)
+            }
+            reply(error)
+        }
+    }
+
+    func listXattrs(of item: FSItem, replyHandler reply: @escaping ([FSFileName]?, Error?) -> Void) {
+        do {
+            let bridgeItem = try requireBridgeItem(item)
+            let names = try runtime.ensureBridge().listxattrs(path: bridgeItem.path)
+            reply(names.map { FSFileName(string: $0) }, nil)
         } catch {
             if let bridgeItem = item as? SpiderwebBridgeItem {
                 noteFailure(for: bridgeItem.path, error: error)
@@ -487,8 +326,16 @@ final class SpiderwebBridgeVolume:
     }
 
     func readSymbolicLink(_ item: FSItem, replyHandler reply: @escaping (FSFileName?, Error?) -> Void) {
-        _ = item
-        reply(nil, CocoaError(.featureUnsupported))
+        do {
+            let bridgeItem = try requireBridgeItem(item)
+            let target = try runtime.ensureBridge().readlink(path: bridgeItem.path)
+            reply(FSFileName(string: target), nil)
+        } catch {
+            if let bridgeItem = item as? SpiderwebBridgeItem {
+                noteFailure(for: bridgeItem.path, error: error)
+            }
+            reply(nil, error)
+        }
     }
 
     func createItem(named name: FSFileName, type: FSItem.ItemType, inDirectory directory: FSItem, attributes newAttributes: FSItem.SetAttributesRequest, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
@@ -526,18 +373,35 @@ final class SpiderwebBridgeVolume:
     }
 
     func createSymbolicLink(named name: FSFileName, inDirectory directory: FSItem, attributes newAttributes: FSItem.SetAttributesRequest, linkContents contents: FSFileName, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
-        _ = name
-        _ = directory
         _ = newAttributes
-        _ = contents
-        reply(nil, nil, readOnlyError(message: "Spiderweb native sample is read-only for now"))
+        do {
+            let directoryItem = try requireBridgeItem(directory)
+            let childPath = try append(name: name, toDirectoryPath: directoryItem.path)
+            guard let target = contents.string, !target.isEmpty else {
+                throw POSIXError(.EINVAL)
+            }
+
+            try runtime.ensureBridge().symlink(target: target, linkPath: childPath)
+            invalidateCachedPath(directoryItem.path)
+            invalidateCachedPath(childPath)
+            let attr = try runtime.ensureBridge().getattr(path: childPath)
+            let child = itemForPath(childPath, attr: attr)
+            reply(child, FSFileName(string: name.string ?? ""), nil)
+        } catch {
+            if let directoryItem = directory as? SpiderwebBridgeItem,
+               let childPath = try? append(name: name, toDirectoryPath: directoryItem.path)
+            {
+                noteFailure(for: childPath, error: error)
+            }
+            reply(nil, nil, error)
+        }
     }
 
     func createLink(to item: FSItem, named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSFileName?, Error?) -> Void) {
         _ = item
         _ = name
         _ = directory
-        reply(nil, readOnlyError(message: "Spiderweb native sample is read-only for now"))
+        reply(nil, NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTSUP), userInfo: [NSLocalizedDescriptionKey: "Spiderweb native mounts do not support hard links"]))
     }
 
     func removeItem(_ item: FSItem, named name: FSFileName, fromDirectory directory: FSItem, replyHandler reply: @escaping ((any Error)?) -> Void) {
@@ -736,7 +600,7 @@ final class SpiderwebBridgeVolume:
     }
 
     private func currentAttributes(for item: SpiderwebBridgeItem) throws -> SpiderwebRemoteAttr {
-        if let cached = item.cachedAttr {
+        if let cached = item.cachedAttr, shouldUseCachedAttributes(for: item) {
             return cached
         }
         return try refreshAttributes(for: item)
@@ -799,6 +663,7 @@ final class SpiderwebBridgeVolume:
             .linkCount,
             .uid,
             .gid,
+            .flags,
             .size,
             .allocSize,
             .fileID,
@@ -818,8 +683,7 @@ final class SpiderwebBridgeVolume:
             newAttributes.isValid(.linkCount) ||
             newAttributes.isValid(.allocSize) ||
             newAttributes.isValid(.fileID) ||
-            newAttributes.isValid(.parentID) ||
-            newAttributes.isValid(.changeTime)
+            newAttributes.isValid(.parentID)
     }
 
     private func requestedSoftMetadataMutation(_ newAttributes: FSItem.SetAttributesRequest) -> Bool {
@@ -834,28 +698,30 @@ final class SpiderwebBridgeVolume:
             newAttributes.isValid(.addedTime)
     }
 
-    private func requestedUnsupportedMetadataMutation(_ newAttributes: FSItem.SetAttributesRequest) -> Bool {
-        if newAttributes.isValid(.uid) {
-            return true
-        }
-        if newAttributes.isValid(.gid) {
-            return true
-        }
-        if newAttributes.isValid(.flags), newAttributes.flags != 0 {
-            return true
-        }
-        if newAttributes.isValid(.birthTime) ||
+    private func hasIgnoredMetadataMutation(_ newAttributes: FSItem.SetAttributesRequest) -> Bool {
+        newAttributes.isValid(.changeTime) ||
+            newAttributes.isValid(.birthTime) ||
             newAttributes.isValid(.backupTime) ||
             newAttributes.isValid(.addedTime)
-        {
-            return true
-        }
-        return false
     }
 
     private func makeSetAttrRequest(_ newAttributes: FSItem.SetAttributesRequest) -> SpiderwebSetAttrRequest {
-        SpiderwebSetAttrRequest(
+        let rawFlags: UInt32? = if newAttributes.isValid(.flags) {
+            newAttributes.flags
+        } else {
+            nil
+        }
+        if let rawFlags {
+            let ignoredFlags = rawFlags & ~supportedBSDFlags
+            if ignoredFlags != 0 {
+                logger.notice("Ignoring unsupported BSD flags in setattr request: raw=\(rawFlags) ignored=\(ignoredFlags)")
+            }
+        }
+        return SpiderwebSetAttrRequest(
             mode: newAttributes.isValid(.mode) ? (newAttributes.mode & UInt32(modeAllBits)) : nil,
+            uid: newAttributes.isValid(.uid) ? newAttributes.uid : nil,
+            gid: newAttributes.isValid(.gid) ? newAttributes.gid : nil,
+            flags: rawFlags.map { $0 & supportedBSDFlags },
             accessTimeNS: newAttributes.isValid(.accessTime) ? nanoseconds(from: newAttributes.accessTime) : nil,
             modifyTimeNS: newAttributes.isValid(.modifyTime) ? nanoseconds(from: newAttributes.modifyTime) : nil
         )
@@ -874,6 +740,56 @@ final class SpiderwebBridgeVolume:
         if newAttributes.isValid(.backupTime) { parts.append("backupTime=\(nanoseconds(from: newAttributes.backupTime))") }
         if newAttributes.isValid(.addedTime) { parts.append("addedTime=\(nanoseconds(from: newAttributes.addedTime))") }
         return parts.isEmpty ? "<none>" : parts.joined(separator: ", ")
+    }
+
+    private func describeIgnoredMetadataRequest(_ newAttributes: FSItem.SetAttributesRequest) -> String {
+        var parts: [String] = []
+        if newAttributes.isValid(.changeTime) { parts.append("changeTime=\(nanoseconds(from: newAttributes.changeTime))") }
+        if newAttributes.isValid(.birthTime) { parts.append("birthTime=\(nanoseconds(from: newAttributes.birthTime))") }
+        if newAttributes.isValid(.backupTime) { parts.append("backupTime=\(nanoseconds(from: newAttributes.backupTime))") }
+        if newAttributes.isValid(.addedTime) { parts.append("addedTime=\(nanoseconds(from: newAttributes.addedTime))") }
+        return parts.isEmpty ? "<none>" : parts.joined(separator: ", ")
+    }
+
+    private func requireXattrName(_ name: FSFileName) throws -> String {
+        if let string = name.string, !string.isEmpty {
+            return string
+        }
+        throw POSIXError(.EINVAL)
+    }
+
+    private func linuxXattrFlags(for policy: FSVolume.SetXattrPolicy) -> UInt32 {
+        switch policy {
+        case .alwaysSet:
+            return 0
+        case .mustCreate:
+            return 0x1
+        case .mustReplace:
+            return 0x2
+        case .delete:
+            return 0
+        @unknown default:
+            return 0
+        }
+    }
+
+    private var supportedBSDFlags: UInt32 {
+        UInt32(UF_HIDDEN | UF_IMMUTABLE)
+    }
+
+    private var writeLikeAccessMask: FSVolume.AccessMask {
+        [
+            .writeData,
+            .appendData,
+            .addFile,
+            .addSubdirectory,
+            .delete,
+            .deleteChild,
+            .writeAttributes,
+            .writeXattr,
+            .writeSecurity,
+            .takeOwnership,
+        ]
     }
 
     private func invalidateCachedPath(_ path: String) {
@@ -1037,6 +953,9 @@ final class SpiderwebBridgeVolume:
         if desiredAttributes.isAttributeWanted(.gid) {
             attributes.gid = attr.gid
         }
+        if desiredAttributes.isAttributeWanted(.flags) {
+            attributes.flags = attr.flags ?? 0
+        }
         if desiredAttributes.isAttributeWanted(.size) {
             attributes.size = attr.size
         }
@@ -1082,7 +1001,7 @@ final class SpiderwebBridgeVolume:
     }
 
     private func fastEnumeratedAttributes(for item: SpiderwebBridgeItem, entryName: String, parentPath: String) -> SpiderwebRemoteAttr? {
-        if let attr = item.cachedAttr {
+        if let attr = item.cachedAttr, shouldUseCachedAttributes(for: item) {
             return attr
         }
         if let attr = syntheticFallbackAttr(forPath: item.path, entryName: entryName), shouldUseSyntheticEnumeration(in: parentPath) {
@@ -1090,6 +1009,19 @@ final class SpiderwebBridgeVolume:
             return attr
         }
         return nil
+    }
+
+    private func shouldUseCachedAttributes(for item: SpiderwebBridgeItem) -> Bool {
+        guard item.cachedAttr != nil else {
+            return false
+        }
+        guard let cachedAt = item.cachedAttrFetchedAt else {
+            return false
+        }
+        guard let bridge = try? runtime.ensureBridge(), bridge.isWritablePath(item.path) else {
+            return true
+        }
+        return Date().timeIntervalSince(cachedAt) < writableAttributeCacheTTL
     }
 
     private func syntheticFallbackAttr(forPath path: String, entryName: String) -> SpiderwebRemoteAttr? {
@@ -1113,6 +1045,7 @@ final class SpiderwebBridgeVolume:
             linkCount: kindCode == 2 ? 2 : 1,
             uid: UInt32(getuid()),
             gid: UInt32(getgid()),
+            flags: 0,
             size: 0,
             accessTimeNS: nowNS,
             modifyTimeNS: nowNS,

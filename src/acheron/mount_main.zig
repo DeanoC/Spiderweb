@@ -598,7 +598,7 @@ fn reportMountCommandError(
             return;
         },
         error.NativeFsExtensionCapabilitiesMissing => {
-            std.log.err("macOS native mounts require SpiderwebFSKitExtension to carry the FSKit entitlement. Rebuild the sample-based app from Xcode with the selected team and retry.", .{});
+            std.log.err("macOS native mounts require SpiderwebFSKitExtension to carry the FSKit entitlement. Rebuild the SpiderwebFSKit app from Xcode with the selected team and retry.", .{});
             return;
         },
         error.NativeFsExtensionProvisioningRequired => {

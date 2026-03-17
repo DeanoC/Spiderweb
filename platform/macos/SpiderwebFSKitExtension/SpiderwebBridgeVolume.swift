@@ -11,6 +11,7 @@ import FSKit
 import OSLog
 
 let modeAllBits: Int32 = 0o7777
+private let spiderwebInvalidationTraceNeedle = "/test-env/fskit-invalidation-traced/existing.txt"
 
 private struct SpiderwebBridgeOpenState {
     var handleID: UInt64
@@ -43,6 +44,7 @@ final class SpiderwebBridgeVolume:
     FSVolume.Operations,
     FSVolume.PathConfOperations,
     FSVolume.AccessCheckOperations,
+    FSVolume.ItemDeactivation,
     FSVolume.OpenCloseOperations,
     FSVolume.ReadWriteOperations,
     FSVolume.XattrOperations
@@ -51,19 +53,21 @@ final class SpiderwebBridgeVolume:
     private let runtime: SpiderwebMountRuntime
     private let stateLock = NSLock()
     private let failFastCooldownMS = spiderwebFailFastCooldownMS
-    private let writableAttributeCacheTTL: TimeInterval = 1.0
 
     private var pathToItem: [String: SpiderwebBridgeItem] = [:]
     private var nextItemIdentifier: UInt64 = 1024
     private var openStates: [UInt64: SpiderwebBridgeOpenState] = [:]
     private var volumeStatsCache = syntheticStatFS
     private var blockedPaths: [String: Date] = [:]
+    private var invalidatedPaths: Set<String> = []
 
     private let rootItem: SpiderwebBridgeItem
 
     let supportedVolumeCapabilities: FSVolume.SupportedCapabilities = {
         let capabilities = FSVolume.SupportedCapabilities()
-        capabilities.supportsPersistentObjectIDs = true
+        // Bridge items are mount-local path objects, not stable object-ID lookups.
+        // Advertising persistent object IDs encourages vnode reuse we can't honor.
+        capabilities.supportsPersistentObjectIDs = false
         capabilities.supportsSymbolicLinks = true
         capabilities.supportsHardLinks = false
         capabilities.supportsSparseFiles = false
@@ -77,6 +81,7 @@ final class SpiderwebBridgeVolume:
     let maximumNameLength = 255
     let restrictsOwnershipChanges = false
     let truncatesLongNames = false
+    let itemDeactivationPolicy: FSVolume.ItemDeactivationOptions = .always
 
     init(requestURL: URL) throws {
         runtime = try SpiderwebMountRuntime(requestURL: requestURL)
@@ -84,6 +89,9 @@ final class SpiderwebBridgeVolume:
         let rootAttr = try bridge.getattr(path: "/")
         rootItem = SpiderwebBridgeItem(path: "/", itemIdentifier: .rootDirectory, cachedAttr: rootAttr)
         super.init(volumeID: FSVolume.Identifier(), volumeName: FSFileName(string: runtime.request.volumeNameOrDefault))
+        runtime.setInvalidationHandler { [weak self] invalidation in
+            self?.applyMountedInvalidation(invalidation)
+        }
         pathToItem["/"] = rootItem
         try refreshVolumeStatistics()
     }
@@ -168,9 +176,34 @@ final class SpiderwebBridgeVolume:
         }
     }
 
+    func deactivateItem(_ item: FSItem, replyHandler reply: @escaping (Error?) -> Void) {
+        guard let bridgeItem = item as? SpiderwebBridgeItem else {
+            reply(nil)
+            return
+        }
+
+        let normalizedPath = normalize(path: bridgeItem.path)
+        if normalizedPath.contains(spiderwebInvalidationTraceNeedle) {
+            logger.notice("deactivateItem for \(normalizedPath, privacy: .public)")
+        }
+        stateLock.lock()
+        bridgeItem.cachedAttr = nil
+        blockedPaths.removeValue(forKey: normalizedPath)
+        invalidatedPaths.remove(normalizedPath)
+        openStates.removeValue(forKey: bridgeItem.itemIdentifier.rawValue)
+        if normalizedPath != "/" {
+            pathToItem.removeValue(forKey: normalizedPath)
+        }
+        stateLock.unlock()
+        reply(nil)
+    }
+
     func getAttributes(_ desiredAttributes: FSItem.GetAttributesRequest, of item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
+            if bridgeItem.path.contains(spiderwebInvalidationTraceNeedle) {
+                logger.notice("getAttributes for \(bridgeItem.path, privacy: .public)")
+            }
             let attr = try refreshAttributes(for: bridgeItem)
             reply(makeAttributes(for: bridgeItem, attr: attr, desiredAttributes: desiredAttributes), nil)
         } catch {
@@ -295,6 +328,9 @@ final class SpiderwebBridgeVolume:
         do {
             let directoryItem = try requireBridgeItem(directory)
             let childPath = try append(name: name, toDirectoryPath: directoryItem.path)
+            if childPath.contains(spiderwebInvalidationTraceNeedle) {
+                logger.notice("lookupItem for \(childPath, privacy: .public)")
+            }
             try ensurePathIsNotBlocked(childPath)
             let attr = try runtime.ensureBridge().getattr(path: childPath)
             clearBlockedPath(childPath)
@@ -504,6 +540,9 @@ final class SpiderwebBridgeVolume:
     func openItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping ((any Error)?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
+            if bridgeItem.path.contains(spiderwebInvalidationTraceNeedle) {
+                logger.notice("openItem for \(bridgeItem.path, privacy: .public)")
+            }
             _ = try ensureHandle(for: bridgeItem, modes: modes)
             reply(nil)
         } catch {
@@ -518,6 +557,9 @@ final class SpiderwebBridgeVolume:
         _ = modes
         do {
             let bridgeItem = try requireBridgeItem(item)
+            if bridgeItem.path.contains(spiderwebInvalidationTraceNeedle) {
+                logger.notice("closeItem for \(bridgeItem.path, privacy: .public)")
+            }
             try releaseHandle(for: bridgeItem)
             reply(nil)
         } catch {
@@ -528,6 +570,9 @@ final class SpiderwebBridgeVolume:
     func read(from item: FSItem, at offset: off_t, length: Int, into buffer: FSMutableFileDataBuffer, replyHandler reply: @escaping (Int, Error?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
+            if bridgeItem.path.contains(spiderwebInvalidationTraceNeedle) {
+                logger.notice("read for \(bridgeItem.path, privacy: .public) offset=\(offset) length=\(length)")
+            }
             let (openState, transient) = try borrowHandle(for: bridgeItem, modes: [.read])
             defer {
                 if transient {
@@ -674,6 +719,7 @@ final class SpiderwebBridgeVolume:
             .birthTime,
             .backupTime,
             .addedTime,
+            .inhibitKernelOffloadedIO,
         ]
         return request
     }
@@ -799,6 +845,7 @@ final class SpiderwebBridgeVolume:
             item.cachedAttr = nil
         }
         blockedPaths.removeValue(forKey: normalizedPath)
+        invalidatedPaths.remove(normalizedPath)
         stateLock.unlock()
     }
 
@@ -809,6 +856,7 @@ final class SpiderwebBridgeVolume:
             openStates.removeValue(forKey: item.itemIdentifier.rawValue)
         }
         blockedPaths.removeValue(forKey: normalizedPath)
+        invalidatedPaths.remove(normalizedPath)
         stateLock.unlock()
     }
 
@@ -823,6 +871,8 @@ final class SpiderwebBridgeVolume:
         }
         blockedPaths.removeValue(forKey: normalizedOldPath)
         blockedPaths.removeValue(forKey: normalizedNewPath)
+        invalidatedPaths.remove(normalizedOldPath)
+        invalidatedPaths.remove(normalizedNewPath)
         stateLock.unlock()
     }
 
@@ -831,11 +881,13 @@ final class SpiderwebBridgeVolume:
         modes: FSVolume.OpenModes,
         retain: Bool = true
     ) throws -> SpiderwebBridgeOpenState {
+        let normalizedPath = normalize(path: item.path)
         stateLock.lock()
         if var existing = openStates[item.itemIdentifier.rawValue] {
             let requestedModes = existing.modes.union(modes)
             let needsUpgrade = requestedModes.contains(.write) && !existing.modes.contains(.write)
-            if !needsUpgrade {
+            let needsRefresh = invalidatedPaths.contains(normalizedPath)
+            if !needsUpgrade && !needsRefresh {
                 if retain {
                     existing.retainCount += 1
                     existing.modes = requestedModes
@@ -846,6 +898,11 @@ final class SpiderwebBridgeVolume:
             }
             let oldHandleID = existing.handleID
             let upgradedRetainCount = existing.retainCount + (retain ? 1 : 0)
+            if needsRefresh {
+                logger.notice(
+                    "Refreshing open handle for invalidated path \(normalizedPath, privacy: .public) oldHandle=\(oldHandleID)"
+                )
+            }
             stateLock.unlock()
 
             try ensurePathIsNotBlocked(item.path)
@@ -860,7 +917,8 @@ final class SpiderwebBridgeVolume:
 
             stateLock.lock()
             openStates[item.itemIdentifier.rawValue] = upgradedState
-            blockedPaths.removeValue(forKey: normalize(path: item.path))
+            blockedPaths.removeValue(forKey: normalizedPath)
+            invalidatedPaths.remove(normalizedPath)
             stateLock.unlock()
             return upgradedState
         }
@@ -877,7 +935,8 @@ final class SpiderwebBridgeVolume:
 
         stateLock.lock()
         openStates[item.itemIdentifier.rawValue] = state
-        blockedPaths.removeValue(forKey: normalize(path: item.path))
+        blockedPaths.removeValue(forKey: normalizedPath)
+        invalidatedPaths.remove(normalizedPath)
         stateLock.unlock()
         return state
     }
@@ -986,6 +1045,9 @@ final class SpiderwebBridgeVolume:
         if desiredAttributes.isAttributeWanted(.addedTime) {
             attributes.addedTime = makeTimespec(fromNanoseconds: attr.changeTimeNS)
         }
+        if desiredAttributes.isAttributeWanted(.inhibitKernelOffloadedIO) {
+            attributes.inhibitKernelOffloadedIO = (try? runtime.ensureBridge().isWritablePath(item.path)) ?? false
+        }
         return attributes
     }
 
@@ -1015,13 +1077,17 @@ final class SpiderwebBridgeVolume:
         guard item.cachedAttr != nil else {
             return false
         }
-        guard let cachedAt = item.cachedAttrFetchedAt else {
+        let normalizedPath = normalize(path: item.path)
+        stateLock.lock()
+        let invalidated = invalidatedPaths.contains(normalizedPath)
+        stateLock.unlock()
+        if invalidated {
             return false
         }
-        guard let bridge = try? runtime.ensureBridge(), bridge.isWritablePath(item.path) else {
-            return true
+        if let bridge = try? runtime.ensureBridge(), bridge.isWritablePath(item.path) {
+            return false
         }
-        return Date().timeIntervalSince(cachedAt) < writableAttributeCacheTTL
+        return item.cachedAttrFetchedAt != nil
     }
 
     private func syntheticFallbackAttr(forPath path: String, entryName: String) -> SpiderwebRemoteAttr? {
@@ -1159,6 +1225,46 @@ final class SpiderwebBridgeVolume:
         stateLock.lock()
         blockedPaths.removeValue(forKey: normalize(path: path))
         stateLock.unlock()
+    }
+
+    private func applyMountedInvalidation(_ invalidation: SpiderwebMountedInvalidation) {
+        let normalizedPath = normalize(path: invalidation.path)
+        logger.notice(
+            "Applying mounted invalidation for \(normalizedPath, privacy: .public) kind \(String(describing: invalidation.kind), privacy: .public)"
+        )
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        applyInvalidationLocked(to: normalizedPath)
+
+        switch invalidation.kind {
+        case .directory:
+            let prefix = normalizedPath == "/" ? "/" : normalizedPath + "/"
+            for (path, item) in pathToItem {
+                guard path == normalizedPath || path.hasPrefix(prefix) else {
+                    continue
+                }
+                item.cachedAttr = nil
+                blockedPaths.removeValue(forKey: path)
+                invalidatedPaths.insert(path)
+            }
+
+        case .attr, .data, .all:
+            if invalidation.kind != .data {
+                pathToItem[normalizedPath]?.cachedAttr = nil
+            }
+        }
+
+        let parent = parentPath(of: normalizedPath)
+        if parent != normalizedPath {
+            applyInvalidationLocked(to: parent)
+        }
+    }
+
+    private func applyInvalidationLocked(to normalizedPath: String) {
+        pathToItem[normalizedPath]?.cachedAttr = nil
+        blockedPaths.removeValue(forKey: normalizedPath)
+        invalidatedPaths.insert(normalizedPath)
     }
 
     private func noteFailure(for path: String, error: Error) {

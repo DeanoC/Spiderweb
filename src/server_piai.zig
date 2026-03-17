@@ -1676,9 +1676,6 @@ fn handleLocalFsConnection(
                 };
                 defer handled.deinit(allocator);
                 if (connection) |live_connection| {
-                    if (parsed.acheron_type != .fs_t_hello) {
-                        local_node.hub.disableInvalidations(live_connection.id);
-                    }
                     for (handled.events) |event| {
                         const event_json = try fs_node_service.buildInvalidationEventJson(allocator, event);
                         defer allocator.free(event_json);
@@ -5281,7 +5278,7 @@ const AgentRuntimeRegistry = struct {
         const mounts_root_trimmed = std.mem.trim(u8, self.runtime_config.sandbox_mounts_root, " \t\r\n");
         const watch_overlaps_sandbox = pathIsAncestorOrEqual(export_path, mounts_root_trimmed) or
             pathIsAncestorOrEqual(mounts_root_trimmed, export_path);
-        const watcher_requested = parseBoolEnv(self.allocator, local_node_watcher_enabled_env, false);
+        const watcher_requested = parseBoolEnv(self.allocator, local_node_watcher_enabled_env, true);
         if (watcher_requested and watch_overlaps_sandbox) {
             std.log.warn(
                 "local fs node watcher disabled: export path {s} overlaps sandbox mounts root {s}",

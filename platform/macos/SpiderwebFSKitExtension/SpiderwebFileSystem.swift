@@ -331,6 +331,16 @@ struct SpiderwebCreateHandleResponse {
     let writable: Bool
 }
 
+struct SpiderwebSetAttrRequest {
+    let mode: UInt32?
+    let accessTimeNS: Int64?
+    let modifyTimeNS: Int64?
+
+    var isEmpty: Bool {
+        mode == nil && accessTimeNS == nil && modifyTimeNS == nil
+    }
+}
+
 enum SpiderwebBridgeError: LocalizedError {
     case invalidURL(String)
     case invalidEnvelope
@@ -1235,6 +1245,36 @@ actor SpiderwebFsEndpointSession {
         )
     }
 
+    func setattr(path: String, request: SpiderwebSetAttrRequest) async throws -> SpiderwebRemoteAttr {
+        try await launchIfNeeded()
+        try ensureWritable()
+        let resolved = try await resolveNode(path)
+        guard !request.isEmpty else {
+            if let attr = resolved.attr {
+                return attr
+            }
+            return try await getattrNode(nodeID: resolved.nodeID)
+        }
+        var payload: [String: Any] = [:]
+        if let mode = request.mode {
+            payload["mode"] = mode
+        }
+        if let accessTimeNS = request.accessTimeNS {
+            payload["at_ns"] = accessTimeNS
+        }
+        if let modifyTimeNS = request.modifyTimeNS {
+            payload["mt_ns"] = modifyTimeNS
+        }
+        let envelope = try await sendFsRequest(
+            type: "acheron.t_fs_setattr",
+            expectedType: "acheron.r_fs_setattr",
+            node: resolved.nodeID,
+            handle: nil,
+            payload: payload
+        )
+        return try parseFsWrappedAttr(envelope)
+    }
+
     func unlink(path: String) async throws {
         try await launchIfNeeded()
         try ensureWritable()
@@ -1587,6 +1627,12 @@ final class SpiderwebFsEndpointBridge {
         }
     }
 
+    func setattr(path: String, request: SpiderwebSetAttrRequest) throws -> SpiderwebRemoteAttr {
+        try perform(operationName: "fs.setattr(\(path))") { [session] in
+            try await session.setattr(path: path, request: request)
+        }
+    }
+
     func unlink(path: String) throws {
         try perform(operationName: "fs.unlink(\(path))") { [session] in
             try await session.unlink(path: path)
@@ -1738,6 +1784,13 @@ final class SpiderwebMountedBridge {
             throw readOnlyError(message: "Spiderweb path \(path) is read-only")
         }
         try endpointMounts[route.endpointIndex].bridge.truncate(path: route.relativePath, size: size)
+    }
+
+    func setattr(path: String, request: SpiderwebSetAttrRequest) throws -> SpiderwebRemoteAttr {
+        guard let route = routeForPath(path) else {
+            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
+        }
+        return try endpointMounts[route.endpointIndex].bridge.setattr(path: route.relativePath, request: request)
     }
 
     func unlink(path: String) throws {

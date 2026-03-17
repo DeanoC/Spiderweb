@@ -424,9 +424,21 @@ final class SpiderwebBridgeVolume:
                     reply(nil, readOnlyError(message: "Spiderweb path \(bridgeItem.path) is read-only"))
                     return
                 }
-                logger.notice("Ignoring metadata-only update for writable Spiderweb path \(bridgeItem.path, privacy: .public)")
-                invalidateCachedPath(bridgeItem.path)
-                let attr = try refreshAttributes(for: bridgeItem)
+                if requestedUnsupportedMetadataMutation(newAttributes) {
+                    logger.warning("Unsupported metadata update for \(bridgeItem.path, privacy: .public): \(self.describeSetAttributesRequest(newAttributes), privacy: .public)")
+                    reply(nil, CocoaError(.featureUnsupported))
+                    return
+                }
+                let request = makeSetAttrRequest(newAttributes)
+                let attr: SpiderwebRemoteAttr
+                if request.isEmpty {
+                    logger.notice("Ignoring metadata-only no-op for writable Spiderweb path \(bridgeItem.path, privacy: .public)")
+                    attr = try currentAttributes(for: bridgeItem)
+                } else {
+                    attr = try bridge.setattr(path: bridgeItem.path, request: request)
+                    clearBlockedPath(bridgeItem.path)
+                    bridgeItem.cachedAttr = attr
+                }
                 reply(makeAttributes(for: bridgeItem, attr: attr, desiredAttributes: attributeSnapshotRequest()), nil)
                 return
             }
@@ -822,6 +834,48 @@ final class SpiderwebBridgeVolume:
             newAttributes.isValid(.addedTime)
     }
 
+    private func requestedUnsupportedMetadataMutation(_ newAttributes: FSItem.SetAttributesRequest) -> Bool {
+        if newAttributes.isValid(.uid) {
+            return true
+        }
+        if newAttributes.isValid(.gid) {
+            return true
+        }
+        if newAttributes.isValid(.flags), newAttributes.flags != 0 {
+            return true
+        }
+        if newAttributes.isValid(.birthTime) ||
+            newAttributes.isValid(.backupTime) ||
+            newAttributes.isValid(.addedTime)
+        {
+            return true
+        }
+        return false
+    }
+
+    private func makeSetAttrRequest(_ newAttributes: FSItem.SetAttributesRequest) -> SpiderwebSetAttrRequest {
+        SpiderwebSetAttrRequest(
+            mode: newAttributes.isValid(.mode) ? (newAttributes.mode & UInt32(modeAllBits)) : nil,
+            accessTimeNS: newAttributes.isValid(.accessTime) ? nanoseconds(from: newAttributes.accessTime) : nil,
+            modifyTimeNS: newAttributes.isValid(.modifyTime) ? nanoseconds(from: newAttributes.modifyTime) : nil
+        )
+    }
+
+    private func describeSetAttributesRequest(_ newAttributes: FSItem.SetAttributesRequest) -> String {
+        var parts: [String] = []
+        if newAttributes.isValid(.size) { parts.append("size=\(newAttributes.size)") }
+        if newAttributes.isValid(.mode) { parts.append("mode=\(String(newAttributes.mode, radix: 8))") }
+        if newAttributes.isValid(.accessTime) { parts.append("accessTime=\(nanoseconds(from: newAttributes.accessTime))") }
+        if newAttributes.isValid(.modifyTime) { parts.append("modifyTime=\(nanoseconds(from: newAttributes.modifyTime))") }
+        if newAttributes.isValid(.uid) { parts.append("uid=\(newAttributes.uid)") }
+        if newAttributes.isValid(.gid) { parts.append("gid=\(newAttributes.gid)") }
+        if newAttributes.isValid(.flags) { parts.append("flags=\(newAttributes.flags)") }
+        if newAttributes.isValid(.birthTime) { parts.append("birthTime=\(nanoseconds(from: newAttributes.birthTime))") }
+        if newAttributes.isValid(.backupTime) { parts.append("backupTime=\(nanoseconds(from: newAttributes.backupTime))") }
+        if newAttributes.isValid(.addedTime) { parts.append("addedTime=\(nanoseconds(from: newAttributes.addedTime))") }
+        return parts.isEmpty ? "<none>" : parts.joined(separator: ", ")
+    }
+
     private func invalidateCachedPath(_ path: String) {
         let normalizedPath = normalize(path: path)
         stateLock.lock()
@@ -1192,5 +1246,9 @@ final class SpiderwebBridgeVolume:
             nanoseconds += 1_000_000_000
         }
         return timespec(tv_sec: Int(seconds), tv_nsec: Int(nanoseconds))
+    }
+
+    private func nanoseconds(from value: timespec) -> Int64 {
+        Int64(value.tv_sec) * 1_000_000_000 + Int64(value.tv_nsec)
     }
 }

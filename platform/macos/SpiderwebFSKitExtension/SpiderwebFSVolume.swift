@@ -402,9 +402,24 @@ final class SpiderwebBridgeVolume:
     }
 
     func setAttributes(_ newAttributes: FSItem.SetAttributesRequest, on item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
-        _ = newAttributes
-        _ = item
-        reply(nil, readOnlyError(message: "Spiderweb native sample is read-only for now"))
+        do {
+            let bridgeItem = try requireBridgeItem(item)
+
+            if newAttributes.isValid(.size) {
+                try runtime.ensureBridge().truncate(path: bridgeItem.path, size: newAttributes.size)
+                invalidateCachedPath(bridgeItem.path)
+                let attr = try refreshAttributes(for: bridgeItem)
+                reply(makeAttributes(for: bridgeItem, attr: attr, desiredAttributes: attributeSnapshotRequest()), nil)
+                return
+            }
+
+            reply(nil, CocoaError(.featureUnsupported))
+        } catch {
+            if let bridgeItem = item as? SpiderwebBridgeItem {
+                noteFailure(for: bridgeItem.path, error: error)
+            }
+            reply(nil, error)
+        }
     }
 
     func lookupItem(named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
@@ -447,11 +462,37 @@ final class SpiderwebBridgeVolume:
     }
 
     func createItem(named name: FSFileName, type: FSItem.ItemType, inDirectory directory: FSItem, attributes newAttributes: FSItem.SetAttributesRequest, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
-        _ = name
-        _ = type
-        _ = directory
-        _ = newAttributes
-        reply(nil, nil, readOnlyError(message: "Spiderweb native sample is read-only for now"))
+        do {
+            let directoryItem = try requireBridgeItem(directory)
+            let childPath = try append(name: name, toDirectoryPath: directoryItem.path)
+
+            switch type {
+            case .directory:
+                try runtime.ensureBridge().mkdir(path: childPath)
+            case .file:
+                let mode = newAttributes.isValid(.mode) ? newAttributes.mode : UInt32(0o644)
+                _ = try runtime.ensureBridge().create(path: childPath, mode: mode, flags: UInt32(O_RDWR))
+                if newAttributes.isValid(.size), newAttributes.size > 0 {
+                    try runtime.ensureBridge().truncate(path: childPath, size: newAttributes.size)
+                }
+            default:
+                reply(nil, nil, CocoaError(.featureUnsupported))
+                return
+            }
+
+            invalidateCachedPath(directoryItem.path)
+            invalidateCachedPath(childPath)
+            let attr = try runtime.ensureBridge().getattr(path: childPath)
+            let child = itemForPath(childPath, attr: attr)
+            reply(child, FSFileName(string: name.string ?? ""), nil)
+        } catch {
+            if let directoryItem = directory as? SpiderwebBridgeItem,
+               let childPath = try? append(name: name, toDirectoryPath: directoryItem.path)
+            {
+                noteFailure(for: childPath, error: error)
+            }
+            reply(nil, nil, error)
+        }
     }
 
     func createSymbolicLink(named name: FSFileName, inDirectory directory: FSItem, attributes newAttributes: FSItem.SetAttributesRequest, linkContents contents: FSFileName, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
@@ -470,20 +511,48 @@ final class SpiderwebBridgeVolume:
     }
 
     func removeItem(_ item: FSItem, named name: FSFileName, fromDirectory directory: FSItem, replyHandler reply: @escaping ((any Error)?) -> Void) {
-        _ = item
-        _ = name
-        _ = directory
-        reply(readOnlyError(message: "Spiderweb native sample is read-only for now"))
+        do {
+            let bridgeItem = try requireBridgeItem(item)
+            let directoryItem = try requireBridgeItem(directory)
+            let attr = try currentAttributes(for: bridgeItem)
+            switch itemType(for: attr) {
+            case .directory:
+                try runtime.ensureBridge().rmdir(path: bridgeItem.path)
+            default:
+                try runtime.ensureBridge().unlink(path: bridgeItem.path)
+            }
+            invalidateCachedPath(directoryItem.path)
+            removeCachedPath(bridgeItem.path)
+            reply(nil)
+        } catch {
+            if let bridgeItem = item as? SpiderwebBridgeItem {
+                noteFailure(for: bridgeItem.path, error: error)
+            }
+            reply(error)
+        }
     }
 
     func renameItem(_ item: FSItem, inDirectory sourceDirectory: FSItem, named sourceName: FSFileName, to destinationName: FSFileName, inDirectory destinationDirectory: FSItem, overItem: FSItem?, replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
-        _ = item
-        _ = sourceDirectory
-        _ = sourceName
-        _ = destinationName
-        _ = destinationDirectory
-        _ = overItem
-        reply(nil, readOnlyError(message: "Spiderweb native sample is read-only for now"))
+        do {
+            let bridgeItem = try requireBridgeItem(item)
+            let sourceDirectoryItem = try requireBridgeItem(sourceDirectory)
+            let destinationDirectoryItem = try requireBridgeItem(destinationDirectory)
+            let destinationPath = try append(name: destinationName, toDirectoryPath: destinationDirectoryItem.path)
+
+            try runtime.ensureBridge().rename(oldPath: bridgeItem.path, newPath: destinationPath)
+            invalidateCachedPath(sourceDirectoryItem.path)
+            invalidateCachedPath(destinationDirectoryItem.path)
+            if let overBridgeItem = overItem as? SpiderwebBridgeItem {
+                removeCachedPath(overBridgeItem.path)
+            }
+            moveCachedPath(from: bridgeItem.path, to: destinationPath)
+            reply(destinationName, nil)
+        } catch {
+            if let bridgeItem = item as? SpiderwebBridgeItem {
+                noteFailure(for: bridgeItem.path, error: error)
+            }
+            reply(nil, error)
+        }
     }
 
     func enumerateDirectory(_ directory: FSItem, startingAt cookie: FSDirectoryCookie, verifier: FSDirectoryVerifier, attributes: FSItem.GetAttributesRequest?, packer: FSDirectoryEntryPacker, replyHandler reply: @escaping (FSDirectoryVerifier, (any Error)?) -> Void) {
@@ -609,6 +678,7 @@ final class SpiderwebBridgeVolume:
                 offset: UInt64(offset),
                 data: contents
             )
+            bridgeItem.cachedAttr = nil
             clearBlockedPath(bridgeItem.path)
             reply(Int(written), nil)
         } catch {
@@ -644,10 +714,25 @@ final class SpiderwebBridgeVolume:
 
     private func refreshAttributes(for item: SpiderwebBridgeItem) throws -> SpiderwebRemoteAttr {
         try ensurePathIsNotBlocked(item.path)
-        let attr = try runtime.ensureBridge().getattr(path: item.path)
-        item.cachedAttr = attr
-        clearBlockedPath(item.path)
-        return attr
+        do {
+            let attr = try runtime.ensureBridge().getattr(path: item.path)
+            item.cachedAttr = attr
+            clearBlockedPath(item.path)
+            return attr
+        } catch {
+            let entryName = URL(fileURLWithPath: item.path).lastPathComponent
+            let parent = parentPath(of: item.path)
+            if isBridgeTimeoutError(error),
+               shouldUseSyntheticEnumeration(in: parent),
+               let fallbackAttr = syntheticFallbackAttr(forPath: item.path, entryName: entryName)
+            {
+                logger.warning("refreshAttributes falling back to synthetic attrs for \(item.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                item.cachedAttr = fallbackAttr
+                noteFailure(for: item.path, error: error)
+                return fallbackAttr
+            }
+            throw error
+        }
     }
 
     private func itemForPath(_ path: String, attr: SpiderwebRemoteAttr?) -> SpiderwebBridgeItem {
@@ -674,6 +759,62 @@ final class SpiderwebBridgeVolume:
         let item = SpiderwebBridgeItem(path: normalizedPath, itemIdentifier: identifier, cachedAttr: attr)
         pathToItem[normalizedPath] = item
         return item
+    }
+
+    private func attributeSnapshotRequest() -> FSItem.GetAttributesRequest {
+        let request = FSItem.GetAttributesRequest()
+        request.wantedAttributes = [
+            .type,
+            .mode,
+            .linkCount,
+            .uid,
+            .gid,
+            .size,
+            .allocSize,
+            .fileID,
+            .parentID,
+            .accessTime,
+            .modifyTime,
+            .changeTime,
+            .birthTime,
+            .backupTime,
+            .addedTime,
+        ]
+        return request
+    }
+
+    private func invalidateCachedPath(_ path: String) {
+        let normalizedPath = normalize(path: path)
+        stateLock.lock()
+        if let item = pathToItem[normalizedPath] {
+            item.cachedAttr = nil
+        }
+        blockedPaths.removeValue(forKey: normalizedPath)
+        stateLock.unlock()
+    }
+
+    private func removeCachedPath(_ path: String) {
+        let normalizedPath = normalize(path: path)
+        stateLock.lock()
+        if let item = pathToItem.removeValue(forKey: normalizedPath) {
+            openStates.removeValue(forKey: item.itemIdentifier.rawValue)
+        }
+        blockedPaths.removeValue(forKey: normalizedPath)
+        stateLock.unlock()
+    }
+
+    private func moveCachedPath(from oldPath: String, to newPath: String) {
+        let normalizedOldPath = normalize(path: oldPath)
+        let normalizedNewPath = normalize(path: newPath)
+        stateLock.lock()
+        if let item = pathToItem.removeValue(forKey: normalizedOldPath) {
+            item.path = normalizedNewPath
+            item.cachedAttr = nil
+            pathToItem[normalizedNewPath] = item
+        }
+        blockedPaths.removeValue(forKey: normalizedOldPath)
+        blockedPaths.removeValue(forKey: normalizedNewPath)
+        stateLock.unlock()
     }
 
     private func ensureHandle(

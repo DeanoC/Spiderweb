@@ -26,6 +26,7 @@ This checkout now has an in-place Spiderweb native mount that keeps the proven s
 - Symbolic link creation now works on writable mounted exports; hard links remain unsupported.
 - Owner/group changes are still unsupported on the native macOS mount because the volume is currently mounted as `noowners`.
 - Advisory locks currently only apply inside the mounted Spiderweb view; they are not mirrored back to the underlying host path.
+- If a file has already been seen through the mount and is then edited directly on the underlying host path, macOS may continue serving stale contents or mode for that file until it is reopened or the mount is remounted.
 
 Example:
 

@@ -519,6 +519,9 @@ fn printFsExtensionStatus(allocator: std.mem.Allocator) !void {
         try std.fs.File.stdout().writeAll(
             "  note: advisory locks currently apply inside the mounted Spiderweb view only and are not mirrored back to the host path.\n",
         );
+        try std.fs.File.stdout().writeAll(
+            "  note: files edited directly on the underlying host path after they have already been seen through the mount may remain stale until reopen or remount.\n",
+        );
     }
 }
 

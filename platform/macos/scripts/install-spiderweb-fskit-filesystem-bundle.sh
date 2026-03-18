@@ -13,6 +13,7 @@ INSTALL_PATH="$INSTALL_ROOT/spiderweb.fs"
 STAGING_ROOT="$(mktemp -d /tmp/spiderweb-fskit-install.XXXXXX)"
 STAGED_BUNDLE="$STAGING_ROOT/spiderweb.fs"
 ROOT_SCRIPT="$STAGING_ROOT/install-spiderweb-fs.sh"
+HOST_ARCH="$(uname -m)"
 
 cleanup() {
   rm -rf "$STAGING_ROOT"
@@ -32,7 +33,7 @@ mkdir -p "$BUNDLE_DIR/Contents/Resources"
 cp "$BUNDLE_INFO_TEMPLATE" "$BUNDLE_DIR/Contents/Info.plist"
 
 xcrun swiftc \
-  -target arm64-apple-macos15.4 \
+  -target "${HOST_ARCH}-apple-macos15.4" \
   -O \
   -o "$HELPER_PATH" \
   "$HELPER_SOURCE"

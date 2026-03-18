@@ -423,12 +423,12 @@ fn isMountedPath(allocator: std.mem.Allocator, mountpoint: []const u8) !bool {
     var result = try runCommandBestEffort(allocator, &.{"mount"});
     defer if (result) |*value| value.deinit(allocator);
     if (result) |value| {
-        if (!commandExitedSuccessfully(value)) return true;
+        if (!commandExitedSuccessfully(value)) return false;
         const marker = try std.fmt.allocPrint(allocator, " on {s} (", .{mountpoint});
         defer allocator.free(marker);
         return std.mem.indexOf(u8, value.stdout, marker) != null;
     }
-    return true;
+    return false;
 }
 
 fn extensionRegistered(allocator: std.mem.Allocator, app_path: []const u8) bool {

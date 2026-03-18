@@ -71,7 +71,7 @@ pub fn main() !void {
         }
         thread.join();
     };
-    if (config.namespace != null) {
+    if (config.namespace != null and config.namespace_keepalive_interval_ms > 0) {
         keepalive_state = .{
             .session = &session,
             .interval_ms = config.namespace_keepalive_interval_ms,

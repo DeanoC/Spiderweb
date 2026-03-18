@@ -183,6 +183,7 @@ final class SpiderwebBridgeVolume:
         }
 
         let normalizedPath = normalize(path: bridgeItem.path)
+        var handleIDToRelease: UInt64?
         if normalizedPath.contains(spiderwebInvalidationTraceNeedle) {
             logger.notice("deactivateItem for \(normalizedPath, privacy: .public)")
         }
@@ -190,11 +191,14 @@ final class SpiderwebBridgeVolume:
         bridgeItem.cachedAttr = nil
         blockedPaths.removeValue(forKey: normalizedPath)
         invalidatedPaths.remove(normalizedPath)
-        openStates.removeValue(forKey: bridgeItem.itemIdentifier.rawValue)
+        handleIDToRelease = openStates.removeValue(forKey: bridgeItem.itemIdentifier.rawValue)?.handleID
         if normalizedPath != "/" {
             pathToItem.removeValue(forKey: normalizedPath)
         }
         stateLock.unlock()
+        if let handleIDToRelease {
+            try? runtime.ensureBridge().release(handleID: handleIDToRelease)
+        }
         reply(nil)
     }
 
@@ -347,16 +351,19 @@ final class SpiderwebBridgeVolume:
     }
 
     func reclaimItem(_ item: FSItem, replyHandler reply: @escaping (Error?) -> Void) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-
         guard let bridgeItem = item as? SpiderwebBridgeItem else {
             reply(nil)
             return
         }
+        var handleIDToRelease: UInt64?
+        stateLock.lock()
         if bridgeItem.path != "/" {
             pathToItem.removeValue(forKey: bridgeItem.path)
-            openStates.removeValue(forKey: bridgeItem.itemIdentifier.rawValue)
+            handleIDToRelease = openStates.removeValue(forKey: bridgeItem.itemIdentifier.rawValue)?.handleID
+        }
+        stateLock.unlock()
+        if let handleIDToRelease {
+            try? runtime.ensureBridge().release(handleID: handleIDToRelease)
         }
         reply(nil)
     }
@@ -851,13 +858,17 @@ final class SpiderwebBridgeVolume:
 
     private func removeCachedPath(_ path: String) {
         let normalizedPath = normalize(path: path)
+        var handleIDToRelease: UInt64?
         stateLock.lock()
         if let item = pathToItem.removeValue(forKey: normalizedPath) {
-            openStates.removeValue(forKey: item.itemIdentifier.rawValue)
+            handleIDToRelease = openStates.removeValue(forKey: item.itemIdentifier.rawValue)?.handleID
         }
         blockedPaths.removeValue(forKey: normalizedPath)
         invalidatedPaths.remove(normalizedPath)
         stateLock.unlock()
+        if let handleIDToRelease {
+            try? runtime.ensureBridge().release(handleID: handleIDToRelease)
+        }
     }
 
     private func moveCachedPath(from oldPath: String, to newPath: String) {

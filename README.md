@@ -6,7 +6,7 @@
 
 Spiderweb is a **workspace host + distributed RPC filesystem** for all AI agents. It provides the workspace, virtual filesystem, nodes, venoms (applications, tools and services), and control plane. The agent process itself lives outside Spiderweb and uses the mounted workspace as its contract.
 
-Built in Zig. The Spiderweb workspace host runs on Linux and macOS. The standalone `spiderweb-fs-mount` client has real local mount backends on Linux, Windows, and macOS. On macOS, local mounts require macFUSE 5.x and a mountpoint under `/Volumes/<name>`.
+Built in Zig. The Spiderweb workspace host runs on Linux and macOS. The standalone `spiderweb-fs-mount` client has real local mount backends on Linux, Windows, and macOS. On macOS, `--mount-backend auto` now prefers the native `FSKit` backend under `platform/macos` when it is installed and ready, while `macFUSE` remains the explicit fallback. The native path uses a sample-derived pure Swift app/extension runtime with timeout/fail-fast protection, browse/read support across the namespace, and read-write support on mounted export paths such as `/nodes/local/fs`.
 
 ## Vision
 
@@ -33,6 +33,9 @@ git clone --recurse-submodules https://github.com/DeanoC/Spiderweb.git
 cd Spiderweb
 zig build
 
+# Optional: inspect or install the native macOS FSKit app/extension
+./zig-out/bin/spiderweb-config config fs-extension-status
+
 # Check the local control auth tokens used by spiderweb-control/spiderweb-fs-mount
 ./zig-out/bin/spiderweb-config auth status --reveal
 
@@ -52,7 +55,7 @@ zig build
   --auth-token <admin-or-user-token> \
   mount /mnt/spiderweb-demo
 
-# macOS local mount example (requires macFUSE 5.x)
+# macOS local mount example (auto prefers native FSKit when ready)
 ./zig-out/bin/spiderweb-fs-mount \
   --workspace-url ws://127.0.0.1:18790/ \
   --workspace-id <workspace-id> \
@@ -70,6 +73,17 @@ zig build
 ## Standalone Mount Client
 
 `spiderweb-fs-mount` can now run as a standalone client on machines that do not host Spiderweb locally. Real local mount backends are currently supported on Linux, Windows, and macOS.
+
+On macOS:
+- `--mount-backend auto` prefers the native FSKit path when the app/extension is installed and ready, and falls back to macFUSE only when native is unavailable.
+- `native` is the first-party FSKit path under `platform/macos`, with the app/extension bundle serving the namespace directly in Swift. The current checkpoint supports browse/read across the namespace, plus read-write operations on mounted export paths such as `/nodes/local/fs`, and includes timeout/fail-fast guards so bad paths fail quickly instead of wedging the mount.
+- `fuse` is the legacy fallback path and still requires macFUSE 5.x.
+- `spiderweb-config config install-fs-extension` / `fs-extension-status` manage the native app bundle once it has been built.
+- a free Xcode Personal Team is not enough for live native mounts; the bundle also needs macOS development provisioning profiles that authorize the FSKit and App Group entitlements
+- on this macOS 26.3.1 machine we have seen `macFUSE` fail with `extensionKit` / `File system named macfuse not found` even after reinstall, approval, and reboot, so treat it as a fallback-of-last-resort rather than the development target
+- the current native FSKit mount still comes up as `noowners`, so `chown`/owner-group changes are not supported
+- advisory file locks currently work within the mounted Spiderweb view, but are not mirrored back to the underlying host path or other non-FSKit clients
+- if a file has already been seen through the mount and is then edited directly on the underlying host path, the mounted view may continue to serve stale data for that file until it is reopened or the mount is remounted; mount-local workflows are unaffected
 
 - `--workspace-url <ws-url>` keeps the existing routed `/v2/fs` mount mode.
 - `--namespace-url <ws-url>` connects to the main Spiderweb websocket, attaches an Acheron session root, and mounts the full namespace (`/agents`, `/nodes`, `/global`, optional `/debug`).
@@ -95,13 +109,13 @@ Examples:
 # Existing routed-FS mode
 ./zig-out/bin/spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ mount /mnt/spiderweb
 
-# macOS routed-FS mode (requires macFUSE 5.x)
+# macOS routed-FS mode (auto prefers native FSKit when ready)
 ./zig-out/bin/spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ mount /Volumes/spiderweb
 
 # Full namespace mode
 ./zig-out/bin/spiderweb-fs-mount --namespace-url ws://127.0.0.1:18790/ --workspace-id ws-demo mount /mnt/spiderweb
 
-# macOS full namespace mode (requires macFUSE 5.x)
+# macOS full namespace mode (auto prefers native FSKit when ready)
 ./zig-out/bin/spiderweb-fs-mount --namespace-url ws://127.0.0.1:18790/ --workspace-id ws-demo mount /Volumes/spiderweb
 
 # Namespace smoke harness (low-level commands, optional real mount when SMOKE_USE_OS_MOUNT=1)

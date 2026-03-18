@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
+const native_mount_support = @import("acheron/native_mount_support.zig");
 const first_run = @import("first_run.zig");
 
 const auth_tokens_filename = "auth_tokens.json";
@@ -14,6 +15,17 @@ const AuthStatusSnapshot = struct {
         allocator.free(self.user_token);
         self.* = undefined;
     }
+};
+
+const NativeFsStatusSnapshot = struct {
+    version: u8 = 1,
+    registered: bool,
+    module_enabled: bool,
+    ready: bool,
+    filesystem_bundle_present: bool,
+    mount_helper_present: bool,
+    runtime_ready: bool,
+    updated_at_ms: i64,
 };
 
 pub fn main() !void {
@@ -216,9 +228,15 @@ fn handleConfigCommand(allocator: std.mem.Allocator, args: []const []const u8) !
         try uninstallService(allocator);
     } else if (std.mem.eql(u8, subcommand, "service-status")) {
         try printServiceStatus(allocator);
+    } else if (std.mem.eql(u8, subcommand, "install-fs-extension")) {
+        try installFsExtension(allocator);
+    } else if (std.mem.eql(u8, subcommand, "uninstall-fs-extension")) {
+        try uninstallFsExtension(allocator);
+    } else if (std.mem.eql(u8, subcommand, "fs-extension-status")) {
+        try printFsExtensionStatus(allocator);
     } else {
         std.log.err("Unknown config command: {s}", .{subcommand});
-        std.log.info("Available: set-server, set-log, path, install-service, uninstall-service, service-status", .{});
+        std.log.info("Available: set-server, set-log, path, install-service, uninstall-service, service-status, install-fs-extension, uninstall-fs-extension, fs-extension-status", .{});
         return error.UnknownCommand;
     }
 }
@@ -265,6 +283,268 @@ fn printServiceStatus(allocator: std.mem.Allocator) !void {
         .launchd_user => printLaunchdUserServiceStatus(allocator),
         .unsupported => error.UnsupportedPlatform,
     };
+}
+
+fn installFsExtension(allocator: std.mem.Allocator) !void {
+    if (builtin.os.tag != .macos) return error.UnsupportedPlatform;
+
+    var status = try native_mount_support.detectInstallStatus(allocator);
+    defer status.deinit(allocator);
+
+    if (!status.supported_os) return error.UnsupportedMacosVersion;
+    const source_app_path = status.source_app_path orelse {
+        std.log.err("Could not find a built SpiderwebFSKit.app. Build it from Xcode or with `xcodebuild` under platform/macos first.", .{});
+        return error.NativeFsExtensionNotInstalled;
+    };
+    const target_app_path = status.app_path;
+    const install_script_path = try native_mount_support.resolveFilesystemBundleInstallScriptPath(allocator) orelse {
+        std.log.err("Could not find install-spiderweb-fskit-filesystem-bundle.sh under platform/macos/scripts.", .{});
+        return error.NativeFsExtensionNotInstalled;
+    };
+    defer allocator.free(install_script_path);
+
+    stopNativeFsExtensionProcesses(allocator);
+    try cleanupLegacyNativeFsArtifacts(allocator, source_app_path);
+
+    if (try runCommandBestEffort(allocator, &.{
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+        "-u",
+        source_app_path,
+    })) |result| {
+        var owned = result;
+        owned.deinit(allocator);
+    }
+
+    if (pathExists(status.extension_path)) {
+        if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-r", status.extension_path })) |result| {
+            var owned = result;
+            owned.deinit(allocator);
+        }
+    }
+
+    try installBundleTreeFromSource(
+        allocator,
+        source_app_path,
+        target_app_path,
+        isSystemApplicationsPath(target_app_path),
+        null,
+    );
+    try runCommandSuccess(allocator, &.{ "/bin/bash", install_script_path });
+    try runCommandSuccess(allocator, &.{
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+        "-f",
+        "-R",
+        "-trusted",
+        target_app_path,
+    });
+
+    const installed_extension_path = try std.fs.path.join(
+        allocator,
+        &.{ target_app_path, "Contents", "Extensions", native_mount_support.extension_bundle_name },
+    );
+    defer allocator.free(installed_extension_path);
+
+    if (pathExists(installed_extension_path)) {
+        if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-a", installed_extension_path })) |result| {
+            var owned = result;
+            owned.deinit(allocator);
+        }
+        if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-e", "use", "-p", "com.apple.fskit.fsmodule", "-i", native_mount_support.extension_bundle_id })) |result| {
+            var owned = result;
+            owned.deinit(allocator);
+        }
+    }
+    if (try runCommandBestEffort(allocator, &.{ "open", "-n", "-a", target_app_path })) |result| {
+        var owned = result;
+        owned.deinit(allocator);
+    }
+    native_mount_support.openSystemSettingsForFsExtension();
+
+    var refreshed = try native_mount_support.detectInstallStatus(allocator);
+    defer refreshed.deinit(allocator);
+    try writeNativeFsStatusSnapshot(allocator, refreshed);
+
+    std.log.info("Installed SpiderwebFSKit.app from {s} to {s}", .{ source_app_path, target_app_path });
+    std.log.info("Installed spiderweb.fs to {s}", .{status.filesystem_bundle_path});
+    std.log.info("If macOS prompts for approval, enable the file system extension in System Settings -> General -> Login Items & Extensions.", .{});
+}
+
+fn uninstallFsExtension(allocator: std.mem.Allocator) !void {
+    if (builtin.os.tag != .macos) return error.UnsupportedPlatform;
+
+    var status = try native_mount_support.detectInstallStatus(allocator);
+    defer status.deinit(allocator);
+
+    stopNativeFsExtensionProcesses(allocator);
+    if (pathExists(status.extension_path)) {
+        if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-r", status.extension_path })) |result| {
+            var owned = result;
+            owned.deinit(allocator);
+        }
+    }
+    if (pathExists(status.app_path)) {
+        if (try runCommandBestEffort(allocator, &.{
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+            "-u",
+            status.app_path,
+        })) |result| {
+            var owned = result;
+            owned.deinit(allocator);
+        }
+    }
+    try cleanupLegacyNativeFsArtifacts(allocator, status.app_path);
+    _ = try deleteTreeIfExistsAny(status.request_dir);
+    const snapshot_path = try native_mount_support.defaultStatusSnapshotPath(allocator);
+    defer allocator.free(snapshot_path);
+    _ = try deleteFileIfExistsAny(snapshot_path);
+
+    std.log.info("Unregistered SpiderwebFSKit.app at {s}", .{status.app_path});
+    std.log.info("Removed Spiderweb filesystem bundles from /Library/Filesystems", .{});
+}
+
+fn stopNativeFsExtensionProcesses(allocator: std.mem.Allocator) void {
+    const command_sets = [_][]const []const u8{
+        &.{ "pkill", "-x", native_mount_support.app_name },
+        &.{ "pkill", "-f", native_mount_support.app_bundle_id },
+        &.{ "pkill", "-f", native_mount_support.extension_bundle_id },
+    };
+
+    for (command_sets) |argv| {
+        if (runCommandBestEffort(allocator, argv)) |maybe_result| {
+            if (maybe_result) |result| {
+                var owned = result;
+                owned.deinit(allocator);
+            }
+        } else |_| {}
+    }
+}
+
+fn cleanupLegacyNativeFsArtifacts(allocator: std.mem.Allocator, active_app_path: []const u8) !void {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch null;
+    defer if (home) |value| allocator.free(value);
+
+    const user_app_path = if (home) |home_dir|
+        try std.fs.path.join(allocator, &.{ home_dir, "Applications", native_mount_support.app_bundle_name })
+    else
+        null;
+    defer if (user_app_path) |value| allocator.free(value);
+
+    const legacy_app_paths = [_][]const u8{
+        "/Applications/SpiderwebFSKit.app",
+        if (user_app_path) |value| value else "",
+    };
+    for (legacy_app_paths) |path| {
+        if (path.len == 0) continue;
+        if (std.mem.eql(u8, path, active_app_path)) continue;
+        if (try runCommandBestEffort(allocator, &.{
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+            "-u",
+            path,
+        })) |result| {
+            var owned = result;
+            owned.deinit(allocator);
+        }
+        if (pathExists(path)) {
+            if (isSystemApplicationsPath(path)) {
+                try privilegedDeleteTreeIfExists(allocator, path);
+            } else {
+                _ = try deleteTreeIfExistsAny(path);
+            }
+        }
+    }
+
+    const legacy_filesystem_paths = [_][]const u8{
+        "/Library/Filesystems/passthrough.fs",
+        "/Library/Filesystems/PassthroughFS.fs",
+        "/Library/Filesystems/spiderweb.fs",
+        "/Library/Filesystems/spiderweb.fs.disabled-codex",
+    };
+    for (legacy_filesystem_paths) |path| {
+        if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-r", path })) |result| {
+            var owned = result;
+            owned.deinit(allocator);
+        }
+        if (pathExists(path)) {
+            try privilegedDeleteTreeIfExists(allocator, path);
+        }
+    }
+}
+
+fn printFsExtensionStatus(allocator: std.mem.Allocator) !void {
+    if (builtin.os.tag != .macos) return error.UnsupportedPlatform;
+
+    var status = try native_mount_support.detectInstallStatus(allocator);
+    defer status.deinit(allocator);
+    try writeNativeFsStatusSnapshot(allocator, status);
+
+    const out = try std.fmt.allocPrint(
+        allocator,
+        "FS extension manager: native-fskit\n  supported_os:             {s}\n  active_app:               {s}\n  built_app_source:         {s}\n  extension_bundle:         {s}\n  runtime_source:           {s}\n  filesystem_bundle:        {s}\n  extension_present:        {s}\n  runtime_ready:            {s}\n  signing_identity:         {s}\n  app_group_entitlements:   {s}\n  extension_fs_entitlement: {s}\n  app_provisioned:          {s}\n  extension_provisioned:    {s}\n  registered:               {s}\n  module_enabled:           {s}\n  ready:                    {s}\n  request_dir:              {s}\n",
+        .{
+            if (status.supported_os) "yes" else "no",
+            status.app_path,
+            status.source_app_path orelse "(not found)",
+            status.extension_path,
+            status.runtime_ready_manifest_path,
+            status.filesystem_bundle_path,
+            if (status.extension_present) "yes" else "no",
+            if (status.runtime_ready) "yes" else "no",
+            if (status.signing_identity_available) "yes" else "no",
+            if (status.app_group_entitled) "yes" else "no",
+            if (status.extension_fskit_entitled) "yes" else "no",
+            if (status.app_provisioned) "yes" else "no",
+            if (status.extension_provisioned) "yes" else "no",
+            if (status.extension_registered) "yes" else "no",
+            if (status.module_enabled) "yes" else "no",
+            if (status.ready()) "yes" else "no",
+            status.request_dir,
+        },
+    );
+    defer allocator.free(out);
+    try std.fs.File.stdout().writeAll(out);
+    if (!status.runtime_ready) {
+        try std.fs.File.stdout().writeAll(
+            "  note: no current SpiderwebFSKit Xcode build was found; build the app in platform/macos, then rerun install-fs-extension.\n",
+        );
+    }
+    if (!status.extension_fskit_entitled) {
+        try std.fs.File.stdout().writeAll(
+            "  note: launch is currently blocked because the extension build is missing the FSKit entitlement.\n",
+        );
+    }
+    if (status.ready()) {
+        try std.fs.File.stdout().writeAll(
+            "  note: current native macOS mounts still present as noowners, so chown/owner-group changes are unsupported.\n",
+        );
+        try std.fs.File.stdout().writeAll(
+            "  note: advisory locks currently apply inside the mounted Spiderweb view only and are not mirrored back to the host path.\n",
+        );
+        try std.fs.File.stdout().writeAll(
+            "  note: files edited directly on the underlying host path after they have already been seen through the mount may remain stale until reopen or remount.\n",
+        );
+    }
+}
+
+fn writeNativeFsStatusSnapshot(allocator: std.mem.Allocator, status: native_mount_support.InstallStatus) !void {
+    const snapshot_path = try native_mount_support.defaultStatusSnapshotPath(allocator);
+    defer allocator.free(snapshot_path);
+
+    if (std.fs.path.dirname(snapshot_path)) |dir| try makePathAny(dir);
+
+    const payload = try std.json.Stringify.valueAlloc(allocator, NativeFsStatusSnapshot{
+        .registered = status.extension_registered,
+        .module_enabled = status.module_enabled,
+        .ready = status.ready(),
+        .filesystem_bundle_present = status.filesystem_bundle_installed,
+        .mount_helper_present = status.mount_helper_present,
+        .runtime_ready = status.runtime_ready,
+        .updated_at_ms = std.time.milliTimestamp(),
+    }, .{});
+    defer allocator.free(payload);
+
+    var file = try createFileAny(snapshot_path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(payload);
 }
 
 fn detectServiceManager() ServiceManager {
@@ -785,6 +1065,121 @@ fn createFileAny(path: []const u8, flags: std.fs.File.CreateFlags) !std.fs.File 
     return std.fs.cwd().createFile(path, flags);
 }
 
+fn isSystemApplicationsPath(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, "/Applications/");
+}
+
+fn shellQuotePosix(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var list = std.ArrayListUnmanaged(u8){};
+    errdefer list.deinit(allocator);
+
+    try list.append(allocator, '\'');
+    for (value) |ch| {
+        if (ch == '\'') {
+            try list.appendSlice(allocator, "'\"'\"'");
+        } else {
+            try list.append(allocator, ch);
+        }
+    }
+    try list.append(allocator, '\'');
+    return list.toOwnedSlice(allocator);
+}
+
+fn runMacosPrivilegedShellCommand(allocator: std.mem.Allocator, shell_command: []const u8) !void {
+    try runCommandSuccess(allocator, &.{
+        "osascript",
+        "-e",
+        "on run argv",
+        "-e",
+        "do shell script (item 1 of argv) with administrator privileges",
+        "-e",
+        "end run",
+        shell_command,
+    });
+}
+
+fn privilegedReplaceApplicationBundle(allocator: std.mem.Allocator, source_path: []const u8, target_path: []const u8) !void {
+    try privilegedReplaceTreeOwnedByRoot(allocator, source_path, target_path, null);
+}
+
+fn privilegedReplaceTreeOwnedByRoot(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    target_path: []const u8,
+    setuid_binary_path: ?[]const u8,
+) !void {
+    const target_dir = std.fs.path.dirname(target_path) orelse return error.InvalidArguments;
+    const quoted_source = try shellQuotePosix(allocator, source_path);
+    defer allocator.free(quoted_source);
+    const quoted_target = try shellQuotePosix(allocator, target_path);
+    defer allocator.free(quoted_target);
+    const quoted_target_dir = try shellQuotePosix(allocator, target_dir);
+    defer allocator.free(quoted_target_dir);
+
+    const shell_command = if (setuid_binary_path) |binary_path| blk: {
+        const quoted_binary = try shellQuotePosix(allocator, binary_path);
+        defer allocator.free(quoted_binary);
+        break :blk try std.fmt.allocPrint(
+            allocator,
+            "mkdir -p {s} && rm -rf {s} && /usr/bin/ditto {s} {s} && /usr/sbin/chown -R root:wheel {s} && /usr/sbin/chown root:wheel {s} && /bin/chmod 4755 {s}",
+            .{ quoted_target_dir, quoted_target, quoted_source, quoted_target, quoted_target, quoted_binary, quoted_binary },
+        );
+    } else try std.fmt.allocPrint(
+        allocator,
+        "mkdir -p {s} && rm -rf {s} && /usr/bin/ditto {s} {s} && /usr/sbin/chown -R root:wheel {s}",
+        .{ quoted_target_dir, quoted_target, quoted_source, quoted_target, quoted_target },
+    );
+    defer allocator.free(shell_command);
+    try runMacosPrivilegedShellCommand(allocator, shell_command);
+}
+
+fn installBundleTreeFromSource(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    target_path: []const u8,
+    privileged: bool,
+    setuid_binary_path: ?[]const u8,
+) !void {
+    if (!privileged) {
+        if (std.fs.path.dirname(target_path)) |dir| try makePathAny(dir);
+    }
+
+    if (std.mem.endsWith(u8, source_path, ".zip")) {
+        const temp_root = try std.fs.path.join(allocator, &.{ "/tmp", "spiderweb-native-install" });
+        defer allocator.free(temp_root);
+        _ = try deleteTreeIfExistsAny(temp_root);
+        try makePathAny(temp_root);
+        defer _ = deleteTreeIfExistsAny(temp_root) catch false;
+
+        try runCommandSuccess(allocator, &.{ "ditto", "-x", "-k", source_path, temp_root });
+        const unpacked_path = try std.fs.path.join(allocator, &.{ temp_root, std.fs.path.basename(target_path) });
+        defer allocator.free(unpacked_path);
+        if (privileged) {
+            try privilegedReplaceTreeOwnedByRoot(allocator, unpacked_path, target_path, setuid_binary_path);
+        } else {
+            _ = try deleteTreeIfExistsAny(target_path);
+            try runCommandSuccess(allocator, &.{ "ditto", unpacked_path, target_path });
+        }
+        return;
+    }
+
+    if (privileged) {
+        try privilegedReplaceTreeOwnedByRoot(allocator, source_path, target_path, setuid_binary_path);
+    } else {
+        _ = try deleteTreeIfExistsAny(target_path);
+        try runCommandSuccess(allocator, &.{ "ditto", source_path, target_path });
+    }
+}
+
+fn privilegedDeleteTreeIfExists(allocator: std.mem.Allocator, path: []const u8) !void {
+    if (!pathExists(path)) return;
+    const quoted_path = try shellQuotePosix(allocator, path);
+    defer allocator.free(quoted_path);
+    const shell_command = try std.fmt.allocPrint(allocator, "rm -rf {s}", .{quoted_path});
+    defer allocator.free(shell_command);
+    try runMacosPrivilegedShellCommand(allocator, shell_command);
+}
+
 fn deleteFileIfExistsAny(path: []const u8) !bool {
     if (std.fs.path.isAbsolute(path)) {
         std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
@@ -797,6 +1192,22 @@ fn deleteFileIfExistsAny(path: []const u8) !bool {
         error.FileNotFound => return false,
         else => return err,
     };
+    return true;
+}
+
+fn deleteTreeIfExistsAny(path: []const u8) !bool {
+    if (!pathExists(path)) return false;
+
+    if (std.fs.path.isAbsolute(path)) {
+        var root_dir = try std.fs.openDirAbsolute("/", .{});
+        defer root_dir.close();
+        const rel_path = std.mem.trimLeft(u8, path, "/");
+        if (rel_path.len == 0) return false;
+        try root_dir.deleteTree(rel_path);
+        return true;
+    }
+
+    try std.fs.cwd().deleteTree(path);
     return true;
 }
 
@@ -903,6 +1314,9 @@ fn printUsage() !void {
         \\  spiderweb-config config install-service
         \\  spiderweb-config config uninstall-service
         \\  spiderweb-config config service-status
+        \\  spiderweb-config config install-fs-extension
+        \\  spiderweb-config config uninstall-fs-extension
+        \\  spiderweb-config config fs-extension-status
         \\
         \\Examples:
         \\  spiderweb-config first-run
@@ -913,11 +1327,13 @@ fn printUsage() !void {
         \\  spiderweb-config config set-server --bind 0.0.0.0 --port 9000
         \\  spiderweb-config config install-service
         \\  spiderweb-config config service-status
+        \\  spiderweb-config config install-fs-extension
+        \\  spiderweb-config config fs-extension-status
         \\
         \\Workspace-first flow:
         \\  spiderweb-control workspace_create '{"name":"Demo","vision":"Deliver the demo workspace"}'
         \\  spiderweb-fs-mount --workspace-id <workspace-id> ./workspace
-        \\  note: native local mounts are currently supported on Linux and Windows
+        \\  note: on macOS, auto prefers the native FSKit backend when SpiderwebFSKit is installed and enabled; otherwise it falls back to macFUSE
         \\  spider-monkey run --workspace-root ./workspace
         \\
     ;

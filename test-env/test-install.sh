@@ -5,6 +5,7 @@
 set -euo pipefail
 
 INSTALL_MODE="${1:-auto}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -67,9 +68,11 @@ require_cmd curl
 require_cmd jq
 require_cmd git
 require_cmd sqlite3
-require_cmd zig
 require_cmd bwrap
 require_cmd fusermount3
+if [[ "$INSTALL_MODE" == "source" ]]; then
+    require_cmd zig
+fi
 
 if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ -f /etc/debian_version ]]; then
     log_success "Linux environment detected"
@@ -90,6 +93,7 @@ mkdir -p "$TEST_HOME"
 
 log_info "Running install.sh in isolated HOME: $TEST_HOME"
 (
+    cd "$REPO_ROOT"
     export HOME="$TEST_HOME"
     export PATH="$INSTALL_DIR:$PATH"
     export SPIDERWEB_NON_INTERACTIVE=1
@@ -98,7 +102,18 @@ log_info "Running install.sh in isolated HOME: $TEST_HOME"
     export SPIDERWEB_INSTALL_SYSTEMD=0
     export SPIDERWEB_START_AFTER_INSTALL=0
     if [[ "$INSTALL_MODE" == "source" ]]; then
-        export SPIDERWEB_REPO_DIR="/home/deano/spiderweb-wsl"
+        export SPIDERWEB_REPO_DIR="$REPO_ROOT"
+    elif [[ "$INSTALL_MODE" == "release" && -z "${SPIDERWEB_RELEASE_ARCHIVE_URL:-}" ]]; then
+        case "$(uname -m)" in
+            x86_64|amd64)
+                export SPIDERWEB_RELEASE_ARCHIVE_URL="https://github.com/DeanoC/Spiderweb/releases/latest/download/spiderweb-linux-x86_64.tar.gz"
+                export SPIDERWEB_RELEASE_VERSION="latest"
+                ;;
+            *)
+                log_error "Release mode needs SPIDERWEB_RELEASE_ARCHIVE_URL on unsupported architecture $(uname -m)"
+                exit 1
+                ;;
+        esac
     fi
     bash ./install.sh
 ) >"$INSTALL_LOG" 2>&1

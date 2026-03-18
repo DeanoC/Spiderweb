@@ -409,6 +409,7 @@ SPIDERWEB_INSTALL_SOURCE="${SPIDERWEB_INSTALL_SOURCE:-auto}"
 SPIDERWEB_RELEASE_ARCHIVE_URL="${SPIDERWEB_RELEASE_ARCHIVE_URL:-}"
 SPIDERWEB_RELEASE_ARCHIVE_SHA256="${SPIDERWEB_RELEASE_ARCHIVE_SHA256:-}"
 SPIDERWEB_RELEASE_VERSION="${SPIDERWEB_RELEASE_VERSION:-}"
+AUTO_SELECTED_RELEASE="0"
 
 INSTALL_SOURCE_RESOLVED="$SPIDERWEB_INSTALL_SOURCE"
 if [[ "$INSTALL_SOURCE_RESOLVED" == "auto" ]]; then
@@ -419,6 +420,7 @@ if [[ "$INSTALL_SOURCE_RESOLVED" == "auto" ]]; then
     elif default_release_archive_url >/dev/null; then
         INSTALL_SOURCE_RESOLVED="release"
         SPIDERWEB_RELEASE_ARCHIVE_URL="$(default_release_archive_url)"
+        AUTO_SELECTED_RELEASE="1"
         if [[ -z "$SPIDERWEB_RELEASE_VERSION" ]]; then
             SPIDERWEB_RELEASE_VERSION="latest"
         fi
@@ -593,6 +595,98 @@ copy_release_binaries() {
     rm -rf "$staged_dir"
 }
 
+install_spiderweb_from_source() {
+    mkdir -p "$(dirname "$REPO_DIR")"
+    if [[ "$MANAGED_REPO" == "1" ]]; then
+        ensure_git_repo "$REPO_DIR" "$SPIDERWEB_REPO_URL" "$SPIDERWEB_GIT_REF"
+        log_info "Syncing Spiderweb submodules..."
+        git -C "$REPO_DIR" submodule sync --recursive
+        git -C "$REPO_DIR" submodule update --init --recursive
+    else
+        if [[ ! -d "$REPO_DIR" ]] || [[ ! -f "$REPO_DIR/build.zig" ]]; then
+            echo "Error: SPIDERWEB_REPO_DIR does not look like a Spiderweb checkout: $REPO_DIR"
+            exit 1
+        fi
+    fi
+
+    cd "$REPO_DIR"
+
+    log_info "Building Spiderweb..."
+    zig build -Doptimize=ReleaseSafe
+
+    log_info "Installing binaries..."
+    for bin in "${SPIDERWEB_BINARIES[@]}"; do
+        if [[ ! -x "zig-out/bin/${bin}" ]]; then
+            echo "Error: expected build artifact missing: zig-out/bin/${bin}"
+            exit 1
+        fi
+    done
+
+    local copy_without_sudo=true
+    local bin
+    for bin in "${SPIDERWEB_BINARIES[@]}"; do
+        if ! cp "zig-out/bin/${bin}" "$INSTALL_DIR/" 2>/dev/null; then
+            copy_without_sudo=false
+            break
+        fi
+    done
+    if [[ "$copy_without_sudo" != "true" ]]; then
+        log_info "Need elevated permissions to update binary..."
+        for bin in "${SPIDERWEB_BINARIES[@]}"; do
+            sudo cp "zig-out/bin/${bin}" "$INSTALL_DIR/"
+        done
+    fi
+
+    log_success "Build complete!"
+}
+
+prepare_source_toolchain_after_release_fallback() {
+    if ! command -v git &> /dev/null; then
+        echo "Error: git is required to fall back to a source install."
+        echo "Install git or rerun with SPIDERWEB_INSTALL_SOURCE=release and an explicit archive URL."
+        exit 1
+    fi
+    if ! command -v zig &> /dev/null; then
+        echo "Error: zig compiler is required to fall back to a source install."
+        echo "Install zig or rerun with SPIDERWEB_INSTALL_SOURCE=release and an explicit archive URL."
+        exit 1
+    fi
+}
+
+install_spiderweb_from_release() {
+    local release_tmp_dir release_archive_name release_archive_path
+    release_tmp_dir="$(mktemp -d)"
+    release_archive_name="$(basename "${SPIDERWEB_RELEASE_ARCHIVE_URL%%\?*}")"
+    if [[ -z "$release_archive_name" || "$release_archive_name" == "/" || "$release_archive_name" == "." ]]; then
+        release_archive_name="spiderweb-release.tar.gz"
+    fi
+    release_archive_path="$release_tmp_dir/$release_archive_name"
+
+    if [[ -n "$SPIDERWEB_RELEASE_VERSION" ]]; then
+        log_info "Installing Spiderweb release ${SPIDERWEB_RELEASE_VERSION} from archive..."
+    else
+        log_info "Installing Spiderweb from release archive..."
+    fi
+
+    if ! download_release_archive "$SPIDERWEB_RELEASE_ARCHIVE_URL" "$release_archive_path"; then
+        rm -rf "$release_tmp_dir"
+        if [[ "$AUTO_SELECTED_RELEASE" == "1" ]]; then
+            log_warn "Latest release archive unavailable; falling back to a source install."
+            INSTALL_SOURCE_RESOLVED="source"
+            prepare_source_toolchain_after_release_fallback
+            install_spiderweb_from_source
+            return 0
+        fi
+        exit 1
+    fi
+
+    verify_release_archive_sha256 "$release_archive_path" "$SPIDERWEB_RELEASE_ARCHIVE_SHA256"
+    extract_release_archive "$release_archive_path" "$release_tmp_dir/extracted"
+    copy_release_binaries "$release_tmp_dir/extracted" "$INSTALL_DIR" "${SPIDERWEB_BINARIES[@]}"
+    rm -rf "$release_tmp_dir"
+    log_success "Release archive installed!"
+}
+
 DEPS_MISSING=()
 NEEDS_APT_INSTALL=false
 APT_DEPS=(libsecret-tools sqlite3)
@@ -744,65 +838,9 @@ fi
 mkdir -p "$INSTALL_DIR"
 SPIDERWEB_BINARIES=(spiderweb spiderweb-config spiderweb-control spiderweb-fs-mount spiderweb-fs-node)
 if [[ "$INSTALL_SOURCE_RESOLVED" == "source" ]]; then
-    mkdir -p "$(dirname "$REPO_DIR")"
-    if [[ "$MANAGED_REPO" == "1" ]]; then
-        ensure_git_repo "$REPO_DIR" "$SPIDERWEB_REPO_URL" "$SPIDERWEB_GIT_REF"
-        log_info "Syncing Spiderweb submodules..."
-        git -C "$REPO_DIR" submodule sync --recursive
-        git -C "$REPO_DIR" submodule update --init --recursive
-    else
-        if [[ ! -d "$REPO_DIR" ]] || [[ ! -f "$REPO_DIR/build.zig" ]]; then
-            echo "Error: SPIDERWEB_REPO_DIR does not look like a Spiderweb checkout: $REPO_DIR"
-            exit 1
-        fi
-    fi
-
-    cd "$REPO_DIR"
-
-    log_info "Building Spiderweb..."
-    zig build -Doptimize=ReleaseSafe
-
-    log_info "Installing binaries..."
-    for bin in "${SPIDERWEB_BINARIES[@]}"; do
-        if [[ ! -x "zig-out/bin/${bin}" ]]; then
-            echo "Error: expected build artifact missing: zig-out/bin/${bin}"
-            exit 1
-        fi
-    done
-
-    copy_without_sudo=true
-    for bin in "${SPIDERWEB_BINARIES[@]}"; do
-        if ! cp "zig-out/bin/${bin}" "$INSTALL_DIR/" 2>/dev/null; then
-            copy_without_sudo=false
-            break
-        fi
-    done
-    if [[ "$copy_without_sudo" != "true" ]]; then
-        log_info "Need elevated permissions to update binary..."
-        for bin in "${SPIDERWEB_BINARIES[@]}"; do
-            sudo cp "zig-out/bin/${bin}" "$INSTALL_DIR/"
-        done
-    fi
-
-    log_success "Build complete!"
+    install_spiderweb_from_source
 else
-    RELEASE_TMP_DIR="$(mktemp -d)"
-    RELEASE_ARCHIVE_NAME="$(basename "${SPIDERWEB_RELEASE_ARCHIVE_URL%%\?*}")"
-    if [[ -z "$RELEASE_ARCHIVE_NAME" || "$RELEASE_ARCHIVE_NAME" == "/" || "$RELEASE_ARCHIVE_NAME" == "." ]]; then
-        RELEASE_ARCHIVE_NAME="spiderweb-release.tar.gz"
-    fi
-    RELEASE_ARCHIVE_PATH="$RELEASE_TMP_DIR/$RELEASE_ARCHIVE_NAME"
-    if [[ -n "$SPIDERWEB_RELEASE_VERSION" ]]; then
-        log_info "Installing Spiderweb release ${SPIDERWEB_RELEASE_VERSION} from archive..."
-    else
-        log_info "Installing Spiderweb from release archive..."
-    fi
-    download_release_archive "$SPIDERWEB_RELEASE_ARCHIVE_URL" "$RELEASE_ARCHIVE_PATH"
-    verify_release_archive_sha256 "$RELEASE_ARCHIVE_PATH" "$SPIDERWEB_RELEASE_ARCHIVE_SHA256"
-    extract_release_archive "$RELEASE_ARCHIVE_PATH" "$RELEASE_TMP_DIR/extracted"
-    copy_release_binaries "$RELEASE_TMP_DIR/extracted" "$INSTALL_DIR" "${SPIDERWEB_BINARIES[@]}"
-    rm -rf "$RELEASE_TMP_DIR"
-    log_success "Release archive installed!"
+    install_spiderweb_from_release
 fi
 
 # Ask about installing ZiggyStarSpider client

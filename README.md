@@ -4,7 +4,7 @@
 [![Zig](https://img.shields.io/badge/Zig-0.15.0-orange.svg)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Spiderweb is a **workspace host + Acheron-based distributed RPC filesystem** for external agents. It provides the workspace, virtual filesystem, nodes, venoms, and control plane. The agent process itself lives outside Spiderweb and uses the mounted workspace as its contract.
+Spiderweb is a **workspace host + distributed RPC filesystem** for all AI agents. It provides the workspace, virtual filesystem, nodes, venoms (applications, tools and services), and control plane. The agent process itself lives outside Spiderweb and uses the mounted workspace as its contract.
 
 Built in Zig. The Spiderweb workspace host runs on Linux and macOS. The standalone `spiderweb-fs-mount` client has real local mount backends on Linux, Windows, and macOS. On macOS, `--mount-backend auto` now prefers the native `FSKit` backend under `platform/macos` when it is installed and ready, while `macFUSE` remains the explicit fallback. The native path uses a sample-derived pure Swift app/extension runtime with timeout/fail-fast protection, browse/read support across the namespace, and read-write support on mounted export paths such as `/nodes/local/fs`.
 

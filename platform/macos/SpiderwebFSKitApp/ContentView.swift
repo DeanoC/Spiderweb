@@ -27,6 +27,14 @@ struct ContentView: View {
             }
             .frame(minWidth: 900, minHeight: 720)
         }
+        .alert("Uninstall Spiderweb?", isPresented: $controller.showingUninstallAlert) {
+            Button("Uninstall", role: .destructive) {
+                controller.uninstallSpiderweb()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes Spiderweb.app, the background service, native file system support, saved mounts, local Spiderweb data, and Spiderweb secrets from this Mac. Spiderweb will quit when uninstall begins.")
+        }
     }
 
     private var header: some View {
@@ -689,6 +697,19 @@ struct ContentView: View {
                 title: "Known limitations",
                 detail: "Owner/group changes and hard links remain unsupported on the native macOS mount. Out-of-band edits on already-seen host files can remain stale until reopen or remount."
             )
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Uninstall")
+                    .font(.headline)
+                Text("Remove Spiderweb.app, the background service, native file system support, saved mounts, local Spiderweb data, and Spiderweb secrets from this Mac. Spiderweb will quit after you confirm.")
+                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+                Button("Uninstall Spiderweb…", role: .destructive) {
+                    controller.showingUninstallAlert = true
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(18)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
     }
 }

@@ -325,6 +325,7 @@ final class SpiderwebAppController: ObservableObject {
     @Published var statusMessage: String?
     @Published var lastError: String?
     @Published var isBusy = false
+    @Published var showingUninstallAlert = false
     @Published var buildInfo: SpiderwebBuildInfo
 
     init() {
@@ -685,6 +686,41 @@ final class SpiderwebAppController: ObservableObject {
     func uninstallLocalService() {
         runSimpleAction(message: "Removed Spiderweb background service") {
             _ = try Self.runCLI("spiderweb-config", arguments: ["config", "uninstall-service"])
+        }
+    }
+
+    func uninstallSpiderweb() {
+        showingUninstallAlert = false
+        isBusy = true
+        lastError = nil
+        statusMessage = "Uninstalling Spiderweb…"
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                for mountpoint in Self.fetchActiveMountpoints() {
+                    Self.bestEffortUnmount(mountpoint)
+                }
+
+                try? Self.applyLaunchAtLogin(enabled: false)
+                _ = try? Self.runCLI("spiderweb-config", arguments: ["config", "remote-node", "clear"])
+                _ = try? Self.runCLI("spiderweb-config", arguments: ["config", "uninstall-service"])
+                _ = try? Self.runCLI("spiderweb-config", arguments: ["config", "uninstall-fs-extension"])
+
+                Self.deleteAllSecrets(service: Self.remoteMountSecretService)
+                Self.deleteAllSecrets(service: Self.spiderwebCredentialService)
+
+                let scriptURL = try Self.writeSelfUninstallScript()
+                try Self.launchDetachedProcess(executableURL: scriptURL, arguments: [])
+
+                await MainActor.run {
+                    NSApp.terminate(nil)
+                }
+            } catch {
+                await MainActor.run {
+                    self.isBusy = false
+                    self.lastError = Self.describe(error: error)
+                }
+            }
         }
     }
 
@@ -1478,6 +1514,16 @@ final class SpiderwebAppController: ObservableObject {
         return result
     }
 
+    private static func launchDetachedProcess(executableURL: URL, arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.standardInput = nil
+        process.standardOutput = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null"))
+        process.standardError = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null"))
+        try process.run()
+    }
+
     private static func terminateProcessTree(rootPID: Int32) {
         let childPIDs = childProcessIDs(of: rootPID)
         for child in childPIDs {
@@ -1576,6 +1622,14 @@ final class SpiderwebAppController: ObservableObject {
         SecItemDelete(query as CFDictionary)
     }
 
+    private static func deleteAllSecrets(service: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
     private static func fetchLaunchAtLoginEnabled() -> Bool {
         if #available(macOS 13.0, *) {
             switch SMAppService.mainApp.status {
@@ -1625,6 +1679,67 @@ final class SpiderwebAppController: ObservableObject {
         }
 
         return message
+    }
+
+    private static func bestEffortUnmount(_ mountpoint: String) {
+        if (try? runCLI("diskutil", arguments: ["unmount", "force", mountpoint])) != nil {
+            return
+        }
+        _ = try? runCLI("umount", arguments: [mountpoint])
+    }
+
+    private static func writeSelfUninstallScript() throws -> URL {
+        let tempDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let scriptURL = tempDirectory.appendingPathComponent("spiderweb-uninstall-\(UUID().uuidString).sh")
+
+        let home = NSHomeDirectory()
+        let appPath = Bundle.main.bundlePath
+        let userCleanupCommands = [
+            "/bin/rm -rf \(shellQuoted("\(home)/Library/Application Support/Spiderweb"))",
+            "/bin/rm -rf \(shellQuoted("\(home)/Library/Group Containers/\(appGroupIdentifier)"))",
+            "/bin/rm -rf \(shellQuoted("\(home)/Library/Saved Application State/com.deanoc.spiderweb.fskit.app.savedState"))",
+            "/bin/rm -f \(shellQuoted("\(home)/Library/Preferences/com.deanoc.spiderweb.fskit.app.plist"))",
+            "/bin/rm -f \(shellQuoted("\(home)/Library/LaunchAgents/spiderweb.plist"))",
+            "/bin/rm -f \(shellQuoted("\(home)/.config/spiderweb/config.json"))",
+            "/bin/rm -rf \(shellQuoted("\(home)/Applications/SpiderwebFSKit.app"))",
+        ].joined(separator: "\n")
+
+        let privilegedCommand = [
+            "/bin/rm -rf \(shellQuoted(appPath))",
+            "/bin/rm -rf /Applications/SpiderwebFSKit.app",
+            "/bin/rm -rf /Library/Filesystems/spiderweb.fs",
+            "/bin/rm -rf /Library/Filesystems/passthrough.fs",
+            "/bin/rm -f /usr/local/bin/spiderweb",
+            "/bin/rm -f /usr/local/bin/spiderweb-config",
+            "/bin/rm -f /usr/local/bin/spiderweb-control",
+            "/bin/rm -f /usr/local/bin/spiderweb-fs-mount",
+            "/bin/rm -f /usr/local/bin/spiderweb-fs-node",
+            "/usr/sbin/pkgutil --forget com.deanoc.spiderweb.filesystems.fs.spiderweb.pkg >/dev/null 2>&1 || true",
+        ].joined(separator: "; ")
+
+        let appleScript = "do shell script \(appleScriptStringLiteral(privilegedCommand)) with administrator privileges"
+        let script = """
+        #!/bin/sh
+        set -eu
+        sleep 2
+        \(userCleanupCommands)
+        /usr/bin/osascript -e \(shellQuoted(appleScript)) >/dev/null 2>&1 || true
+        /bin/rm -f "$0"
+        """
+
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    private static func appleScriptStringLiteral(_ value: String) -> String {
+        "\"" + value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }
 

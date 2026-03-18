@@ -1,7 +1,7 @@
 const std = @import("std");
 const ltm_store = @import("ziggy-memory-store").ltm_store;
 const venom_catalog = @import("spiderweb_node").venom_catalog;
-const venom_package_model = @import("spiderweb_node").venom_package;
+const venom_package_model = @import("../venom_package.zig");
 const venom_packages = @import("../venom_packages.zig");
 
 const persistence_base_id = "spiderweb:control-plane:state";
@@ -206,6 +206,7 @@ const Node = struct {
     platform_runtime_kind: []u8,
     labels: std.ArrayListUnmanaged(NodeLabel) = .{},
     venoms: std.ArrayListUnmanaged(venom_catalog.VenomDescriptor) = .{},
+    venom_package_ids: std.ArrayListUnmanaged(?[]u8) = .{},
     joined_at_ms: i64,
     last_seen_ms: i64,
     lease_expires_at_ms: i64,
@@ -222,6 +223,10 @@ const Node = struct {
         for (self.labels.items) |*label| label.deinit(allocator);
         self.labels.deinit(allocator);
         venom_catalog.deinitVenoms(allocator, &self.venoms);
+        for (self.venom_package_ids.items) |package_id| {
+            if (package_id) |value| allocator.free(value);
+        }
+        self.venom_package_ids.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -229,11 +234,13 @@ const Node = struct {
 const NodeVenomDigest = struct {
     venom_id: []u8,
     version: []u8,
+    package_id: ?[]u8 = null,
     digest: u64,
 
     fn deinit(self: *NodeVenomDigest, allocator: std.mem.Allocator) void {
         allocator.free(self.venom_id);
         allocator.free(self.version);
+        if (self.package_id) |value| allocator.free(value);
         self.* = undefined;
     }
 };
@@ -1297,19 +1304,27 @@ pub const ControlPlane = struct {
 
         var previous = std.ArrayListUnmanaged(NodeVenomDigest){};
         defer deinitNodeVenomDigests(self.allocator, &previous);
-        try snapshotNodeVenomDigests(self.allocator, node.venoms.items, &previous);
+        try snapshotNodeVenomDigests(self.allocator, node.venoms.items, node.venom_package_ids.items, &previous);
 
         const prospective_runtime_kind = extractProspectiveNodeRuntimeKind(node, obj.get("platform")) catch return ControlPlaneError.InvalidPayload;
         if (obj.get("venoms")) |venoms_value| {
             var next_venoms = std.ArrayListUnmanaged(venom_catalog.VenomDescriptor){};
             defer venom_catalog.deinitVenoms(self.allocator, &next_venoms);
+            var package_ids = std.ArrayListUnmanaged(?[]const u8){};
+            defer package_ids.deinit(self.allocator);
+            try collectNodeVenomPackageIds(self.allocator, venoms_value, &package_ids);
             venom_catalog.replaceVenomsFromJsonValue(self.allocator, &next_venoms, venoms_value) catch return ControlPlaneError.InvalidPayload;
-            try validateNodeVenomCatalogLocked(self, node.fs_url, prospective_runtime_kind, next_venoms.items);
+            try validateNodeVenomCatalogLocked(self, node.fs_url, prospective_runtime_kind, next_venoms.items, package_ids.items);
+            var owned_package_ids = try cloneNodeVenomPackageIds(self.allocator, package_ids.items);
+            errdefer deinitNodeVenomPackageIds(self.allocator, &owned_package_ids);
             venom_catalog.deinitVenoms(self.allocator, &node.venoms);
+            deinitNodeVenomPackageIds(self.allocator, &node.venom_package_ids);
             node.venoms = next_venoms;
             next_venoms = .{};
+            node.venom_package_ids = owned_package_ids;
+            owned_package_ids = .{};
         } else {
-            try validateNodeVenomCatalogLocked(self, node.fs_url, prospective_runtime_kind, node.venoms.items);
+            try validateNodeVenomCatalogLocked(self, node.fs_url, prospective_runtime_kind, node.venoms.items, node.venom_package_ids.items);
         }
 
         if (obj.get("platform")) |platform_value| {
@@ -1321,7 +1336,7 @@ pub const ControlPlane = struct {
 
         var current = std.ArrayListUnmanaged(NodeVenomDigest){};
         defer deinitNodeVenomDigests(self.allocator, &current);
-        try snapshotNodeVenomDigests(self.allocator, node.venoms.items, &current);
+        try snapshotNodeVenomDigests(self.allocator, node.venoms.items, node.venom_package_ids.items, &current);
         const delta_json = try renderNodeVenomDeltaJson(self.allocator, &previous, &current);
         defer self.allocator.free(delta_json);
 
@@ -4011,7 +4026,8 @@ pub const ControlPlane = struct {
         try out.appendSlice(self.allocator, "},\"venoms\":[");
         for (node.venoms.items, 0..) |venom, idx| {
             if (idx != 0) try out.append(self.allocator, ',');
-            try venom_catalog.appendVenomJson(self.allocator, &out, venom);
+            const package_id = if (idx < node.venom_package_ids.items.len) node.venom_package_ids.items[idx] else null;
+            try appendNodeVenomJson(self.allocator, &out, venom, package_id);
         }
         try out.append(self.allocator, ']');
         if (delta_json) |delta| {
@@ -4109,7 +4125,9 @@ pub const ControlPlane = struct {
         fs_url: []const u8,
         platform_runtime_kind: []const u8,
         venoms: []const venom_catalog.VenomDescriptor,
+        package_ids: []const ?[]const u8,
     ) !void {
+        if (package_ids.len != 0 and package_ids.len != venoms.len) return ControlPlaneError.InvalidPayload;
         var available_venoms = std.ArrayListUnmanaged([]const u8){};
         defer available_venoms.deinit(self.allocator);
         for (venoms) |venom| {
@@ -4127,8 +4145,8 @@ pub const ControlPlane = struct {
             try host_capabilities.append(self.allocator, "wasm");
         }
 
-        for (venoms) |venom| {
-            const package_id = venom.package_id orelse venom.venom_id;
+        for (venoms, 0..) |venom, idx| {
+            const package_id = if (package_ids.len == 0) venom.venom_id else package_ids[idx] orelse venom.venom_id;
             const package = lookupVenomPackageLocked(self, package_id) orelse return ControlPlaneError.VenomPackageNotFound;
             try validateVenomPackageInstantiationLocked(
                 self.allocator,
@@ -4163,6 +4181,47 @@ pub const ControlPlane = struct {
         if (!runtimeTypeCompatible(allocator, package.runtime_json, actual_runtime_json)) {
             return ControlPlaneError.VenomPackageRuntimeMismatch;
         }
+    }
+
+    fn collectNodeVenomPackageIds(
+        allocator: std.mem.Allocator,
+        venoms_value: std.json.Value,
+        out: *std.ArrayListUnmanaged(?[]const u8),
+    ) !void {
+        if (venoms_value != .array) return ControlPlaneError.InvalidPayload;
+        for (venoms_value.array.items) |item| {
+            if (item != .object) return ControlPlaneError.InvalidPayload;
+            if (item.object.get("package_id")) |package_id_value| {
+                if (package_id_value != .string or package_id_value.string.len == 0) return ControlPlaneError.InvalidPayload;
+                try validateIdentifier(package_id_value.string, 128);
+                try out.append(allocator, package_id_value.string);
+            } else {
+                try out.append(allocator, null);
+            }
+        }
+    }
+
+    fn cloneNodeVenomPackageIds(
+        allocator: std.mem.Allocator,
+        package_ids: []const ?[]const u8,
+    ) !std.ArrayListUnmanaged(?[]u8) {
+        var out = std.ArrayListUnmanaged(?[]u8){};
+        errdefer deinitNodeVenomPackageIds(allocator, &out);
+        for (package_ids) |package_id| {
+            try out.append(allocator, if (package_id) |value| try allocator.dupe(u8, value) else null);
+        }
+        return out;
+    }
+
+    fn deinitNodeVenomPackageIds(
+        allocator: std.mem.Allocator,
+        package_ids: *std.ArrayListUnmanaged(?[]u8),
+    ) void {
+        for (package_ids.items) |package_id| {
+            if (package_id) |value| allocator.free(value);
+        }
+        package_ids.deinit(allocator);
+        package_ids.* = .{};
     }
 
     fn requirementsSatisfied(
@@ -4323,19 +4382,35 @@ pub const ControlPlane = struct {
     fn snapshotNodeVenomDigests(
         allocator: std.mem.Allocator,
         venoms: []const venom_catalog.VenomDescriptor,
+        package_ids: []const ?[]u8,
         out: *std.ArrayListUnmanaged(NodeVenomDigest),
     ) !void {
-        for (venoms) |venom| {
+        for (venoms, 0..) |venom, idx| {
             const venom_id = try allocator.dupe(u8, venom.venom_id);
             errdefer allocator.free(venom_id);
             const version = try allocator.dupe(u8, venom.version);
             errdefer allocator.free(version);
+            const package_id = if (idx < package_ids.len) package_ids[idx] else null;
+            const owned_package_id = if (package_id) |value| try allocator.dupe(u8, value) else null;
+            errdefer if (owned_package_id) |value| allocator.free(value);
             try out.append(allocator, .{
                 .venom_id = venom_id,
                 .version = version,
-                .digest = venom_catalog.venomDigest64(venom),
+                .package_id = owned_package_id,
+                .digest = nodeVenomDigest64(venom, package_id),
             });
         }
+    }
+
+    fn nodeVenomDigest64(venom: venom_catalog.VenomDescriptor, package_id: ?[]const u8) u64 {
+        var hasher = std.hash.Wyhash.init(venom_catalog.venomDigest64(venom));
+        if (package_id) |value| {
+            hasher.update(&.{1});
+            hasher.update(value);
+        } else {
+            hasher.update(&.{0});
+        }
+        return hasher.final();
     }
 
     fn deinitNodeVenomDigests(
@@ -4606,7 +4681,8 @@ pub const ControlPlane = struct {
             try out.appendSlice(self.allocator, "},\"venoms\":[");
             for (node.venoms.items, 0..) |venom, idx| {
                 if (idx != 0) try out.append(self.allocator, ',');
-                try venom_catalog.appendVenomJson(self.allocator, &out, venom);
+                const package_id = if (idx < node.venom_package_ids.items.len) node.venom_package_ids.items[idx] else null;
+                try appendNodeVenomJson(self.allocator, &out, venom, package_id);
             }
             try out.writer(self.allocator).print(
                 "],\"joined_at_ms\":{d},\"last_seen_ms\":{d},\"lease_expires_at_ms\":{d}}}",
@@ -4842,7 +4918,11 @@ pub const ControlPlane = struct {
                     replaceNodeLabelsFromValue(self.allocator, &node.labels, labels_val) catch return error.InvalidSnapshot;
                 }
                 if (item.object.get("venoms")) |venoms_val| {
+                    var package_ids = std.ArrayListUnmanaged(?[]const u8){};
+                    defer package_ids.deinit(self.allocator);
+                    try collectNodeVenomPackageIds(self.allocator, venoms_val, &package_ids);
                     venom_catalog.replaceVenomsFromJsonValue(self.allocator, &node.venoms, venoms_val) catch return error.InvalidSnapshot;
+                    node.venom_package_ids = try cloneNodeVenomPackageIds(self.allocator, package_ids.items);
                 }
                 if (self.nodes.contains(node.id)) return error.InvalidSnapshot;
                 try self.nodes.put(self.allocator, node.id, node);
@@ -5232,6 +5312,28 @@ fn makeToken(allocator: std.mem.Allocator, prefix: []const u8) ![]u8 {
         try out.writer(allocator).print("{x:0>2}", .{byte});
     }
     return out.toOwnedSlice(allocator);
+}
+
+fn appendNodeVenomJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    venom: venom_catalog.VenomDescriptor,
+    package_id: ?[]const u8,
+) !void {
+    if (package_id == null or std.mem.eql(u8, package_id.?, venom.venom_id)) {
+        try venom_catalog.appendVenomJson(allocator, out, venom);
+        return;
+    }
+
+    var base = std.ArrayListUnmanaged(u8){};
+    defer base.deinit(allocator);
+    try venom_catalog.appendVenomJson(allocator, &base, venom);
+    if (base.items.len == 0 or base.items[base.items.len - 1] != '}') return error.InvalidPayload;
+    base.items.len -= 1;
+    try out.appendSlice(allocator, base.items);
+    const escaped_package_id = try jsonEscape(allocator, package_id.?);
+    defer allocator.free(escaped_package_id);
+    try out.writer(allocator).print(",\"package_id\":\"{s}\"}}", .{escaped_package_id});
 }
 
 fn appendNodeJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), node: Node) !void {
@@ -7791,6 +7893,48 @@ test "acheron_control_plane: node venom upsert reports unchanged catalog delta" 
     try std.testing.expect(std.mem.indexOf(u8, second, "\"removed\":[]") != null);
 }
 
+test "acheron_control_plane: node venom delta changes when only package_id changes" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.init(allocator);
+    defer plane.deinit();
+
+    const installed_a = try plane.installVenomPackage(
+        \\{"package":{"venom_id":"camera_pkg_a","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+    );
+    defer allocator.free(installed_a);
+    const installed_b = try plane.installVenomPackage(
+        \\{"package":{"venom_id":"camera_pkg_b","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+    );
+    defer allocator.free(installed_b);
+
+    const ensured = try plane.ensureNode("delta-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    defer allocator.free(ensured);
+    var ensured_parsed = try std.json.parseFromSlice(std.json.Value, allocator, ensured, .{});
+    defer ensured_parsed.deinit();
+    const node_id = ensured_parsed.value.object.get("node_id").?.string;
+    const node_secret = ensured_parsed.value.object.get("node_secret").?.string;
+
+    const first_upsert = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"native\"}},\"venoms\":[{{\"venom_id\":\"camera-instance\",\"package_id\":\"camera_pkg_a\",\"kind\":\"camera\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/camera\"],\"runtime\":{{\"type\":\"native_proc\"}}}}]}}",
+        .{ node_id, node_secret, node_id },
+    );
+    defer allocator.free(first_upsert);
+    const first = try plane.nodeVenomUpsert(first_upsert);
+    defer allocator.free(first);
+
+    const second_upsert = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"native\"}},\"venoms\":[{{\"venom_id\":\"camera-instance\",\"package_id\":\"camera_pkg_b\",\"kind\":\"camera\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/camera\"],\"runtime\":{{\"type\":\"native_proc\"}}}}]}}",
+        .{ node_id, node_secret, node_id },
+    );
+    defer allocator.free(second_upsert);
+    const second = try plane.nodeVenomUpsert(second_upsert);
+    defer allocator.free(second);
+
+    try std.testing.expect(std.mem.indexOf(u8, second, "\"venom_delta\":{\"changed\":true") != null);
+}
+
 test "acheron_control_plane: node venom event retention honors configured history max" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.initWithOptions(allocator, .{
@@ -8681,6 +8825,73 @@ test "acheron_control_plane: builtin jobs package accepts local node export upse
     const upserted = try plane.nodeVenomUpsert(upsert_req);
     defer allocator.free(upserted);
     try std.testing.expect(std.mem.indexOf(u8, upserted, "\"venom_id\":\"jobs\"") != null);
+}
+
+test "acheron_control_plane: node venom upsert honors package_id alias" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.init(allocator);
+    defer plane.deinit();
+
+    const installed = try plane.installVenomPackage(
+        \\{"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+    );
+    defer allocator.free(installed);
+
+    const joined = try plane.ensureNode("camera-node", "", 60_000);
+    defer allocator.free(joined);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
+    defer parsed.deinit();
+    const node_id = parsed.value.object.get("node_id").?.string;
+    const node_secret = parsed.value.object.get("node_secret").?.string;
+
+    const upsert_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"native\"}},\"venoms\":[{{\"venom_id\":\"camera-instance\",\"package_id\":\"camera_pkg\",\"kind\":\"camera\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/camera\"],\"runtime\":{{\"type\":\"native_proc\"}}}}]}}",
+        .{ node_id, node_secret, node_id },
+    );
+    defer allocator.free(upsert_req);
+
+    const upserted = try plane.nodeVenomUpsert(upsert_req);
+    defer allocator.free(upserted);
+    try std.testing.expect(std.mem.indexOf(u8, upserted, "\"venom_id\":\"camera-instance\"") != null);
+}
+
+test "acheron_control_plane: platform-only upsert preserves stored package_id alias" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.init(allocator);
+    defer plane.deinit();
+
+    const installed = try plane.installVenomPackage(
+        \\{"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+    );
+    defer allocator.free(installed);
+
+    const joined = try plane.ensureNode("camera-node", "", 60_000);
+    defer allocator.free(joined);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
+    defer parsed.deinit();
+    const node_id = parsed.value.object.get("node_id").?.string;
+    const node_secret = parsed.value.object.get("node_secret").?.string;
+
+    const initial_upsert = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"native\"}},\"venoms\":[{{\"venom_id\":\"camera-instance\",\"package_id\":\"camera_pkg\",\"kind\":\"camera\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/camera\"],\"runtime\":{{\"type\":\"native_proc\"}}}}]}}",
+        .{ node_id, node_secret, node_id },
+    );
+    defer allocator.free(initial_upsert);
+    const upserted = try plane.nodeVenomUpsert(initial_upsert);
+    defer allocator.free(upserted);
+
+    const platform_only = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"native\"}}}}",
+        .{ node_id, node_secret },
+    );
+    defer allocator.free(platform_only);
+
+    const revalidated = try plane.nodeVenomUpsert(platform_only);
+    defer allocator.free(revalidated);
+    try std.testing.expect(std.mem.indexOf(u8, revalidated, "\"package_id\":\"camera_pkg\"") != null);
 }
 
 test "acheron_control_plane: platform-only node upsert revalidates existing venoms" {

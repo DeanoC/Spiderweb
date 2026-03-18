@@ -31,6 +31,7 @@ const github_pr_venom = @import("../venoms/github_pr.zig");
 const missions_venom = @import("../venoms/missions.zig");
 const pr_review_venom = @import("../venoms/pr_review.zig");
 const venom_packages = @import("../venom_packages.zig");
+const venom_package = @import("../venom_package.zig");
 
 var direct_builtin_shell_exec_mutex: std.Thread.Mutex = .{};
 
@@ -5604,18 +5605,18 @@ pub const Session = struct {
         _ = try self.addFile(venom_dir_id, "PACKAGE.json", package_json, false, .none);
     }
 
-    fn cloneWorkerVenomPackage(self: *Session, venom_id: []const u8) !?shared_node.venom_package.VenomPackage {
+    fn cloneWorkerVenomPackage(self: *Session, venom_id: []const u8) !?venom_package.VenomPackage {
         if (self.control_plane) |control_plane| {
             return control_plane.cloneVenomPackage(self.allocator, venom_id);
         }
         return venom_packages.cloneBuiltinPackage(self.allocator, venom_id);
     }
 
-    fn seedPackageMetadata(self: *Session, venom_dir_id: u32, package: shared_node.venom_package.VenomPackage) !void {
+    fn seedPackageMetadata(self: *Session, venom_dir_id: u32, package: venom_package.VenomPackage) !void {
         if (self.lookupChild(venom_dir_id, "PACKAGE.json") != null) return;
         var package_json = std.ArrayListUnmanaged(u8){};
         defer package_json.deinit(self.allocator);
-        try shared_node.venom_package.appendPackageJson(self.allocator, &package_json, package);
+        try venom_package.appendPackageJson(self.allocator, &package_json, package);
         _ = try self.addFile(venom_dir_id, "PACKAGE.json", package_json.items, false, .none);
     }
 
@@ -5625,7 +5626,7 @@ pub const Session = struct {
         base_path: []const u8,
         worker_id: []const u8,
         agent_id: []const u8,
-        package: shared_node.venom_package.VenomPackage,
+        package: venom_package.VenomPackage,
     ) !void {
         const escaped_base_path = try unified.jsonEscape(self.allocator, base_path);
         defer self.allocator.free(escaped_base_path);

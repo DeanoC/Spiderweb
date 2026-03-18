@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Security
 import ServiceManagement
@@ -290,6 +291,13 @@ struct SpiderwebBuildInfo: Codable {
     }
 }
 
+struct SpiderwebAccessEndpoint: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let detail: String
+    let url: String
+}
+
 final class SpiderwebAppController: ObservableObject {
     static let localServerURL = "ws://127.0.0.1:18790/"
     private static let appGroupIdentifier = "group.com.deanoc.spiderweb.fskit"
@@ -449,6 +457,43 @@ final class SpiderwebAppController: ObservableObject {
             authLine,
             remoteNodeLine,
         ].joined(separator: "\n")
+    }
+
+    var localAccessEndpoints: [SpiderwebAccessEndpoint] {
+        var endpoints: [SpiderwebAccessEndpoint] = [
+            .init(
+                id: "localhost",
+                title: "Local-only URL",
+                detail: "Use this on the same Mac. Other machines cannot reach 127.0.0.1 on your Mac.",
+                url: Self.localServerURL
+            )
+        ]
+
+        let networkHostnames = Self.discoverLocalHostnames()
+        for hostname in networkHostnames {
+            endpoints.append(
+                .init(
+                    id: "host-\(hostname)",
+                    title: "Network hostname",
+                    detail: "Works from another machine on the same network if mDNS or local DNS resolves this Mac.",
+                    url: "ws://\(hostname):18790/"
+                )
+            )
+        }
+
+        let networkIPv4s = Self.discoverLocalIPv4Addresses()
+        for address in networkIPv4s {
+            endpoints.append(
+                .init(
+                    id: "ipv4-\(address)",
+                    title: "Network IPv4",
+                    detail: "Direct LAN address for another Mac or tool to connect to this Spiderweb service.",
+                    url: "ws://\(address):18790/"
+                )
+            )
+        }
+
+        return endpoints
     }
 
     func refresh() {
@@ -1275,6 +1320,70 @@ final class SpiderwebAppController: ObservableObject {
             gitDirty: nil,
             builtAtUTC: nil
         )
+    }
+
+    private static func discoverLocalHostnames() -> [String] {
+        var candidates: [String] = []
+
+        let processHostname = ProcessInfo.processInfo.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !processHostname.isEmpty {
+            candidates.append(processHostname)
+        }
+
+        let localized = (Host.current().localizedName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !localized.isEmpty {
+            let sanitized = localized.replacingOccurrences(of: " ", with: "-")
+            if sanitized.contains(".") {
+                candidates.append(sanitized)
+            } else {
+                candidates.append("\(sanitized).local")
+            }
+        }
+
+        var seen = Set<String>()
+        return candidates.filter { candidate in
+            let lowered = candidate.lowercased()
+            guard !lowered.isEmpty, !seen.contains(lowered) else { return false }
+            seen.insert(lowered)
+            return true
+        }
+    }
+
+    private static func discoverLocalIPv4Addresses() -> [String] {
+        var results: [String] = []
+        var seen = Set<String>()
+        var ifaddrPointer: UnsafeMutablePointer<ifaddrs>?
+
+        guard getifaddrs(&ifaddrPointer) == 0, let first = ifaddrPointer else {
+            return []
+        }
+        defer { freeifaddrs(ifaddrPointer) }
+
+        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let interface = pointer.pointee
+            guard let address = interface.ifa_addr else { continue }
+            guard address.pointee.sa_family == UInt8(AF_INET) else { continue }
+
+            let flags = Int32(interface.ifa_flags)
+            guard (flags & IFF_UP) != 0, (flags & IFF_LOOPBACK) == 0 else { continue }
+
+            let name = String(cString: interface.ifa_name)
+            if name.hasPrefix("utun") || name.hasPrefix("awdl") || name.hasPrefix("llw") {
+                continue
+            }
+
+            var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let length = socklen_t(address.pointee.sa_len)
+            let status = getnameinfo(address, length, &hostBuffer, socklen_t(hostBuffer.count), nil, 0, NI_NUMERICHOST)
+            guard status == 0 else { continue }
+
+            let host = String(cString: hostBuffer)
+            guard !host.hasPrefix("169.254.") else { continue }
+            guard seen.insert(host).inserted else { continue }
+            results.append(host)
+        }
+
+        return results.sorted()
     }
 
     private static func installFileSystemStatusMessage(

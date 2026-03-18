@@ -534,6 +534,26 @@ struct ContentView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Connection URLs")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Use the local-only URL on this Mac. For another machine, copy one of the network URLs below.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    ForEach(controller.localAccessEndpoints) { endpoint in
+                        SecretValueRow(
+                            title: endpoint.title,
+                            detail: endpoint.detail,
+                            value: endpoint.url,
+                            copyLabel: "Copy URL",
+                            copyAction: {
+                                controller.copyToClipboard(endpoint.url)
+                            }
+                        )
+                    }
+                }
+
                 SecretValueRow(
                     title: "Admin token",
                     detail: "Full-control token for setup, workspace creation, and administrative access.",

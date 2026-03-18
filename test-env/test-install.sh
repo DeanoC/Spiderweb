@@ -169,8 +169,20 @@ log_info "Starting installed spiderweb on port $SERVER_PORT"
     wait
 ) &
 launcher_pid=$!
-sleep 0.2
-SERVER_PID="$(cat "$TEST_ROOT/server.pid")"
+server_pid_file="$TEST_ROOT/server.pid"
+ready_pid_file=0
+for _ in $(seq 1 40); do
+    if [[ -s "$server_pid_file" ]]; then
+        ready_pid_file=1
+        break
+    fi
+    sleep 0.1
+done
+if [[ "$ready_pid_file" != "1" ]]; then
+    log_error "Timed out waiting for server pid file"
+    exit 1
+fi
+SERVER_PID="$(cat "$server_pid_file")"
 disown "$launcher_pid" 2>/dev/null || true
 
 log_info "Waiting for auth tokens and control plane to become ready..."

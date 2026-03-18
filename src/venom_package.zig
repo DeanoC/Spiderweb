@@ -39,6 +39,7 @@ pub fn deinitPackages(
 ) void {
     for (packages.items) |*package| package.deinit(allocator);
     packages.deinit(allocator);
+    packages.* = .{};
 }
 
 pub fn replacePackagesFromJsonValue(

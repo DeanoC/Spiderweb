@@ -540,7 +540,7 @@ fn moduleEnabledFromSnapshot(snapshot: ?NativeFsStatusSnapshot, extension_regist
             }
         }
     }
-    return true;
+    return false;
 }
 
 fn nativeMountProbeShowsEnabled(output: []const u8, term: std.process.Child.Term) bool {
@@ -756,10 +756,10 @@ test "native_mount_support: trusts fresh enabled status snapshots" {
     }, true, now_ms));
 }
 
-test "native_mount_support: falls back to registration when snapshot is stale or missing" {
+test "native_mount_support: stale or missing snapshots do not imply enabled modules" {
     const now_ms: i64 = status_snapshot_max_age_ms + 3_000_000;
-    try std.testing.expect(moduleEnabledFromSnapshot(null, true, now_ms));
-    try std.testing.expect(moduleEnabledFromSnapshot(.{
+    try std.testing.expect(!moduleEnabledFromSnapshot(null, true, now_ms));
+    try std.testing.expect(!moduleEnabledFromSnapshot(.{
         .registered = true,
         .module_enabled = false,
         .ready = false,

@@ -338,7 +338,12 @@ pub fn main() !void {
     if (std.mem.eql(u8, command, "mount")) {
         if (remaining.items.len < 2) return error.InvalidArguments;
         const mountpoint = remaining.items[1];
-        const effective_backend = try resolveRequestedMountBackend(allocator, mount_backend);
+        const effective_backend = try resolveRequestedMountBackend(
+            allocator,
+            mount_backend,
+            workspace_url,
+            namespace_status,
+        );
         if (effective_backend == .native and workspace_url != null and namespace_status.namespace_url == null) {
             namespace_status = try buildNativeNamespaceStatusFromWorkspace(
                 allocator,
@@ -628,17 +633,24 @@ fn reportMountCommandError(
 fn resolveRequestedMountBackend(
     allocator: std.mem.Allocator,
     backend: fs_fuse_adapter.FuseAdapter.MountBackend,
+    workspace_url: ?[]const u8,
+    namespace_status: NamespaceStatus,
 ) !fs_fuse_adapter.FuseAdapter.MountBackend {
     if (builtin.os.tag != .macos) return backend;
 
     return switch (backend) {
         .auto => blk: {
+            if (!nativeMountCanBindNamespace(workspace_url, namespace_status)) break :blk .fuse;
             var status = native_mount_support.detectInstallStatus(allocator) catch break :blk .fuse;
             defer status.deinit(allocator);
             break :blk if (status.ready()) .native else .fuse;
         },
         else => backend,
     };
+}
+
+fn nativeMountCanBindNamespace(workspace_url: ?[]const u8, namespace_status: NamespaceStatus) bool {
+    return workspace_url != null or namespace_status.namespace_url != null;
 }
 
 fn emitNativeStatusDiagnostic(allocator: std.mem.Allocator) bool {
@@ -1657,6 +1669,12 @@ test "acheron_mount_main: connectWorkspaceHasMounts requires non-empty mounts ar
     var parsed_with_mount = try std.json.parseFromSlice(std.json.Value, allocator, "{\"workspace\":{\"mounts\":[{\"mount_path\":\"/m\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}]}}", .{});
     defer parsed_with_mount.deinit();
     try std.testing.expect(connectWorkspaceHasMounts(parsed_with_mount.value.object.get("workspace")));
+}
+
+test "acheron_mount_main: auto native backend requires namespace binding" {
+    try std.testing.expect(!nativeMountCanBindNamespace(null, .{}));
+    try std.testing.expect(nativeMountCanBindNamespace("ws://127.0.0.1:18790/", .{}));
+    try std.testing.expect(nativeMountCanBindNamespace(null, .{ .namespace_url = @constCast("ws://127.0.0.1:18790/control") }));
 }
 
 test "acheron_mount_main: live mac smoke covers terminal exec and pr review validation" {

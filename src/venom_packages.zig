@@ -1,5 +1,5 @@
 const std = @import("std");
-const venom_package = @import("spiderweb_node").venom_package;
+const venom_package = @import("venom_package.zig");
 
 pub const BuiltinPackageSpec = struct {
     venom_id: []const u8,

@@ -1,7 +1,7 @@
 const std = @import("std");
 const ltm_store = @import("ziggy-memory-store").ltm_store;
 const venom_catalog = @import("spiderweb_node").venom_catalog;
-const venom_package_model = @import("spiderweb_node").venom_package;
+const venom_package_model = @import("../venom_package.zig");
 const venom_packages = @import("../venom_packages.zig");
 
 const persistence_base_id = "spiderweb:control-plane:state";
@@ -4128,8 +4128,7 @@ pub const ControlPlane = struct {
         }
 
         for (venoms) |venom| {
-            const package_id = venom.package_id orelse venom.venom_id;
-            const package = lookupVenomPackageLocked(self, package_id) orelse return ControlPlaneError.VenomPackageNotFound;
+            const package = lookupVenomPackageLocked(self, venom.venom_id) orelse return ControlPlaneError.VenomPackageNotFound;
             try validateVenomPackageInstantiationLocked(
                 self.allocator,
                 package,

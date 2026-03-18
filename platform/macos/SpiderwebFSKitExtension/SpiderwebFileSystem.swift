@@ -1964,7 +1964,6 @@ final class SpiderwebMountedBridge {
     init(request: SpiderwebMountRequest) {
         namespaceBridge = SpiderwebNamespaceBridge(request: request)
         endpointMounts = request.launchConfig.endpoints
-            .filter { shouldUseEndpointBridge(mountPath: $0.mountPath) }
             .map {
                 SpiderwebMountedEndpoint(
                     mountPath: normalizeAbsolutePath($0.mountPath),
@@ -2749,20 +2748,6 @@ private func mapCodeToNSError(code: String, message: String) -> NSError {
         posixCode = EIO
     }
     return NSError(domain: NSPOSIXErrorDomain, code: Int(posixCode), userInfo: [NSLocalizedDescriptionKey: message])
-}
-
-private func shouldUseEndpointBridge(mountPath: String) -> Bool {
-    let normalized = normalizeAbsolutePath(mountPath)
-    if normalized == "/nodes/local/fs" {
-        return true
-    }
-    if normalized.hasSuffix("/nodes/local/fs") {
-        return true
-    }
-    if normalized.hasSuffix("/fs/local::fs") {
-        return true
-    }
-    return false
 }
 
 func readOnlyError(message: String) -> NSError {

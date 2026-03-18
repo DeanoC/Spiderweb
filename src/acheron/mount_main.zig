@@ -618,6 +618,10 @@ fn reportMountCommandError(
             std.log.err("macOS sees the SpiderwebFSKit module as disabled. Re-enable it in System Settings -> General -> Login Items & Extensions -> File System Extensions after reinstalling a correctly signed build.", .{});
             return;
         },
+        error.NativeNamespaceBindingRequired => {
+            std.log.err("macOS native mounts currently require a Spiderweb namespace binding. Provide --workspace-url/--workspace-id or a pre-attached namespace before using --mount-backend native.", .{});
+            return;
+        },
         error.NativeMountTimedOut => {
             std.log.err("macOS native mount request timed out waiting for {s} to appear. Check the SpiderwebFSKit app/extension logs and retry.", .{mountpoint});
             return;
@@ -750,17 +754,7 @@ fn requestNativeMount(
         };
     }
 
-    const namespace_binding = if (namespace_status.namespace_url) |namespace_url|
-        native_mount_protocol.NamespaceBinding{
-            .namespace_url = namespace_url,
-            .auth_token = auth_token,
-            .project_id = namespace_status.project_id orelse return error.ProjectRequired,
-            .agent_id = namespace_status.agent_id orelse return error.InvalidResponse,
-            .session_key = namespace_status.session_key orelse return error.InvalidResponse,
-            .project_token = workspace_token,
-        }
-    else
-        null;
+    const namespace_binding = try makeNativeNamespaceBinding(namespace_status, workspace_token, auth_token);
 
     try native_mount_support.requestNativeMount(allocator, .{
         .mountpoint = mountpoint,
@@ -769,6 +763,21 @@ fn requestNativeMount(
         .endpoints = native_endpoints,
         .namespace = namespace_binding,
     }, native_mount_timeout_ms);
+}
+
+fn makeNativeNamespaceBinding(
+    namespace_status: NamespaceStatus,
+    workspace_token: ?[]const u8,
+    auth_token: ?[]const u8,
+) !native_mount_protocol.NamespaceBinding {
+    return .{
+        .namespace_url = namespace_status.namespace_url orelse return error.NativeNamespaceBindingRequired,
+        .auth_token = auth_token,
+        .project_id = namespace_status.project_id orelse return error.ProjectRequired,
+        .agent_id = namespace_status.agent_id orelse return error.InvalidResponse,
+        .session_key = namespace_status.session_key orelse return error.InvalidResponse,
+        .project_token = workspace_token,
+    };
 }
 
 fn buildNativeNamespaceStatusFromWorkspace(
@@ -1675,6 +1684,10 @@ test "acheron_mount_main: auto native backend requires namespace binding" {
     try std.testing.expect(!nativeMountCanBindNamespace(null, .{}));
     try std.testing.expect(nativeMountCanBindNamespace("ws://127.0.0.1:18790/", .{}));
     try std.testing.expect(nativeMountCanBindNamespace(null, .{ .namespace_url = @constCast("ws://127.0.0.1:18790/control") }));
+}
+
+test "acheron_mount_main: explicit native mount requires namespace binding" {
+    try std.testing.expectError(error.NativeNamespaceBindingRequired, makeNativeNamespaceBinding(.{}, null, null));
 }
 
 test "acheron_mount_main: live mac smoke covers terminal exec and pr review validation" {

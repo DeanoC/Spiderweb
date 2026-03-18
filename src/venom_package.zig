@@ -114,21 +114,75 @@ pub fn appendPackageJson(
 }
 
 fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !VenomPackage {
-    return .{
-        .venom_id = try dupRequiredString(allocator, obj, "venom_id", 128),
-        .kind = try dupRequiredString(allocator, obj, "kind", 128),
-        .version = try dupStringOrDefault(allocator, obj, "version", "1"),
-        .categories_json = try dupObjectFieldJsonOrDefault(allocator, obj, "categories", "[]"),
-        .hosts_json = try dupObjectFieldJsonOrDefault(allocator, obj, "hosts", "[]"),
-        .projection_modes_json = try dupObjectFieldJsonOrDefault(allocator, obj, "projection_modes", "[]"),
-        .requirements_json = try dupObjectFieldJsonOrDefault(allocator, obj, "requirements", "{}"),
-        .capabilities_json = try dupObjectFieldJsonOrDefault(allocator, obj, "capabilities", "{}"),
-        .ops_json = try dupObjectFieldJsonOrDefault(allocator, obj, "ops", "{}"),
-        .runtime_json = try dupObjectFieldJsonOrDefault(allocator, obj, "runtime", "{}"),
-        .permissions_json = try dupObjectFieldJsonOrDefault(allocator, obj, "permissions", "{}"),
-        .schema_json = try dupObjectFieldJsonOrDefault(allocator, obj, "schema", "{}"),
-        .help_md = try dupOptionalString(allocator, obj, "help_md"),
+    var package = VenomPackage{
+        .venom_id = undefined,
+        .kind = undefined,
+        .version = undefined,
+        .categories_json = undefined,
+        .hosts_json = undefined,
+        .projection_modes_json = undefined,
+        .requirements_json = undefined,
+        .capabilities_json = undefined,
+        .ops_json = undefined,
+        .runtime_json = undefined,
+        .permissions_json = undefined,
+        .schema_json = undefined,
+        .help_md = null,
     };
+    var venom_id_set = false;
+    var kind_set = false;
+    var version_set = false;
+    var categories_set = false;
+    var hosts_set = false;
+    var projection_modes_set = false;
+    var requirements_set = false;
+    var capabilities_set = false;
+    var ops_set = false;
+    var runtime_set = false;
+    var permissions_set = false;
+    var schema_set = false;
+    errdefer {
+        if (venom_id_set) allocator.free(package.venom_id);
+        if (kind_set) allocator.free(package.kind);
+        if (version_set) allocator.free(package.version);
+        if (categories_set) allocator.free(package.categories_json);
+        if (hosts_set) allocator.free(package.hosts_json);
+        if (projection_modes_set) allocator.free(package.projection_modes_json);
+        if (requirements_set) allocator.free(package.requirements_json);
+        if (capabilities_set) allocator.free(package.capabilities_json);
+        if (ops_set) allocator.free(package.ops_json);
+        if (runtime_set) allocator.free(package.runtime_json);
+        if (permissions_set) allocator.free(package.permissions_json);
+        if (schema_set) allocator.free(package.schema_json);
+        if (package.help_md) |value| allocator.free(value);
+    }
+
+    package.venom_id = try dupRequiredString(allocator, obj, "venom_id", 128);
+    venom_id_set = true;
+    package.kind = try dupRequiredString(allocator, obj, "kind", 128);
+    kind_set = true;
+    package.version = try dupStringOrDefault(allocator, obj, "version", "1");
+    version_set = true;
+    package.categories_json = try dupObjectFieldJsonOrDefault(allocator, obj, "categories", "[]");
+    categories_set = true;
+    package.hosts_json = try dupObjectFieldJsonOrDefault(allocator, obj, "hosts", "[]");
+    hosts_set = true;
+    package.projection_modes_json = try dupObjectFieldJsonOrDefault(allocator, obj, "projection_modes", "[]");
+    projection_modes_set = true;
+    package.requirements_json = try dupObjectFieldJsonOrDefault(allocator, obj, "requirements", "{}");
+    requirements_set = true;
+    package.capabilities_json = try dupObjectFieldJsonOrDefault(allocator, obj, "capabilities", "{}");
+    capabilities_set = true;
+    package.ops_json = try dupObjectFieldJsonOrDefault(allocator, obj, "ops", "{}");
+    ops_set = true;
+    package.runtime_json = try dupObjectFieldJsonOrDefault(allocator, obj, "runtime", "{}");
+    runtime_set = true;
+    package.permissions_json = try dupObjectFieldJsonOrDefault(allocator, obj, "permissions", "{}");
+    permissions_set = true;
+    package.schema_json = try dupObjectFieldJsonOrDefault(allocator, obj, "schema", "{}");
+    schema_set = true;
+    package.help_md = try dupOptionalString(allocator, obj, "help_md");
+    return package;
 }
 
 fn dupRequiredString(

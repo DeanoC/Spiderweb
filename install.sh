@@ -13,7 +13,10 @@
 #
 # NON-INTERACTIVE with options:
 #   curl ... | SPIDERWEB_INSTALL_ZSS=0 SPIDERWEB_INSTALL_SYSTEMD=0 bash
-# Use a prebuilt release archive instead of compiling locally:
+# Default path: install the latest published GitHub release for this machine.
+# Force a local source build instead:
+#   curl ... | SPIDERWEB_INSTALL_SOURCE=source bash
+# Pin a specific release archive instead of the default latest release:
 #   curl ... | SPIDERWEB_INSTALL_SOURCE=release SPIDERWEB_RELEASE_ARCHIVE_URL=https://github.com/DeanoC/Spiderweb/releases/download/vX.Y.Z/spiderweb-linux-x86_64.tar.gz bash
 # Pin installer repo refs (for testing non-main branches):
 #   curl .../install.sh | SPIDERWEB_GIT_REF=feat/foo ZSS_GIT_REF=feat/bar bash
@@ -65,6 +68,24 @@ normalize_bool() {
             ;;
         *)
             echo "$default"
+            ;;
+    esac
+}
+
+is_env_set() {
+    local name="$1"
+    [[ -n "${!name+x}" ]]
+}
+
+default_release_archive_url() {
+    local machine
+    machine="$(uname -m 2>/dev/null || true)"
+    case "$machine" in
+        x86_64|amd64)
+            printf '%s' "https://github.com/DeanoC/Spiderweb/releases/latest/download/spiderweb-linux-x86_64.tar.gz"
+            ;;
+        *)
+            return 1
             ;;
     esac
 }
@@ -196,6 +217,13 @@ sync_git_submodules() {
     log_info "Initializing ${name} submodules..."
     git -C "$dir" submodule sync --recursive >/dev/null 2>&1 || true
     git -C "$dir" submodule update --init --recursive
+}
+
+ensure_runtime_layout() {
+    local runtime_root="$1"
+    mkdir -p "$runtime_root"
+    mkdir -p "$runtime_root/agents"
+    mkdir -p "$runtime_root/templates"
 }
 
 print_auth_tokens_summary() {
@@ -386,6 +414,14 @@ INSTALL_SOURCE_RESOLVED="$SPIDERWEB_INSTALL_SOURCE"
 if [[ "$INSTALL_SOURCE_RESOLVED" == "auto" ]]; then
     if [[ -n "$SPIDERWEB_RELEASE_ARCHIVE_URL" ]]; then
         INSTALL_SOURCE_RESOLVED="release"
+    elif is_env_set "SPIDERWEB_GIT_REF" || is_env_set "SPIDERWEB_REPO_URL" || is_env_set "SPIDERWEB_REPO_DIR"; then
+        INSTALL_SOURCE_RESOLVED="source"
+    elif default_release_archive_url >/dev/null; then
+        INSTALL_SOURCE_RESOLVED="release"
+        SPIDERWEB_RELEASE_ARCHIVE_URL="$(default_release_archive_url)"
+        if [[ -z "$SPIDERWEB_RELEASE_VERSION" ]]; then
+            SPIDERWEB_RELEASE_VERSION="latest"
+        fi
     else
         INSTALL_SOURCE_RESOLVED="source"
     fi
@@ -817,6 +853,7 @@ else
     mkdir -p "$REPO_DIR"
     cd "$REPO_DIR"
 fi
+ensure_runtime_layout "$REPO_DIR"
 
 # Ask about systemd service
 INSTALL_SYSTEMD_BOOL="$DEFAULT_INSTALL_SYSTEMD"

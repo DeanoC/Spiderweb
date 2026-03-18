@@ -2052,6 +2052,7 @@ pub const ControlPlane = struct {
         var first = true;
         var it = self.projects.valueIterator();
         while (it.next()) |project| {
+            if (project.kind == .spider_web_builtin) continue;
             if (!first) try out.append(self.allocator, ',');
             first = false;
             try appendProjectSummaryJson(self.allocator, &out, project.*);
@@ -6356,16 +6357,15 @@ fn decodeBase64(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     return out;
 }
 
-test "acheron_control_plane: builtin system project is protected and primary-only" {
+test "acheron_control_plane: builtin system project is protected and hidden from listings" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
     const projects_json = try plane.listProjects();
     defer allocator.free(projects_json);
-    try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"project_id\":\"system\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"kind\":\"system_builtin\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"is_delete_protected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"project_id\":\"system\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"kind\":\"system_builtin\"") == null);
 
     try std.testing.expectError(
         ControlPlaneError.ProjectProtected,

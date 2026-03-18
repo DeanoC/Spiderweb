@@ -147,7 +147,6 @@ pub fn main() !void {
             try mount_state.ClientStateStore.generateEphemeralSessionKey(allocator);
         defer allocator.free(resolved_session_key);
 
-        try client.controlAgentEnsure(resolved_agent_id);
         var attach_info = try client.controlSessionAttach(.{
             .session_key = resolved_session_key,
             .agent_id = resolved_agent_id,
@@ -591,31 +590,31 @@ fn reportMountCommandError(
             return;
         },
         error.NativeFsExtensionNotInstalled => {
-            std.log.err("macOS native mounts require a current SpiderwebFSKit Xcode build plus the installed spiderweb.fs wrapper. Build under platform/macos, then run `spiderweb-config config install-fs-extension`.", .{});
+            std.log.err("macOS native mounts require a current Spiderweb.app Xcode build plus the installed spiderweb.fs wrapper. Build under platform/macos, then run `spiderweb-config config install-fs-extension`.", .{});
             return;
         },
         error.NativeFsExtensionNotReady => {
-            std.log.err("macOS native mounts require a current SpiderwebFSKit build output. Rebuild under platform/macos, reinstall the FS extension, then retry.", .{});
+            std.log.err("macOS native mounts require a current Spiderweb.app build output. Rebuild under platform/macos, reinstall the FS extension, then retry.", .{});
             return;
         },
         error.NativeFsExtensionSigningRequired => {
-            std.log.err("macOS native mounts require a real Apple development signing identity. Sign into Xcode, select a development team, rebuild SpiderwebFSKit, then reinstall the FS extension so the FSKit and app-group entitlements are preserved.", .{});
+            std.log.err("macOS native mounts require a real Apple development signing identity. Sign into Xcode, select a development team, rebuild Spiderweb.app, then reinstall the FS extension so the FSKit and app-group entitlements are preserved.", .{});
             return;
         },
         error.NativeFsExtensionCapabilitiesMissing => {
-            std.log.err("macOS native mounts require SpiderwebFSKitExtension to carry the FSKit entitlement. Rebuild the SpiderwebFSKit app from Xcode with the selected team and retry.", .{});
+            std.log.err("macOS native mounts require SpiderwebFSKitExtension to carry the FSKit entitlement. Rebuild the Spiderweb app from Xcode with the selected team and retry.", .{});
             return;
         },
         error.NativeFsExtensionProvisioningRequired => {
-            std.log.err("macOS native mounts require a signed SpiderwebFSKit build from Xcode. Rebuild the app with your selected team and retry.", .{});
+            std.log.err("macOS native mounts require a signed Spiderweb build from Xcode. Rebuild the app with your selected team and retry.", .{});
             return;
         },
         error.NativeFsExtensionApprovalRequired => {
-            std.log.err("macOS native mounts require the SpiderwebFSKit extension to be enabled in System Settings -> General -> Login Items & Extensions -> File System Extensions.", .{});
+            std.log.err("macOS native mounts require the Spiderweb file system extension to be enabled in System Settings -> General -> Login Items & Extensions -> File System Extensions.", .{});
             return;
         },
         error.NativeFsExtensionDisabled => {
-            std.log.err("macOS sees the SpiderwebFSKit module as disabled. Re-enable it in System Settings -> General -> Login Items & Extensions -> File System Extensions after reinstalling a correctly signed build.", .{});
+            std.log.err("macOS sees the Spiderweb module as disabled. Re-enable it in System Settings -> General -> Login Items & Extensions -> File System Extensions after reinstalling a correctly signed build.", .{});
             return;
         },
         error.NativeNamespaceBindingRequired => {
@@ -623,7 +622,7 @@ fn reportMountCommandError(
             return;
         },
         error.NativeMountTimedOut => {
-            std.log.err("macOS native mount request timed out waiting for {s} to appear. Check the SpiderwebFSKit app/extension logs and retry.", .{mountpoint});
+            std.log.err("macOS native mount request timed out waiting for {s} to appear. Check the Spiderweb app/extension logs and retry.", .{mountpoint});
             return;
         },
         error.MacFuseNotInstalled, error.MountLibraryNotFound => {
@@ -674,11 +673,11 @@ fn emitNativeStatusDiagnostic(allocator: std.mem.Allocator) bool {
     }
 
     if (!status.app_installed) {
-        std.log.warn("local macOS native mount backend unavailable: build SpiderwebFSKit in Xcode under platform/macos, then run `spiderweb-config config install-fs-extension`", .{});
+        std.log.warn("local macOS native mount backend unavailable: build Spiderweb in Xcode under platform/macos, then run `spiderweb-config config install-fs-extension`", .{});
         return false;
     }
     if (!status.extension_present) {
-        std.log.warn("local macOS native mount backend unavailable: the current SpiderwebFSKit build is missing the FSKit extension payload", .{});
+        std.log.warn("local macOS native mount backend unavailable: the current Spiderweb build is missing the FSKit extension payload", .{});
         return false;
     }
     if (!status.filesystem_bundle_installed or !status.mount_helper_present) {
@@ -686,7 +685,7 @@ fn emitNativeStatusDiagnostic(allocator: std.mem.Allocator) bool {
         return false;
     }
     if (!status.runtime_ready) {
-        std.log.warn("local macOS native mount backend scaffold detected, but no current SpiderwebFSKit build is available; rebuild from platform/macos", .{});
+        std.log.warn("local macOS native mount backend scaffold detected, but no current Spiderweb build is available; rebuild from platform/macos", .{});
         return false;
     }
     if (!status.signing_identity_available) {
@@ -698,11 +697,11 @@ fn emitNativeStatusDiagnostic(allocator: std.mem.Allocator) bool {
         return false;
     }
     if (!status.extension_registered) {
-        std.log.warn("local macOS native mount backend needs approval: enable SpiderwebFSKit in System Settings -> General -> Login Items & Extensions -> File System Extensions", .{});
+        std.log.warn("local macOS native mount backend needs approval: enable Spiderweb in System Settings -> General -> Login Items & Extensions -> File System Extensions", .{});
         return false;
     }
     if (!status.module_enabled) {
-        std.log.warn("local macOS native mount backend is installed but still disabled by the OS; enable SpiderwebFSKit in File System Extensions and verify the signed entitlements survived install", .{});
+        std.log.warn("local macOS native mount backend is installed but still disabled by the OS; enable Spiderweb in File System Extensions and verify the signed entitlements survived install", .{});
         return false;
     }
     return false;
@@ -810,7 +809,6 @@ fn buildNativeNamespaceStatusFromWorkspace(
     const resolved_session_key = try mount_state.ClientStateStore.generateEphemeralSessionKey(allocator);
     errdefer allocator.free(resolved_session_key);
 
-    try client.controlAgentEnsure(resolved_agent_id);
     var attach_info = try client.controlSessionAttach(.{
         .session_key = resolved_session_key,
         .agent_id = resolved_agent_id,
@@ -1707,7 +1705,6 @@ test "acheron_mount_main: live mac smoke covers terminal exec and pr review vali
     defer allocator.free(session_key);
     const agent_id = "mac-live-smoke-agent";
 
-    try client.controlAgentEnsure(agent_id);
     var attach_info = try client.controlSessionAttach(.{
         .session_key = session_key,
         .agent_id = agent_id,

@@ -1,0 +1,47 @@
+#!/bin/bash
+set -euo pipefail
+
+APP_PATH="/Applications/Spiderweb.app"
+LEGACY_APP_PATH="/Applications/SpiderwebFSKit.app"
+EXTENSION_PATH="$APP_PATH/Contents/Extensions/SpiderwebFSKitExtension.appex"
+FILESYSTEM_BUNDLE="/Library/Filesystems/spiderweb.fs"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+if [[ -d "$LEGACY_APP_PATH" && "$LEGACY_APP_PATH" != "$APP_PATH" ]]; then
+  rm -rf "$LEGACY_APP_PATH" || true
+fi
+
+pkill -9 -x fskit_agent >/dev/null 2>&1 || true
+pkill -9 -x extensionkitservice >/dev/null 2>&1 || true
+
+if [[ -d "$APP_PATH" ]]; then
+  "$LSREGISTER" -f -R -trusted "$APP_PATH" >/dev/null 2>&1 || true
+fi
+
+if [[ -d "$EXTENSION_PATH" ]]; then
+  pluginkit -r "$EXTENSION_PATH" >/dev/null 2>&1 || true
+  pluginkit -a "$EXTENSION_PATH" >/dev/null 2>&1 || true
+  pluginkit -e use -p com.apple.fskit.fsmodule -i com.deanoc.spiderweb.fskit.app.extension >/dev/null 2>&1 || true
+fi
+
+if [[ -d "$FILESYSTEM_BUNDLE" ]]; then
+  pluginkit -r "$FILESYSTEM_BUNDLE" >/dev/null 2>&1 || true
+  "$LSREGISTER" -f -R "$FILESYSTEM_BUNDLE" >/dev/null 2>&1 || true
+fi
+
+sleep 1
+
+if [[ -d "$APP_PATH" ]]; then
+  console_user="$(stat -f%Su /dev/console 2>/dev/null || true)"
+  if [[ -n "$console_user" && "$console_user" != "root" ]]; then
+    console_uid="$(id -u "$console_user" 2>/dev/null || true)"
+    if [[ -n "$console_uid" ]]; then
+      launchctl asuser "$console_uid" open -a "$APP_PATH" >/dev/null 2>&1 || \
+        su -l "$console_user" -c "open -a '$APP_PATH'" >/dev/null 2>&1 || true
+    fi
+  else
+    open -a "$APP_PATH" >/dev/null 2>&1 || true
+  fi
+fi
+
+exit 0

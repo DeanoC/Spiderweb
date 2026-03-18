@@ -65,3 +65,6 @@ The request file uses the existing Spiderweb native request shape:
 ```
 
 For background on Apple’s starting point, see [Building a passthrough file system](https://developer.apple.com/documentation/fskit/building-a-passthrough-file-system).
+
+For shipping Spiderweb to a normal SIP-enabled Mac, see the release packaging guide in [RELEASE.md](/Users/deanocalver/Documents/Spider/Spiderweb/platform/macos/RELEASE.md).
+For the planned end-user installer and first-run flow, see [INSTALLER_UX.md](/Users/deanocalver/Documents/Spider/Spiderweb/platform/macos/INSTALLER_UX.md).

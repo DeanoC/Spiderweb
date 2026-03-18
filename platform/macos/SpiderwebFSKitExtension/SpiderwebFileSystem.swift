@@ -599,12 +599,6 @@ actor SpiderwebNamespaceSession {
             payload: [:]
         )
 
-        _ = try await sendControlRequest(
-            type: "control.agent_ensure",
-            expectedType: "control.agent_ensure",
-            payload: ["agent_id": namespace.agentID]
-        )
-
         var attachPayload: [String: Any] = [
             "session_key": namespace.sessionKey,
             "agent_id": namespace.agentID,

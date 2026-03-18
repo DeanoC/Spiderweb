@@ -52,7 +52,7 @@ pub fn runFirstRun(allocator: std.mem.Allocator, args: []const []const u8) !void
 
     try std.fs.File.stdout().writeAll("Spiderweb is configured as a workspace host and mounted-filesystem control plane.\n");
     try std.fs.File.stdout().writeAll("Provider selection, OAuth, and API-key setup belong in the external worker repo.\n");
-    try std.fs.File.stdout().writeAll("If runtime.spider_web_root is empty, Spiderweb uses its current working directory as the default local workspace root.\n");
+    try std.fs.File.stdout().writeAll("On a clean install, Spiderweb seeds a default local workspace root at ~/Spiderweb unless you configure runtime.spider_web_root explicitly.\n");
 
     if (!non_interactive) {
         try std.fs.File.stdout().writeAll("\n");
@@ -66,9 +66,14 @@ pub fn runFirstRun(allocator: std.mem.Allocator, args: []const []const u8) !void
     try std.fs.File.stdout().writeAll("  Worker model: external filesystem agents\n");
     try std.fs.File.stdout().writeAll("\nHost flow:\n");
     try std.fs.File.stdout().writeAll("  1. Start Spiderweb: spiderweb\n");
-    try std.fs.File.stdout().writeAll("  2. Create a workspace: spiderweb-control workspace_create '{\"name\":\"Demo\",\"vision\":\"Mounted workspace\"}'\n");
+    try std.fs.File.stdout().writeAll("  2. Create a mountable workspace: spiderweb-control workspace_up '{\"name\":\"Demo\",\"vision\":\"Mounted workspace\",\"template_id\":\"dev\",\"activate\":false}'\n");
     if (builtin.os.tag == .macos) {
-        try std.fs.File.stdout().writeAll("  3. Connect a Linux/Windows mount client or another worker host for mounted workspace access. Native macOS mount support is still pending.\n");
+        try std.fs.File.stdout().writeAll("  3. Open the Spiderweb macOS app and choose either:\n");
+        try std.fs.File.stdout().writeAll("     - Run Spiderweb on this Mac\n");
+        try std.fs.File.stdout().writeAll("     - Mount an existing Spiderweb\n");
+        try std.fs.File.stdout().writeAll("  4. Enable “Spiderweb file system” in System Settings when prompted.\n");
+        try std.fs.File.stdout().writeAll("  5. Mount locally with the native backend: spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ --workspace-id <workspace-id> --mount-backend native mount <mountpoint>\n");
+        try std.fs.File.stdout().writeAll("  6. Start Spider Monkey: spider-monkey run --workspace-root <mountpoint>\n");
     } else {
         try std.fs.File.stdout().writeAll("  3. Mount it locally: spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ --workspace-id <workspace-id> mount <mountpoint>\n");
         try std.fs.File.stdout().writeAll("  4. Start Spider Monkey: spider-monkey run --workspace-root <mountpoint>\n");

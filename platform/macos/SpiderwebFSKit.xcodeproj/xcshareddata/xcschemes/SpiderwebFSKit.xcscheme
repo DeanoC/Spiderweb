@@ -15,7 +15,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "D3BA956D2D9D74FC00FAF4A2"
-               BuildableName = "SpiderwebFSKit.app"
+               BuildableName = "Spiderweb.app"
                BlueprintName = "SpiderwebFSKit"
                ReferencedContainer = "container:SpiderwebFSKit.xcodeproj">
             </BuildableReference>
@@ -45,7 +45,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "D3BA956D2D9D74FC00FAF4A2"
-            BuildableName = "SpiderwebFSKit.app"
+            BuildableName = "Spiderweb.app"
             BlueprintName = "SpiderwebFSKit"
             ReferencedContainer = "container:SpiderwebFSKit.xcodeproj">
          </BuildableReference>
@@ -62,7 +62,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "D3BA956D2D9D74FC00FAF4A2"
-            BuildableName = "SpiderwebFSKit.app"
+            BuildableName = "Spiderweb.app"
             BlueprintName = "SpiderwebFSKit"
             ReferencedContainer = "container:SpiderwebFSKit.xcodeproj">
          </BuildableReference>

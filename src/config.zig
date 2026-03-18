@@ -13,6 +13,44 @@ pub const LogConfig = struct {
 };
 
 pub const RuntimeConfig = struct {
+    pub const RemoteNodeConfig = struct {
+        enabled: bool = false,
+        remote_control_url: []const u8 = "",
+        node_name: []const u8 = "",
+        public_base_url: []const u8 = "",
+        export_path: []const u8 = "",
+        export_name: []const u8 = "fs",
+        export_ro: bool = false,
+        node_id: []const u8 = "",
+        lease_ttl_ms: u64 = 15 * 60 * 1000,
+        heartbeat_ms: u64 = (15 * 60 * 1000) / 2,
+
+        pub fn clone(self: RemoteNodeConfig, allocator: std.mem.Allocator) !RemoteNodeConfig {
+            return .{
+                .enabled = self.enabled,
+                .remote_control_url = try allocator.dupe(u8, self.remote_control_url),
+                .node_name = try allocator.dupe(u8, self.node_name),
+                .public_base_url = try allocator.dupe(u8, self.public_base_url),
+                .export_path = try allocator.dupe(u8, self.export_path),
+                .export_name = try allocator.dupe(u8, self.export_name),
+                .export_ro = self.export_ro,
+                .node_id = try allocator.dupe(u8, self.node_id),
+                .lease_ttl_ms = self.lease_ttl_ms,
+                .heartbeat_ms = self.heartbeat_ms,
+            };
+        }
+
+        pub fn deinit(self: *RemoteNodeConfig, allocator: std.mem.Allocator) void {
+            allocator.free(self.remote_control_url);
+            allocator.free(self.node_name);
+            allocator.free(self.public_base_url);
+            allocator.free(self.export_path);
+            allocator.free(self.export_name);
+            allocator.free(self.node_id);
+            self.* = undefined;
+        }
+    };
+
     inbound_queue_max: usize = 512,
     brain_tick_queue_max: usize = 256,
     outbound_queue_max: usize = 512,
@@ -43,6 +81,7 @@ pub const RuntimeConfig = struct {
     sandbox_snapshot_root: []const u8 = "/var/lib/spiderweb/rootfs/snapshots",
     sandbox_launcher: []const u8 = "bwrap",
     sandbox_fs_mount_bin: []const u8 = "spiderweb-fs-mount",
+    remote_node: RemoteNodeConfig = .{},
 
     pub fn clone(self: RuntimeConfig, allocator: std.mem.Allocator) !RuntimeConfig {
         return .{
@@ -76,6 +115,7 @@ pub const RuntimeConfig = struct {
             .sandbox_snapshot_root = try allocator.dupe(u8, self.sandbox_snapshot_root),
             .sandbox_launcher = try allocator.dupe(u8, self.sandbox_launcher),
             .sandbox_fs_mount_bin = try allocator.dupe(u8, self.sandbox_fs_mount_bin),
+            .remote_node = try self.remote_node.clone(allocator),
         };
     }
 
@@ -93,6 +133,7 @@ pub const RuntimeConfig = struct {
         allocator.free(self.sandbox_snapshot_root);
         allocator.free(self.sandbox_launcher);
         allocator.free(self.sandbox_fs_mount_bin);
+        self.remote_node.deinit(allocator);
     }
 };
 
@@ -134,6 +175,19 @@ const default_config =
     \\    "ltm_filename": "runtime-memory.db",
     \\    "assets_dir": "templates",
     \\    "agents_dir": "agents"
+    \\    ,
+    \\    "remote_node": {
+    \\      "enabled": false,
+    \\      "remote_control_url": "",
+    \\      "node_name": "",
+    \\      "public_base_url": "",
+    \\      "export_path": "",
+    \\      "export_name": "fs",
+    \\      "export_ro": false,
+    \\      "node_id": "",
+    \\      "lease_ttl_ms": 900000,
+    \\      "heartbeat_ms": 450000
+    \\    }
     \\  }
     \\}
 ;
@@ -249,6 +303,18 @@ pub fn init(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
             .sandbox_snapshot_root = try allocator.dupe(u8, sandbox_defaults.snapshot_root),
             .sandbox_launcher = try allocator.dupe(u8, "bwrap"),
             .sandbox_fs_mount_bin = try allocator.dupe(u8, "spiderweb-fs-mount"),
+            .remote_node = .{
+                .enabled = false,
+                .remote_control_url = try allocator.dupe(u8, ""),
+                .node_name = try allocator.dupe(u8, ""),
+                .public_base_url = try allocator.dupe(u8, ""),
+                .export_path = try allocator.dupe(u8, ""),
+                .export_name = try allocator.dupe(u8, "fs"),
+                .export_ro = false,
+                .node_id = try allocator.dupe(u8, ""),
+                .lease_ttl_ms = 15 * 60 * 1000,
+                .heartbeat_ms = (15 * 60 * 1000) / 2,
+            },
         },
         .config_path = path,
     };
@@ -519,6 +585,66 @@ pub fn load(self: *Config) !void {
                     self.runtime.sandbox_fs_mount_bin = try self.allocator.dupe(u8, value.string);
                 }
             }
+            if (runtime_val.object.get("remote_node")) |remote_node_val| {
+                if (remote_node_val == .object) {
+                    if (remote_node_val.object.get("enabled")) |value| {
+                        if (value == .bool) {
+                            self.runtime.remote_node.enabled = value.bool;
+                        }
+                    }
+                    if (remote_node_val.object.get("remote_control_url")) |value| {
+                        if (value == .string) {
+                            self.allocator.free(self.runtime.remote_node.remote_control_url);
+                            self.runtime.remote_node.remote_control_url = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (remote_node_val.object.get("node_name")) |value| {
+                        if (value == .string) {
+                            self.allocator.free(self.runtime.remote_node.node_name);
+                            self.runtime.remote_node.node_name = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (remote_node_val.object.get("public_base_url")) |value| {
+                        if (value == .string) {
+                            self.allocator.free(self.runtime.remote_node.public_base_url);
+                            self.runtime.remote_node.public_base_url = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (remote_node_val.object.get("export_path")) |value| {
+                        if (value == .string) {
+                            self.allocator.free(self.runtime.remote_node.export_path);
+                            self.runtime.remote_node.export_path = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (remote_node_val.object.get("export_name")) |value| {
+                        if (value == .string and value.string.len > 0) {
+                            self.allocator.free(self.runtime.remote_node.export_name);
+                            self.runtime.remote_node.export_name = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (remote_node_val.object.get("export_ro")) |value| {
+                        if (value == .bool) {
+                            self.runtime.remote_node.export_ro = value.bool;
+                        }
+                    }
+                    if (remote_node_val.object.get("node_id")) |value| {
+                        if (value == .string) {
+                            self.allocator.free(self.runtime.remote_node.node_id);
+                            self.runtime.remote_node.node_id = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (remote_node_val.object.get("lease_ttl_ms")) |value| {
+                        if (value == .integer and value.integer > 0) {
+                            self.runtime.remote_node.lease_ttl_ms = @intCast(value.integer);
+                        }
+                    }
+                    if (remote_node_val.object.get("heartbeat_ms")) |value| {
+                        if (value == .integer and value.integer > 0) {
+                            self.runtime.remote_node.heartbeat_ms = @intCast(value.integer);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -526,6 +652,7 @@ pub fn load(self: *Config) !void {
 }
 
 fn validateRuntimeConfig(self: *Config) !void {
+    try validateRemoteNodeConfig(self.runtime.remote_node);
     if (!runtimeRequiresSandboxValidation(self.runtime)) return;
 
     const mounts_root = try requireAbsoluteRuntimePath("runtime.sandbox_mounts_root", self.runtime.sandbox_mounts_root);
@@ -572,6 +699,25 @@ fn validateRuntimeConfig(self: *Config) !void {
         "runtime.sandbox_snapshot_root",
         snapshot_root,
     );
+}
+
+fn validateRemoteNodeConfig(remote_node: RuntimeConfig.RemoteNodeConfig) !void {
+    if (!remote_node.enabled) return;
+
+    _ = try requireRuntimeField("runtime.remote_node.remote_control_url", remote_node.remote_control_url);
+    _ = try requireRuntimeField("runtime.remote_node.node_name", remote_node.node_name);
+    _ = try requireRuntimeField("runtime.remote_node.public_base_url", remote_node.public_base_url);
+    _ = try requireRuntimeField("runtime.remote_node.export_path", remote_node.export_path);
+    _ = try requireRuntimeField("runtime.remote_node.export_name", remote_node.export_name);
+    if (remote_node.lease_ttl_ms == 0 or remote_node.heartbeat_ms == 0 or remote_node.heartbeat_ms > remote_node.lease_ttl_ms) {
+        if (!builtin.is_test) {
+            std.log.err(
+                "invalid config: runtime.remote_node heartbeat/lease settings are invalid (heartbeat={d} lease={d})",
+                .{ remote_node.heartbeat_ms, remote_node.lease_ttl_ms },
+            );
+        }
+        return error.InvalidConfig;
+    }
 }
 
 fn requireRuntimeField(field_name: []const u8, value: []const u8) ![]const u8 {
@@ -736,8 +882,30 @@ pub fn save(self: Config) !void {
     try file.writeAll(sandbox_snapshot_line);
     const sandbox_launcher_line = try std.fmt.bufPrint(&buf, "    \"sandbox_launcher\": \"{s}\",\n", .{self.runtime.sandbox_launcher});
     try file.writeAll(sandbox_launcher_line);
-    const sandbox_fs_mount_line = try std.fmt.bufPrint(&buf, "    \"sandbox_fs_mount_bin\": \"{s}\"\n", .{self.runtime.sandbox_fs_mount_bin});
+    const sandbox_fs_mount_line = try std.fmt.bufPrint(&buf, "    \"sandbox_fs_mount_bin\": \"{s}\",\n", .{self.runtime.sandbox_fs_mount_bin});
     try file.writeAll(sandbox_fs_mount_line);
+    try file.writeAll("    \"remote_node\": {\n");
+    const remote_enabled_line = try std.fmt.bufPrint(&buf, "      \"enabled\": {},\n", .{self.runtime.remote_node.enabled});
+    try file.writeAll(remote_enabled_line);
+    const remote_url_line = try std.fmt.bufPrint(&buf, "      \"remote_control_url\": \"{s}\",\n", .{self.runtime.remote_node.remote_control_url});
+    try file.writeAll(remote_url_line);
+    const remote_name_line = try std.fmt.bufPrint(&buf, "      \"node_name\": \"{s}\",\n", .{self.runtime.remote_node.node_name});
+    try file.writeAll(remote_name_line);
+    const remote_public_base_line = try std.fmt.bufPrint(&buf, "      \"public_base_url\": \"{s}\",\n", .{self.runtime.remote_node.public_base_url});
+    try file.writeAll(remote_public_base_line);
+    const remote_export_path_line = try std.fmt.bufPrint(&buf, "      \"export_path\": \"{s}\",\n", .{self.runtime.remote_node.export_path});
+    try file.writeAll(remote_export_path_line);
+    const remote_export_name_line = try std.fmt.bufPrint(&buf, "      \"export_name\": \"{s}\",\n", .{self.runtime.remote_node.export_name});
+    try file.writeAll(remote_export_name_line);
+    const remote_export_ro_line = try std.fmt.bufPrint(&buf, "      \"export_ro\": {},\n", .{self.runtime.remote_node.export_ro});
+    try file.writeAll(remote_export_ro_line);
+    const remote_node_id_line = try std.fmt.bufPrint(&buf, "      \"node_id\": \"{s}\",\n", .{self.runtime.remote_node.node_id});
+    try file.writeAll(remote_node_id_line);
+    const remote_lease_line = try std.fmt.bufPrint(&buf, "      \"lease_ttl_ms\": {d},\n", .{self.runtime.remote_node.lease_ttl_ms});
+    try file.writeAll(remote_lease_line);
+    const remote_heartbeat_line = try std.fmt.bufPrint(&buf, "      \"heartbeat_ms\": {d}\n", .{self.runtime.remote_node.heartbeat_ms});
+    try file.writeAll(remote_heartbeat_line);
+    try file.writeAll("    }\n");
     try file.writeAll("  }\n");
 
     try file.writeAll("}\n");

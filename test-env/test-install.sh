@@ -85,6 +85,9 @@ TEST_HOME="$TEST_ROOT/home"
 INSTALL_DIR="$TEST_HOME/.local/bin"
 REPO_DIR="$TEST_HOME/.local/share/ziggy-spiderweb"
 RUNTIME_CWD="$REPO_DIR"
+if [[ "$INSTALL_MODE" == "source" ]]; then
+    RUNTIME_CWD="$REPO_ROOT"
+fi
 SERVER_PORT="${SPIDERWEB_TEST_PORT:-28790}"
 INSTALL_LOG="$TEST_ROOT/install.log"
 SERVER_LOG="$TEST_ROOT/server.log"
@@ -94,6 +97,11 @@ mkdir -p "$TEST_HOME"
 log_info "Running install.sh in isolated HOME: $TEST_HOME"
 (
     cd "$REPO_ROOT"
+    for maybe_empty_var in SPIDERWEB_GIT_REF SPIDERWEB_REPO_DIR SPIDERWEB_REPO_URL SPIDERWEB_RELEASE_ARCHIVE_URL SPIDERWEB_RELEASE_VERSION; do
+        if [[ -z "${!maybe_empty_var:-}" ]]; then
+            unset "$maybe_empty_var"
+        fi
+    done
     export HOME="$TEST_HOME"
     export PATH="$INSTALL_DIR:$PATH"
     export SPIDERWEB_NON_INTERACTIVE=1

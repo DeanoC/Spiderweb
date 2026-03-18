@@ -77,6 +77,11 @@ is_env_set() {
     [[ -n "${!name+x}" ]]
 }
 
+is_env_nonempty() {
+    local name="$1"
+    [[ -n "${!name:-}" ]]
+}
+
 default_release_archive_url() {
     local machine
     machine="$(uname -m 2>/dev/null || true)"
@@ -415,7 +420,7 @@ INSTALL_SOURCE_RESOLVED="$SPIDERWEB_INSTALL_SOURCE"
 if [[ "$INSTALL_SOURCE_RESOLVED" == "auto" ]]; then
     if [[ -n "$SPIDERWEB_RELEASE_ARCHIVE_URL" ]]; then
         INSTALL_SOURCE_RESOLVED="release"
-    elif is_env_set "SPIDERWEB_GIT_REF" || is_env_set "SPIDERWEB_REPO_URL" || is_env_set "SPIDERWEB_REPO_DIR"; then
+    elif is_env_nonempty "SPIDERWEB_GIT_REF" || is_env_nonempty "SPIDERWEB_REPO_URL" || is_env_nonempty "SPIDERWEB_REPO_DIR"; then
         INSTALL_SOURCE_RESOLVED="source"
     elif default_release_archive_url >/dev/null; then
         INSTALL_SOURCE_RESOLVED="release"

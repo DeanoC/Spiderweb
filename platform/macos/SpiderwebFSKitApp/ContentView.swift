@@ -563,24 +563,12 @@ struct ContentView: View {
                 }
 
                 SecretValueRow(
-                    title: "Admin token",
-                    detail: "Full-control token for setup, workspace creation, and administrative access.",
+                    title: "Access token",
+                    detail: "Use this token when another Mac, tool, or saved remote mount needs to connect to this Spiderweb service.",
                     value: revealLocalTokens ? (auth.adminToken ?? "") : maskedToken(auth.adminToken),
-                    copyLabel: "Copy Admin Token",
+                    copyLabel: "Copy Access Token",
                     copyAction: {
                         if let token = auth.adminToken {
-                            controller.copyToClipboard(token)
-                        }
-                    }
-                )
-
-                SecretValueRow(
-                    title: "User token",
-                    detail: "Regular access token for clients that do not need admin privileges.",
-                    value: revealLocalTokens ? (auth.userToken ?? "") : maskedToken(auth.userToken),
-                    copyLabel: "Copy User Token",
-                    copyAction: {
-                        if let token = auth.userToken {
                             controller.copyToClipboard(token)
                         }
                     }

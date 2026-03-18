@@ -2708,8 +2708,9 @@ const AuthTokenStore = struct {
         const mutex = @constCast(&self.mutex);
         mutex.lock();
         defer mutex.unlock();
-        if (secureTokenEql(self.admin_token, token)) return .{ .role = .admin, .token_id = "admin" };
-        if (secureTokenEql(self.user_token, token)) return .{ .role = .user, .token_id = "user" };
+        if (secureTokenEql(self.admin_token, token)) return .{ .role = .admin, .token_id = "access" };
+        // The old user token is now treated as the same effective access role.
+        if (secureTokenEql(self.user_token, token)) return .{ .role = .admin, .token_id = "access-legacy-user" };
         return null;
     }
 

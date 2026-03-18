@@ -429,7 +429,7 @@ final class SpiderwebAppController: ObservableObject {
 
         let authLine: String
         if let authStatus {
-            authLine = "auth admin_present=\(authStatus.adminPresent) user_present=\(authStatus.userPresent)"
+            authLine = "auth access_present=\(authStatus.adminPresent)"
         } else {
             authLine = "auth unknown"
         }

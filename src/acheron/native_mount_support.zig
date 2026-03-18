@@ -533,14 +533,10 @@ fn moduleEnabledFromSnapshot(snapshot: ?NativeFsStatusSnapshot, extension_regist
             if (value.updated_at_ms > 0) {
                 const age = now_ms - value.updated_at_ms;
                 if (age >= 0 and age <= status_snapshot_max_age_ms) {
-                    // A stale or false-negative snapshot should not block the real mount path.
-                    // The actual `mount -t spiderweb ...` call is the authoritative check.
-                    if (value.module_enabled) return true;
-                    return extension_registered;
+                    return value.module_enabled;
                 }
             } else {
-                if (value.module_enabled) return true;
-                return extension_registered;
+                return value.module_enabled;
             }
         }
     }
@@ -752,7 +748,7 @@ test "native_mount_support: trusts fresh enabled status snapshots" {
         .ready = true,
         .updated_at_ms = now_ms - 500,
     }, true, now_ms));
-    try std.testing.expect(moduleEnabledFromSnapshot(.{
+    try std.testing.expect(!moduleEnabledFromSnapshot(.{
         .registered = true,
         .module_enabled = false,
         .ready = false,

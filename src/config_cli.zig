@@ -396,7 +396,7 @@ fn uninstallFsExtension(allocator: std.mem.Allocator) !void {
     _ = try deleteTreeIfExistsAny(status.request_dir);
     const snapshot_path = try native_mount_support.defaultStatusSnapshotPath(allocator);
     defer allocator.free(snapshot_path);
-    _ = try deleteTreeIfExistsAny(snapshot_path);
+    _ = try deleteFileIfExistsAny(snapshot_path);
 
     std.log.info("Unregistered SpiderwebFSKit.app at {s}", .{status.app_path});
     std.log.info("Removed Spiderweb filesystem bundles from /Library/Filesystems", .{});

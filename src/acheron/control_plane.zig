@@ -234,11 +234,13 @@ const Node = struct {
 const NodeVenomDigest = struct {
     venom_id: []u8,
     version: []u8,
+    package_id: ?[]u8 = null,
     digest: u64,
 
     fn deinit(self: *NodeVenomDigest, allocator: std.mem.Allocator) void {
         allocator.free(self.venom_id);
         allocator.free(self.version);
+        if (self.package_id) |value| allocator.free(value);
         self.* = undefined;
     }
 };
@@ -1302,7 +1304,7 @@ pub const ControlPlane = struct {
 
         var previous = std.ArrayListUnmanaged(NodeVenomDigest){};
         defer deinitNodeVenomDigests(self.allocator, &previous);
-        try snapshotNodeVenomDigests(self.allocator, node.venoms.items, &previous);
+        try snapshotNodeVenomDigests(self.allocator, node.venoms.items, node.venom_package_ids.items, &previous);
 
         const prospective_runtime_kind = extractProspectiveNodeRuntimeKind(node, obj.get("platform")) catch return ControlPlaneError.InvalidPayload;
         if (obj.get("venoms")) |venoms_value| {
@@ -1334,7 +1336,7 @@ pub const ControlPlane = struct {
 
         var current = std.ArrayListUnmanaged(NodeVenomDigest){};
         defer deinitNodeVenomDigests(self.allocator, &current);
-        try snapshotNodeVenomDigests(self.allocator, node.venoms.items, &current);
+        try snapshotNodeVenomDigests(self.allocator, node.venoms.items, node.venom_package_ids.items, &current);
         const delta_json = try renderNodeVenomDeltaJson(self.allocator, &previous, &current);
         defer self.allocator.free(delta_json);
 
@@ -4380,19 +4382,35 @@ pub const ControlPlane = struct {
     fn snapshotNodeVenomDigests(
         allocator: std.mem.Allocator,
         venoms: []const venom_catalog.VenomDescriptor,
+        package_ids: []const ?[]u8,
         out: *std.ArrayListUnmanaged(NodeVenomDigest),
     ) !void {
-        for (venoms) |venom| {
+        for (venoms, 0..) |venom, idx| {
             const venom_id = try allocator.dupe(u8, venom.venom_id);
             errdefer allocator.free(venom_id);
             const version = try allocator.dupe(u8, venom.version);
             errdefer allocator.free(version);
+            const package_id = if (idx < package_ids.len) package_ids[idx] else null;
+            const owned_package_id = if (package_id) |value| try allocator.dupe(u8, value) else null;
+            errdefer if (owned_package_id) |value| allocator.free(value);
             try out.append(allocator, .{
                 .venom_id = venom_id,
                 .version = version,
-                .digest = venom_catalog.venomDigest64(venom),
+                .package_id = owned_package_id,
+                .digest = nodeVenomDigest64(venom, package_id),
             });
         }
+    }
+
+    fn nodeVenomDigest64(venom: venom_catalog.VenomDescriptor, package_id: ?[]const u8) u64 {
+        var hasher = std.hash.Wyhash.init(venom_catalog.venomDigest64(venom));
+        if (package_id) |value| {
+            hasher.update(&.{1});
+            hasher.update(value);
+        } else {
+            hasher.update(&.{0});
+        }
+        return hasher.final();
     }
 
     fn deinitNodeVenomDigests(
@@ -7873,6 +7891,48 @@ test "acheron_control_plane: node venom upsert reports unchanged catalog delta" 
     try std.testing.expect(std.mem.indexOf(u8, second, "\"added\":[]") != null);
     try std.testing.expect(std.mem.indexOf(u8, second, "\"updated\":[]") != null);
     try std.testing.expect(std.mem.indexOf(u8, second, "\"removed\":[]") != null);
+}
+
+test "acheron_control_plane: node venom delta changes when only package_id changes" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.init(allocator);
+    defer plane.deinit();
+
+    const installed_a = try plane.installVenomPackage(
+        \\{"package":{"venom_id":"camera_pkg_a","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+    );
+    defer allocator.free(installed_a);
+    const installed_b = try plane.installVenomPackage(
+        \\{"package":{"venom_id":"camera_pkg_b","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+    );
+    defer allocator.free(installed_b);
+
+    const ensured = try plane.ensureNode("delta-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    defer allocator.free(ensured);
+    var ensured_parsed = try std.json.parseFromSlice(std.json.Value, allocator, ensured, .{});
+    defer ensured_parsed.deinit();
+    const node_id = ensured_parsed.value.object.get("node_id").?.string;
+    const node_secret = ensured_parsed.value.object.get("node_secret").?.string;
+
+    const first_upsert = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"native\"}},\"venoms\":[{{\"venom_id\":\"camera-instance\",\"package_id\":\"camera_pkg_a\",\"kind\":\"camera\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/camera\"],\"runtime\":{{\"type\":\"native_proc\"}}}}]}}",
+        .{ node_id, node_secret, node_id },
+    );
+    defer allocator.free(first_upsert);
+    const first = try plane.nodeVenomUpsert(first_upsert);
+    defer allocator.free(first);
+
+    const second_upsert = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"native\"}},\"venoms\":[{{\"venom_id\":\"camera-instance\",\"package_id\":\"camera_pkg_b\",\"kind\":\"camera\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/camera\"],\"runtime\":{{\"type\":\"native_proc\"}}}}]}}",
+        .{ node_id, node_secret, node_id },
+    );
+    defer allocator.free(second_upsert);
+    const second = try plane.nodeVenomUpsert(second_upsert);
+    defer allocator.free(second);
+
+    try std.testing.expect(std.mem.indexOf(u8, second, "\"venom_delta\":{\"changed\":true") != null);
 }
 
 test "acheron_control_plane: node venom event retention honors configured history max" {

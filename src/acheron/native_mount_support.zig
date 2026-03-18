@@ -504,7 +504,8 @@ fn fskitModuleEnabled(allocator: std.mem.Allocator) bool {
 fn cachedModuleEnabled(allocator: std.mem.Allocator, extension_registered: bool) bool {
     if (!extension_registered) return false;
     const snapshot = loadNativeFsStatusSnapshot(allocator) catch null;
-    return moduleEnabledFromSnapshot(snapshot, extension_registered, std.time.milliTimestamp());
+    return moduleEnabledFromSnapshot(snapshot, extension_registered, std.time.milliTimestamp()) orelse
+        fskitModuleEnabled(allocator);
 }
 
 fn loadNativeFsStatusSnapshot(allocator: std.mem.Allocator) !?NativeFsStatusSnapshot {
@@ -526,7 +527,7 @@ fn loadNativeFsStatusSnapshot(allocator: std.mem.Allocator) !?NativeFsStatusSnap
     return parsed.value;
 }
 
-fn moduleEnabledFromSnapshot(snapshot: ?NativeFsStatusSnapshot, extension_registered: bool, now_ms: i64) bool {
+fn moduleEnabledFromSnapshot(snapshot: ?NativeFsStatusSnapshot, extension_registered: bool, now_ms: i64) ?bool {
     if (!extension_registered) return false;
     if (snapshot) |value| {
         if (value.version == 1 and value.registered) {
@@ -540,7 +541,7 @@ fn moduleEnabledFromSnapshot(snapshot: ?NativeFsStatusSnapshot, extension_regist
             }
         }
     }
-    return false;
+    return null;
 }
 
 fn nativeMountProbeShowsEnabled(output: []const u8, term: std.process.Child.Term) bool {
@@ -747,23 +748,23 @@ test "native_mount_support: trusts fresh enabled status snapshots" {
         .module_enabled = true,
         .ready = true,
         .updated_at_ms = now_ms - 500,
-    }, true, now_ms));
+    }, true, now_ms).?);
     try std.testing.expect(!moduleEnabledFromSnapshot(.{
         .registered = true,
         .module_enabled = false,
         .ready = false,
         .updated_at_ms = now_ms - 500,
-    }, true, now_ms));
+    }, true, now_ms).?);
 }
 
-test "native_mount_support: stale or missing snapshots do not imply enabled modules" {
+test "native_mount_support: stale or missing snapshots report unknown module state" {
     const now_ms: i64 = status_snapshot_max_age_ms + 3_000_000;
-    try std.testing.expect(!moduleEnabledFromSnapshot(null, true, now_ms));
-    try std.testing.expect(!moduleEnabledFromSnapshot(.{
+    try std.testing.expectEqual(@as(?bool, null), moduleEnabledFromSnapshot(null, true, now_ms));
+    try std.testing.expectEqual(@as(?bool, null), moduleEnabledFromSnapshot(.{
         .registered = true,
         .module_enabled = false,
         .ready = false,
         .updated_at_ms = now_ms - status_snapshot_max_age_ms - 1,
     }, true, now_ms));
-    try std.testing.expect(!moduleEnabledFromSnapshot(null, false, now_ms));
+    try std.testing.expectEqual(@as(?bool, false), moduleEnabledFromSnapshot(null, false, now_ms));
 }

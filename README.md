@@ -19,6 +19,8 @@ If that resonates, start with:
 - `docs/README.md`
 - `CODEX_EXTERNAL_AGENT.md` for the current non-Spider-Monkey external-worker path
 
+![Spiderweb](Spiderweb.png)
+
 ## Quick Start
 
 ### Workspace-First External Worker Flow

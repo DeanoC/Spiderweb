@@ -21,14 +21,14 @@ pub fn main() !void {
 
     if (requested_help) {
         const help =
-            "Spiderweb v0.3.1 - Workspace Host for OpenClaw Protocol\n" ++
+            "Spiderweb v0.3.2 - Workspace Host for OpenClaw Protocol\n" ++
             "\n" ++
             "A WebSocket host that exposes Spiderweb workspaces, nodes, venoms, and the virtual filesystem.\n" ++
             "\n" ++
             "Usage: spiderweb [options]\n" ++
             "\n" ++
             "Options:\n" ++
-            "  --bind <addr>    Bind address (default: from config or 127.0.0.1)\n" ++
+            "  --bind <addr>    Bind address (default: from config or 0.0.0.0)\n" ++
             "  --port <port>    Port number (default: from config or 18790)\n" ++
             "  --help, -h       Show this help\n" ++
             "\n" ++
@@ -56,7 +56,7 @@ pub fn main() !void {
     }
     try config.normalizeRuntimePathsFromSpiderWebRoot();
 
-    std.log.info("Starting Spiderweb v0.3.1 (Workspace Host)", .{});
+    std.log.info("Starting Spiderweb v0.3.2 (Workspace Host)", .{});
     std.log.info("Config: {s}", .{config.config_path});
     std.log.info("Workspace mount binary: {s}", .{config.runtime.sandbox_fs_mount_bin});
 

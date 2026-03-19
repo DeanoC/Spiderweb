@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.3.2 - 2026-03-19
+
+### Remote Connectivity and Packaging
+- Fixed remote workspace status and mount graph endpoint URLs so routed `/v2/fs` operations no longer leak `127.0.0.1` to other machines.
+- Defaulted new and upgraded installs to LAN-reachable server binds and surfaced that reachability clearly in the macOS app.
+- Kept the macOS packaged filesystem repair path self-contained so installed builds do not depend on a local Xcode checkout.
+
 ## 0.3.1 - 2026-03-13
 
 ### External Agent Machine Independence

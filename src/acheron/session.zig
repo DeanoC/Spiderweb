@@ -8728,7 +8728,7 @@ pub const Session = struct {
             }
             const source_id = try self.allocator.dupe(u8, normalized_path);
             errdefer self.allocator.free(source_id);
-            const fs_url = try self.allocator.dupe(u8, fs_url_raw.string);
+            const fs_url = try self.rewriteMountGraphSourceFsUrl(fs_url_raw.string);
             errdefer self.allocator.free(fs_url);
             const export_name = if (mount_value.object.get("export_name")) |value|
                 if (value == .string and value.string.len > 0) try self.allocator.dupe(u8, value.string) else null
@@ -8744,6 +8744,79 @@ pub const Session = struct {
             });
         }
         return out;
+    }
+
+    fn rewriteMountGraphSourceFsUrl(self: *Session, raw_fs_url: []const u8) ![]u8 {
+        const namespace_mount_url = self.namespace_mount_url orelse return self.allocator.dupe(u8, raw_fs_url);
+        return rewriteLocalOnlyWsUrlToNamespaceAuthority(self.allocator, raw_fs_url, namespace_mount_url);
+    }
+
+    const ParsedWsUrl = struct {
+        scheme: []const u8,
+        authority: []const u8,
+        path: []const u8,
+    };
+
+    fn parseWsUrlParts(url: []const u8) ?ParsedWsUrl {
+        const scheme: []const u8 = if (std.mem.startsWith(u8, url, "ws://"))
+            "ws"
+        else if (std.mem.startsWith(u8, url, "wss://"))
+            "wss"
+        else
+            return null;
+        const prefix_len = scheme.len + 3;
+        if (url.len <= prefix_len) return null;
+        const rest = url[prefix_len..];
+        const slash_idx = std.mem.indexOfScalar(u8, rest, '/') orelse {
+            return .{
+                .scheme = scheme,
+                .authority = rest,
+                .path = "/",
+            };
+        };
+        if (slash_idx == 0) return null;
+        return .{
+            .scheme = scheme,
+            .authority = rest[0..slash_idx],
+            .path = rest[slash_idx..],
+        };
+    }
+
+    fn wsAuthorityHost(authority: []const u8) []const u8 {
+        const trimmed = std.mem.trim(u8, authority, " \t\r\n");
+        if (trimmed.len == 0) return trimmed;
+        if (trimmed[0] == '[') {
+            const closing = std.mem.indexOfScalar(u8, trimmed, ']') orelse return trimmed;
+            if (closing <= 1) return "";
+            return trimmed[1..closing];
+        }
+        const colon_idx = std.mem.lastIndexOfScalar(u8, trimmed, ':') orelse return trimmed;
+        return trimmed[0..colon_idx];
+    }
+
+    fn wsAuthorityIsLocalOnly(authority: []const u8) bool {
+        const host = wsAuthorityHost(authority);
+        if (host.len == 0) return false;
+        if (std.ascii.eqlIgnoreCase(host, "localhost")) return true;
+        if (std.mem.eql(u8, host, "::1") or std.mem.eql(u8, host, "::")) return true;
+        if (std.mem.eql(u8, host, "0.0.0.0")) return true;
+        return std.mem.startsWith(u8, host, "127.");
+    }
+
+    fn rewriteLocalOnlyWsUrlToNamespaceAuthority(
+        allocator: std.mem.Allocator,
+        raw_fs_url: []const u8,
+        namespace_mount_url: []const u8,
+    ) ![]u8 {
+        const fs_url = parseWsUrlParts(raw_fs_url) orelse return allocator.dupe(u8, raw_fs_url);
+        if (!wsAuthorityIsLocalOnly(fs_url.authority)) return allocator.dupe(u8, raw_fs_url);
+
+        const namespace_url = parseWsUrlParts(namespace_mount_url) orelse return allocator.dupe(u8, raw_fs_url);
+        return std.fmt.allocPrint(
+            allocator,
+            "{s}://{s}{s}",
+            .{ namespace_url.scheme, namespace_url.authority, fs_url.path },
+        );
     }
 
     fn isSyntheticBrowseLocalMountGraphPath(path: []const u8) bool {
@@ -8795,6 +8868,25 @@ pub const Session = struct {
         try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/nodes/local/projects/proj-1/fs/local::fs"));
         try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/services"));
         try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/foo/meta"));
+    }
+
+    test "mount graph rewrites local-only fs sources to the connected namespace authority" {
+        const allocator = std.testing.allocator;
+        const rewritten = try rewriteLocalOnlyWsUrlToNamespaceAuthority(
+            allocator,
+            "ws://127.0.0.1:18790/v2/fs",
+            "ws://192.168.10.101:18790/",
+        );
+        defer allocator.free(rewritten);
+        try std.testing.expectEqualStrings("ws://192.168.10.101:18790/v2/fs", rewritten);
+
+        const preserved = try rewriteLocalOnlyWsUrlToNamespaceAuthority(
+            allocator,
+            "ws://edge-box.local:18790/v2/fs",
+            "ws://192.168.10.101:18790/",
+        );
+        defer allocator.free(preserved);
+        try std.testing.expectEqualStrings("ws://edge-box.local:18790/v2/fs", preserved);
     }
 
     fn appendMountGraphAncestorChain(

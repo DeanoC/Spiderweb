@@ -3,9 +3,12 @@ const builtin = @import("builtin");
 
 const Config = @This();
 
+pub const default_server_bind = "0.0.0.0";
+pub const default_server_port: u16 = 18790;
+
 pub const ServerConfig = struct {
-    bind: []const u8 = "127.0.0.1",
-    port: u16 = 18790,
+    bind: []const u8 = default_server_bind,
+    port: u16 = default_server_port,
 };
 
 pub const LogConfig = struct {
@@ -146,7 +149,7 @@ config_path: []const u8,
 const default_config =
     \\{
     \\  "server": {
-    \\    "bind": "127.0.0.1",
+    \\    "bind": "0.0.0.0",
     \\    "port": 18790
     \\  },
     \\  "log": {
@@ -191,6 +194,24 @@ const default_config =
     \\  }
     \\}
 ;
+
+pub fn defaultRemoteReachableServerBind() []const u8 {
+    return default_server_bind;
+}
+
+pub fn serverBindIsLoopback(bind: []const u8) bool {
+    const trimmed = std.mem.trim(u8, bind, " \t\r\n");
+    if (trimmed.len == 0) return false;
+    if (std.ascii.eqlIgnoreCase(trimmed, "localhost")) return true;
+    if (std.mem.eql(u8, trimmed, "::1") or std.mem.eql(u8, trimmed, "[::1]")) return true;
+    return std.mem.startsWith(u8, trimmed, "127.");
+}
+
+pub fn serverBindAllowsRemoteConnections(bind: []const u8) bool {
+    const trimmed = std.mem.trim(u8, bind, " \t\r\n");
+    if (trimmed.len == 0) return false;
+    return !serverBindIsLoopback(trimmed);
+}
 
 const SandboxPathDefaults = struct {
     mounts_root: []u8,
@@ -266,8 +287,8 @@ pub fn init(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
     var self = Config{
         .allocator = allocator,
         .server = .{
-            .bind = try allocator.dupe(u8, "127.0.0.1"),
-            .port = 18790,
+            .bind = try allocator.dupe(u8, default_server_bind),
+            .port = default_server_port,
         },
         .log = .{
             .level = try allocator.dupe(u8, "info"),
@@ -968,8 +989,8 @@ test "Config defaults" {
     var config = try Config.init(allocator, cfg_path);
     defer config.deinit();
 
-    try std.testing.expectEqualStrings("127.0.0.1", config.server.bind);
-    try std.testing.expectEqual(@as(u16, 18790), config.server.port);
+    try std.testing.expectEqualStrings(default_server_bind, config.server.bind);
+    try std.testing.expectEqual(default_server_port, config.server.port);
     try std.testing.expectEqual(@as(usize, 512), config.runtime.inbound_queue_max);
     try std.testing.expectEqual(@as(usize, 16), config.runtime.connection_worker_threads);
     try std.testing.expectEqual(@as(usize, 2), config.runtime.runtime_worker_threads);
@@ -985,6 +1006,19 @@ test "Config defaults" {
     try std.testing.expectEqualStrings("", config.runtime.default_agent_id);
     try std.testing.expectEqualStrings("", config.runtime.spider_web_root);
     try std.testing.expectEqualStrings(".spiderweb-ltm", config.runtime.ltm_directory);
+}
+
+test "Config server bind helpers distinguish loopback from remote binds" {
+    try std.testing.expect(serverBindIsLoopback("127.0.0.1"));
+    try std.testing.expect(serverBindIsLoopback("127.0.0.42"));
+    try std.testing.expect(serverBindIsLoopback("localhost"));
+    try std.testing.expect(serverBindIsLoopback("::1"));
+    try std.testing.expect(serverBindIsLoopback("[::1]"));
+    try std.testing.expect(!serverBindIsLoopback("0.0.0.0"));
+    try std.testing.expect(!serverBindIsLoopback("192.168.1.20"));
+    try std.testing.expect(serverBindAllowsRemoteConnections("0.0.0.0"));
+    try std.testing.expect(serverBindAllowsRemoteConnections("::"));
+    try std.testing.expect(!serverBindAllowsRemoteConnections("127.0.0.1"));
 }
 
 test "Config ignores deprecated runtime.sandbox_enabled field and does not persist it" {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
+const credential_store_mod = @import("credential_store.zig");
 const native_mount_support = @import("acheron/native_mount_support.zig");
 const first_run = @import("first_run.zig");
 
@@ -26,6 +27,59 @@ const NativeFsStatusSnapshot = struct {
     mount_helper_present: bool,
     runtime_ready: bool,
     updated_at_ms: i64,
+};
+
+const AuthStatusJson = struct {
+    path: []const u8,
+    admin_present: bool,
+    user_present: bool,
+    admin_token: ?[]const u8 = null,
+    user_token: ?[]const u8 = null,
+};
+
+const ServiceStatusJson = struct {
+    manager: []const u8,
+    unit_path: []const u8,
+    installed: bool,
+    loaded: bool,
+    enabled: ?[]const u8 = null,
+    active: ?[]const u8 = null,
+};
+
+const FsExtensionStatusJson = struct {
+    manager: []const u8 = "native-fskit",
+    supported_os: bool,
+    active_app: []const u8,
+    built_app_source: ?[]const u8 = null,
+    extension_bundle: []const u8,
+    runtime_source: []const u8,
+    filesystem_bundle: []const u8,
+    extension_present: bool,
+    runtime_ready: bool,
+    signing_identity: bool,
+    app_group_entitlements: bool,
+    extension_fs_entitlement: bool,
+    app_provisioned: bool,
+    extension_provisioned: bool,
+    registered: bool,
+    module_enabled: bool,
+    ready: bool,
+    request_dir: []const u8,
+    notes: []const []const u8,
+};
+
+const RemoteNodeStatusJson = struct {
+    enabled: bool,
+    remote_control_url: []const u8,
+    node_name: []const u8,
+    public_base_url: []const u8,
+    export_path: []const u8,
+    export_name: []const u8,
+    export_ro: bool,
+    node_id: []const u8,
+    lease_ttl_ms: u64,
+    heartbeat_ms: u64,
+    secret_present: bool,
 };
 
 pub fn main() !void {
@@ -72,9 +126,14 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
     if (std.mem.eql(u8, subcommand, "status")) {
         var reveal_tokens = false;
+        var json_output = false;
         for (args[1..]) |arg| {
             if (std.mem.eql(u8, arg, "--reveal")) {
                 reveal_tokens = true;
+                continue;
+            }
+            if (std.mem.eql(u8, arg, "--json")) {
+                json_output = true;
                 continue;
             }
             std.log.err("Unknown auth status arg: {s}", .{arg});
@@ -88,6 +147,20 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
         var snapshot = try loadAuthStatusSnapshot(allocator, path);
         defer snapshot.deinit(allocator);
+
+        if (json_output) {
+            const payload = try std.json.Stringify.valueAlloc(allocator, AuthStatusJson{
+                .path = path,
+                .admin_present = snapshot.admin_token.len > 0,
+                .user_present = snapshot.user_token.len > 0,
+                .admin_token = if (reveal_tokens) snapshot.admin_token else null,
+                .user_token = if (reveal_tokens) snapshot.user_token else null,
+            }, .{});
+            defer allocator.free(payload);
+            try std.fs.File.stdout().writeAll(payload);
+            try std.fs.File.stdout().writeAll("\n");
+            return;
+        }
 
         const admin_display_owned = if (reveal_tokens)
             null
@@ -227,16 +300,20 @@ fn handleConfigCommand(allocator: std.mem.Allocator, args: []const []const u8) !
     } else if (std.mem.eql(u8, subcommand, "uninstall-service")) {
         try uninstallService(allocator);
     } else if (std.mem.eql(u8, subcommand, "service-status")) {
-        try printServiceStatus(allocator);
+        const json_output = try parseJsonOnlyFlag(args[1..]);
+        try printServiceStatus(allocator, json_output);
     } else if (std.mem.eql(u8, subcommand, "install-fs-extension")) {
         try installFsExtension(allocator);
     } else if (std.mem.eql(u8, subcommand, "uninstall-fs-extension")) {
         try uninstallFsExtension(allocator);
     } else if (std.mem.eql(u8, subcommand, "fs-extension-status")) {
-        try printFsExtensionStatus(allocator);
+        const json_output = try parseJsonOnlyFlag(args[1..]);
+        try printFsExtensionStatus(allocator, json_output);
+    } else if (std.mem.eql(u8, subcommand, "remote-node")) {
+        try handleRemoteNodeConfigCommand(allocator, args[1..]);
     } else {
         std.log.err("Unknown config command: {s}", .{subcommand});
-        std.log.info("Available: set-server, set-log, path, install-service, uninstall-service, service-status, install-fs-extension, uninstall-fs-extension, fs-extension-status", .{});
+        std.log.info("Available: set-server, set-log, path, install-service, uninstall-service, service-status, install-fs-extension, uninstall-fs-extension, fs-extension-status, remote-node", .{});
         return error.UnknownCommand;
     }
 }
@@ -262,6 +339,8 @@ const CommandResult = struct {
 };
 
 fn installService(allocator: std.mem.Allocator) !void {
+    try ensureDefaultLocalWorkspaceRootConfig(allocator);
+    try ensureDefaultRuntimeStorageConfig(allocator);
     return switch (detectServiceManager()) {
         .systemd_user => installSystemdUserService(allocator),
         .launchd_user => installLaunchdUserService(allocator),
@@ -277,12 +356,236 @@ fn uninstallService(allocator: std.mem.Allocator) !void {
     };
 }
 
-fn printServiceStatus(allocator: std.mem.Allocator) !void {
+fn parseJsonOnlyFlag(args: []const []const u8) !bool {
+    var json_output = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--json")) {
+            json_output = true;
+            continue;
+        }
+        std.log.err("Unknown status arg: {s}", .{arg});
+        return error.InvalidArguments;
+    }
+    return json_output;
+}
+
+fn printServiceStatus(allocator: std.mem.Allocator, json_output: bool) !void {
     return switch (detectServiceManager()) {
-        .systemd_user => printSystemdUserServiceStatus(allocator),
-        .launchd_user => printLaunchdUserServiceStatus(allocator),
+        .systemd_user => printSystemdUserServiceStatus(allocator, json_output),
+        .launchd_user => printLaunchdUserServiceStatus(allocator, json_output),
         .unsupported => error.UnsupportedPlatform,
     };
+}
+
+fn handleRemoteNodeConfigCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const subcommand = if (args.len > 0) args[0] else "status";
+    const subcommand_args = commandTail(args);
+    if (std.mem.eql(u8, subcommand, "status")) {
+        const json_output = try parseJsonOnlyFlag(subcommand_args);
+        try printRemoteNodeStatus(allocator, json_output);
+        return;
+    }
+    if (std.mem.eql(u8, subcommand, "clear")) {
+        try clearRemoteNodeConfig(allocator);
+        return;
+    }
+    if (std.mem.eql(u8, subcommand, "set")) {
+        try setRemoteNodeConfig(allocator, subcommand_args);
+        return;
+    }
+
+    std.log.err("Unknown remote-node command: {s}", .{subcommand});
+    std.log.info("Available: status, set, clear", .{});
+    return error.UnknownCommand;
+}
+
+fn commandTail(args: []const []const u8) []const []const u8 {
+    return if (args.len > 0) args[1..] else args[0..0];
+}
+
+fn printRemoteNodeStatus(allocator: std.mem.Allocator, json_output: bool) !void {
+    var config = try Config.init(allocator, null);
+    defer config.deinit();
+    const store = credential_store_mod.CredentialStore.init(allocator);
+    const secret_present = blk: {
+        const node_id = std.mem.trim(u8, config.runtime.remote_node.node_id, " \t\r\n");
+        if (node_id.len == 0) break :blk false;
+        const secret = store.getRemoteNodeSecret(node_id) orelse break :blk false;
+        allocator.free(secret);
+        break :blk true;
+    };
+
+    if (json_output) {
+        const payload = try std.json.Stringify.valueAlloc(allocator, RemoteNodeStatusJson{
+            .enabled = config.runtime.remote_node.enabled,
+            .remote_control_url = config.runtime.remote_node.remote_control_url,
+            .node_name = config.runtime.remote_node.node_name,
+            .public_base_url = config.runtime.remote_node.public_base_url,
+            .export_path = config.runtime.remote_node.export_path,
+            .export_name = config.runtime.remote_node.export_name,
+            .export_ro = config.runtime.remote_node.export_ro,
+            .node_id = config.runtime.remote_node.node_id,
+            .lease_ttl_ms = config.runtime.remote_node.lease_ttl_ms,
+            .heartbeat_ms = config.runtime.remote_node.heartbeat_ms,
+            .secret_present = secret_present,
+        }, .{});
+        defer allocator.free(payload);
+        try std.fs.File.stdout().writeAll(payload);
+        try std.fs.File.stdout().writeAll("\n");
+        return;
+    }
+
+    const out = try std.fmt.allocPrint(
+        allocator,
+        "Remote node\n  enabled:            {s}\n  remote_control_url: {s}\n  node_name:          {s}\n  public_base_url:    {s}\n  export_path:        {s}\n  export_name:        {s}\n  export_ro:          {s}\n  node_id:            {s}\n  lease_ttl_ms:       {d}\n  heartbeat_ms:       {d}\n  secret_present:     {s}\n",
+        .{
+            if (config.runtime.remote_node.enabled) "yes" else "no",
+            config.runtime.remote_node.remote_control_url,
+            config.runtime.remote_node.node_name,
+            config.runtime.remote_node.public_base_url,
+            config.runtime.remote_node.export_path,
+            config.runtime.remote_node.export_name,
+            if (config.runtime.remote_node.export_ro) "yes" else "no",
+            config.runtime.remote_node.node_id,
+            config.runtime.remote_node.lease_ttl_ms,
+            config.runtime.remote_node.heartbeat_ms,
+            if (secret_present) "yes" else "no",
+        },
+    );
+    defer allocator.free(out);
+    try std.fs.File.stdout().writeAll(out);
+}
+
+fn setRemoteNodeConfig(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var remote_control_url: ?[]const u8 = null;
+    var node_name: ?[]const u8 = null;
+    var public_base_url: ?[]const u8 = null;
+    var export_path: ?[]const u8 = null;
+    var export_name: ?[]const u8 = null;
+    var node_id: ?[]const u8 = null;
+    var node_secret: ?[]const u8 = null;
+    var export_ro = false;
+    var lease_ttl_ms: ?u64 = null;
+    var heartbeat_ms: ?u64 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--remote-control-url")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            remote_control_url = args[i];
+        } else if (std.mem.eql(u8, arg, "--node-name")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            node_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--public-base-url")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            public_base_url = args[i];
+        } else if (std.mem.eql(u8, arg, "--export-path")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            export_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--export-name")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            export_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--node-id")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            node_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--node-secret")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            node_secret = args[i];
+        } else if (std.mem.eql(u8, arg, "--lease-ttl-ms")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            lease_ttl_ms = try std.fmt.parseInt(u64, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--heartbeat-ms")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            heartbeat_ms = try std.fmt.parseInt(u64, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--read-only")) {
+            export_ro = true;
+        } else {
+            std.log.err("Unknown remote-node set arg: {s}", .{arg});
+            return error.InvalidArguments;
+        }
+    }
+
+    const next_remote_control_url = remote_control_url orelse return error.InvalidArguments;
+    const next_node_name = node_name orelse return error.InvalidArguments;
+    const next_public_base_url = public_base_url orelse return error.InvalidArguments;
+    const next_export_path = export_path orelse return error.InvalidArguments;
+    const next_node_id = node_id orelse return error.InvalidArguments;
+
+    var config = try Config.init(allocator, null);
+    defer config.deinit();
+
+    replaceOwnedString(allocator, &config.runtime.remote_node.remote_control_url, next_remote_control_url) catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.node_name, next_node_name) catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.public_base_url, next_public_base_url) catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.export_path, next_export_path) catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.export_name, export_name orelse "fs") catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.node_id, next_node_id) catch return error.OutOfMemory;
+    config.runtime.remote_node.export_ro = export_ro;
+    config.runtime.remote_node.enabled = true;
+    const next_lease_ttl_ms = lease_ttl_ms orelse config.runtime.remote_node.lease_ttl_ms;
+    const next_heartbeat_ms = heartbeat_ms orelse config.runtime.remote_node.heartbeat_ms;
+    try validateRemoteNodeHeartbeatSettings(next_lease_ttl_ms, next_heartbeat_ms);
+    config.runtime.remote_node.lease_ttl_ms = next_lease_ttl_ms;
+    config.runtime.remote_node.heartbeat_ms = next_heartbeat_ms;
+    try config.save();
+
+    if (node_secret) |secret| {
+        const store = credential_store_mod.CredentialStore.init(allocator);
+        try store.setRemoteNodeSecret(next_node_id, secret);
+    }
+}
+
+fn validateRemoteNodeHeartbeatSettings(lease_ttl_ms: u64, heartbeat_ms: u64) !void {
+    if (lease_ttl_ms == 0 or heartbeat_ms == 0 or heartbeat_ms > lease_ttl_ms) {
+        if (!builtin.is_test) {
+            std.log.err(
+                "invalid remote-node heartbeat/lease settings (heartbeat={d} lease={d})",
+                .{ heartbeat_ms, lease_ttl_ms },
+            );
+        }
+        return error.InvalidArguments;
+    }
+}
+
+fn clearRemoteNodeConfig(allocator: std.mem.Allocator) !void {
+    var config = try Config.init(allocator, null);
+    defer config.deinit();
+
+    const previous_node_id = try allocator.dupe(u8, std.mem.trim(u8, config.runtime.remote_node.node_id, " \t\r\n"));
+    defer allocator.free(previous_node_id);
+
+    replaceOwnedString(allocator, &config.runtime.remote_node.remote_control_url, "") catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.node_name, "") catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.public_base_url, "") catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.export_path, "") catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.export_name, "fs") catch return error.OutOfMemory;
+    replaceOwnedString(allocator, &config.runtime.remote_node.node_id, "") catch return error.OutOfMemory;
+    config.runtime.remote_node.export_ro = false;
+    config.runtime.remote_node.enabled = false;
+    config.runtime.remote_node.lease_ttl_ms = 15 * 60 * 1000;
+    config.runtime.remote_node.heartbeat_ms = (15 * 60 * 1000) / 2;
+    try config.save();
+
+    if (previous_node_id.len > 0) {
+        const store = credential_store_mod.CredentialStore.init(allocator);
+        store.clearRemoteNodeSecret(previous_node_id) catch {};
+    }
+}
+
+fn replaceOwnedString(allocator: std.mem.Allocator, target: *[]const u8, next: []const u8) !void {
+    const dupe = try allocator.dupe(u8, next);
+    allocator.free(target.*);
+    target.* = dupe;
 }
 
 fn installFsExtension(allocator: std.mem.Allocator) !void {
@@ -292,27 +595,34 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
     defer status.deinit(allocator);
 
     if (!status.supported_os) return error.UnsupportedMacosVersion;
-    const source_app_path = status.source_app_path orelse {
-        std.log.err("Could not find a built SpiderwebFSKit.app. Build it from Xcode or with `xcodebuild` under platform/macos first.", .{});
-        return error.NativeFsExtensionNotInstalled;
-    };
     const target_app_path = status.app_path;
-    const install_script_path = try native_mount_support.resolveFilesystemBundleInstallScriptPath(allocator) orelse {
-        std.log.err("Could not find install-spiderweb-fskit-filesystem-bundle.sh under platform/macos/scripts.", .{});
+    const source_app_path = blk: {
+        if (status.source_app_path) |value| break :blk value;
+        if (pathExists(target_app_path)) break :blk target_app_path;
+        std.log.err("Could not find Spiderweb.app to register. Reinstall Spiderweb.app or build it from Xcode under platform/macos.", .{});
         return error.NativeFsExtensionNotInstalled;
     };
-    defer allocator.free(install_script_path);
+    const source_is_installed_app = std.mem.eql(u8, source_app_path, target_app_path);
+    const install_script_path = try native_mount_support.resolveFilesystemBundleInstallScriptPath(allocator);
+    defer if (install_script_path) |value| allocator.free(value);
 
     stopNativeFsExtensionProcesses(allocator);
-    try cleanupLegacyNativeFsArtifacts(allocator, source_app_path);
+    try cleanupLegacyNativeFsArtifacts(
+        allocator,
+        target_app_path,
+        if (source_is_installed_app) status.filesystem_bundle_path else null,
+    );
+    try cleanupDerivedDataNativeFsArtifacts(allocator, target_app_path);
 
-    if (try runCommandBestEffort(allocator, &.{
-        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-        "-u",
-        source_app_path,
-    })) |result| {
-        var owned = result;
-        owned.deinit(allocator);
+    if (!source_is_installed_app) {
+        if (try runCommandBestEffort(allocator, &.{
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+            "-u",
+            source_app_path,
+        })) |result| {
+            var owned = result;
+            owned.deinit(allocator);
+        }
     }
 
     if (pathExists(status.extension_path)) {
@@ -322,14 +632,23 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
         }
     }
 
-    try installBundleTreeFromSource(
-        allocator,
-        source_app_path,
-        target_app_path,
-        isSystemApplicationsPath(target_app_path),
-        null,
-    );
-    try runCommandSuccess(allocator, &.{ "/bin/bash", install_script_path });
+    if (!source_is_installed_app) {
+        try installBundleTreeFromSource(
+            allocator,
+            source_app_path,
+            target_app_path,
+            isSystemApplicationsPath(target_app_path),
+            null,
+        );
+    }
+
+    if (!status.filesystem_bundle_installed or !status.mount_helper_present or !source_is_installed_app) {
+        const script_path = install_script_path orelse {
+            std.log.err("Could not find install-spiderweb-fskit-filesystem-bundle.sh under platform/macos/scripts.", .{});
+            return error.NativeFsExtensionNotInstalled;
+        };
+        try runCommandSuccess(allocator, &.{ "/bin/bash", script_path });
+    }
     try runCommandSuccess(allocator, &.{
         "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
         "-f",
@@ -364,7 +683,11 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
     defer refreshed.deinit(allocator);
     try writeNativeFsStatusSnapshot(allocator, refreshed);
 
-    std.log.info("Installed SpiderwebFSKit.app from {s} to {s}", .{ source_app_path, target_app_path });
+    if (source_is_installed_app) {
+        std.log.info("Registered installed Spiderweb.app at {s}", .{target_app_path});
+    } else {
+        std.log.info("Installed Spiderweb.app from {s} to {s}", .{ source_app_path, target_app_path });
+    }
     std.log.info("Installed spiderweb.fs to {s}", .{status.filesystem_bundle_path});
     std.log.info("If macOS prompts for approval, enable the file system extension in System Settings -> General -> Login Items & Extensions.", .{});
 }
@@ -392,13 +715,13 @@ fn uninstallFsExtension(allocator: std.mem.Allocator) !void {
             owned.deinit(allocator);
         }
     }
-    try cleanupLegacyNativeFsArtifacts(allocator, status.app_path);
+    try cleanupLegacyNativeFsArtifacts(allocator, status.app_path, null);
     _ = try deleteTreeIfExistsAny(status.request_dir);
     const snapshot_path = try native_mount_support.defaultStatusSnapshotPath(allocator);
     defer allocator.free(snapshot_path);
     _ = try deleteFileIfExistsAny(snapshot_path);
 
-    std.log.info("Unregistered SpiderwebFSKit.app at {s}", .{status.app_path});
+    std.log.info("Unregistered Spiderweb.app at {s}", .{status.app_path});
     std.log.info("Removed Spiderweb filesystem bundles from /Library/Filesystems", .{});
 }
 
@@ -419,7 +742,11 @@ fn stopNativeFsExtensionProcesses(allocator: std.mem.Allocator) void {
     }
 }
 
-fn cleanupLegacyNativeFsArtifacts(allocator: std.mem.Allocator, active_app_path: []const u8) !void {
+fn cleanupLegacyNativeFsArtifacts(
+    allocator: std.mem.Allocator,
+    active_app_path: []const u8,
+    active_filesystem_bundle_path: ?[]const u8,
+) !void {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch null;
     defer if (home) |value| allocator.free(value);
 
@@ -460,6 +787,9 @@ fn cleanupLegacyNativeFsArtifacts(allocator: std.mem.Allocator, active_app_path:
         "/Library/Filesystems/spiderweb.fs.disabled-codex",
     };
     for (legacy_filesystem_paths) |path| {
+        if (active_filesystem_bundle_path) |active_path| {
+            if (std.mem.eql(u8, path, active_path)) continue;
+        }
         if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-r", path })) |result| {
             var owned = result;
             owned.deinit(allocator);
@@ -470,12 +800,101 @@ fn cleanupLegacyNativeFsArtifacts(allocator: std.mem.Allocator, active_app_path:
     }
 }
 
-fn printFsExtensionStatus(allocator: std.mem.Allocator) !void {
+fn cleanupDerivedDataNativeFsArtifacts(allocator: std.mem.Allocator, active_app_path: []const u8) !void {
+    if (builtin.os.tag != .macos) return;
+
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return;
+    defer allocator.free(home);
+    const derived_data_root = try std.fs.path.join(allocator, &.{ home, "Library", "Developer", "Xcode", "DerivedData" });
+    defer allocator.free(derived_data_root);
+    if (!pathExists(derived_data_root)) return;
+
+    var result = try runCommandBestEffort(allocator, &.{
+        "find",
+        derived_data_root,
+        "-maxdepth",
+        "5",
+        "-type",
+        "d",
+        "-name",
+        native_mount_support.app_bundle_name,
+    });
+    defer if (result) |*value| value.deinit(allocator);
+
+    if (result) |value| {
+        if (!commandExitedSuccessfully(value)) return;
+        var lines = std.mem.tokenizeAny(u8, value.stdout, "\r\n");
+        while (lines.next()) |app_path| {
+            if (app_path.len == 0) continue;
+            if (std.mem.eql(u8, app_path, active_app_path)) continue;
+
+            const extension_path = try std.fs.path.join(
+                allocator,
+                &.{ app_path, "Contents", "Extensions", native_mount_support.extension_bundle_name },
+            );
+            defer allocator.free(extension_path);
+
+            if (pathExists(extension_path)) {
+                if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-r", extension_path })) |plugin_result| {
+                    var owned_plugin_result = plugin_result;
+                    owned_plugin_result.deinit(allocator);
+                }
+            }
+            if (try runCommandBestEffort(allocator, &.{
+                "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+                "-u",
+                app_path,
+            })) |ls_result| {
+                var owned_ls_result = ls_result;
+                owned_ls_result.deinit(allocator);
+            }
+        }
+    }
+}
+
+fn printFsExtensionStatus(allocator: std.mem.Allocator, json_output: bool) !void {
     if (builtin.os.tag != .macos) return error.UnsupportedPlatform;
 
     var status = try native_mount_support.detectInstallStatus(allocator);
     defer status.deinit(allocator);
     try writeNativeFsStatusSnapshot(allocator, status);
+
+    var notes = std.ArrayListUnmanaged([]const u8){};
+    defer notes.deinit(allocator);
+    if (!status.runtime_ready) try notes.append(allocator, "no current Spiderweb Xcode build was found; build the app in platform/macos, then rerun install-fs-extension");
+    if (!status.extension_fskit_entitled) try notes.append(allocator, "launch is blocked because the extension build is missing the FSKit entitlement");
+    if (status.ready()) {
+        try notes.append(allocator, "owner/group changes are unsupported because native macOS mounts currently present as noowners");
+        try notes.append(allocator, "advisory locks currently apply only inside the mounted Spiderweb view and are not mirrored to the host path");
+        try notes.append(allocator, "files edited directly on the host path after they have already been seen through the mount may remain stale until reopen or remount");
+    }
+
+    if (json_output) {
+        const payload = try std.json.Stringify.valueAlloc(allocator, FsExtensionStatusJson{
+            .supported_os = status.supported_os,
+            .active_app = status.app_path,
+            .built_app_source = status.source_app_path,
+            .extension_bundle = status.extension_path,
+            .runtime_source = status.runtime_ready_manifest_path,
+            .filesystem_bundle = status.filesystem_bundle_path,
+            .extension_present = status.extension_present,
+            .runtime_ready = status.runtime_ready,
+            .signing_identity = status.signing_identity_available,
+            .app_group_entitlements = status.app_group_entitled,
+            .extension_fs_entitlement = status.extension_fskit_entitled,
+            .app_provisioned = status.app_provisioned,
+            .extension_provisioned = status.extension_provisioned,
+            .registered = status.extension_registered,
+            .module_enabled = status.module_enabled,
+            .ready = status.ready(),
+            .request_dir = status.request_dir,
+            .notes = notes.items,
+        }, .{});
+        defer allocator.free(payload);
+        try std.fs.File.stdout().writeAll(payload);
+        try std.fs.File.stdout().writeAll("\n");
+        return;
+    }
 
     const out = try std.fmt.allocPrint(
         allocator,
@@ -504,7 +923,7 @@ fn printFsExtensionStatus(allocator: std.mem.Allocator) !void {
     try std.fs.File.stdout().writeAll(out);
     if (!status.runtime_ready) {
         try std.fs.File.stdout().writeAll(
-            "  note: no current SpiderwebFSKit Xcode build was found; build the app in platform/macos, then rerun install-fs-extension.\n",
+            "  note: no current Spiderweb Xcode build was found; build the app in platform/macos, then rerun install-fs-extension.\n",
         );
     }
     if (!status.extension_fskit_entitled) {
@@ -564,6 +983,7 @@ fn installSystemdUserService(allocator: std.mem.Allocator) !void {
     defer allocator.free(service_path);
 
     if (std.fs.path.dirname(service_path)) |dir| try makePathAny(dir);
+    try makePathAny(working_dir);
 
     const content = try std.fmt.allocPrint(
         allocator,
@@ -613,12 +1033,26 @@ fn uninstallSystemdUserService(allocator: std.mem.Allocator) !void {
     std.log.info("Removed systemd user service definition at {s}", .{service_path});
 }
 
-fn printSystemdUserServiceStatus(allocator: std.mem.Allocator) !void {
+fn printSystemdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool) !void {
     const service_path = try systemdUserServicePath(allocator);
     defer allocator.free(service_path);
     const installed = pathExists(service_path);
 
     if (!installed) {
+        if (json_output) {
+            const payload = try std.json.Stringify.valueAlloc(allocator, ServiceStatusJson{
+                .manager = "systemd",
+                .unit_path = service_path,
+                .installed = false,
+                .loaded = false,
+                .enabled = null,
+                .active = null,
+            }, .{});
+            defer allocator.free(payload);
+            try std.fs.File.stdout().writeAll(payload);
+            try std.fs.File.stdout().writeAll("\n");
+            return;
+        }
         const out = try std.fmt.allocPrint(
             allocator,
             "Service manager: systemd\n  unit:      {s}\n  installed: no\n",
@@ -643,6 +1077,21 @@ fn printSystemdUserServiceStatus(allocator: std.mem.Allocator) !void {
     else
         "unknown";
 
+    if (json_output) {
+        const payload = try std.json.Stringify.valueAlloc(allocator, ServiceStatusJson{
+            .manager = "systemd",
+            .unit_path = service_path,
+            .installed = true,
+            .loaded = active != null and commandExitedSuccessfully(active.?),
+            .enabled = enabled_text,
+            .active = active_text,
+        }, .{});
+        defer allocator.free(payload);
+        try std.fs.File.stdout().writeAll(payload);
+        try std.fs.File.stdout().writeAll("\n");
+        return;
+    }
+
     const out = try std.fmt.allocPrint(
         allocator,
         "Service manager: systemd\n  unit:      {s}\n  installed: yes\n  enabled:   {s}\n  active:    {s}\n",
@@ -661,6 +1110,7 @@ fn installLaunchdUserService(allocator: std.mem.Allocator) !void {
     defer allocator.free(plist_path);
 
     if (std.fs.path.dirname(plist_path)) |dir| try makePathAny(dir);
+    try makePathAny(working_dir);
 
     const content = try std.fmt.allocPrint(
         allocator,
@@ -728,7 +1178,7 @@ fn uninstallLaunchdUserService(allocator: std.mem.Allocator) !void {
     std.log.info("Removed launchd user service definition at {s}", .{plist_path});
 }
 
-fn printLaunchdUserServiceStatus(allocator: std.mem.Allocator) !void {
+fn printLaunchdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool) !void {
     const plist_path = try launchdPlistPath(allocator);
     defer allocator.free(plist_path);
     const installed = pathExists(plist_path);
@@ -740,6 +1190,21 @@ fn printLaunchdUserServiceStatus(allocator: std.mem.Allocator) !void {
     else
         null;
     defer if (printed) |*value| value.deinit(allocator);
+
+    if (json_output) {
+        const payload = try std.json.Stringify.valueAlloc(allocator, ServiceStatusJson{
+            .manager = "launchd",
+            .unit_path = plist_path,
+            .installed = installed,
+            .loaded = printed != null and commandExitedSuccessfully(printed.?),
+            .enabled = null,
+            .active = null,
+        }, .{});
+        defer allocator.free(payload);
+        try std.fs.File.stdout().writeAll(payload);
+        try std.fs.File.stdout().writeAll("\n");
+        return;
+    }
 
     const out = try std.fmt.allocPrint(
         allocator,
@@ -772,11 +1237,78 @@ fn defaultServiceWorkingDirectory(allocator: std.mem.Allocator) ![]u8 {
     const home = try requireHomeDir(allocator);
     defer allocator.free(home);
 
-    const repo_dir = try std.fs.path.join(allocator, &.{ home, ".local", "share", "ziggy-spiderweb" });
-    if (pathExists(repo_dir)) return repo_dir;
-    allocator.free(repo_dir);
+    return switch (builtin.os.tag) {
+        .macos => std.fs.path.join(allocator, &.{ home, "Library", "Application Support", "Spiderweb" }),
+        else => std.fs.path.join(allocator, &.{ home, ".local", "share", "spiderweb" }),
+    };
+}
 
-    return currentShellWorkingDirectory(allocator);
+fn defaultServiceRuntimeStorageDirectory(allocator: std.mem.Allocator) ![]u8 {
+    const working_dir = try defaultServiceWorkingDirectory(allocator);
+    defer allocator.free(working_dir);
+    return std.fs.path.join(allocator, &.{ working_dir, ".spiderweb-ltm" });
+}
+
+fn defaultLocalWorkspaceRoot(allocator: std.mem.Allocator) ![]u8 {
+    const home = try requireHomeDir(allocator);
+    defer allocator.free(home);
+    return std.fs.path.join(allocator, &.{ home, "Spiderweb" });
+}
+
+fn ensureDefaultLocalWorkspaceLayout(allocator: std.mem.Allocator, root: []const u8, agents_dir: []const u8) !void {
+    try makePathAny(root);
+
+    const trimmed_agents = std.mem.trim(u8, agents_dir, " \t\r\n");
+    if (trimmed_agents.len == 0) return;
+
+    const agents_path = if (std.fs.path.isAbsolute(trimmed_agents))
+        try allocator.dupe(u8, trimmed_agents)
+    else
+        try std.fs.path.join(allocator, &.{ root, trimmed_agents });
+    defer allocator.free(agents_path);
+    try makePathAny(agents_path);
+}
+
+fn ensureDefaultLocalWorkspaceRootConfig(allocator: std.mem.Allocator) !void {
+    var config = try Config.init(allocator, null);
+    defer config.deinit();
+
+    const current_root = std.mem.trim(u8, config.runtime.spider_web_root, " \t\r\n");
+    if (current_root.len > 0) {
+        try ensureDefaultLocalWorkspaceLayout(allocator, current_root, config.runtime.agents_dir);
+        return;
+    }
+
+    const default_root = try defaultLocalWorkspaceRoot(allocator);
+    defer allocator.free(default_root);
+    try ensureDefaultLocalWorkspaceLayout(allocator, default_root, config.runtime.agents_dir);
+
+    config.allocator.free(config.runtime.spider_web_root);
+    config.runtime.spider_web_root = try allocator.dupe(u8, default_root);
+    try config.save();
+}
+
+fn ensureDefaultRuntimeStorageConfig(allocator: std.mem.Allocator) !void {
+    var config = try Config.init(allocator, null);
+    defer config.deinit();
+
+    const current = std.mem.trim(u8, config.runtime.ltm_directory, " \t\r\n");
+    if (current.len > 0 and std.fs.path.isAbsolute(current)) {
+        try makePathAny(current);
+        return;
+    }
+
+    if (current.len > 0 and !std.mem.eql(u8, current, ".spiderweb-ltm")) {
+        return;
+    }
+
+    const default_storage = try defaultServiceRuntimeStorageDirectory(allocator);
+    defer allocator.free(default_storage);
+    try makePathAny(default_storage);
+
+    config.allocator.free(config.runtime.ltm_directory);
+    config.runtime.ltm_directory = try allocator.dupe(u8, default_storage);
+    try config.save();
 }
 
 fn requireHomeDir(allocator: std.mem.Allocator) ![]u8 {
@@ -1333,7 +1865,7 @@ fn printUsage() !void {
         \\Workspace-first flow:
         \\  spiderweb-control workspace_create '{"name":"Demo","vision":"Deliver the demo workspace"}'
         \\  spiderweb-fs-mount --workspace-id <workspace-id> ./workspace
-        \\  note: on macOS, auto prefers the native FSKit backend when SpiderwebFSKit is installed and enabled; otherwise it falls back to macFUSE
+        \\  note: on macOS, auto prefers the native FSKit backend when Spiderweb is installed and enabled; otherwise it falls back to macFUSE
         \\  spider-monkey run --workspace-root ./workspace
         \\
     ;
@@ -1413,4 +1945,17 @@ test "config_cli: parse working directory from launchd plist" {
     const parsed = (try parseServiceWorkingDirectory(allocator, plist_path)) orelse return error.TestExpectedWorkingDirectory;
     defer allocator.free(parsed);
     try std.testing.expectEqualStrings("/Users/example/Spiderweb", parsed);
+}
+
+test "config_cli: command tail handles empty args" {
+    const args = [_][]const u8{};
+    try std.testing.expectEqual(@as(usize, 0), commandTail(&args).len);
+}
+
+test "config_cli: remote-node heartbeat validation rejects invalid settings" {
+    try std.testing.expectError(error.InvalidArguments, validateRemoteNodeHeartbeatSettings(0, 1));
+    try std.testing.expectError(error.InvalidArguments, validateRemoteNodeHeartbeatSettings(10, 0));
+    try std.testing.expectError(error.InvalidArguments, validateRemoteNodeHeartbeatSettings(10, 11));
+    try validateRemoteNodeHeartbeatSettings(10, 10);
+    try validateRemoteNodeHeartbeatSettings(10, 5);
 }

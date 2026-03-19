@@ -42,11 +42,11 @@ zig build
 # Start Spiderweb
 ./zig-out/bin/spiderweb
 
-# Create a workspace
+# Create a mountable workspace
 ./zig-out/bin/spiderweb-control \
   --auth-token <admin-token> \
-  workspace_create \
-  '{"name":"Demo","vision":"Mounted workspace demo"}'
+  workspace_up \
+  '{"name":"Demo","vision":"Mounted workspace demo","template_id":"dev","activate":false}'
 
 # Mount that workspace into the local filesystem
 ./zig-out/bin/spiderweb-fs-mount \
@@ -79,6 +79,7 @@ On macOS:
 - `native` is the first-party FSKit path under `platform/macos`, with the app/extension bundle serving the namespace directly in Swift. The current checkpoint supports browse/read across the namespace, plus read-write operations on mounted export paths such as `/nodes/local/fs`, and includes timeout/fail-fast guards so bad paths fail quickly instead of wedging the mount.
 - `fuse` is the legacy fallback path and still requires macFUSE 5.x.
 - `spiderweb-config config install-fs-extension` / `fs-extension-status` manage the native app bundle once it has been built.
+- for end-user distribution on normal SIP-enabled Macs, package the native runtime as a signed/notarized `.pkg`; see [platform/macos/RELEASE.md](/Users/deanocalver/Documents/Spider/Spiderweb/platform/macos/RELEASE.md)
 - a free Xcode Personal Team is not enough for live native mounts; the bundle also needs macOS development provisioning profiles that authorize the FSKit and App Group entitlements
 - on this macOS 26.3.1 machine we have seen `macFUSE` fail with `extensionKit` / `File system named macfuse not found` even after reinstall, approval, and reboot, so treat it as a fallback-of-last-resort rather than the development target
 - the current native FSKit mount still comes up as `noowners`, so `chown`/owner-group changes are not supported
@@ -124,7 +125,7 @@ SPIDERWEB_WORKSPACE_ID=ws-demo ./scripts/acheron-namespace-smoke.sh
 
 This flow has been smoke-tested with:
 - `spiderweb`
-- `spiderweb-control workspace_create`
+- `spiderweb-control workspace_up`
 - `spiderweb-control workspace_list`
 - `spiderweb-fs-mount ... readdir /`
 

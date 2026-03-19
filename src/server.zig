@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
+const credential_store_mod = @import("credential_store.zig");
 const connection_dispatcher = @import("connection_dispatcher.zig");
 const protocol = @import("spider-protocol").protocol;
 const runtime_handle_mod = @import("agents/runtime_handle.zig");
@@ -537,6 +538,73 @@ fn formatInternalWsUrl(
         return std.fmt.allocPrint(allocator, "ws://[{s}]:{d}{s}", .{ host, port, path });
     }
     return std.fmt.allocPrint(allocator, "ws://{s}:{d}{s}", .{ host, port, path });
+}
+
+fn derivePublicFsUrl(allocator: std.mem.Allocator, public_base_url: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, public_base_url, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidArguments;
+    if (std.mem.endsWith(u8, trimmed, "/v2/fs")) {
+        return allocator.dupe(u8, trimmed);
+    }
+    const without_trailing = std.mem.trimRight(u8, trimmed, "/");
+    return std.fmt.allocPrint(allocator, "{s}/v2/fs", .{without_trailing});
+}
+
+fn resolveSiblingExecutablePath(allocator: std.mem.Allocator, executable_name: []const u8) ![]u8 {
+    const self_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_path);
+    const self_dir = std.fs.path.dirname(self_path) orelse return error.InvalidExecutablePath;
+
+    const sibling = try std.fs.path.join(allocator, &.{ self_dir, executable_name });
+    if (pathExists(sibling)) return sibling;
+    allocator.free(sibling);
+
+    return allocator.dupe(u8, executable_name);
+}
+
+fn runRemoteControlOperation(
+    allocator: std.mem.Allocator,
+    control_url: []const u8,
+    operation: []const u8,
+    payload_json: []const u8,
+) ![]u8 {
+    const control_cli_path = try resolveSiblingExecutablePath(allocator, "spiderweb-control");
+    defer allocator.free(control_cli_path);
+
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{
+            control_cli_path,
+            "--url",
+            control_url,
+            operation,
+            payload_json,
+        },
+        .max_output_bytes = 512 * 1024,
+    });
+    errdefer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| {
+            if (code == 0) return result.stdout;
+        },
+        else => {},
+    }
+
+    const stderr_text = std.mem.trim(u8, result.stderr, " \t\r\n");
+    if (stderr_text.len > 0) {
+        std.log.warn("remote control operation {s} failed: {s}", .{ operation, stderr_text });
+    } else {
+        const stdout_text = std.mem.trim(u8, result.stdout, " \t\r\n");
+        if (stdout_text.len > 0) {
+            std.log.warn("remote control operation {s} failed: {s}", .{ operation, stdout_text });
+        } else {
+            std.log.warn("remote control operation {s} failed with no output", .{operation});
+        }
+    }
+    allocator.free(result.stdout);
+    return error.CommandFailed;
 }
 
 fn parseOptionalEnvOwned(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
@@ -1090,6 +1158,48 @@ const LocalFsMountSpec = struct {
     }
 };
 
+const RemoteNodeRegistration = struct {
+    control_url: []u8,
+    node_name: []u8,
+    public_base_url: []u8,
+    public_fs_url: []u8,
+    export_path: []u8,
+    export_name: []u8,
+    export_ro: bool,
+    node_id: []u8,
+    node_secret: []u8,
+    lease_ttl_ms: u64,
+    heartbeat_ms: u64,
+
+    fn clone(self: RemoteNodeRegistration, allocator: std.mem.Allocator) !RemoteNodeRegistration {
+        return .{
+            .control_url = try allocator.dupe(u8, self.control_url),
+            .node_name = try allocator.dupe(u8, self.node_name),
+            .public_base_url = try allocator.dupe(u8, self.public_base_url),
+            .public_fs_url = try allocator.dupe(u8, self.public_fs_url),
+            .export_path = try allocator.dupe(u8, self.export_path),
+            .export_name = try allocator.dupe(u8, self.export_name),
+            .export_ro = self.export_ro,
+            .node_id = try allocator.dupe(u8, self.node_id),
+            .node_secret = try allocator.dupe(u8, self.node_secret),
+            .lease_ttl_ms = self.lease_ttl_ms,
+            .heartbeat_ms = self.heartbeat_ms,
+        };
+    }
+
+    fn deinit(self: *RemoteNodeRegistration, allocator: std.mem.Allocator) void {
+        allocator.free(self.control_url);
+        allocator.free(self.node_name);
+        allocator.free(self.public_base_url);
+        allocator.free(self.public_fs_url);
+        allocator.free(self.export_path);
+        allocator.free(self.export_name);
+        allocator.free(self.node_id);
+        allocator.free(self.node_secret);
+        self.* = undefined;
+    }
+};
+
 const LocalFsNode = struct {
     allocator: std.mem.Allocator,
     runtime_registry: *AgentRuntimeRegistry,
@@ -1108,6 +1218,7 @@ const LocalFsNode = struct {
     registration_mutex: std.Thread.Mutex = .{},
     registered_node_id: ?[]u8 = null,
     session_auth_token: ?[]u8 = null,
+    remote_registration: ?RemoteNodeRegistration = null,
     chat_jobs_mutex: std.Thread.Mutex = .{},
     chat_jobs_cond: std.Thread.Condition = .{},
     chat_jobs_inflight: usize = 0,
@@ -1123,6 +1234,7 @@ const LocalFsNode = struct {
         lease_ttl_ms: u64,
         heartbeat_interval_ms: u64,
         watcher_enabled: bool,
+        remote_registration: ?RemoteNodeRegistration,
     ) !*LocalFsNode {
         const endpoint = try allocator.create(LocalFsNode);
         errdefer allocator.destroy(endpoint);
@@ -1163,6 +1275,7 @@ const LocalFsNode = struct {
             .fs_rw_export_count = countLocalFsRwExports(export_specs),
             .lease_ttl_ms = lease_ttl_ms,
             .heartbeat_interval_ms = heartbeat_interval_ms,
+            .remote_registration = if (remote_registration) |registration| try registration.clone(allocator) else null,
         };
         errdefer {
             endpoint.hub.deinit();
@@ -1171,6 +1284,7 @@ const LocalFsNode = struct {
             for (endpoint.mount_specs.items) |*item| item.deinit(allocator);
             endpoint.mount_specs.deinit(allocator);
             allocator.free(endpoint.fs_url);
+            if (endpoint.remote_registration) |*registration| registration.deinit(allocator);
         }
 
         const watch_source_export = export_specs[0];
@@ -1223,6 +1337,12 @@ const LocalFsNode = struct {
             self.allocator.free(node_id);
         }
         if (owned_auth_token) |token| self.allocator.free(token);
+        self.registration_mutex.lock();
+        if (self.remote_registration) |*registration| {
+            registration.deinit(self.allocator);
+            self.remote_registration = null;
+        }
+        self.registration_mutex.unlock();
 
         self.hub.deinit();
         self.service.deinit();
@@ -1264,6 +1384,9 @@ const LocalFsNode = struct {
 
     fn startRegistrationAndHeartbeat(self: *LocalFsNode, control_plane: *control_plane_mod.ControlPlane) !void {
         try self.refreshRegistration(control_plane);
+        self.refreshRemoteRegistration() catch |err| {
+            std.log.warn("initial remote fs node registration failed: {s}", .{@errorName(err)});
+        };
         self.heartbeat_thread = try std.Thread.spawn(.{}, localFsHeartbeatThreadMain, .{ self, control_plane });
     }
 
@@ -1351,6 +1474,27 @@ const LocalFsNode = struct {
         return out.toOwnedSlice(self.allocator);
     }
 
+    fn buildFsOnlyVenomUpsertPayload(self: *LocalFsNode, node_id: []const u8, node_secret: []const u8) ![]u8 {
+        const escaped_node_id = try unified.jsonEscape(self.allocator, node_id);
+        defer self.allocator.free(escaped_node_id);
+        const escaped_node_secret = try unified.jsonEscape(self.allocator, node_secret);
+        defer self.allocator.free(escaped_node_secret);
+        const escaped_platform_os = try unified.jsonEscape(self.allocator, @tagName(builtin.os.tag));
+        defer self.allocator.free(escaped_platform_os);
+        const escaped_platform_arch = try unified.jsonEscape(self.allocator, @tagName(builtin.cpu.arch));
+        defer self.allocator.free(escaped_platform_arch);
+
+        var out = std.ArrayListUnmanaged(u8){};
+        errdefer out.deinit(self.allocator);
+        try out.writer(self.allocator).print(
+            "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"{s}\",\"arch\":\"{s}\",\"runtime_kind\":\"spiderweb\"}},\"venoms\":[",
+            .{ escaped_node_id, escaped_node_secret, escaped_platform_os, escaped_platform_arch },
+        );
+        try self.appendLocalFsVenomJson(&out, escaped_node_id);
+        try out.appendSlice(self.allocator, "]}");
+        return out.toOwnedSlice(self.allocator);
+    }
+
     fn appendLocalFsVenomJson(
         self: *LocalFsNode,
         out: *std.ArrayListUnmanaged(u8),
@@ -1427,6 +1571,57 @@ const LocalFsNode = struct {
             return @as(?[]u8, copy);
         }
         return null;
+    }
+
+    fn copyAcceptedSessionAuthTokens(self: *LocalFsNode, allocator: std.mem.Allocator) ![][]u8 {
+        self.registration_mutex.lock();
+        defer self.registration_mutex.unlock();
+
+        var tokens = std.ArrayListUnmanaged([]u8){};
+        errdefer {
+            for (tokens.items) |item| allocator.free(item);
+            tokens.deinit(allocator);
+        }
+
+        if (self.session_auth_token) |token| {
+            try tokens.append(allocator, try allocator.dupe(u8, token));
+        }
+        if (self.remote_registration) |registration| {
+            const already_present = if (self.session_auth_token) |token|
+                std.mem.eql(u8, token, registration.node_secret)
+            else
+                false;
+            if (!already_present) {
+                try tokens.append(allocator, try allocator.dupe(u8, registration.node_secret));
+            }
+        }
+        return tokens.toOwnedSlice(allocator);
+    }
+
+    fn refreshRemoteRegistration(self: *LocalFsNode) !void {
+        self.registration_mutex.lock();
+        errdefer self.registration_mutex.unlock();
+        var remote = if (self.remote_registration) |registration|
+            try registration.clone(self.allocator)
+        else
+            null;
+        self.registration_mutex.unlock();
+        defer if (remote) |*registration| registration.deinit(self.allocator);
+        const active_remote = remote orelse return;
+
+        const refresh_payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"fs_url\":\"{s}\",\"lease_ttl_ms\":{d}}}",
+            .{ active_remote.node_id, active_remote.node_secret, active_remote.public_fs_url, active_remote.lease_ttl_ms },
+        );
+        defer self.allocator.free(refresh_payload);
+        const refresh_reply = try runRemoteControlOperation(self.allocator, active_remote.control_url, "node_lease_refresh", refresh_payload);
+        defer self.allocator.free(refresh_reply);
+
+        const upsert_payload = try self.buildFsOnlyVenomUpsertPayload(active_remote.node_id, active_remote.node_secret);
+        defer self.allocator.free(upsert_payload);
+        const upsert_reply = try runRemoteControlOperation(self.allocator, active_remote.control_url, "venom_upsert", upsert_payload);
+        defer self.allocator.free(upsert_reply);
     }
 
     fn submitChatInput(
@@ -1564,8 +1759,11 @@ fn handleLocalFsConnection(
     local_node: *LocalFsNode,
     stream: *std.net.Stream,
 ) !void {
-    const required_auth_token = try local_node.copySessionAuthToken(allocator);
-    defer if (required_auth_token) |token| allocator.free(token);
+    const accepted_auth_tokens = try local_node.copyAcceptedSessionAuthTokens(allocator);
+    defer {
+        for (accepted_auth_tokens) |token| allocator.free(token);
+        allocator.free(accepted_auth_tokens);
+    }
 
     var connection: ?*FsHubConnection = null;
     defer if (connection) |conn| local_node.hub.unregister(conn);
@@ -1626,7 +1824,11 @@ fn handleLocalFsConnection(
                         try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, "", .close);
                         return;
                     }
-                    const hello_opts = validateFsNodeHelloPayload(allocator, parsed.payload_json, required_auth_token) catch |err| {
+                    const hello_opts = validateFsNodeHelloPayloadWithAcceptedTokens(
+                        allocator,
+                        parsed.payload_json,
+                        if (accepted_auth_tokens.len > 0) accepted_auth_tokens else null,
+                    ) catch |err| {
                         const response = try unified.buildFsrpcFsError(
                             allocator,
                             parsed.tag,
@@ -1642,7 +1844,11 @@ fn handleLocalFsConnection(
                     acheron_negotiated = true;
                     register_after_response = true;
                 } else if (parsed.acheron_type == .fs_t_hello) {
-                    const hello_opts = validateFsNodeHelloPayload(allocator, parsed.payload_json, required_auth_token) catch |err| {
+                    const hello_opts = validateFsNodeHelloPayloadWithAcceptedTokens(
+                        allocator,
+                        parsed.payload_json,
+                        if (accepted_auth_tokens.len > 0) accepted_auth_tokens else null,
+                    ) catch |err| {
                         const response = try unified.buildFsrpcFsError(
                             allocator,
                             parsed.tag,
@@ -2229,6 +2435,9 @@ fn localFsHeartbeatThreadMain(local_node: *LocalFsNode, control_plane: *control_
         local_node.refreshRegistration(control_plane) catch |err| {
             std.log.warn("local fs node heartbeat refresh failed: {s}", .{@errorName(err)});
         };
+        local_node.refreshRemoteRegistration() catch |err| {
+            std.log.warn("remote fs node heartbeat refresh failed: {s}", .{@errorName(err)});
+        };
     }
 }
 
@@ -2500,8 +2709,9 @@ const AuthTokenStore = struct {
         const mutex = @constCast(&self.mutex);
         mutex.lock();
         defer mutex.unlock();
-        if (secureTokenEql(self.admin_token, token)) return .{ .role = .admin, .token_id = "admin" };
-        if (secureTokenEql(self.user_token, token)) return .{ .role = .user, .token_id = "user" };
+        if (secureTokenEql(self.admin_token, token)) return .{ .role = .admin, .token_id = "access" };
+        // The old user token is now treated as the same effective access role.
+        if (secureTokenEql(self.user_token, token)) return .{ .role = .admin, .token_id = "access-legacy-user" };
         return null;
     }
 
@@ -5249,18 +5459,23 @@ const AgentRuntimeRegistry = struct {
         self.mutex.unlock();
         if (existing_node != null) return;
 
+        const remote_node_config = self.runtime_config.remote_node;
+
         const export_path_owned = std.process.getEnvVarOwned(self.allocator, local_node_export_path_env) catch |err| switch (err) {
             error.EnvironmentVariableNotFound => null,
             else => return err,
         };
         defer if (export_path_owned) |value| self.allocator.free(value);
         const configured_export_path = std.mem.trim(u8, self.runtime_config.spider_web_root, " \t\r\n");
+        const configured_remote_export_path = std.mem.trim(u8, remote_node_config.export_path, " \t\r\n");
         const export_path = if (export_path_owned) |value| blk: {
             const trimmed = std.mem.trim(u8, value, " \t\r\n");
             if (trimmed.len > 0) break :blk trimmed;
-            break :blk configured_export_path;
+            if (configured_export_path.len > 0) break :blk configured_export_path;
+            break :blk configured_remote_export_path;
         } else blk: {
-            break :blk configured_export_path;
+            if (configured_export_path.len > 0) break :blk configured_export_path;
+            break :blk configured_remote_export_path;
         };
         if (std.mem.eql(u8, export_path, "/")) {
             std.log.warn(
@@ -5292,11 +5507,24 @@ const AgentRuntimeRegistry = struct {
         };
         defer if (export_name_owned) |value| self.allocator.free(value);
         const workspace_export_name = if (export_name_owned) |value|
-            if (std.mem.trim(u8, value, " \t\r\n").len > 0) std.mem.trim(u8, value, " \t\r\n") else local_node_default_workspace_export_name
+            if (std.mem.trim(u8, value, " \t\r\n").len > 0) std.mem.trim(u8, value, " \t\r\n") else if (std.mem.trim(u8, remote_node_config.export_name, " \t\r\n").len > 0) std.mem.trim(u8, remote_node_config.export_name, " \t\r\n") else local_node_default_workspace_export_name
         else
-            local_node_default_workspace_export_name;
+            if (std.mem.trim(u8, remote_node_config.export_name, " \t\r\n").len > 0) std.mem.trim(u8, remote_node_config.export_name, " \t\r\n") else local_node_default_workspace_export_name;
 
-        const export_ro = parseBoolEnv(self.allocator, local_node_export_ro_env, false);
+        const export_ro = blk: {
+            const env_value = std.process.getEnvVarOwned(self.allocator, local_node_export_ro_env) catch |err| switch (err) {
+                error.EnvironmentVariableNotFound => null,
+                else => return err,
+            };
+            defer if (env_value) |value| self.allocator.free(value);
+            if (env_value) |value| {
+                const trimmed = std.mem.trim(u8, value, " \t\r\n");
+                if (trimmed.len == 0) break :blk remote_node_config.export_ro;
+                if (std.ascii.eqlIgnoreCase(trimmed, "1") or std.ascii.eqlIgnoreCase(trimmed, "true") or std.ascii.eqlIgnoreCase(trimmed, "yes") or std.ascii.eqlIgnoreCase(trimmed, "on")) break :blk true;
+                if (std.ascii.eqlIgnoreCase(trimmed, "0") or std.ascii.eqlIgnoreCase(trimmed, "false") or std.ascii.eqlIgnoreCase(trimmed, "no") or std.ascii.eqlIgnoreCase(trimmed, "off")) break :blk false;
+            }
+            break :blk remote_node_config.export_ro;
+        };
 
         const node_name_owned = std.process.getEnvVarOwned(self.allocator, local_node_name_env) catch |err| switch (err) {
             error.EnvironmentVariableNotFound => null,
@@ -5325,7 +5553,51 @@ const AgentRuntimeRegistry = struct {
         if (heartbeat_ms == 0) heartbeat_ms = 1_000;
         if (heartbeat_ms > lease_ttl_ms) heartbeat_ms = lease_ttl_ms;
         const configured_agents_path = std.mem.trim(u8, self.runtime_config.agents_dir, " \t\r\n");
-        const agents_export_path = if (configured_agents_path.len > 0) configured_agents_path else "agents";
+        const agents_export_rel = if (configured_agents_path.len > 0) configured_agents_path else "agents";
+        const agents_export_path = if (std.fs.path.isAbsolute(agents_export_rel))
+            try self.allocator.dupe(u8, agents_export_rel)
+        else
+            try std.fs.path.join(self.allocator, &.{ export_path, agents_export_rel });
+        defer self.allocator.free(agents_export_path);
+        ensureDirectoryExists(agents_export_path) catch |err| {
+            std.log.warn("local fs node agents export init failed for {s}: {s}", .{ agents_export_path, @errorName(err) });
+            return err;
+        };
+
+        var remote_registration: ?RemoteNodeRegistration = null;
+        defer if (remote_registration) |*registration| registration.deinit(self.allocator);
+        if (remote_node_config.enabled) {
+            const remote_control_url = std.mem.trim(u8, remote_node_config.remote_control_url, " \t\r\n");
+            const remote_node_name = std.mem.trim(u8, remote_node_config.node_name, " \t\r\n");
+            const public_base_url = std.mem.trim(u8, remote_node_config.public_base_url, " \t\r\n");
+            const node_id = std.mem.trim(u8, remote_node_config.node_id, " \t\r\n");
+            if (remote_control_url.len == 0 or remote_node_name.len == 0 or public_base_url.len == 0 or node_id.len == 0) {
+                std.log.warn("remote node pairing is enabled but incomplete; skipping remote registration until setup is finished", .{});
+            } else {
+                const store = credential_store_mod.CredentialStore.init(self.allocator);
+                const remote_node_secret = store.getRemoteNodeSecret(node_id);
+                if (remote_node_secret) |secret| {
+                    defer self.allocator.free(secret);
+                    const public_fs_url = try derivePublicFsUrl(self.allocator, public_base_url);
+                    errdefer self.allocator.free(public_fs_url);
+                    remote_registration = .{
+                        .control_url = try self.allocator.dupe(u8, remote_control_url),
+                        .node_name = try self.allocator.dupe(u8, remote_node_name),
+                        .public_base_url = try self.allocator.dupe(u8, public_base_url),
+                        .public_fs_url = public_fs_url,
+                        .export_path = try self.allocator.dupe(u8, export_path),
+                        .export_name = try self.allocator.dupe(u8, workspace_export_name),
+                        .export_ro = export_ro,
+                        .node_id = try self.allocator.dupe(u8, node_id),
+                        .node_secret = try self.allocator.dupe(u8, secret),
+                        .lease_ttl_ms = remote_node_config.lease_ttl_ms,
+                        .heartbeat_ms = remote_node_config.heartbeat_ms,
+                    };
+                } else {
+                    std.log.warn("remote node pairing is enabled for {s} but no remote node secret is available in secure storage", .{node_id});
+                }
+            }
+        }
 
         const export_specs = [_]fs_node_ops.ExportSpec{
             .{
@@ -5391,6 +5663,7 @@ const AgentRuntimeRegistry = struct {
             lease_ttl_ms,
             heartbeat_ms,
             watcher_requested and !watch_overlaps_sandbox,
+            remote_registration,
         );
         errdefer local_node.deinit(&self.control_plane);
         try local_node.startRegistrationAndHeartbeat(&self.control_plane);
@@ -7770,10 +8043,10 @@ const FsNodeHelloOptions = struct {
     allow_invalidations: bool = false,
 };
 
-fn validateFsNodeHelloPayload(
+fn validateFsNodeHelloPayloadWithAcceptedTokens(
     allocator: std.mem.Allocator,
     payload_json: ?[]const u8,
-    required_auth_token: ?[]const u8,
+    accepted_auth_tokens: ?[]const []const u8,
 ) !FsNodeHelloOptions {
     const raw = payload_json orelse return error.MissingField;
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
@@ -7788,10 +8061,18 @@ fn validateFsNodeHelloPayload(
     if (proto_value != .integer) return error.InvalidType;
     if (proto_value.integer != acheron_node_proto_id) return error.ProtocolMismatch;
 
-    if (required_auth_token) |expected| {
+    if (accepted_auth_tokens) |expected_tokens| {
         const auth_value = parsed.value.object.get("auth_token") orelse return error.AuthMissing;
         if (auth_value != .string) return error.InvalidType;
-        if (!std.mem.eql(u8, auth_value.string, expected)) return error.AuthFailed;
+
+        var matched = false;
+        for (expected_tokens) |expected| {
+            if (std.mem.eql(u8, auth_value.string, expected)) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) return error.AuthFailed;
     }
 
     var opts = FsNodeHelloOptions{};
@@ -7800,6 +8081,18 @@ fn validateFsNodeHelloPayload(
         opts.allow_invalidations = value.bool;
     }
     return opts;
+}
+
+fn validateFsNodeHelloPayload(
+    allocator: std.mem.Allocator,
+    payload_json: ?[]const u8,
+    required_auth_token: ?[]const u8,
+) !FsNodeHelloOptions {
+    if (required_auth_token) |expected| {
+        const tokens = [_][]const u8{expected};
+        return validateFsNodeHelloPayloadWithAcceptedTokens(allocator, payload_json, tokens[0..]);
+    }
+    return validateFsNodeHelloPayloadWithAcceptedTokens(allocator, payload_json, null);
 }
 
 fn writeFrameLocked(
@@ -10919,6 +11212,7 @@ test "server: local fs node registration upserts fs chat and jobs venoms" {
         60_000,
         30_000,
         false,
+        null,
     );
     defer local_node.deinit(&registry.control_plane);
 

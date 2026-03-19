@@ -599,12 +599,6 @@ actor SpiderwebNamespaceSession {
             payload: [:]
         )
 
-        _ = try await sendControlRequest(
-            type: "control.agent_ensure",
-            expectedType: "control.agent_ensure",
-            payload: ["agent_id": namespace.agentID]
-        )
-
         var attachPayload: [String: Any] = [
             "session_key": namespace.sessionKey,
             "agent_id": namespace.agentID,
@@ -1771,6 +1765,7 @@ actor SpiderwebFsEndpointSession {
 
 private struct SpiderwebMountedEndpoint {
     let mountPath: String
+    let preferredDirectRouting: Bool
     let bridge: SpiderwebFsEndpointBridge
 }
 
@@ -1967,6 +1962,7 @@ final class SpiderwebMountedBridge {
             .map {
                 SpiderwebMountedEndpoint(
                     mountPath: normalizeAbsolutePath($0.mountPath),
+                    preferredDirectRouting: shouldPreferDirectEndpointRouting(mountPath: $0.mountPath),
                     bridge: SpiderwebFsEndpointBridge(config: $0)
                 )
             }
@@ -2173,6 +2169,9 @@ final class SpiderwebMountedBridge {
     private func routeForPath(_ path: String) -> SpiderwebMountedPathRoute? {
         let normalizedPath = normalizeAbsolutePath(path)
         for (index, endpoint) in endpointMounts.enumerated() {
+            guard endpoint.preferredDirectRouting else {
+                continue
+            }
             guard let relativePath = matchMountedPath(normalizedPath, mountPath: endpoint.mountPath) else {
                 continue
             }
@@ -2226,6 +2225,27 @@ final class SpiderwebMountedBridge {
 
         handler?(SpiderwebMountedInvalidation(path: absolutePath, kind: invalidation.kind))
     }
+}
+
+private func shouldPreferDirectEndpointRouting(mountPath: String) -> Bool {
+    let normalized = normalizeAbsolutePath(mountPath)
+    if normalized == "/agents" ||
+        normalized == "/meta" ||
+        normalized == "/global/chat" ||
+        normalized == "/global/jobs"
+    {
+        return false
+    }
+
+    if normalized.hasSuffix("/agents") ||
+        normalized.hasSuffix("/meta") ||
+        normalized.hasSuffix("/global/chat") ||
+        normalized.hasSuffix("/global/jobs")
+    {
+        return false
+    }
+
+    return true
 }
 
 final class SpiderwebNamespaceBridge {
@@ -2313,7 +2333,9 @@ private let spiderwebBridgeTimeoutMS: UInt64 = {
     if let value, let parsed = UInt64(value), parsed > 0 {
         return parsed
     }
-    return 2_000
+    // Finder and FSKit can issue several concurrent cold-start requests at once.
+    // A 2s default is too eager and makes the mounted root look empty on first open.
+    return 10_000
 }()
 
 let spiderwebFailFastCooldownMS: UInt64 = {

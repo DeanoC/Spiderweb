@@ -2,7 +2,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const native_protocol = @import("native_mount_protocol.zig");
 
-pub const app_name = "SpiderwebFSKit";
+pub const app_name = "Spiderweb";
 pub const app_bundle_name = app_name ++ ".app";
 pub const app_bundle_id = "com.deanoc.spiderweb.fskit.app";
 pub const extension_bundle_name = "SpiderwebFSKitExtension.appex";
@@ -75,6 +75,11 @@ pub const InstallStatus = struct {
     }
 };
 
+const ExtensionRegistrationState = struct {
+    registered: bool,
+    module_enabled: ?bool,
+};
+
 pub fn isCurrentMacosNativeSupported() bool {
     if (builtin.os.tag != .macos) return false;
     const runtime_target = std.zig.system.resolveTargetQuery(.{}) catch return false;
@@ -103,10 +108,11 @@ pub fn detectInstallStatus(allocator: std.mem.Allocator) !InstallStatus {
     const mount_helper_present = pathExists(mount_helper_path);
     const extension_present = pathExists(extension_path);
     const runtime_ready = app_installed and extension_present;
-    const extension_registered = if (builtin.os.tag == .macos and app_installed)
-        extensionRegistered(allocator, app_path)
+    const registration_state = if (builtin.os.tag == .macos and app_installed)
+        queryExtensionRegistrationState(allocator)
     else
-        false;
+        ExtensionRegistrationState{ .registered = false, .module_enabled = false };
+    const extension_registered = registration_state.registered;
     const signing_identity_available = if (builtin.os.tag == .macos)
         hasCodeSigningIdentity(allocator)
     else
@@ -128,7 +134,7 @@ pub fn detectInstallStatus(allocator: std.mem.Allocator) !InstallStatus {
     else
         false;
     const module_enabled = if (builtin.os.tag == .macos and extension_registered)
-        cachedModuleEnabled(allocator, extension_registered)
+        cachedModuleEnabled(allocator, registration_state)
     else
         false;
 
@@ -183,11 +189,11 @@ pub fn validateNativeMountRequest(mountpoint: []const u8) !void {
 }
 
 pub fn installedAppPath(allocator: std.mem.Allocator) ![]u8 {
-    return legacyInstalledAppPath(allocator);
+    return std.fs.path.join(allocator, &.{ "/Applications", app_bundle_name });
 }
 
 fn legacyInstalledAppPath(allocator: std.mem.Allocator) ![]u8 {
-    return std.fs.path.join(allocator, &.{ "/Applications", app_bundle_name });
+    return std.fs.path.join(allocator, &.{ "/Applications", "SpiderwebFSKit.app" });
 }
 
 pub fn installedFilesystemBundlePath(allocator: std.mem.Allocator) ![]u8 {
@@ -213,7 +219,7 @@ pub fn defaultRequestDirectory(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn defaultStatusSnapshotPath(allocator: std.mem.Allocator) ![]u8 {
-    const base_dir = try defaultSupportDirectory(allocator);
+    const base_dir = try defaultSharedContainerDirectory(allocator);
     defer allocator.free(base_dir);
     return std.fs.path.join(allocator, &.{ base_dir, "native-status.json" });
 }
@@ -232,6 +238,11 @@ pub fn resolveBuiltAppSourcePath(allocator: std.mem.Allocator) !?[]u8 {
     } else |_| {}
 
     if (try findRepoBuildPath(allocator, &.{
+        "platform/macos/.deriveddata-spiderwebfskit/Build/Products/Debug/Spiderweb.app",
+        "platform/macos/.deriveddata-spiderwebfskit/Build/Products/Release/Spiderweb.app",
+        "platform/macos/build/Build/Products/Release/Spiderweb.app",
+        "platform/macos/build/DerivedData/Build/Products/Release/Spiderweb.app",
+        "zig-out/Spiderweb.app",
         "platform/macos/.deriveddata-spiderwebfskit/Build/Products/Debug/SpiderwebFSKit.app",
         "platform/macos/.deriveddata-spiderwebfskit/Build/Products/Release/SpiderwebFSKit.app",
         "platform/macos/build/Build/Products/Release/SpiderwebFSKit.app",
@@ -431,15 +442,27 @@ fn isMountedPath(allocator: std.mem.Allocator, mountpoint: []const u8) !bool {
     return false;
 }
 
-fn extensionRegistered(allocator: std.mem.Allocator, app_path: []const u8) bool {
-    _ = app_path;
-    var result = runCommandBestEffort(allocator, &.{ "pluginkit", "-m", "-A", "-D", "-i", extension_bundle_id }) catch return false;
+fn queryExtensionRegistrationState(allocator: std.mem.Allocator) ExtensionRegistrationState {
+    var result = runCommandBestEffort(allocator, &.{ "pluginkit", "-m", "-A", "-D", "-i", extension_bundle_id }) catch return .{
+        .registered = false,
+        .module_enabled = false,
+    };
     defer if (result) |*value| value.deinit(allocator);
     if (result) |value| {
-        if (!commandExitedSuccessfully(value)) return false;
-        return std.mem.indexOf(u8, value.stdout, extension_bundle_id) != null;
+        if (!commandExitedSuccessfully(value)) return .{ .registered = false, .module_enabled = false };
+        var lines = std.mem.tokenizeAny(u8, value.stdout, "\r\n");
+        while (lines.next()) |line| {
+            if (std.mem.indexOf(u8, line, extension_bundle_id) == null) continue;
+            const trimmed = std.mem.trimLeft(u8, line, " \t");
+            if (trimmed.len == 0) break;
+            return switch (trimmed[0]) {
+                '+' => .{ .registered = true, .module_enabled = true },
+                '-', '!' => .{ .registered = true, .module_enabled = false },
+                else => .{ .registered = true, .module_enabled = null },
+            };
+        }
     }
-    return false;
+    return .{ .registered = false, .module_enabled = false };
 }
 
 fn issueMountRequest(allocator: std.mem.Allocator, request_path: []const u8, mountpoint: []const u8) !void {
@@ -501,11 +524,14 @@ fn fskitModuleEnabled(allocator: std.mem.Allocator) bool {
     return false;
 }
 
-fn cachedModuleEnabled(allocator: std.mem.Allocator, extension_registered: bool) bool {
-    if (!extension_registered) return false;
+fn cachedModuleEnabled(allocator: std.mem.Allocator, registration_state: ExtensionRegistrationState) bool {
+    if (!registration_state.registered) return false;
+    if (registration_state.module_enabled) |enabled| return enabled;
     const snapshot = loadNativeFsStatusSnapshot(allocator) catch null;
-    return moduleEnabledFromSnapshot(snapshot, extension_registered, std.time.milliTimestamp()) orelse
-        fskitModuleEnabled(allocator);
+    if (moduleEnabledFromSnapshot(snapshot, registration_state.registered, std.time.milliTimestamp())) |enabled| {
+        if (enabled) return true;
+    }
+    return fskitModuleEnabled(allocator);
 }
 
 fn loadNativeFsStatusSnapshot(allocator: std.mem.Allocator) !?NativeFsStatusSnapshot {
@@ -700,9 +726,9 @@ test "native_mount_support: resolves install path under applications" {
     const request_dir = try defaultRequestDirectory(allocator);
     defer allocator.free(request_dir);
 
-    try std.testing.expect(std.mem.endsWith(u8, app_path, "SpiderwebFSKit.app"));
+    try std.testing.expect(std.mem.endsWith(u8, app_path, "Spiderweb.app"));
     try std.testing.expect(std.mem.eql(u8, filesystem_bundle_path, "/Library/Filesystems/spiderweb.fs"));
-    try std.testing.expect(std.mem.indexOf(u8, request_dir, "Application Support/SpiderwebFSKit/Requests") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request_dir, "Application Support/Spiderweb/Requests") != null);
 }
 
 test "native_mount_support: runtime gating requires macos 15.4 or newer" {

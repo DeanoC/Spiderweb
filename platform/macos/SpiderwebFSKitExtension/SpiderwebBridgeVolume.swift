@@ -20,6 +20,11 @@ private struct SpiderwebBridgeOpenState {
     var retainCount: Int
 }
 
+private struct SpiderwebDirectoryCacheEntry {
+    let fetchedAt: Date
+    let listing: SpiderwebRemoteDirectoryListing
+}
+
 final class SpiderwebBridgeItem: FSItem {
     var path: String
     let itemIdentifier: FSItem.Identifier
@@ -60,8 +65,10 @@ final class SpiderwebBridgeVolume:
     private var volumeStatsCache = syntheticStatFS
     private var blockedPaths: [String: Date] = [:]
     private var invalidatedPaths: Set<String> = []
+    private var directoryCache: [String: SpiderwebDirectoryCacheEntry] = [:]
 
     private let rootItem: SpiderwebBridgeItem
+    private let directoryCacheTTL: TimeInterval = 5.0
 
     let supportedVolumeCapabilities: FSVolume.SupportedCapabilities = {
         let capabilities = FSVolume.SupportedCapabilities()
@@ -123,6 +130,9 @@ final class SpiderwebBridgeVolume:
             _ = try runtime.ensureBridge()
             let attr = try refreshAttributes(for: rootItem)
             rootItem.cachedAttr = attr
+            warmDirectoryListing(path: "/")
+            warmDirectoryListing(path: "/agents")
+            warmDirectoryListing(path: "/meta")
             reply(rootItem, nil)
         } catch {
             reply(nil, error)
@@ -191,6 +201,7 @@ final class SpiderwebBridgeVolume:
         bridgeItem.cachedAttr = nil
         blockedPaths.removeValue(forKey: normalizedPath)
         invalidatedPaths.remove(normalizedPath)
+        clearDirectoryCacheLocked(forPath: normalizedPath)
         handleIDToRelease = openStates.removeValue(forKey: bridgeItem.itemIdentifier.rawValue)?.handleID
         if normalizedPath != "/" {
             pathToItem.removeValue(forKey: normalizedPath)
@@ -361,6 +372,7 @@ final class SpiderwebBridgeVolume:
             pathToItem.removeValue(forKey: bridgeItem.path)
             handleIDToRelease = openStates.removeValue(forKey: bridgeItem.itemIdentifier.rawValue)?.handleID
         }
+        clearDirectoryCacheLocked(forPath: normalize(path: bridgeItem.path))
         stateLock.unlock()
         if let handleIDToRelease {
             try? runtime.ensureBridge().release(handleID: handleIDToRelease)
@@ -496,13 +508,11 @@ final class SpiderwebBridgeVolume:
         _ = verifier
         do {
             let directoryItem = try requireBridgeItem(directory)
-            try ensurePathIsNotBlocked(directoryItem.path)
-            let listing = try runtime.ensureBridge().readdir(
+            let listing = try readDirectoryListing(
                 path: directoryItem.path,
                 cookie: UInt64(cookie.rawValue),
                 maxEntries: 256
             )
-            clearBlockedPath(directoryItem.path)
 
             for (index, entry) in listing.entries.enumerated() {
                 let childPath = join(directoryPath: directoryItem.path, childName: entry.name)
@@ -853,6 +863,7 @@ final class SpiderwebBridgeVolume:
         }
         blockedPaths.removeValue(forKey: normalizedPath)
         invalidatedPaths.remove(normalizedPath)
+        clearDirectoryCacheLocked(forPath: normalizedPath)
         stateLock.unlock()
     }
 
@@ -865,6 +876,7 @@ final class SpiderwebBridgeVolume:
         }
         blockedPaths.removeValue(forKey: normalizedPath)
         invalidatedPaths.remove(normalizedPath)
+        clearDirectoryCacheLocked(forPath: normalizedPath)
         stateLock.unlock()
         if let handleIDToRelease {
             try? runtime.ensureBridge().release(handleID: handleIDToRelease)
@@ -884,6 +896,8 @@ final class SpiderwebBridgeVolume:
         blockedPaths.removeValue(forKey: normalizedNewPath)
         invalidatedPaths.remove(normalizedOldPath)
         invalidatedPaths.remove(normalizedNewPath)
+        clearDirectoryCacheLocked(forPath: normalizedOldPath)
+        clearDirectoryCacheLocked(forPath: normalizedNewPath)
         stateLock.unlock()
     }
 
@@ -1276,6 +1290,7 @@ final class SpiderwebBridgeVolume:
         pathToItem[normalizedPath]?.cachedAttr = nil
         blockedPaths.removeValue(forKey: normalizedPath)
         invalidatedPaths.insert(normalizedPath)
+        clearDirectoryCacheLocked(forPath: normalizedPath)
     }
 
     private func noteFailure(for path: String, error: Error) {
@@ -1300,5 +1315,66 @@ final class SpiderwebBridgeVolume:
 
     private func nanoseconds(from value: timespec) -> Int64 {
         Int64(value.tv_sec) * 1_000_000_000 + Int64(value.tv_nsec)
+    }
+
+    private func readDirectoryListing(path: String, cookie: UInt64, maxEntries: UInt32) throws -> SpiderwebRemoteDirectoryListing {
+        let normalizedPath = normalize(path: path)
+        let bridge = try runtime.ensureBridge()
+        let cacheable = !bridge.isWritablePath(normalizedPath)
+        if cacheable, let cached = cachedDirectoryListing(path: normalizedPath, cookie: cookie, maxEntries: maxEntries) {
+            return cached
+        }
+
+        try ensurePathIsNotBlocked(normalizedPath)
+        let listing = try bridge.readdir(path: normalizedPath, cookie: cookie, maxEntries: maxEntries)
+        clearBlockedPath(normalizedPath)
+        if cacheable {
+            storeDirectoryListing(listing, path: normalizedPath, cookie: cookie, maxEntries: maxEntries)
+        }
+        return listing
+    }
+
+    private func warmDirectoryListing(path: String) {
+        do {
+            _ = try readDirectoryListing(path: path, cookie: 0, maxEntries: 256)
+        } catch {
+            logger.notice("Warm directory listing failed for \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func cachedDirectoryListing(path: String, cookie: UInt64, maxEntries: UInt32) -> SpiderwebRemoteDirectoryListing? {
+        let cacheKey = directoryCacheKey(path: path, cookie: cookie, maxEntries: maxEntries)
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard let entry = directoryCache[cacheKey] else {
+            return nil
+        }
+        guard Date().timeIntervalSince(entry.fetchedAt) <= directoryCacheTTL else {
+            directoryCache.removeValue(forKey: cacheKey)
+            return nil
+        }
+        if invalidatedPaths.contains(path) {
+            directoryCache.removeValue(forKey: cacheKey)
+            return nil
+        }
+        return entry.listing
+    }
+
+    private func storeDirectoryListing(_ listing: SpiderwebRemoteDirectoryListing, path: String, cookie: UInt64, maxEntries: UInt32) {
+        let cacheKey = directoryCacheKey(path: path, cookie: cookie, maxEntries: maxEntries)
+        stateLock.lock()
+        directoryCache[cacheKey] = SpiderwebDirectoryCacheEntry(fetchedAt: Date(), listing: listing)
+        stateLock.unlock()
+    }
+
+    private func directoryCacheKey(path: String, cookie: UInt64, maxEntries: UInt32) -> String {
+        "\(path)#\(cookie)#\(maxEntries)"
+    }
+
+    private func clearDirectoryCacheLocked(forPath path: String) {
+        let prefix = "\(path)#"
+        directoryCache.keys
+            .filter { $0.hasPrefix(prefix) }
+            .forEach { directoryCache.removeValue(forKey: $0) }
     }
 }

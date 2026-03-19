@@ -1,0 +1,63 @@
+#!/bin/bash
+set -euo pipefail
+
+APP_PATH="/Applications/Spiderweb.app"
+APP_BINARY="$APP_PATH/Contents/MacOS/Spiderweb"
+EXTENSION_PATH="$APP_PATH/Contents/Extensions/SpiderwebFSKitExtension.appex"
+FILESYSTEM_BUNDLE="/Library/Filesystems/spiderweb.fs"
+EXTENSION_BUNDLE_ID="com.deanoc.spiderweb.fskit.app.extension"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+quit_running_spiderweb() {
+  if pgrep -x Spiderweb >/dev/null 2>&1; then
+    pkill -x Spiderweb >/dev/null 2>&1 || true
+  fi
+
+  if [[ -x "$APP_BINARY" ]]; then
+    pkill -f "$APP_BINARY" >/dev/null 2>&1 || true
+  fi
+
+  for _ in $(seq 1 20); do
+    if ! pgrep -x Spiderweb >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  pkill -9 -x Spiderweb >/dev/null 2>&1 || true
+  if [[ -x "$APP_BINARY" ]]; then
+    pkill -9 -f "$APP_BINARY" >/dev/null 2>&1 || true
+  fi
+}
+
+tear_down_fskit_state() {
+  pluginkit -e ignore -p com.apple.fskit.fsmodule -i "$EXTENSION_BUNDLE_ID" >/dev/null 2>&1 || true
+
+  if [[ -d "$EXTENSION_PATH" ]]; then
+    pluginkit -r "$EXTENSION_PATH" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -d "$APP_PATH" ]]; then
+    "$LSREGISTER" -u "$APP_PATH" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -d "$FILESYSTEM_BUNDLE" ]]; then
+    "$LSREGISTER" -u "$FILESYSTEM_BUNDLE" >/dev/null 2>&1 || true
+  fi
+
+  pkill -9 -x fskit_agent >/dev/null 2>&1 || true
+  pkill -9 -x extensionkitservice >/dev/null 2>&1 || true
+}
+
+quit_running_spiderweb
+tear_down_fskit_state
+
+if [[ -d "$APP_PATH" ]]; then
+  rm -rf "$APP_PATH"
+fi
+
+if [[ -d "$FILESYSTEM_BUNDLE" ]]; then
+  rm -rf "$FILESYSTEM_BUNDLE"
+fi
+
+exit 0

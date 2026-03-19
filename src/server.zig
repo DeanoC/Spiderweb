@@ -1600,6 +1600,7 @@ const LocalFsNode = struct {
 
     fn refreshRemoteRegistration(self: *LocalFsNode) !void {
         self.registration_mutex.lock();
+        errdefer self.registration_mutex.unlock();
         var remote = if (self.remote_registration) |registration|
             try registration.clone(self.allocator)
         else

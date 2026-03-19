@@ -169,23 +169,10 @@ fn secretAccountKey(allocator: std.mem.Allocator, kind: SecretKind, key: []const
     return std.fmt.allocPrint(allocator, "{s}:{s}", .{ secretKindLabel(kind), key });
 }
 
-fn lookupLinuxSecretTool(allocator: std.mem.Allocator, kind: SecretKind, key: []const u8) ?[]u8 {
-    const account_key = secretAccountKey(allocator, kind, key) catch return null;
-    defer allocator.free(account_key);
-
-    const kind_label = secretKindLabel(kind);
+fn runLinuxSecretToolLookup(allocator: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
     const result = std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &[_][]const u8{
-            "secret-tool",
-            "lookup",
-            "service",
-            service_name,
-            "kind",
-            kind_label,
-            "account",
-            account_key,
-        },
+        .argv = argv,
         .max_output_bytes = 32 * 1024,
     }) catch return null;
     defer allocator.free(result.stdout);
@@ -199,6 +186,39 @@ fn lookupLinuxSecretTool(allocator: std.mem.Allocator, kind: SecretKind, key: []
     const trimmed = std.mem.trimRight(u8, result.stdout, "\r\n");
     if (trimmed.len == 0) return null;
     return allocator.dupe(u8, trimmed) catch null;
+}
+
+fn lookupLinuxSecretTool(allocator: std.mem.Allocator, kind: SecretKind, key: []const u8) ?[]u8 {
+    const account_key = secretAccountKey(allocator, kind, key) catch return null;
+    defer allocator.free(account_key);
+
+    const kind_label = secretKindLabel(kind);
+    if (runLinuxSecretToolLookup(allocator, &[_][]const u8{
+        "secret-tool",
+        "lookup",
+        "service",
+        service_name,
+        "kind",
+        kind_label,
+        "account",
+        account_key,
+    })) |value| return value;
+
+    // Older provider API keys were stored as kind=provider_api_key,provider=<name>.
+    if (kind == .provider_api_key) {
+        return runLinuxSecretToolLookup(allocator, &[_][]const u8{
+            "secret-tool",
+            "lookup",
+            "service",
+            service_name,
+            "kind",
+            kind_label,
+            "provider",
+            key,
+        });
+    }
+
+    return null;
 }
 
 fn storeLinuxSecretTool(allocator: std.mem.Allocator, kind: SecretKind, key: []const u8, value: []const u8) !void {
@@ -277,10 +297,36 @@ fn clearLinuxSecretTool(allocator: std.mem.Allocator, kind: SecretKind, key: []c
     defer allocator.free(result.stderr);
 
     switch (result.term) {
-        .Exited => |code| if (code == 0 or code == 1) return,
+        .Exited => |code| if (code != 0 and code != 1) return error.CommandFailed,
         else => {},
     }
-    return error.CommandFailed;
+
+    if (kind == .provider_api_key) {
+        const legacy_result = try std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &[_][]const u8{
+                "secret-tool",
+                "clear",
+                "service",
+                service_name,
+                "kind",
+                secretKindLabel(kind),
+                "provider",
+                key,
+            },
+            .max_output_bytes = 16 * 1024,
+        });
+        defer allocator.free(legacy_result.stdout);
+        defer allocator.free(legacy_result.stderr);
+
+        switch (legacy_result.term) {
+            .Exited => |code| if (code == 0 or code == 1) return,
+            else => {},
+        }
+        return error.CommandFailed;
+    }
+
+    return;
 }
 
 fn lookupMacosSecurity(allocator: std.mem.Allocator, kind: SecretKind, key: []const u8) ?[]u8 {

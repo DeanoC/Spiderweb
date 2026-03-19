@@ -1440,6 +1440,7 @@ fn launchdPlistPath(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn launchdDomainTarget(allocator: std.mem.Allocator) ![]u8 {
+    if (builtin.os.tag != .macos) return error.UnsupportedPlatform;
     return std.fmt.allocPrint(allocator, "gui/{d}", .{std.posix.getuid()});
 }
 

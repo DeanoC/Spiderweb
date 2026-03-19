@@ -3,6 +3,8 @@ const std = @import("std");
 const mount_provider = @import("spiderweb_mount_provider");
 const mount_session = @import("spiderweb_mount_session");
 const fs_protocol = @import("acheron_fs_router").acheron_protocol;
+const fs_helper_client = @import("fs_helper_client.zig");
+const native_mount_protocol = @import("spiderweb_native_mount_protocol");
 
 const c = @cImport({
     @cInclude("fuse_compat.h");
@@ -43,6 +45,10 @@ const FuseMainRealFn = *const fn (
 pub const FuseAdapter = struct {
     allocator: std.mem.Allocator,
     session: mount_session.MountSession,
+    helper_client: ?fs_helper_client.HelperClient = null,
+    helper_lookup_open_handle: std.AutoHashMapUnmanaged(u64, mount_provider.OpenFile) = .{},
+    helper_lookup_mutex: std.Thread.Mutex = .{},
+    helper_next_local_handle: u64 = 1,
 
     pub const MountBackend = enum {
         auto,
@@ -59,90 +65,130 @@ pub const FuseAdapter = struct {
     }
 
     pub fn deinit(self: *FuseAdapter) void {
+        self.helper_lookup_mutex.lock();
+        var helper_handles = self.helper_lookup_open_handle;
+        self.helper_lookup_open_handle = .{};
+        self.helper_lookup_mutex.unlock();
+        helper_handles.deinit(self.allocator);
+        if (self.helper_client) |*client| client.deinit();
         self.session.deinit();
     }
 
+    pub fn enableHelperTransport(self: *FuseAdapter, config: native_mount_protocol.LaunchConfig) !void {
+        if (self.helper_client != null) return;
+        self.helper_client = try fs_helper_client.HelperClient.start(self.allocator, config);
+    }
+
     pub fn getattr(self: *FuseAdapter, path: []const u8) ![]u8 {
+        if (self.helper_client) |*client| return client.getattr(path);
         return self.session.getattr(path);
     }
 
     pub fn readdir(self: *FuseAdapter, path: []const u8, cookie: u64, max_entries: u32) ![]u8 {
+        if (self.helper_client) |*client| return client.readdir(path, cookie, max_entries);
         return self.session.readdir(path, cookie, max_entries);
     }
 
     pub fn statfs(self: *FuseAdapter, path: []const u8) ![]u8 {
+        if (self.helper_client) |*client| return client.statfs(path);
         return self.session.statfs(path);
     }
 
     pub fn open(self: *FuseAdapter, path: []const u8, flags: u32) !mount_provider.OpenFile {
+        if (self.helper_client) |*client| return client.open(path, flags);
         return self.session.open(path, flags);
     }
 
     pub fn openAndStoreHandle(self: *FuseAdapter, path: []const u8, flags: u32) !u64 {
+        if (self.helper_client) |*client| {
+            const open_file = try client.open(path, flags);
+            errdefer client.release(open_file) catch {};
+            return self.storeOpenHandle(open_file);
+        }
         return self.session.openAndStoreHandle(path, flags);
     }
 
     pub fn read(self: *FuseAdapter, file: mount_provider.OpenFile, off: u64, len: u32) ![]u8 {
+        if (self.helper_client) |*client| return client.read(file, off, len);
         return self.session.read(file, off, len);
     }
 
     pub fn release(self: *FuseAdapter, file: mount_provider.OpenFile) !void {
+        if (self.helper_client) |*client| return client.release(file);
         try self.session.release(file);
     }
 
     pub fn create(self: *FuseAdapter, path: []const u8, mode: u32, flags: u32) !mount_provider.OpenFile {
+        if (self.helper_client) |*client| return client.create(path, mode, flags);
         return self.session.create(path, mode, flags);
     }
 
     pub fn createAndStoreHandle(self: *FuseAdapter, path: []const u8, mode: u32, flags: u32) !u64 {
+        if (self.helper_client) |*client| {
+            const open_file = try client.create(path, mode, flags);
+            errdefer client.release(open_file) catch {};
+            return self.storeOpenHandle(open_file);
+        }
         return self.session.createAndStoreHandle(path, mode, flags);
     }
 
     pub fn write(self: *FuseAdapter, file: mount_provider.OpenFile, off: u64, data: []const u8) !u32 {
+        if (self.helper_client) |*client| return client.write(file, off, data);
         return self.session.write(file, off, data);
     }
 
     pub fn truncate(self: *FuseAdapter, path: []const u8, size: u64) !void {
+        if (self.helper_client) |*client| return client.truncate(path, size);
         try self.session.truncate(path, size);
     }
 
     pub fn unlink(self: *FuseAdapter, path: []const u8) !void {
+        if (self.helper_client) |*client| return client.unlink(path);
         try self.session.unlink(path);
     }
 
     pub fn mkdir(self: *FuseAdapter, path: []const u8) !void {
+        if (self.helper_client) |*client| return client.mkdir(path);
         try self.session.mkdir(path);
     }
 
     pub fn rmdir(self: *FuseAdapter, path: []const u8) !void {
+        if (self.helper_client) |*client| return client.rmdir(path);
         try self.session.rmdir(path);
     }
 
     pub fn rename(self: *FuseAdapter, old_path: []const u8, new_path: []const u8) !void {
+        if (self.helper_client) |*client| return client.rename(old_path, new_path);
         try self.session.rename(old_path, new_path);
     }
 
     pub fn symlink(self: *FuseAdapter, target: []const u8, link_path: []const u8) !void {
+        if (self.helper_client) |*client| return client.symlink(target, link_path);
         try self.session.symlink(target, link_path);
     }
 
     pub fn setxattr(self: *FuseAdapter, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
+        if (self.helper_client) |*client| return client.setxattr(path, name, value, flags);
         try self.session.setxattr(path, name, value, flags);
     }
 
     pub fn getxattr(self: *FuseAdapter, path: []const u8, name: []const u8) ![]u8 {
+        if (self.helper_client) |*client| return client.getxattr(path, name);
         return self.session.getxattr(path, name);
     }
 
     pub fn listxattr(self: *FuseAdapter, path: []const u8) ![]u8 {
+        if (self.helper_client) |*client| return client.listxattr(path);
         return self.session.listxattr(path);
     }
 
     pub fn removexattr(self: *FuseAdapter, path: []const u8, name: []const u8) !void {
+        if (self.helper_client) |*client| return client.removexattr(path, name);
         try self.session.removexattr(path, name);
     }
 
     pub fn lock(self: *FuseAdapter, file: mount_provider.OpenFile, mode: mount_provider.LockMode, wait: bool) !void {
+        if (self.helper_client) |*client| return client.lock(file, mode, wait);
         try self.session.lock(file, mode, wait);
     }
 
@@ -150,10 +196,12 @@ pub const FuseAdapter = struct {
         self: *FuseAdapter,
         endpoint_configs: []const @import("acheron_fs_router").EndpointConfig,
     ) !bool {
+        if (self.helper_client) |*client| return client.tryReconcileEndpointsIfIdle(endpoint_configs);
         return self.session.tryReconcileEndpointsIfIdle(endpoint_configs);
     }
 
     pub fn tryKeepAliveIfIdle(self: *FuseAdapter) !bool {
+        if (self.helper_client) |*client| return client.tryKeepAliveIfIdle();
         return self.session.tryKeepAliveIfIdle();
     }
 
@@ -284,11 +332,43 @@ pub const FuseAdapter = struct {
     }
 
     fn lookupOpenHandle(self: *FuseAdapter, local_id: u64) ?mount_provider.OpenFile {
+        if (self.helper_client != null) {
+            self.helper_lookup_mutex.lock();
+            defer self.helper_lookup_mutex.unlock();
+            return self.helper_lookup_open_handle.get(local_id);
+        }
         return self.session.lookupOpenHandle(local_id);
     }
 
     fn releaseStoredHandle(self: *FuseAdapter, local_id: u64) void {
+        if (self.helper_client) |*client| {
+            self.helper_lookup_mutex.lock();
+            const removed = self.helper_lookup_open_handle.fetchRemove(local_id);
+            self.helper_lookup_mutex.unlock();
+            if (removed) |entry| {
+                client.release(entry.value) catch {};
+            }
+            return;
+        }
         self.session.releaseStoredHandle(local_id);
+    }
+
+    fn storeOpenHandle(self: *FuseAdapter, open_file: mount_provider.OpenFile) !u64 {
+        self.helper_lookup_mutex.lock();
+        defer self.helper_lookup_mutex.unlock();
+        const local_id = reserveLocalHandle(&self.helper_next_local_handle);
+        try self.helper_lookup_open_handle.put(self.allocator, local_id, open_file);
+        return local_id;
+    }
+
+    fn reserveLocalHandle(next_local_handle: *u64) u64 {
+        var local_id = next_local_handle.*;
+        next_local_handle.* +%= 1;
+        if (local_id == 0) {
+            local_id = next_local_handle.*;
+            next_local_handle.* +%= 1;
+        }
+        return local_id;
     }
 };
 

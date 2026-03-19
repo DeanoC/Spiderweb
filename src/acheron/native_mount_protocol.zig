@@ -24,6 +24,7 @@ pub const LaunchConfig = struct {
     mountpoint: []const u8,
     workspace_sync_interval_ms: u64 = 5_000,
     namespace_keepalive_interval_ms: u64 = 60_000,
+    shared_auth_token: ?[]const u8 = null,
     endpoints: []const EndpointSpec,
     namespace: ?NamespaceBinding = null,
 };
@@ -38,11 +39,13 @@ pub const OwnedLaunchConfig = struct {
     mountpoint: []u8,
     workspace_sync_interval_ms: u64,
     namespace_keepalive_interval_ms: u64,
+    shared_auth_token: ?[]u8 = null,
     endpoints: []OwnedEndpointSpec,
     namespace: ?OwnedNamespaceBinding = null,
 
     pub fn deinit(self: *OwnedLaunchConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.mountpoint);
+        if (self.shared_auth_token) |value| allocator.free(value);
         for (self.endpoints) |*endpoint| endpoint.deinit(allocator);
         allocator.free(self.endpoints);
         if (self.namespace) |*namespace| namespace.deinit(allocator);
@@ -94,6 +97,7 @@ pub const LockMode = enum {
 
 pub const RequestOp = enum {
     ping,
+    keepalive,
     getattr,
     readdir,
     statfs,
@@ -113,10 +117,12 @@ pub const RequestOp = enum {
     listxattr,
     removexattr,
     lock,
+    reconcile_endpoints,
 };
 
 pub const OwnedRequest = union(RequestOp) {
     ping: void,
+    keepalive: void,
     getattr: PathRequest,
     readdir: ReaddirRequest,
     statfs: PathRequest,
@@ -136,10 +142,11 @@ pub const OwnedRequest = union(RequestOp) {
     listxattr: PathRequest,
     removexattr: NamedPathRequest,
     lock: LockRequest,
+    reconcile_endpoints: ReconcileEndpointsRequest,
 
     pub fn deinit(self: *OwnedRequest, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .ping => {},
+            .ping, .keepalive => {},
             .getattr, .statfs, .unlink, .mkdir, .rmdir, .listxattr => |*request| request.deinit(allocator),
             .readdir => |*request| request.deinit(allocator),
             .open => |*request| request.deinit(allocator),
@@ -153,6 +160,7 @@ pub const OwnedRequest = union(RequestOp) {
             .setxattr => |*request| request.deinit(allocator),
             .getxattr, .removexattr => |*request| request.deinit(allocator),
             .lock => {},
+            .reconcile_endpoints => |*request| request.deinit(allocator),
         }
         self.* = undefined;
     }
@@ -273,6 +281,16 @@ pub const LockRequest = struct {
     wait: bool,
 };
 
+pub const ReconcileEndpointsRequest = struct {
+    endpoints: []OwnedEndpointSpec,
+
+    fn deinit(self: *ReconcileEndpointsRequest, allocator: std.mem.Allocator) void {
+        for (self.endpoints) |*endpoint| endpoint.deinit(allocator);
+        allocator.free(self.endpoints);
+        self.* = undefined;
+    }
+};
+
 pub const SuccessResponse = struct {
     ok: bool = true,
     op: []const u8,
@@ -317,6 +335,8 @@ pub fn parseLaunchConfigOwned(allocator: std.mem.Allocator, json: []const u8) !O
 
     const workspace_sync_interval_ms = integerFieldToU64(parsed.value.object.get("workspace_sync_interval_ms")) orelse 5_000;
     const namespace_keepalive_interval_ms = integerFieldToU64(parsed.value.object.get("namespace_keepalive_interval_ms")) orelse 60_000;
+    const shared_auth_token = try duplicateOptionalString(allocator, parsed.value.object.get("shared_auth_token"));
+    errdefer if (shared_auth_token) |value| allocator.free(value);
 
     const endpoints_value = parsed.value.object.get("endpoints") orelse return error.InvalidResponse;
     if (endpoints_value != .array) return error.InvalidResponse;
@@ -355,6 +375,7 @@ pub fn parseLaunchConfigOwned(allocator: std.mem.Allocator, json: []const u8) !O
         .mountpoint = mountpoint,
         .workspace_sync_interval_ms = workspace_sync_interval_ms,
         .namespace_keepalive_interval_ms = namespace_keepalive_interval_ms,
+        .shared_auth_token = shared_auth_token,
         .endpoints = endpoints,
         .namespace = namespace,
     };
@@ -368,6 +389,7 @@ pub fn parseRequestOwned(allocator: std.mem.Allocator, json: []const u8) !OwnedR
     if (op != .string) return error.InvalidResponse;
 
     if (std.mem.eql(u8, op.string, "ping")) return .{ .ping = {} };
+    if (std.mem.eql(u8, op.string, "keepalive")) return .{ .keepalive = {} };
     if (std.mem.eql(u8, op.string, "getattr")) return .{ .getattr = .{ .path = try duplicateRequiredString(allocator, parsed.value.object.get("path")) } };
     if (std.mem.eql(u8, op.string, "readdir")) return .{ .readdir = .{
         .path = try duplicateRequiredString(allocator, parsed.value.object.get("path")),
@@ -444,6 +466,28 @@ pub fn parseRequestOwned(allocator: std.mem.Allocator, json: []const u8) !OwnedR
             .wait = boolField(parsed.value.object.get("wait")) orelse false,
         } };
     }
+    if (std.mem.eql(u8, op.string, "reconcile_endpoints")) {
+        const endpoints_value = parsed.value.object.get("endpoints") orelse return error.InvalidResponse;
+        if (endpoints_value != .array) return error.InvalidResponse;
+        const endpoints = try allocator.alloc(OwnedEndpointSpec, endpoints_value.array.items.len);
+        errdefer allocator.free(endpoints);
+        var endpoints_len: usize = 0;
+        errdefer {
+            for (endpoints[0..endpoints_len]) |*endpoint| endpoint.deinit(allocator);
+        }
+        for (endpoints_value.array.items) |entry| {
+            if (entry != .object) return error.InvalidResponse;
+            endpoints[endpoints_len] = .{
+                .name = try duplicateRequiredString(allocator, entry.object.get("name")),
+                .url = try duplicateRequiredString(allocator, entry.object.get("url")),
+                .export_name = try duplicateOptionalString(allocator, entry.object.get("export_name")),
+                .mount_path = try duplicateRequiredString(allocator, entry.object.get("mount_path")),
+                .auth_token = try duplicateOptionalString(allocator, entry.object.get("auth_token")),
+            };
+            endpoints_len += 1;
+        }
+        return .{ .reconcile_endpoints = .{ .endpoints = endpoints } };
+    }
     return error.InvalidResponse;
 }
 
@@ -513,6 +557,7 @@ test "native_mount_protocol: launch config roundtrips endpoint and namespace fie
         .mountpoint = "/Volumes/spiderweb",
         .workspace_sync_interval_ms = 12_000,
         .namespace_keepalive_interval_ms = 90_000,
+        .shared_auth_token = "sw-shared-456",
         .endpoints = &.{
             .{
                 .name = "local",
@@ -536,6 +581,7 @@ test "native_mount_protocol: launch config roundtrips endpoint and namespace fie
     try std.testing.expectEqualStrings("/Volumes/spiderweb", parsed.mountpoint);
     try std.testing.expectEqual(@as(usize, 1), parsed.endpoints.len);
     try std.testing.expect(parsed.namespace != null);
+    try std.testing.expectEqualStrings("sw-shared-456", parsed.shared_auth_token.?);
     try std.testing.expectEqualStrings("/nodes/local/fs", parsed.endpoints[0].mount_path);
     try std.testing.expectEqualStrings("proj-1", parsed.namespace.?.project_id);
 }
@@ -553,6 +599,24 @@ test "native_mount_protocol: parses write requests with base64 payload" {
             try std.testing.expectEqual(@as(u64, 9), write.handle_id);
             try std.testing.expectEqual(@as(u64, 3), write.off);
             try std.testing.expectEqualStrings("hello", write.data);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "native_mount_protocol: parses reconcile endpoints requests" {
+    const allocator = std.testing.allocator;
+    var request = try parseRequestOwned(
+        allocator,
+        "{\"op\":\"reconcile_endpoints\",\"endpoints\":[{\"name\":\"local\",\"url\":\"ws://127.0.0.1:18891/v2/fs\",\"mount_path\":\"/src\"}]}",
+    );
+    defer request.deinit(allocator);
+
+    switch (request) {
+        .reconcile_endpoints => |reconcile| {
+            try std.testing.expectEqual(@as(usize, 1), reconcile.endpoints.len);
+            try std.testing.expectEqualStrings("local", reconcile.endpoints[0].name);
+            try std.testing.expectEqualStrings("/src", reconcile.endpoints[0].mount_path);
         },
         else => return error.TestUnexpectedResult,
     }

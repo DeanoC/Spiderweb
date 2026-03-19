@@ -7,17 +7,8 @@
         .spider_protocol = .{
             .path = "deps/spider-protocol",
         },
-        .ziggy_memory_store = .{
-            .path = "deps/ziggy-memory-store",
-        },
         .ziggy_tool_runtime = .{
             .path = "deps/ziggy-tool-runtime",
-        },
-        .ziggy_runtime_hooks = .{
-            .path = "deps/ziggy-runtime-hooks",
-        },
-        .ziggy_run_orchestrator = .{
-            .path = "deps/ziggy-run-orchestrator",
         },
     },
     .paths = .{

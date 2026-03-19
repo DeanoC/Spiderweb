@@ -1423,10 +1423,6 @@ const LocalFsNode = struct {
                         .ctx = @ptrCast(endpoint),
                         .on_submit = localFsNodeChatInputSubmitHook,
                     },
-                    .before_operation_hook = .{
-                        .ctx = @ptrCast(endpoint),
-                        .run = localFsNodeBeforeOperationHook,
-                    },
                 },
             ),
             .hub = .{ .allocator = allocator },
@@ -1891,9 +1887,7 @@ fn localFsNodeChatInputSubmitHook(
     return node.submitChatInput(input, correlation_id);
 }
 
-fn localFsNodeBeforeOperationHook(raw_ctx: ?*anyopaque) anyerror!void {
-    const ctx = raw_ctx orelse return error.InvalidContext;
-    const node: *LocalFsNode = @ptrCast(@alignCast(ctx));
+fn refreshLocalFsNodeExclusionsBeforeRequest(node: *LocalFsNode) void {
     node.refreshActiveMountpointExclusions() catch |err| {
         std.log.warn("local fs mount exclusion refresh failed: {s}", .{@errorName(err)});
     };
@@ -2140,6 +2134,8 @@ fn handleLocalFsConnection(
                         }
                     }
                 }
+
+                refreshLocalFsNodeExclusionsBeforeRequest(local_node);
 
                 var handled = local_node.service.handleRequestJsonWithEvents(frame.payload) catch |err| blk: {
                     const fallback = try unified.buildFsrpcFsError(
@@ -4794,15 +4790,10 @@ const AgentRuntimeRegistry = struct {
         _ = agent_id;
         if (requested_project_id) |project_id| {
             if (!isValidProjectId(project_id)) return error.InvalidProjectId;
-            if (self.runtime_config.sandbox_enabled and !self.control_plane.projectHasMounts(project_id)) {
+            if (!self.control_plane.projectHasMounts(project_id)) {
                 return error.ProjectMountsMissing;
             }
             return self.allocator.dupe(u8, project_id);
-        }
-
-        if (!self.runtime_config.sandbox_enabled) {
-            if (!builtin.is_test) return error.InvalidSandboxConfig;
-            return self.allocator.dupe(u8, "__local__");
         }
         return error.ProjectRequired;
     }
@@ -4872,14 +4863,6 @@ const AgentRuntimeRegistry = struct {
 
     fn runtimeAttachSnapshot(self: *AgentRuntimeRegistry, agent_id: []const u8, project_id: ?[]const u8) SessionAttachStateSnapshot {
         _ = agent_id;
-        if (!self.runtime_config.sandbox_enabled) {
-            return .{
-                .state = .ready,
-                .runtime_ready = true,
-                .mount_ready = true,
-                .updated_at_ms = std.time.milliTimestamp(),
-            };
-        }
         if (project_id) |value| {
             if (self.control_plane.projectHasMounts(value)) {
                 return .{
@@ -4904,14 +4887,12 @@ const AgentRuntimeRegistry = struct {
             .runtime_ready = false,
             .mount_ready = false,
             .updated_at_ms = std.time.milliTimestamp(),
-            .error_code = self.allocator.dupe(u8, "sandbox_mount_missing") catch null,
-            .error_message = self.allocator.dupe(u8, "sandbox requires a project binding") catch null,
+            .error_code = self.allocator.dupe(u8, "project_required") catch null,
+            .error_message = self.allocator.dupe(u8, "workspace attach requires a project binding") catch null,
         };
     }
 
     fn touchRuntimeAttachState(self: *AgentRuntimeRegistry, agent_id: []const u8, project_id: ?[]const u8) void {
-        if (!self.runtime_config.sandbox_enabled) return;
-
         const binding_key = self.runtimeBindingKey(agent_id, project_id) catch return;
         defer self.allocator.free(binding_key);
         if (project_id) |value| {
@@ -4928,8 +4909,8 @@ const AgentRuntimeRegistry = struct {
         }
         self.markRuntimeWarmupError(
             binding_key,
-            "sandbox_mount_missing",
-            "sandbox requires a project binding",
+            "project_required",
+            "workspace attach requires a project binding",
         );
     }
 
@@ -4954,11 +4935,11 @@ const AgentRuntimeRegistry = struct {
             },
             error.ProcessFdQuotaExceeded => .{
                 .code = "runtime_resource_exhausted",
-                .message = "sandbox runtime hit process fd quota",
+                .message = "runtime hit process fd quota",
             },
             error.ProjectRequired => .{
-                .code = "sandbox_mount_missing",
-                .message = "sandbox requires a project binding",
+                .code = "project_required",
+                .message = "workspace attach requires a project binding",
             },
             error.ProjectMountsMissing => .{
                 .code = "project_mounts_missing",
@@ -5179,14 +5160,6 @@ const AgentRuntimeRegistry = struct {
     ) !SessionAttachStateSnapshot {
         _ = project_token;
         _ = retry_on_error;
-        if (!self.runtime_config.sandbox_enabled) {
-            return .{
-                .state = .ready,
-                .runtime_ready = true,
-                .mount_ready = true,
-                .updated_at_ms = std.time.milliTimestamp(),
-            };
-        }
         if (project_id) |value| {
             if (!self.control_plane.projectHasMounts(value)) {
                 const binding_key = try self.runtimeBindingKey(agent_id, project_id);
@@ -5207,8 +5180,8 @@ const AgentRuntimeRegistry = struct {
         defer self.allocator.free(binding_key);
         self.markRuntimeWarmupError(
             binding_key,
-            "sandbox_mount_missing",
-            "sandbox requires a project binding",
+            "project_required",
+            "workspace attach requires a project binding",
         );
         return self.runtimeAttachSnapshotByKey(binding_key);
     }
@@ -7177,413 +7150,6 @@ fn handleWebSocketConnection(
                                 const response = try unified.buildControlAck(
                                     allocator,
                                     .session_status,
-                                    parsed.id,
-                                    payload_json,
-                                );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                continue;
-                            },
-                            .mount_attach_v2 => {
-                                var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
-                                defer payload.deinit();
-                                if (payload.value != .object) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "mount_attach_v2 payload must be an object",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                if (active_binding.project_id == null) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_state",
-                                        "mount_attach_v2 requires an attached project session",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const workspace_json = try buildWorkspaceStatusPayloadForBinding(
-                                    allocator,
-                                    runtime_registry,
-                                    active_binding,
-                                    connection_workspace_url,
-                                    principal.role == .admin,
-                                );
-                                defer allocator.free(workspace_json);
-
-                                const session = getOrInitNamespaceSessionForBinding(
-                                    allocator,
-                                    &namespace_session,
-                                    runtime_registry,
-                                    active_binding,
-                                    active_session_key,
-                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
-                                    principal.role == .admin,
-                                ) catch |err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "execution_failed",
-                                        @errorName(err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-
-                                const requested_path = blk: {
-                                    const value = payload.value.object.get("path") orelse break :blk "/";
-                                    if (value != .string) {
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            "invalid_payload",
-                                            "mount_attach_v2 path must be a string",
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    }
-                                    break :blk value.string;
-                                };
-                                const requested_depth: u32 = blk: {
-                                    const value = payload.value.object.get("depth") orelse break :blk 1;
-                                    if (value != .integer or value.integer < 0) {
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            "invalid_payload",
-                                            "mount_attach_v2 depth must be a non-negative integer",
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    }
-                                    break :blk @intCast(@min(value.integer, 8));
-                                };
-
-                                const payload_json = session.buildMountGraphSnapshotPayloadForPath(
-                                    workspace_json,
-                                    active_session_key,
-                                    requested_path,
-                                    requested_depth,
-                                ) catch |err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        mountGraphErrorCode(err),
-                                        @errorName(err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                defer allocator.free(payload_json);
-
-                                const response = try unified.buildControlAck(
-                                    allocator,
-                                    .mount_attach_v2,
-                                    parsed.id,
-                                    payload_json,
-                                );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                continue;
-                            },
-                            .mount_file_read_v2 => {
-                                var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
-                                defer payload.deinit();
-                                if (payload.value != .object) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "mount_file_read_v2 payload must be an object",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                if (active_binding.project_id == null) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_state",
-                                        "mount_file_read_v2 requires an attached project session",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const path = getRequiredStringField(payload.value.object, "path") catch {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "missing_field",
-                                        "path is required",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                const offset = getOptionalU64Field(payload.value.object, "offset") orelse 0;
-                                const length = getOptionalU32Field(payload.value.object, "length") orelse 1_048_576;
-
-                                const session = getOrInitNamespaceSessionForBinding(
-                                    allocator,
-                                    &namespace_session,
-                                    runtime_registry,
-                                    active_binding,
-                                    active_session_key,
-                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
-                                    principal.role == .admin,
-                                ) catch |err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "execution_failed",
-                                        @errorName(err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-
-                                const data = session.readMountGraphFile(path, offset, length) catch |err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        mountGraphErrorCode(err),
-                                        @errorName(err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                defer allocator.free(data);
-                                const encoded = try unified.encodeDataB64(allocator, data);
-                                defer allocator.free(encoded);
-                                const escaped_path = try unified.jsonEscape(allocator, path);
-                                defer allocator.free(escaped_path);
-                                const eof = data.len < length;
-                                const payload_json = try std.fmt.allocPrint(
-                                    allocator,
-                                    "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d},\"eof\":{s},\"data_b64\":\"{s}\"}}",
-                                    .{ escaped_path, offset, data.len, if (eof) "true" else "false", encoded },
-                                );
-                                defer allocator.free(payload_json);
-
-                                const response = try unified.buildControlAck(
-                                    allocator,
-                                    .mount_file_read_v2,
-                                    parsed.id,
-                                    payload_json,
-                                );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                continue;
-                            },
-                            .mount_file_write_v2 => {
-                                var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
-                                defer payload.deinit();
-                                if (payload.value != .object) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "mount_file_write_v2 payload must be an object",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                if (active_binding.project_id == null) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_state",
-                                        "mount_file_write_v2 requires an attached project session",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const path = getRequiredStringField(payload.value.object, "path") catch {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "missing_field",
-                                        "path is required",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                const data_b64 = getRequiredStringField(payload.value.object, "data_b64") catch {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "missing_field",
-                                        "data_b64 is required",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                const offset = getOptionalU64Field(payload.value.object, "offset") orelse 0;
-                                const decoded = decodeStandardBase64Owned(allocator, data_b64) catch |err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        @errorName(err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                defer allocator.free(decoded);
-
-                                const session = getOrInitNamespaceSessionForBinding(
-                                    allocator,
-                                    &namespace_session,
-                                    runtime_registry,
-                                    active_binding,
-                                    active_session_key,
-                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
-                                    principal.role == .admin,
-                                ) catch |err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "execution_failed",
-                                        @errorName(err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-
-                                _ = validateMountGraphWriteRange(offset, decoded.len) catch |err| switch (err) {
-                                    error.InvalidOffset => {
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            "invalid_payload",
-                                            "offset is out of range",
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    },
-                                    error.WriteTooLarge => {
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            "invalid_payload",
-                                            "mount graph write exceeds max materialized size",
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    },
-                                    else => return err,
-                                };
-
-                                const existing = session.readMountGraphFile(path, 0, max_mount_graph_materialized_file_bytes + 1) catch |err| switch (err) {
-                                    error.FileNotFound, error.AccessDenied, error.OperationNotSupported => try allocator.dupe(u8, ""),
-                                    else => {
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            mountGraphErrorCode(err),
-                                            @errorName(err),
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    },
-                                };
-                                defer allocator.free(existing);
-                                if (existing.len > max_mount_graph_materialized_file_bytes) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "mount graph file is too large to rewrite",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const write_data = mergeMountGraphWriteData(allocator, existing, offset, decoded) catch |err| switch (err) {
-                                    error.InvalidOffset => {
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            "invalid_payload",
-                                            "offset is out of range",
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    },
-                                    error.WriteTooLarge => {
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            "invalid_payload",
-                                            "mount graph write exceeds max materialized size",
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    },
-                                    else => return err,
-                                };
-                                defer allocator.free(write_data);
-
-                                session.writeMountGraphFile(path, write_data) catch |err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        mountGraphErrorCode(err),
-                                        @errorName(err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                const bytes_written = mountGraphWriteResponseCount(decoded.len) catch unreachable;
-                                const escaped_path = try unified.jsonEscape(allocator, path);
-                                defer allocator.free(escaped_path);
-                                const payload_json = try std.fmt.allocPrint(
-                                    allocator,
-                                    "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d}}}",
-                                    .{ escaped_path, offset, bytes_written },
-                                );
-                                defer allocator.free(payload_json);
-
-                                const response = try unified.buildControlAck(
-                                    allocator,
-                                    .mount_file_write_v2,
                                     parsed.id,
                                     payload_json,
                                 );

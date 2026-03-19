@@ -76,7 +76,6 @@ pub const RuntimeConfig = struct {
     ltm_filename: []const u8 = "runtime-memory.db",
     assets_dir: []const u8 = "templates",
     agents_dir: []const u8 = "agents",
-    sandbox_enabled: bool = builtin.os.tag == .linux and !builtin.is_test,
     sandbox_mounts_root: []const u8 = "/var/lib/spiderweb/mounts",
     sandbox_rootfs_base_ref: []const u8 = "debian:bookworm-slim",
     sandbox_rootfs_store_root: []const u8 = "/var/lib/spiderweb/rootfs/base",
@@ -110,7 +109,6 @@ pub const RuntimeConfig = struct {
             .ltm_filename = try allocator.dupe(u8, self.ltm_filename),
             .assets_dir = try allocator.dupe(u8, self.assets_dir),
             .agents_dir = try allocator.dupe(u8, self.agents_dir),
-            .sandbox_enabled = self.sandbox_enabled,
             .sandbox_mounts_root = try allocator.dupe(u8, self.sandbox_mounts_root),
             .sandbox_rootfs_base_ref = try allocator.dupe(u8, self.sandbox_rootfs_base_ref),
             .sandbox_rootfs_store_root = try allocator.dupe(u8, self.sandbox_rootfs_store_root),
@@ -316,7 +314,6 @@ pub fn init(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
             .ltm_filename = try allocator.dupe(u8, "runtime-memory.db"),
             .assets_dir = try allocator.dupe(u8, "templates"),
             .agents_dir = try allocator.dupe(u8, "agents"),
-            .sandbox_enabled = builtin.os.tag == .linux and !builtin.is_test,
             .sandbox_mounts_root = try allocator.dupe(u8, sandbox_defaults.mounts_root),
             .sandbox_rootfs_base_ref = try allocator.dupe(u8, "debian:bookworm-slim"),
             .sandbox_rootfs_store_root = try allocator.dupe(u8, sandbox_defaults.rootfs_store_root),
@@ -800,7 +797,8 @@ fn ensureRuntimePathsDoNotOverlap(
 }
 
 fn runtimeRequiresSandboxValidation(runtime: RuntimeConfig) bool {
-    return builtin.os.tag == .linux and runtime.sandbox_enabled;
+    _ = runtime;
+    return builtin.os.tag == .linux;
 }
 pub fn save(self: Config) !void {
     // Ensure parent directory exists
@@ -1033,8 +1031,6 @@ test "Config ignores deprecated runtime.sandbox_enabled field and does not persi
     var config = try Config.init(allocator, cfg_path);
     defer config.deinit();
 
-    config.runtime.sandbox_enabled = true;
-
     const legacy_contents =
         \\{
         \\  "runtime": {
@@ -1048,28 +1044,11 @@ test "Config ignores deprecated runtime.sandbox_enabled field and does not persi
     });
 
     try config.load();
-    try std.testing.expect(config.runtime.sandbox_enabled);
 
     try config.save();
     const saved = try std.fs.cwd().readFileAlloc(allocator, cfg_path, 1024 * 64);
     defer allocator.free(saved);
     try std.testing.expect(std.mem.indexOf(u8, saved, "\"sandbox_enabled\"") == null);
-}
-
-test "Config validation allows disabled sandbox runtime" {
-    const allocator = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const tmp_root = try tmp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(tmp_root);
-    const cfg_path = try std.fs.path.join(allocator, &.{ tmp_root, "config.json" });
-
-    var config = try Config.init(allocator, cfg_path);
-    defer config.deinit();
-
-    config.runtime.sandbox_enabled = false;
-    try config.validateRuntimeConfig();
 }
 
 test "Config validation rejects overlapping sandbox roots" {
@@ -1086,7 +1065,6 @@ test "Config validation rejects overlapping sandbox roots" {
     var config = try Config.init(allocator, cfg_path);
     defer config.deinit();
 
-    config.runtime.sandbox_enabled = true;
     config.allocator.free(config.runtime.sandbox_mounts_root);
     config.runtime.sandbox_mounts_root = try allocator.dupe(u8, "/tmp/spiderweb-overlap");
     config.allocator.free(config.runtime.sandbox_overlay_root);
@@ -1109,7 +1087,6 @@ test "Config validation rejects empty rootfs base ref" {
     var config = try Config.init(allocator, cfg_path);
     defer config.deinit();
 
-    config.runtime.sandbox_enabled = true;
     config.allocator.free(config.runtime.sandbox_rootfs_base_ref);
     config.runtime.sandbox_rootfs_base_ref = try allocator.dupe(u8, "   ");
 
@@ -1162,7 +1139,7 @@ test "Config normalizes relative sandbox_fs_mount_bin from spider_web_root" {
 
     try config.normalizeRuntimePathsFromSpiderWebRoot();
 
-    const expected_bin = try std.fs.path.join(allocator, &.{ tmp_root, "zig-out", "bin", "spiderweb-fs-mount" });
+    const expected_bin = try std.fs.path.join(allocator, &.{ tmp_root, "zig-out/bin/spiderweb-fs-mount" });
     defer allocator.free(expected_bin);
     try std.testing.expectEqualStrings(expected_bin, config.runtime.sandbox_fs_mount_bin);
 }

@@ -1,5 +1,4 @@
 const std = @import("std");
-const ltm_store = @import("ziggy-memory-store").ltm_store;
 const venom_catalog = @import("spiderweb_node").venom_catalog;
 const venom_package_model = @import("../venom_package.zig");
 const venom_packages = @import("../venom_packages.zig");
@@ -9,6 +8,7 @@ const persistence_kind = "control_plane_state_v1";
 const persistence_key_env = "SPIDERWEB_CONTROL_STATE_KEY_HEX";
 const persistence_cipher = std.crypto.aead.aes_gcm.Aes256Gcm;
 const persistence_aad = "spiderweb-control-plane-state-v1";
+const max_snapshot_file_bytes: u64 = 256 * 1024 * 1024;
 pub const spider_web_project_id = "system";
 const spider_web_project_name = "System";
 const spider_web_project_status = "active";
@@ -441,7 +441,8 @@ pub const ControlPlane = struct {
     primary_agent_id: []const u8 = default_primary_agent_id,
     spider_web_root: []const u8 = default_spider_web_root,
     node_venom_event_history_max: usize = node_venom_event_history_max_default,
-    store: ?*ltm_store.VersionedMemStore = null,
+    snapshot_directory: ?[]u8 = null,
+    snapshot_filename: ?[]u8 = null,
     state_encryption_key: ?[persistence_cipher.key_length]u8 = null,
     mutex: std.Thread.Mutex = .{},
 
@@ -549,30 +550,26 @@ pub const ControlPlane = struct {
     ) ControlPlane {
         var plane = ControlPlane.initWithOptions(allocator, options);
         plane.state_encryption_key = loadStateEncryptionKey(allocator);
-        if (ltm_directory.len == 0 or ltm_filename.len == 0) {
-            plane.ensureBuiltinProjectBestEffortLocked(std.time.milliTimestamp());
-            return plane;
-        }
+        if (ltm_directory.len == 0 or ltm_filename.len == 0) return plane;
 
-        const store_ptr = allocator.create(ltm_store.VersionedMemStore) catch |err| {
-            std.log.warn("control-plane persistence disabled: {s}", .{@errorName(err)});
-            plane.ensureBuiltinProjectBestEffortLocked(std.time.milliTimestamp());
+        plane.snapshot_directory = allocator.dupe(u8, ltm_directory) catch |err| {
+            std.log.warn("control-plane persistence disabled: failed duplicating snapshot directory: {s}", .{@errorName(err)});
             return plane;
         };
-        errdefer allocator.destroy(store_ptr);
+        errdefer if (plane.snapshot_directory) |directory| allocator.free(directory);
 
-        store_ptr.* = ltm_store.VersionedMemStore.open(allocator, ltm_directory, ltm_filename) catch |err| {
-            std.log.warn("control-plane persistence disabled: {s}", .{@errorName(err)});
-            allocator.destroy(store_ptr);
-            plane.ensureBuiltinProjectBestEffortLocked(std.time.milliTimestamp());
+        plane.snapshot_filename = allocator.dupe(u8, ltm_filename) catch |err| {
+            std.log.warn("control-plane persistence disabled: failed duplicating snapshot filename: {s}", .{@errorName(err)});
+            if (plane.snapshot_directory) |directory| allocator.free(directory);
+            plane.snapshot_directory = null;
             return plane;
         };
-        plane.store = store_ptr;
 
         plane.loadSnapshotLocked() catch |err| {
             plane.clearState();
             plane.next_invite_id = 1;
             plane.next_node_id = 1;
+            plane.next_pending_join_id = 1;
             plane.next_project_id = 1;
             std.log.warn("control-plane snapshot load failed: {s}", .{@errorName(err)});
         };
@@ -685,7 +682,7 @@ pub const ControlPlane = struct {
             changed = true;
         }
 
-        if (changed and self.store != null) self.persistSnapshotBestEffortLocked();
+        if (changed) self.persistSnapshotBestEffortLocked();
     }
 
     pub fn ensureSpiderWebMount(self: *ControlPlane, node_id: []const u8, export_name: []const u8) !void {
@@ -967,12 +964,21 @@ pub const ControlPlane = struct {
 
     pub fn deinit(self: *ControlPlane) void {
         self.clearState();
+        if (self.snapshot_directory) |directory| self.allocator.free(directory);
+        if (self.snapshot_filename) |filename| self.allocator.free(filename);
+    }
 
-        if (self.store) |store| {
-            store.close();
-            self.allocator.destroy(store);
-            self.store = null;
-        }
+    pub fn dumpState(self: *ControlPlane) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.buildSnapshotJsonLocked();
+    }
+
+    pub fn loadState(self: *ControlPlane, snapshot_json: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.restoreSnapshotFromJsonLocked(snapshot_json);
+        self.ensureBuiltinProjectBestEffortLocked(std.time.milliTimestamp());
     }
 
     fn clearState(self: *ControlPlane) void {
@@ -4547,7 +4553,8 @@ pub const ControlPlane = struct {
     }
 
     fn persistSnapshotLocked(self: *ControlPlane) !void {
-        const store = self.store orelse return;
+        const snapshot_directory = self.snapshot_directory orelse return;
+        const snapshot_filename = self.snapshot_filename orelse return;
 
         const snapshot_json = try self.buildSnapshotJsonLocked();
         defer self.allocator.free(snapshot_json);
@@ -4557,30 +4564,43 @@ pub const ControlPlane = struct {
             try self.allocator.dupe(u8, snapshot_json);
         defer self.allocator.free(persisted_json);
 
-        // Keep a single latest snapshot blob; historical versions are not needed.
-        try store.deleteBaseId(persistence_base_id);
-        try store.persistVersion(persistence_base_id, 1, persistence_kind, persisted_json);
+        try std.fs.cwd().makePath(snapshot_directory);
+        const snapshot_path = try std.fs.path.join(self.allocator, &.{ snapshot_directory, snapshot_filename });
+        defer self.allocator.free(snapshot_path);
+        try std.fs.cwd().writeFile(.{
+            .sub_path = snapshot_path,
+            .data = persisted_json,
+        });
     }
 
     fn loadSnapshotLocked(self: *ControlPlane) !void {
-        const store = self.store orelse return;
-        var record = (try store.load(self.allocator, persistence_base_id, null)) orelse return;
-        defer record.deinit(self.allocator);
+        const snapshot_directory = self.snapshot_directory orelse return;
+        const snapshot_filename = self.snapshot_filename orelse return;
+        const snapshot_path = try std.fs.path.join(self.allocator, &.{ snapshot_directory, snapshot_filename });
+        defer self.allocator.free(snapshot_path);
 
-        if (!std.mem.eql(u8, record.kind, persistence_kind)) {
-            std.log.warn(
-                "control-plane snapshot kind mismatch: expected {s}, got {s}",
-                .{ persistence_kind, record.kind },
-            );
-        }
-        if (isEncryptedSnapshotEnvelope(record.content_json)) {
+        var file = std.fs.cwd().openFile(snapshot_path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NameTooLong => return,
+            error.NotDir => return,
+            error.IsDir => return,
+            else => return err,
+        };
+        defer file.close();
+
+        const snapshot_size = try file.getEndPos();
+        if (snapshot_size > max_snapshot_file_bytes) return error.FileTooBig;
+
+        const record = try file.readToEndAlloc(self.allocator, @intCast(snapshot_size));
+        defer self.allocator.free(record);
+
+        if (isEncryptedSnapshotEnvelope(record)) {
             const key = self.state_encryption_key orelse return error.MissingSnapshotEncryptionKey;
-            const snapshot_json = try decryptSnapshotJson(self.allocator, record.content_json, key);
+            const snapshot_json = try decryptSnapshotJson(self.allocator, record, key);
             defer self.allocator.free(snapshot_json);
             try self.restoreSnapshotFromJsonLocked(snapshot_json);
             return;
         }
-        try self.restoreSnapshotFromJsonLocked(record.content_json);
+        try self.restoreSnapshotFromJsonLocked(record);
     }
 
     fn buildSnapshotJsonLocked(self: *ControlPlane) ![]u8 {

@@ -1065,7 +1065,6 @@ test "Config validation rejects overlapping sandbox roots" {
     var config = try Config.init(allocator, cfg_path);
     defer config.deinit();
 
-    config.runtime.sandbox_enabled = true;
     config.allocator.free(config.runtime.sandbox_mounts_root);
     config.runtime.sandbox_mounts_root = try allocator.dupe(u8, "/tmp/spiderweb-overlap");
     config.allocator.free(config.runtime.sandbox_overlay_root);
@@ -1088,7 +1087,6 @@ test "Config validation rejects empty rootfs base ref" {
     var config = try Config.init(allocator, cfg_path);
     defer config.deinit();
 
-    config.runtime.sandbox_enabled = true;
     config.allocator.free(config.runtime.sandbox_rootfs_base_ref);
     config.runtime.sandbox_rootfs_base_ref = try allocator.dupe(u8, "   ");
 
@@ -1141,7 +1139,7 @@ test "Config normalizes relative sandbox_fs_mount_bin from spider_web_root" {
 
     try config.normalizeRuntimePathsFromSpiderWebRoot();
 
-    const expected_bin = try std.fs.path.join(allocator, &.{ tmp_root, "zig-out", "bin", "spiderweb-fs-mount" });
+    const expected_bin = try std.fs.path.join(allocator, &.{ tmp_root, "zig-out/bin/spiderweb-fs-mount" });
     defer allocator.free(expected_bin);
     try std.testing.expectEqualStrings(expected_bin, config.runtime.sandbox_fs_mount_bin);
 }

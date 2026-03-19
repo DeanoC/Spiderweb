@@ -34,13 +34,7 @@ pub const HelperClient = struct {
 
         const stdin_file = child.stdin.?;
         const stdout_file = child.stdout.?;
-        const shared_auth_token = if (config.namespace) |namespace|
-            if (namespace.auth_token) |auth_token|
-                try allocator.dupe(u8, auth_token)
-            else
-                null
-        else
-            null;
+        const shared_auth_token = try duplicateSharedAuthToken(allocator, config);
         errdefer if (shared_auth_token) |auth_token| allocator.free(auth_token);
 
         var client = HelperClient{
@@ -484,6 +478,39 @@ fn expectNamespaceHandle(file: mount_provider.OpenFile) !mount_provider.Namespac
     };
 }
 
+fn duplicateSharedAuthToken(
+    allocator: std.mem.Allocator,
+    config: native_protocol.LaunchConfig,
+) !?[]u8 {
+    if (config.namespace) |namespace| {
+        if (namespace.auth_token) |auth_token| {
+            return allocator.dupe(u8, auth_token);
+        }
+    }
+    const inferred_auth_token = inferSharedAuthTokenFromEndpoints(config.endpoints) orelse return null;
+    return allocator.dupe(u8, inferred_auth_token);
+}
+
+fn inferSharedAuthTokenFromEndpoints(endpoints: []const native_protocol.EndpointSpec) ?[]const u8 {
+    var best_auth_token: ?[]const u8 = null;
+    var best_count: usize = 0;
+    for (endpoints) |candidate_endpoint| {
+        const candidate_auth_token = candidate_endpoint.auth_token orelse continue;
+        var candidate_count: usize = 0;
+        for (endpoints) |endpoint| {
+            const endpoint_auth_token = endpoint.auth_token orelse continue;
+            if (std.mem.eql(u8, endpoint_auth_token, candidate_auth_token)) {
+                candidate_count += 1;
+            }
+        }
+        if (candidate_count > best_count) {
+            best_auth_token = candidate_auth_token;
+            best_count = candidate_count;
+        }
+    }
+    return best_auth_token;
+}
+
 fn writeLaunchConfig(allocator: std.mem.Allocator, config: native_protocol.LaunchConfig) ![]u8 {
     const temp_dir = try temporaryDirectory(allocator);
     defer allocator.free(temp_dir);
@@ -503,7 +530,10 @@ fn writeLaunchConfig(allocator: std.mem.Allocator, config: native_protocol.Launc
     const encoded = try native_protocol.encodeLaunchConfig(allocator, config);
     defer allocator.free(encoded);
 
-    var file = try createFileAny(config_path, .{ .truncate = true });
+    var file = try createFileAny(config_path, .{
+        .truncate = true,
+        .mode = 0o600,
+    });
     defer file.close();
     try file.writeAll(encoded);
     return config_path;

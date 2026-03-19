@@ -4578,11 +4578,15 @@ pub const ControlPlane = struct {
         const snapshot_path = try std.fs.path.join(self.allocator, &.{ snapshot_directory, snapshot_filename });
         defer self.allocator.free(snapshot_path);
 
-        const record = std.fs.cwd().readFileAlloc(self.allocator, snapshot_path, 16 * 1024 * 1024) catch |err| switch (err) {
-            error.FileNotFound, error.PathAlreadyExists, error.NameTooLong => return,
+        var file = std.fs.cwd().openFile(snapshot_path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NameTooLong => return,
             error.NotDir => return,
+            error.IsDir => return,
             else => return err,
         };
+        defer file.close();
+
+        const record = try file.readToEndAlloc(self.allocator, std.math.maxInt(usize));
         defer self.allocator.free(record);
 
         if (isEncryptedSnapshotEnvelope(record)) {

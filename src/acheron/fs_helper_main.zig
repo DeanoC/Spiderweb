@@ -4,7 +4,7 @@ const hybrid_mount_provider = @import("hybrid_mount_provider.zig");
 const mount_provider = @import("spiderweb_mount_provider");
 const mount_session = @import("mount_session.zig");
 const namespace_client = @import("namespace_client.zig");
-const native_protocol = @import("native_mount_protocol.zig");
+const native_protocol = @import("spiderweb_native_mount_protocol");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -125,6 +125,12 @@ fn handleRequest(allocator: std.mem.Allocator, session: *mount_session.MountSess
     switch (request) {
         .ping => {
             return native_protocol.encodeSuccessResponse(allocator, .{ .op = "ping", .result_json = "{}" });
+        },
+        .keepalive => {
+            const kept_alive = try session.tryKeepAliveIfIdle();
+            const payload = try std.fmt.allocPrint(allocator, "{{\"kept_alive\":{s}}}", .{if (kept_alive) "true" else "false"});
+            defer allocator.free(payload);
+            return native_protocol.encodeSuccessResponse(allocator, .{ .op = "keepalive", .result_json = payload });
         },
         .getattr => |payload| {
             const attr_json = try session.getattr(payload.path);
@@ -251,6 +257,23 @@ fn handleRequest(allocator: std.mem.Allocator, session: *mount_session.MountSess
             };
             try session.lock(open_file, mode, payload.wait);
             return native_protocol.encodeSuccessResponse(allocator, .{ .op = "lock", .result_json = "{}" });
+        },
+        .reconcile_endpoints => |payload| {
+            const endpoint_configs = try allocator.alloc(fs_router.EndpointConfig, payload.endpoints.len);
+            defer allocator.free(endpoint_configs);
+            for (payload.endpoints, 0..) |endpoint, idx| {
+                endpoint_configs[idx] = .{
+                    .name = endpoint.name,
+                    .url = endpoint.url,
+                    .export_name = endpoint.export_name,
+                    .mount_path = endpoint.mount_path,
+                    .auth_token = endpoint.auth_token,
+                };
+            }
+            const reconciled = try session.tryReconcileEndpointsIfIdle(endpoint_configs);
+            const result_json = try std.fmt.allocPrint(allocator, "{{\"reconciled\":{s}}}", .{if (reconciled) "true" else "false"});
+            defer allocator.free(result_json);
+            return native_protocol.encodeSuccessResponse(allocator, .{ .op = "reconcile_endpoints", .result_json = result_json });
         },
     }
 }

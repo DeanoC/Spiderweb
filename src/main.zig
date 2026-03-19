@@ -21,7 +21,7 @@ pub fn main() !void {
 
     if (requested_help) {
         const help =
-            "Spiderweb v0.3.1 - Workspace Host for OpenClaw Protocol\n" ++
+            "Spiderweb v0.3.2 - Workspace Host for OpenClaw Protocol\n" ++
             "\n" ++
             "A WebSocket host that exposes Spiderweb workspaces, nodes, venoms, and the virtual filesystem.\n" ++
             "\n" ++
@@ -56,7 +56,7 @@ pub fn main() !void {
     }
     try config.normalizeRuntimePathsFromSpiderWebRoot();
 
-    std.log.info("Starting Spiderweb v0.3.1 (Workspace Host)", .{});
+    std.log.info("Starting Spiderweb v0.3.2 (Workspace Host)", .{});
     std.log.info("Config: {s}", .{config.config_path});
     std.log.info("Workspace mount binary: {s}", .{config.runtime.sandbox_fs_mount_bin});
 
@@ -81,11 +81,6 @@ pub fn main() !void {
     }
 
     std.log.info("Binding to {s}:{d}", .{ bind_addr, port });
-
-    if (config.runtime.ltm_directory.len == 0 or config.runtime.ltm_filename.len == 0) {
-        std.log.err("Invalid runtime config: LTM store is required (`runtime.ltm_directory` and `runtime.ltm_filename` must be set)", .{});
-        return error.MissingLtmStoreConfig;
-    }
 
     // Start server
     try server.run(allocator, bind_addr, port, config.runtime);

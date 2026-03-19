@@ -3,7 +3,6 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const sqlite_lib_dir = b.option([]const u8, "sqlite-lib-dir", "Directory containing sqlite3 import library and runtime DLL");
 
     const spider_protocol_dep = b.dependency("spider_protocol", .{
         .target = target,
@@ -30,30 +29,11 @@ pub fn build(b: *std.Build) void {
     const spiderweb_fs_protocol_module = spider_protocol_dep.module("spiderweb_fs");
     spiderweb_node_module.addImport("spider-protocol", spider_protocol_module);
     spiderweb_fs_protocol_module.addImport("spider-protocol", spider_protocol_module);
-    const ziggy_memory_store_dep = b.dependency("ziggy_memory_store", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const ziggy_memory_store_module = ziggy_memory_store_dep.module("ziggy-memory-store");
     const ziggy_tool_runtime_dep = b.dependency("ziggy_tool_runtime", .{
         .target = target,
         .optimize = optimize,
     });
     const ziggy_tool_runtime_module = ziggy_tool_runtime_dep.module("ziggy-tool-runtime");
-    const ziggy_run_orchestrator_module = b.createModule(.{
-        .root_source_file = b.path("deps/ziggy-run-orchestrator/src/lib.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    ziggy_run_orchestrator_module.addImport("ziggy-memory-store", ziggy_memory_store_module);
-
-    const ziggy_runtime_hooks_module = b.createModule(.{
-        .root_source_file = b.path("deps/ziggy-runtime-hooks/src/lib.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    ziggy_runtime_hooks_module.addImport("ziggy-memory-store", ziggy_memory_store_module);
-    ziggy_runtime_hooks_module.addImport("ziggy-run-orchestrator", ziggy_run_orchestrator_module);
 
     const acheron_fs_client_mod = b.createModule(.{
         .root_source_file = b.path("src/acheron/client.zig"),
@@ -92,6 +72,11 @@ pub fn build(b: *std.Build) void {
     });
     spiderweb_mount_session_mod.addImport("acheron_fs_router", acheron_fs_router_mod);
     spiderweb_mount_session_mod.addImport("spiderweb_mount_provider", spiderweb_mount_provider_mod);
+    const spiderweb_native_mount_protocol_mod = b.createModule(.{
+        .root_source_file = b.path("src/acheron/native_mount_protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const spiderweb_fs_fuse_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/venoms/fs/fs_fuse_adapter.zig"),
         .target = target,
@@ -101,6 +86,7 @@ pub fn build(b: *std.Build) void {
     spiderweb_fs_fuse_adapter_mod.addImport("acheron_fs_router", acheron_fs_router_mod);
     spiderweb_fs_fuse_adapter_mod.addImport("spiderweb_mount_provider", spiderweb_mount_provider_mod);
     spiderweb_fs_fuse_adapter_mod.addImport("spiderweb_mount_session", spiderweb_mount_session_mod);
+    spiderweb_fs_fuse_adapter_mod.addImport("spiderweb_native_mount_protocol", spiderweb_native_mount_protocol_mod);
     const fuse_compat_stub_mod = b.createModule(.{
         .root_source_file = b.path("src/c/fuse_compat_stub.zig"),
         .target = target,
@@ -195,10 +181,7 @@ pub fn build(b: *std.Build) void {
     spiderweb_mod.addImport("spiderweb_fs", spiderweb_fs_protocol_module);
     spiderweb_mod.addImport("spiderweb_fs_cache", spiderweb_fs_cache_mod);
     spiderweb_mod.addImport("spiderweb_fs_source_policy", spiderweb_fs_source_policy_mod);
-    spiderweb_mod.addImport("ziggy-memory-store", ziggy_memory_store_module);
     spiderweb_mod.addImport("ziggy-tool-runtime", ziggy_tool_runtime_module);
-    spiderweb_mod.addImport("ziggy-runtime-hooks", ziggy_runtime_hooks_module);
-    spiderweb_mod.addImport("ziggy-run-orchestrator", ziggy_run_orchestrator_module);
 
     // Add agent_config module for flat config loading
     const agent_config_mod = b.createModule(.{
@@ -213,9 +196,7 @@ pub fn build(b: *std.Build) void {
         .root_module = spiderweb_mod,
     });
     spiderweb.linkLibrary(fuse_compat_lib);
-    applySqliteLibraryPath(spiderweb, sqlite_lib_dir);
     spiderweb.linkLibC();
-    spiderweb.linkSystemLibrary("sqlite3");
 
     b.installArtifact(spiderweb);
     const spiderweb_build_step = b.step("spiderweb", "Build spiderweb server executable");
@@ -246,6 +227,7 @@ pub fn build(b: *std.Build) void {
     fs_mount_mod.addImport("acheron_fs_router", acheron_fs_router_mod);
     fs_mount_mod.addImport("spiderweb_fs_fuse_adapter", spiderweb_fs_fuse_adapter_mod);
     fs_mount_mod.addImport("spiderweb_mount_provider", spiderweb_mount_provider_mod);
+    fs_mount_mod.addImport("spiderweb_native_mount_protocol", spiderweb_native_mount_protocol_mod);
     const spiderweb_fs_mount = b.addExecutable(.{
         .name = "spiderweb-fs-mount",
         .root_module = fs_mount_mod,
@@ -265,6 +247,7 @@ pub fn build(b: *std.Build) void {
     fs_helper_mod.addImport("acheron_fs_router", acheron_fs_router_mod);
     fs_helper_mod.addImport("spiderweb_mount_provider", spiderweb_mount_provider_mod);
     fs_helper_mod.addImport("spiderweb_mount_session", spiderweb_mount_session_mod);
+    fs_helper_mod.addImport("spiderweb_native_mount_protocol", spiderweb_native_mount_protocol_mod);
     const spiderweb_fs_helper = b.addExecutable(.{
         .name = "spiderweb-fs-helper",
         .root_module = fs_helper_mod,
@@ -280,6 +263,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    config_mod.addImport("spiderweb_native_mount_protocol", spiderweb_native_mount_protocol_mod);
 
     const config_cli = b.addExecutable(.{
         .name = "spiderweb-config",
@@ -323,9 +307,7 @@ pub fn build(b: *std.Build) void {
         .root_module = spiderweb_mod,
     });
     spiderweb_tests.linkLibrary(fuse_compat_lib);
-    applySqliteLibraryPath(spiderweb_tests, sqlite_lib_dir);
     spiderweb_tests.linkLibC();
-    spiderweb_tests.linkSystemLibrary("sqlite3");
     const run_spiderweb_tests = b.addRunArtifact(spiderweb_tests);
     test_step.dependOn(&run_spiderweb_tests.step);
 
@@ -397,10 +379,4 @@ pub fn build(b: *std.Build) void {
     fs_helper_tests.linkLibC();
     const run_fs_helper_tests = b.addRunArtifact(fs_helper_tests);
     test_step.dependOn(&run_fs_helper_tests.step);
-}
-
-fn applySqliteLibraryPath(compile: *std.Build.Step.Compile, sqlite_lib_dir: ?[]const u8) void {
-    if (sqlite_lib_dir) |dir| {
-        compile.addLibraryPath(.{ .cwd_relative = dir });
-    }
 }

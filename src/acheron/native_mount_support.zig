@@ -1,6 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const native_protocol = @import("native_mount_protocol.zig");
+const native_protocol = @import("spiderweb_native_mount_protocol");
 
 pub const app_name = "Spiderweb";
 pub const app_bundle_name = app_name ++ ".app";

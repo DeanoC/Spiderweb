@@ -51,14 +51,15 @@ if (Test-Path "$DestDir\.git") {
 
 Push-Location $DestDir
 try {
-    zig build fs-mount
+    zig build fs-mount spiderweb-fs-helper
 } finally {
     Pop-Location
 }
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -Force "$DestDir\zig-out\bin\spiderweb-fs-mount.exe" "$InstallDir\spiderweb-fs-mount.exe"
+Copy-Item -Force "$DestDir\zig-out\bin\spiderweb-fs-helper.exe" "$InstallDir\spiderweb-fs-helper.exe"
 
-Write-Host "Installed spiderweb-fs-mount.exe to $InstallDir"
+Write-Host "Installed spiderweb-fs-mount.exe and spiderweb-fs-helper.exe to $InstallDir"
 Write-Host "Example:"
 Write-Host "  spiderweb-fs-mount.exe --namespace-url ws://host:18790/ --workspace-id ws-demo --mount-backend winfsp mount X:"

@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.3.2 - 2026-03-19
+
+### Windows Mounts and Remote Namespace
+- Moved the Windows mount path onto the shared native mount helper/library flow used by the newer high-performance mount stack.
+- Added `spiderweb-fs-helper.exe` to the Windows install/build flow and taught the WinFsp client to launch it with fallback to the legacy in-process path.
+- Verified remote Windows namespace mounts against a live Spiderweb server, including routed read/write and a real WinFsp OS mount.
+
+### Windows Build and Runtime Cleanup
+- Removed the extracted `ziggy-memory-store` persistence path from Spiderweb and switched the control plane to the in-memory startup path.
+- Dropped stale `sandbox_enabled` gating and old `mount_*_v2` namespace control branches that no longer match the current workspace-first model.
+- Updated the pinned `zwasm` branch and local wrapper so the full `zig build` succeeds on Windows.
+
 ## 0.3.1 - 2026-03-13
 
 ### External Agent Machine Independence

@@ -11,6 +11,7 @@ pub const HelperClient = struct {
     stdout_file: std.fs.File,
     config_path: []u8,
     shared_auth_token: ?[]u8 = null,
+    auth_token_by_endpoint_name: std.StringHashMapUnmanaged([]u8) = .{},
     mutex: std.Thread.Mutex = .{},
 
     pub fn start(allocator: std.mem.Allocator, config: native_protocol.LaunchConfig) !HelperClient {
@@ -52,6 +53,7 @@ pub const HelperClient = struct {
         };
         errdefer client.deinit();
 
+        try client.rememberConfiguredEndpointAuths(config.endpoints);
         try client.ping();
         return client;
     }
@@ -64,6 +66,12 @@ pub const HelperClient = struct {
         deleteConfigFileBestEffort(self.config_path);
         self.allocator.free(self.config_path);
         if (self.shared_auth_token) |auth_token| self.allocator.free(auth_token);
+        var auth_it = self.auth_token_by_endpoint_name.iterator();
+        while (auth_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.auth_token_by_endpoint_name.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -279,12 +287,13 @@ pub const HelperClient = struct {
             }
         }
         for (endpoint_configs, 0..) |endpoint, idx| {
+            const auth_token = endpoint.auth_token orelse self.authTokenForEndpoint(endpoint.name) orelse self.shared_auth_token;
             endpoints[idx] = .{
                 .name = endpoint.name,
                 .url = endpoint.url,
                 .export_name = endpoint.export_name,
                 .mount_path = try resolveReconcileEndpointMountPath(self.allocator, endpoint, &owned_mount_paths[idx]),
-                .auth_token = endpoint.auth_token orelse self.shared_auth_token,
+                .auth_token = auth_token,
             };
         }
 
@@ -293,7 +302,9 @@ pub const HelperClient = struct {
             .endpoints = endpoints,
         });
         defer response.deinit(self.allocator);
-        return response.parseBoolResult(self.allocator, "reconciled");
+        const reconciled = try response.parseBoolResult(self.allocator, "reconciled");
+        try self.rememberReconciledEndpointAuths(endpoint_configs, endpoints);
+        return reconciled;
     }
 
     pub fn tryKeepAliveIfIdle(self: *HelperClient) !bool {
@@ -320,6 +331,50 @@ pub const HelperClient = struct {
             else => return err,
         };
         return ParsedResponse.parse(self.allocator, line);
+    }
+
+    fn rememberConfiguredEndpointAuths(
+        self: *HelperClient,
+        endpoints: []const native_protocol.EndpointSpec,
+    ) !void {
+        for (endpoints) |endpoint| {
+            const auth_token = endpoint.auth_token orelse continue;
+            try self.rememberEndpointAuthToken(endpoint.name, auth_token);
+        }
+    }
+
+    fn rememberReconciledEndpointAuths(
+        self: *HelperClient,
+        endpoint_configs: []const fs_router.EndpointConfig,
+        endpoints: []const ReconcileEndpointRequest.Endpoint,
+    ) !void {
+        for (endpoint_configs, endpoints) |config_endpoint, request_endpoint| {
+            if (config_endpoint.auth_token != null or self.authTokenForEndpoint(config_endpoint.name) == null) {
+                if (request_endpoint.auth_token) |auth_token| {
+                    try self.rememberEndpointAuthToken(config_endpoint.name, auth_token);
+                }
+            }
+        }
+    }
+
+    fn rememberEndpointAuthToken(self: *HelperClient, endpoint_name: []const u8, auth_token: []const u8) !void {
+        const owned_name = try self.allocator.dupe(u8, endpoint_name);
+        errdefer self.allocator.free(owned_name);
+        const owned_auth_token = try self.allocator.dupe(u8, auth_token);
+        errdefer self.allocator.free(owned_auth_token);
+
+        const entry = try self.auth_token_by_endpoint_name.getOrPut(self.allocator, owned_name);
+        if (entry.found_existing) {
+            self.allocator.free(owned_name);
+            self.allocator.free(entry.value_ptr.*);
+            entry.value_ptr.* = owned_auth_token;
+        } else {
+            entry.value_ptr.* = owned_auth_token;
+        }
+    }
+
+    fn authTokenForEndpoint(self: *const HelperClient, endpoint_name: []const u8) ?[]const u8 {
+        return self.auth_token_by_endpoint_name.get(endpoint_name);
     }
 };
 

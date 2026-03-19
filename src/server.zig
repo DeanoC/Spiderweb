@@ -3752,8 +3752,10 @@ const AgentRuntimeRegistry = struct {
             .default_agent_id = effective_default,
             .max_runtimes = if (max_runtimes == 0) 1 else max_runtimes,
             .debug_stream_sink = debug_stream_sink,
-            .control_plane = control_plane_mod.ControlPlane.initWithOptions(
+            .control_plane = control_plane_mod.ControlPlane.initWithPersistenceOptions(
                 allocator,
+                runtime_config.ltm_directory,
+                runtime_config.ltm_filename,
                 .{
                     .primary_agent_id = system_agent_id,
                     .spider_web_root = runtime_config.spider_web_root,

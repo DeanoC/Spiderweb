@@ -292,12 +292,47 @@ pub fn resolveBuiltFilesystemBundleSourcePath(allocator: std.mem.Allocator) !?[]
         allocator.free(env_path);
     } else |_| {}
 
+    if (try resolvePackagedFilesystemBundleSourcePath(allocator)) |path| {
+        return path;
+    }
+
     return findRepoBuildPath(allocator, &.{
         "platform/macos/build/spiderweb.fs",
         "platform/macos/build/install-source/spiderweb.fs.install-source.zip",
         "platform/macos/build/install-source/spiderweb.fs",
         "platform/macos/build/Release/spiderweb.fs",
     });
+}
+
+fn resolvePackagedFilesystemBundleSourcePath(allocator: std.mem.Allocator) !?[]u8 {
+    const exe_path = std.fs.selfExePathAlloc(allocator) catch null;
+    defer if (exe_path) |value| allocator.free(value);
+
+    if (exe_path) |value| {
+        if (std.fs.path.dirname(value)) |exe_dir| {
+            for ([_][]const u8{
+                "spiderweb.fs.install-source.zip",
+                "spiderweb.fs",
+            }) |candidate| {
+                const joined = try std.fs.path.join(allocator, &.{ exe_dir, candidate });
+                if (pathExists(joined)) return joined;
+                allocator.free(joined);
+            }
+        }
+    }
+
+    const app_path = try installedAppPath(allocator);
+    defer allocator.free(app_path);
+    for ([_][]const u8{
+        "spiderweb.fs.install-source.zip",
+        "spiderweb.fs",
+    }) |candidate| {
+        const joined = try std.fs.path.join(allocator, &.{ app_path, "Contents", "Resources", candidate });
+        if (pathExists(joined)) return joined;
+        allocator.free(joined);
+    }
+
+    return null;
 }
 
 fn findRepoBuildPath(allocator: std.mem.Allocator, candidates: []const []const u8) !?[]u8 {

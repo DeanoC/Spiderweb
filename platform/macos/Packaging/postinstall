@@ -7,7 +7,6 @@ EXTENSION_PATH="$APP_PATH/Contents/Extensions/SpiderwebFSKitExtension.appex"
 FILESYSTEM_BUNDLE="/Library/Filesystems/spiderweb.fs"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 LAUNCH_AGENT_LABEL="spiderweb"
-SPIDERWEB_CONFIG="$APP_PATH/Contents/Resources/spiderweb-config"
 INSTALL_LOG="/var/log/spiderweb-installer.log"
 
 mkdir -p "$(dirname "$INSTALL_LOG")"
@@ -98,15 +97,6 @@ fi
 sleep 1
 
 restart_user_launch_agent
-
-if [[ -x "$SPIDERWEB_CONFIG" ]]; then
-  log "Running installed spiderweb-config registration flow"
-  if run_as_console_user "$SPIDERWEB_CONFIG" config install-fs-extension; then
-    log "spiderweb-config install-fs-extension succeeded"
-  else
-    log "spiderweb-config install-fs-extension failed; falling back to app launch"
-  fi
-fi
 
 if [[ -d "$APP_PATH" ]]; then
   if run_as_console_user open -a "$APP_PATH"; then

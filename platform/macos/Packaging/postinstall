@@ -6,6 +6,31 @@ LEGACY_APP_PATH="/Applications/SpiderwebFSKit.app"
 EXTENSION_PATH="$APP_PATH/Contents/Extensions/SpiderwebFSKitExtension.appex"
 FILESYSTEM_BUNDLE="/Library/Filesystems/spiderweb.fs"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+LAUNCH_AGENT_LABEL="spiderweb"
+
+restart_user_launch_agent() {
+  local console_user console_uid console_home plist_path domain_target service_target
+  console_user="$(stat -f%Su /dev/console 2>/dev/null || true)"
+  if [[ -z "$console_user" || "$console_user" == "root" ]]; then
+    return 0
+  fi
+
+  console_uid="$(id -u "$console_user" 2>/dev/null || true)"
+  console_home="$(dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+  if [[ -z "$console_uid" || -z "$console_home" ]]; then
+    return 0
+  fi
+
+  plist_path="$console_home/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist"
+  domain_target="gui/$console_uid"
+  service_target="$domain_target/$LAUNCH_AGENT_LABEL"
+
+  if [[ -f "$plist_path" ]]; then
+    launchctl bootout "$domain_target" "$plist_path" >/dev/null 2>&1 || true
+    launchctl bootstrap "$domain_target" "$plist_path" >/dev/null 2>&1 || true
+    launchctl kickstart -k "$service_target" >/dev/null 2>&1 || true
+  fi
+}
 
 if [[ -d "$LEGACY_APP_PATH" && "$LEGACY_APP_PATH" != "$APP_PATH" ]]; then
   rm -rf "$LEGACY_APP_PATH" || true
@@ -30,6 +55,8 @@ if [[ -d "$FILESYSTEM_BUNDLE" ]]; then
 fi
 
 sleep 1
+
+restart_user_launch_agent
 
 if [[ -d "$APP_PATH" ]]; then
   console_user="$(stat -f%Su /dev/console 2>/dev/null || true)"

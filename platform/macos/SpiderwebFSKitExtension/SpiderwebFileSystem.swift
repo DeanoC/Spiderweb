@@ -363,9 +363,23 @@ final class SpiderwebMountRuntime {
     }
 
     func ensureBridge() throws -> SpiderwebMountedBridge {
-        try bridge.launchIfNeeded()
-        try bridge.requireMountedRPCBridge()
+        // The mounted bridge now routes namespace and direct-export operations
+        // independently. Returning the bridge must not force namespace startup,
+        // otherwise direct export paths like /nodes/local/fs can still block on
+        // unrelated namespace launch work.
         return bridge
+    }
+
+    func isWritablePath(_ path: String) -> Bool {
+        bridge.isWritablePath(path)
+    }
+
+    func syntheticAttrHint(path: String) -> SpiderwebRemoteAttr? {
+        bridge.syntheticAttrHint(path: path)
+    }
+
+    func performanceSnapshot() -> SpiderwebRemoteOperationSnapshot {
+        bridge.performanceSnapshot()
     }
 
     func setInvalidationHandler(_ handler: @escaping @Sendable (SpiderwebMountedInvalidation) -> Void) {
@@ -398,24 +412,99 @@ let syntheticStatFS = SpiderwebRemoteStatFS(
     maximumNameLength: 4_096
 )
 
-private struct SpiderwebNamespaceStat {
-    enum Kind {
-        case directory
-        case file
-    }
+private enum SpiderwebMountGraphNodeKind: String, Codable {
+    case syntheticDirectory = "synthetic_directory"
+    case syntheticFile = "synthetic_file"
+    case alias
+    case exportRoot = "export_root"
+}
 
+private enum SpiderwebSyntheticContentMode: String, Codable {
+    case inlineSnapshot = "inline_snapshot"
+    case deltaSnapshot = "delta_snapshot"
+    case remoteRead = "remote_read"
+    case remoteRW = "remote_rw"
+    case writeOnlyCommand = "write_only_command"
+}
+
+private struct SpiderwebMountGraphSource: Codable {
+    let id: String
+    let mountPath: String
+    let fsURL: String
+    let exportName: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case mountPath = "mount_path"
+        case fsURL = "fs_url"
+        case exportName = "export_name"
+    }
+}
+
+private struct SpiderwebMountGraphNode: Codable {
     let id: UInt64
-    let kind: Kind
-    let size: UInt64
+    let parentID: UInt64?
+    let name: String
+    let path: String
+    let kind: SpiderwebMountGraphNodeKind
     let mode: UInt32
     let writable: Bool
+    let size: UInt64
+    let canonicalNodeID: UInt64?
+    let contentMode: SpiderwebSyntheticContentMode?
+    let inlineContentB64: String?
+    let sourceID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case parentID = "parent_id"
+        case name
+        case path
+        case kind
+        case mode
+        case writable
+        case size
+        case canonicalNodeID = "canonical_node_id"
+        case contentMode = "content_mode"
+        case inlineContentB64 = "inline_content_b64"
+        case sourceID = "source_id"
+    }
+
+    var inlineContent: Data? {
+        guard let inlineContentB64 else {
+            return nil
+        }
+        return Data(base64Encoded: inlineContentB64)
+    }
+}
+
+private struct SpiderwebMountGraphSnapshot: Codable {
+    let mountSessionID: String
+    let graphGeneration: UInt64
+    let rootNodeID: UInt64
+    let nodes: [SpiderwebMountGraphNode]
+    let sources: [SpiderwebMountGraphSource]
+
+    private enum CodingKeys: String, CodingKey {
+        case mountSessionID = "mount_session_id"
+        case graphGeneration = "graph_generation"
+        case rootNodeID = "root_node_id"
+        case nodes
+        case sources
+    }
+}
+
+private enum SpiderwebNamespaceHandleBacking {
+    case inline(Data)
+    case remote
 }
 
 private struct SpiderwebNamespaceHandleState {
-    var path: String
-    var fid: UInt32
-    var flags: UInt32
-    var writable: Bool
+    let path: String
+    let nodeID: UInt64
+    let flags: UInt32
+    let writable: Bool
+    let backing: SpiderwebNamespaceHandleBacking
 }
 
 private enum SpiderwebProtocolFailure: LocalizedError {
@@ -447,41 +536,72 @@ actor SpiderwebNamespaceSession {
 
     private var urlSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
+    private var launchTask: Task<Void, Error>?
+    private var receiveLoopTask: Task<Void, Never>?
+    private var connectionGeneration: UInt64 = 0
     private var nextControlID: UInt64 = 1
-    private var nextTag: UInt32 = 1
     private var nextHandleID: UInt64 = 1
-    private var rootAttached = false
     private var openHandles: [UInt64: SpiderwebNamespaceHandleState] = [:]
+    private var pendingControlResponses: [String: CheckedContinuation<[String: Any], Error>] = [:]
+    private var mountGraph: SpiderwebMountGraphSnapshot?
+    private var mountGraphNodesByPath: [String: SpiderwebMountGraphNode] = [:]
+    private var mountGraphNodesByID: [UInt64: SpiderwebMountGraphNode] = [:]
+    private var mountGraphSourcesByID: [String: SpiderwebMountGraphSource] = [:]
+    private var mountGraphLoadedDirectoryDepths: [String: UInt32] = [:]
+    private var mountGraphFetchedAt: Date?
+    private var mountGraphRefreshTask: Task<Void, Never>?
+    private var remoteOperationSnapshot = SpiderwebRemoteOperationSnapshot.zero
 
     init(request: SpiderwebMountRequest) {
         self.request = request
     }
 
     func launchIfNeeded() async throws {
-        if webSocketTask != nil {
+        if webSocketTask != nil, mountGraph != nil {
             return
         }
-        try await connectFresh()
+        if let launchTask {
+            try await launchTask.value
+            return
+        }
+
+        let task = Task { [self] in
+            try await self.connectFresh()
+        }
+        launchTask = task
+        do {
+            try await task.value
+            launchTask = nil
+        } catch {
+            launchTask = nil
+            throw error
+        }
     }
 
     func shutdown() async {
-        await tearDown()
+        launchTask?.cancel()
+        launchTask = nil
+        receiveLoopTask?.cancel()
+        receiveLoopTask = nil
+        await tearDown(throwing: URLError(.cancelled), preserveMountGraph: false)
     }
 
     func ping() async throws {
-        _ = try await getattr(path: "/")
+        try await ensureMountGraphLoaded()
+        scheduleMountGraphRefreshIfStale()
     }
 
     func getattr(path: String) async throws -> SpiderwebRemoteAttr {
-        let stat = try await withReconnect { session in
-            try await session.statPath(path)
+        let normalizedPath = normalizeAbsolutePath(path)
+        return try await withReconnect { session in
+            try await session.localGetattr(path: normalizedPath)
         }
-        return remoteAttr(from: stat)
     }
 
     func readdir(path: String, cookie: UInt64, maxEntries: UInt32) async throws -> SpiderwebRemoteDirectoryListing {
-        try await withReconnect { session in
-            try await session.readDirectory(path: path, cookie: cookie, maxEntries: maxEntries)
+        let normalizedPath = normalizeAbsolutePath(path)
+        return try await withReconnect { session in
+            try await session.localReaddir(path: normalizedPath, cookie: cookie, maxEntries: maxEntries)
         }
     }
 
@@ -492,32 +612,35 @@ actor SpiderwebNamespaceSession {
     }
 
     func open(path: String, flags: UInt32) async throws -> SpiderwebOpenHandleResponse {
-        try await withReconnect { session in
-            try await session.openFile(path: path, flags: flags)
+        let normalizedPath = normalizeAbsolutePath(path)
+        return try await withReconnect { session in
+            try await session.localOpen(path: normalizedPath, flags: flags)
         }
     }
 
     func read(handleID: UInt64, offset: UInt64, length: UInt32) async throws -> Data {
         try await withReconnect { session in
-            try await session.readFile(handleID: handleID, offset: offset, length: length)
+            try await session.localRead(handleID: handleID, offset: offset, length: length)
         }
     }
 
     func release(handleID: UInt64) async throws {
         try await withReconnect { session in
-            try await session.closeFile(handleID: handleID)
+            try await session.localRelease(handleID: handleID)
         }
     }
 
     func write(handleID: UInt64, offset: UInt64, data: Data) async throws -> UInt32 {
         try await withReconnect { session in
-            try await session.writeHandle(handleID: handleID, offset: offset, data: data)
+            try await session.localWrite(handleID: handleID, offset: offset, data: data)
         }
     }
 
     private func withReconnect<T>(_ operation: (SpiderwebNamespaceSession) async throws -> T) async throws -> T {
         do {
-            try await launchIfNeeded()
+            if webSocketTask != nil || mountGraph == nil {
+                try await launchIfNeeded()
+            }
             return try await operation(self)
         } catch {
             if !isRecoverableTransportError(error) {
@@ -550,40 +673,43 @@ actor SpiderwebNamespaceSession {
 
         self.urlSession = urlSession
         self.webSocketTask = task
-        self.rootAttached = false
+        connectionGeneration &+= 1
+        let generation = connectionGeneration
+        receiveLoopTask?.cancel()
+        receiveLoopTask = Task { [weak self] in
+            await self?.runReceiveLoop(generation: generation)
+        }
 
-        try await negotiateControlAndAttach(namespace: namespace)
+        do {
+            try await negotiateControlAndAttach(namespace: namespace)
+        } catch {
+            await tearDown(throwing: error, preserveMountGraph: mountGraph != nil)
+            throw error
+        }
     }
 
     private func reconnect() async throws {
-        let existingHandles = openHandles
-        await tearDown()
+        await tearDown(throwing: URLError(.networkConnectionLost), preserveMountGraph: true)
         try await connectFresh()
-
-        if existingHandles.isEmpty {
-            return
-        }
-
-        var restored: [UInt64: SpiderwebNamespaceHandleState] = [:]
-        for (handleID, state) in existingHandles {
-            let response = try await openFile(path: state.path, flags: state.flags)
-            guard let refreshed = openHandles.removeValue(forKey: response.handleID) else {
-                continue
-            }
-            restored[handleID] = refreshed
-        }
-        openHandles = restored
     }
 
-    private func tearDown() async {
+    private func tearDown(throwing error: Error, preserveMountGraph: Bool) async {
+        receiveLoopTask?.cancel()
+        receiveLoopTask = nil
         if let task = webSocketTask {
             task.cancel(with: .goingAway, reason: nil)
         }
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
         urlSession = nil
-        rootAttached = false
         openHandles.removeAll()
+        mountGraphRefreshTask?.cancel()
+        mountGraphRefreshTask = nil
+        mountGraphFetchedAt = nil
+        if !preserveMountGraph {
+            clearMountGraph()
+        }
+        failPendingResponses(throwing: error)
     }
 
     private func negotiateControlAndAttach(namespace: SpiderwebMountRequest.LaunchConfig.Namespace) async throws {
@@ -612,21 +738,7 @@ actor SpiderwebNamespaceSession {
             expectedType: "control.session_attach",
             payload: attachPayload
         )
-
-        _ = try await sendAcheronRequest(
-            type: "acheron.t_version",
-            expectedType: "acheron.r_version",
-            fields: [
-                "msize": 1_048_576,
-                "version": spiderwebAcheronRuntimeVersion,
-            ]
-        )
-        _ = try await sendAcheronRequest(
-            type: "acheron.t_attach",
-            expectedType: "acheron.r_attach",
-            fields: ["fid": 1]
-        )
-        rootAttached = true
+        try await refreshMountGraph(force: true)
     }
 
     private func sendControlRequest(type: String, expectedType: String, payload: [String: Any]) async throws -> [String: Any] {
@@ -637,54 +749,24 @@ actor SpiderwebNamespaceSession {
             "id": requestID,
             "payload": payload,
         ]
-        try await sendEnvelope(envelope)
-        while true {
-            let envelope = try await receiveEnvelope()
-            guard stringValue(envelope["channel"]) == "control" else {
-                continue
+        let response = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String: Any], Error>) in
+            pendingControlResponses[requestID] = continuation
+            Task {
+                do {
+                    try await self.sendEnvelope(envelope)
+                } catch {
+                    self.failPendingControlResponse(id: requestID, throwing: error)
+                }
             }
-            guard stringValue(envelope["id"]) == requestID else {
-                continue
-            }
-            let messageType = stringValue(envelope["type"]) ?? ""
-            if messageType == "control.error" {
-                throw mapControlError(envelope)
-            }
-            guard messageType == expectedType else {
-                throw SpiderwebProtocolFailure.unexpectedMessage(messageType)
-            }
-            return envelope
         }
-    }
-
-    private func sendAcheronRequest(type: String, expectedType: String, fields: [String: Any]) async throws -> [String: Any] {
-        let tag = nextAcheronTag()
-        var envelope: [String: Any] = [
-            "channel": "acheron",
-            "type": type,
-            "tag": tag,
-        ]
-        for (key, value) in fields {
-            envelope[key] = value
+        let messageType = stringValue(response["type"]) ?? ""
+        if messageType == "control.error" {
+            throw mapControlError(response)
         }
-        try await sendEnvelope(envelope)
-        while true {
-            let envelope = try await receiveEnvelope()
-            guard stringValue(envelope["channel"]) == "acheron" else {
-                continue
-            }
-            guard uint32Value(envelope["tag"]) == tag else {
-                continue
-            }
-            let messageType = stringValue(envelope["type"]) ?? ""
-            if messageType == "acheron.error" || messageType == "acheron.err_fs" {
-                throw mapAcheronError(envelope)
-            }
-            guard messageType == expectedType else {
-                throw SpiderwebProtocolFailure.unexpectedMessage(messageType)
-            }
-            return envelope
+        guard messageType == expectedType else {
+            throw SpiderwebProtocolFailure.unexpectedMessage(messageType)
         }
+        return response
     }
 
     private func sendEnvelope(_ envelope: [String: Any]) async throws {
@@ -724,262 +806,414 @@ actor SpiderwebNamespaceSession {
         return raw
     }
 
-    private func statPath(_ path: String) async throws -> SpiderwebNamespaceStat {
-        let fid = try await walkPathToNewFid(path)
-        defer { Task { try? await self.clunk(fid: fid) } }
-        return try await statFid(fid: fid)
+    private func runReceiveLoop(generation: UInt64) async {
+        do {
+            while !Task.isCancelled {
+                let envelope = try await receiveEnvelope()
+                processIncomingEnvelope(envelope, generation: generation)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            await handleReceiveLoopFailure(error, generation: generation)
+        }
     }
 
-    private func statFid(fid: UInt32) async throws -> SpiderwebNamespaceStat {
-        let envelope = try await sendAcheronRequest(
-            type: "acheron.t_stat",
-            expectedType: "acheron.r_stat",
-            fields: ["fid": fid]
+    private func processIncomingEnvelope(_ envelope: [String: Any], generation: UInt64) {
+        guard generation == connectionGeneration else {
+            return
+        }
+
+        let channel = stringValue(envelope["channel"]) ?? ""
+        guard channel == "control" else {
+            return
+        }
+
+        let messageType = stringValue(envelope["type"]) ?? ""
+        if messageType == "control.mount_graph_delta_v2" {
+            mountGraphFetchedAt = nil
+            scheduleMountGraphRefreshIfStale(force: true)
+            return
+        }
+
+        guard let requestID = stringValue(envelope["id"]),
+              let continuation = pendingControlResponses.removeValue(forKey: requestID)
+        else {
+            return
+        }
+        continuation.resume(returning: envelope)
+    }
+
+    private func handleReceiveLoopFailure(_ error: Error, generation: UInt64) async {
+        guard generation == connectionGeneration else {
+            return
+        }
+        await tearDown(throwing: error, preserveMountGraph: true)
+    }
+
+    private func ensureMountGraphLoaded() async throws {
+        if mountGraph == nil {
+            try await refreshMountGraph(force: true)
+            return
+        }
+        scheduleMountGraphRefreshIfStale()
+    }
+
+    private func refreshMountGraph(force: Bool) async throws {
+        if !force, let fetchedAt = mountGraphFetchedAt, Date().timeIntervalSince(fetchedAt) < spiderwebNamespaceCacheTTL {
+            return
+        }
+        let snapshot = try await requestMountGraph(path: "/", depth: spiderwebNamespaceInitialSnapshotDepth)
+        replaceMountGraph(with: snapshot, scopePath: "/", depth: spiderwebNamespaceInitialSnapshotDepth, replaceAll: true)
+        mountGraphFetchedAt = Date()
+    }
+
+    private func requestMountGraph(path: String, depth: UInt32) async throws -> SpiderwebMountGraphSnapshot {
+        remoteOperationSnapshot.readdir &+= 1
+        remoteOperationSnapshot.getattr &+= 1
+        let response = try await sendControlRequest(
+            type: "control.mount_attach_v2",
+            expectedType: "control.mount_attach_v2",
+            payload: [
+                "path": normalizeAbsolutePath(path),
+                "depth": depth,
+            ]
         )
-        guard let payload = envelope["payload"] as? [String: Any] else {
+        guard let payload = response["payload"] else {
             throw SpiderwebProtocolFailure.invalidEnvelope
         }
-        return try parseNamespaceStat(payload: payload)
+        return try decodeMountGraphSnapshot(payload)
     }
 
-    private func readDirectory(path: String, cookie: UInt64, maxEntries: UInt32) async throws -> SpiderwebRemoteDirectoryListing {
-        let stat = try await statPath(path)
-        guard stat.kind == .directory else {
+    private func scheduleMountGraphRefreshIfStale(force: Bool = false) {
+        guard force || mountGraphRefreshTask == nil else {
+            return
+        }
+        if !force, let fetchedAt = mountGraphFetchedAt, Date().timeIntervalSince(fetchedAt) < spiderwebNamespaceCacheTTL {
+            return
+        }
+        mountGraphRefreshTask = Task { [weak self] in
+            defer {
+                Task { [weak self] in
+                    await self?.clearMountGraphRefreshTask()
+                }
+            }
+            try? await self?.refreshMountGraph(force: true)
+        }
+    }
+
+    private func clearMountGraphRefreshTask() {
+        mountGraphRefreshTask = nil
+    }
+
+    private func replaceMountGraph(
+        with snapshot: SpiderwebMountGraphSnapshot,
+        scopePath: String,
+        depth: UInt32,
+        replaceAll: Bool
+    ) {
+        let normalizedScopePath = normalizeAbsolutePath(scopePath)
+        mountGraph = SpiderwebMountGraphSnapshot(
+            mountSessionID: snapshot.mountSessionID,
+            graphGeneration: snapshot.graphGeneration,
+            rootNodeID: snapshot.rootNodeID,
+            nodes: [],
+            sources: snapshot.sources
+        )
+
+        if replaceAll {
+            mountGraphNodesByPath.removeAll(keepingCapacity: false)
+            mountGraphNodesByID.removeAll(keepingCapacity: false)
+            mountGraphLoadedDirectoryDepths.removeAll(keepingCapacity: false)
+        } else {
+            clearMountGraphSubtree(at: normalizedScopePath)
+        }
+
+        for node in snapshot.nodes {
+            let normalizedPath = normalizeAbsolutePath(node.path)
+            mountGraphNodesByPath[normalizedPath] = node
+            mountGraphNodesByID[node.id] = node
+        }
+        for source in snapshot.sources {
+            mountGraphSourcesByID[normalizeAbsolutePath(source.id)] = source
+        }
+        markLoadedDirectoryDepths(scopePath: normalizedScopePath, depth: depth, nodes: snapshot.nodes)
+    }
+
+    private func clearMountGraphSubtree(at path: String) {
+        let normalizedPath = normalizeAbsolutePath(path)
+        let descendantPrefix = normalizedPath == "/" ? "/" : normalizedPath + "/"
+        let pathsToRemove = mountGraphNodesByPath.keys.filter { currentPath in
+            currentPath == normalizedPath || currentPath.hasPrefix(descendantPrefix)
+        }
+        for currentPath in pathsToRemove {
+            if let removed = mountGraphNodesByPath.removeValue(forKey: currentPath) {
+                mountGraphNodesByID.removeValue(forKey: removed.id)
+            }
+        }
+        let loadedPathsToRemove = mountGraphLoadedDirectoryDepths.keys.filter { currentPath in
+            currentPath == normalizedPath || currentPath.hasPrefix(descendantPrefix)
+        }
+        for currentPath in loadedPathsToRemove {
+            mountGraphLoadedDirectoryDepths.removeValue(forKey: currentPath)
+        }
+    }
+
+    private func markLoadedDirectoryDepths(scopePath: String, depth: UInt32, nodes: [SpiderwebMountGraphNode]) {
+        guard depth > 0 else {
+            return
+        }
+        for node in nodes where node.kind == .syntheticDirectory || node.kind == .exportRoot {
+            let normalizedPath = normalizeAbsolutePath(node.path)
+            guard let relativeDepth = relativeMountGraphDepth(from: scopePath, to: normalizedPath) else {
+                continue
+            }
+            guard relativeDepth <= depth else {
+                continue
+            }
+            let loadedDepth = depth - relativeDepth
+            guard loadedDepth > 0 || normalizedPath == scopePath else {
+                continue
+            }
+            let existingDepth = mountGraphLoadedDirectoryDepths[normalizedPath] ?? 0
+            mountGraphLoadedDirectoryDepths[normalizedPath] = max(existingDepth, loadedDepth)
+        }
+    }
+
+    private func relativeMountGraphDepth(from scopePath: String, to path: String) -> UInt32? {
+        let normalizedScope = normalizeAbsolutePath(scopePath)
+        let normalizedPath = normalizeAbsolutePath(path)
+        if normalizedScope == normalizedPath {
+            return 0
+        }
+        guard pathMatchesPrefixBoundary(normalizedPath, normalizedScope) else {
+            return nil
+        }
+        let suffix = normalizedPath.dropFirst(normalizedScope.count + (normalizedScope == "/" ? 0 : 1))
+        let segments = suffix.split(separator: "/").count
+        return UInt32(segments)
+    }
+
+    private func ensureDirectoryChildrenLoaded(at path: String, minimumDepth: UInt32 = 1) async throws {
+        guard minimumDepth > 0 else {
+            return
+        }
+        try await ensureMountGraphLoaded()
+        let normalizedPath = normalizeAbsolutePath(path)
+        if (mountGraphLoadedDirectoryDepths[normalizedPath] ?? 0) >= minimumDepth {
+            return
+        }
+        let snapshot = try await requestMountGraph(path: normalizedPath, depth: minimumDepth)
+        replaceMountGraph(with: snapshot, scopePath: normalizedPath, depth: minimumDepth, replaceAll: normalizedPath == "/")
+        mountGraphFetchedAt = Date()
+    }
+
+    private func clearMountGraph() {
+        mountGraph = nil
+        mountGraphNodesByPath.removeAll(keepingCapacity: false)
+        mountGraphNodesByID.removeAll(keepingCapacity: false)
+        mountGraphSourcesByID.removeAll(keepingCapacity: false)
+        mountGraphLoadedDirectoryDepths.removeAll(keepingCapacity: false)
+        mountGraphFetchedAt = nil
+    }
+
+    private func decodeMountGraphSnapshot(_ payload: Any) throws -> SpiderwebMountGraphSnapshot {
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+        return try JSONDecoder().decode(SpiderwebMountGraphSnapshot.self, from: data)
+    }
+
+    private func resolveMountGraphNode(path: String) async throws -> SpiderwebMountGraphNode {
+        try await ensureMountGraphLoaded()
+        let normalizedPath = normalizeAbsolutePath(path)
+        if normalizedPath == "/" {
+            guard let node = mountGraphNodesByPath[normalizedPath] else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT), userInfo: [NSLocalizedDescriptionKey: "Spiderweb path not found"])
+            }
+            return node
+        }
+
+        var currentPath = "/"
+        guard var currentNode = mountGraphNodesByPath[currentPath] else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT), userInfo: [NSLocalizedDescriptionKey: "Spiderweb path not found"])
+        }
+
+        for segment in normalizedPath.split(separator: "/").map(String.init) {
+            if currentNode.kind == .syntheticDirectory {
+                try await ensureDirectoryChildrenLoaded(at: currentPath)
+            }
+            let nextPath = join(directoryPath: currentPath, childName: segment)
+            guard let nextNode = mountGraphNodesByPath[nextPath] else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT), userInfo: [NSLocalizedDescriptionKey: "Spiderweb path not found"])
+            }
+            currentPath = nextPath
+            currentNode = nextNode
+        }
+        return currentNode
+    }
+
+    private func localGetattr(path: String) async throws -> SpiderwebRemoteAttr {
+        scheduleMountGraphRefreshIfStale()
+        let node = try await resolveMountGraphNode(path: path)
+        return remoteAttr(from: node)
+    }
+
+    private func localReaddir(path: String, cookie: UInt64, maxEntries: UInt32) async throws -> SpiderwebRemoteDirectoryListing {
+        scheduleMountGraphRefreshIfStale()
+        let directory = try await resolveMountGraphNode(path: path)
+        guard directory.kind == .syntheticDirectory || directory.kind == .exportRoot else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTDIR), userInfo: [NSLocalizedDescriptionKey: "Not a directory"])
         }
 
-        let fid = try await walkPathToNewFid(path)
-        defer { Task { try? await self.clunk(fid: fid) } }
-        try await openFid(fid: fid, mode: "r")
-        let listingData = try await readAll(fid: fid, initialOffset: 0, maxBytes: 1_048_576)
-        let listingText = String(data: listingData, encoding: .utf8) ?? ""
-
-        var names: [String] = []
-        for line in listingText.split(separator: "\n", omittingEmptySubsequences: true) {
-            names.append(String(line))
-        }
+        let normalizedPath = normalizeAbsolutePath(path)
+        try await ensureDirectoryChildrenLoaded(at: normalizedPath)
+        let childNodes = mountGraphNodesByPath.values
+            .filter { $0.parentID == directory.id }
+            .sorted { lhs, rhs in lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending }
 
         let startIndex = Int(clamping: cookie)
-        if startIndex >= names.count {
-            return SpiderwebRemoteDirectoryListing(entries: [], nextCookie: 0, eof: true, directoryGeneration: 1)
+        guard startIndex < childNodes.count else {
+            return SpiderwebRemoteDirectoryListing(entries: [], nextCookie: 0, eof: true, directoryGeneration: mountGraph?.graphGeneration ?? 0)
         }
 
         let maxCount = maxEntries == 0 ? 0 : Int(maxEntries)
-        let endIndex = min(names.count, startIndex + maxCount)
-        let eof = endIndex >= names.count
-        var entries: [SpiderwebRemoteDirectoryListing.Entry] = []
-        for name in names[startIndex..<endIndex] {
-            entries.append(.init(name: name, attr: nil))
+        let endIndex = min(childNodes.count, startIndex + maxCount)
+        let slice = childNodes[startIndex..<endIndex]
+        let entries = slice.map { child in
+            SpiderwebRemoteDirectoryListing.Entry(
+                name: child.name == "/" ? normalizedPath : child.name,
+                attr: remoteAttr(from: child)
+            )
         }
         return SpiderwebRemoteDirectoryListing(
             entries: entries,
-            nextCookie: eof ? 0 : UInt64(endIndex),
-            eof: eof,
-            directoryGeneration: 1
+            nextCookie: endIndex >= childNodes.count ? 0 : UInt64(endIndex),
+            eof: endIndex >= childNodes.count,
+            directoryGeneration: mountGraph?.graphGeneration ?? 0
         )
     }
 
-    private func openFile(path: String, flags: UInt32) async throws -> SpiderwebOpenHandleResponse {
-        let stat = try await statPath(path)
-        let fid = try await walkPathToNewFid(path)
-        do {
-            try await openFid(fid: fid, mode: flagsRequireWrite(flags) ? "rw" : "r")
-        } catch {
-            try? await clunk(fid: fid)
-            throw error
+    private func localOpen(path: String, flags: UInt32) async throws -> SpiderwebOpenHandleResponse {
+        scheduleMountGraphRefreshIfStale()
+        let node = try await resolveMountGraphNode(path: path)
+        if node.kind == .syntheticDirectory || node.kind == .exportRoot {
+            let handleID = reserveNamespaceHandleID()
+            openHandles[handleID] = SpiderwebNamespaceHandleState(
+                path: normalizeAbsolutePath(path),
+                nodeID: node.id,
+                flags: flags,
+                writable: false,
+                backing: .inline(Data())
+            )
+            return SpiderwebOpenHandleResponse(handleID: handleID, writable: false)
         }
 
-        let handleID = nextHandleID
-        nextHandleID &+= 1
+        let backing: SpiderwebNamespaceHandleBacking
+        switch node.contentMode {
+        case .inlineSnapshot, .deltaSnapshot:
+            backing = .inline(node.inlineContent ?? Data())
+        case .remoteRead, .remoteRW, .writeOnlyCommand, .none:
+            backing = .remote
+        }
+
+        let handleID = reserveNamespaceHandleID()
         openHandles[handleID] = SpiderwebNamespaceHandleState(
-            path: path,
-            fid: fid,
+            path: normalizeAbsolutePath(path),
+            nodeID: node.id,
             flags: flags,
-            writable: stat.writable
+            writable: node.writable,
+            backing: backing
         )
-        return SpiderwebOpenHandleResponse(handleID: handleID, writable: stat.writable)
+        return SpiderwebOpenHandleResponse(handleID: handleID, writable: node.writable)
     }
 
-    private func closeFile(handleID: UInt64) async throws {
-        guard let state = openHandles.removeValue(forKey: handleID) else {
-            return
-        }
-        try await flushNamespaceWrites()
-        try await clunk(fid: state.fid)
-    }
-
-    private func readFile(handleID: UInt64, offset: UInt64, length: UInt32) async throws -> Data {
+    private func localRead(handleID: UInt64, offset: UInt64, length: UInt32) async throws -> Data {
         guard let state = openHandles[handleID] else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(EBADF), userInfo: [NSLocalizedDescriptionKey: "Unknown Spiderweb handle"])
         }
-        return try await readFid(fid: state.fid, offset: offset, count: length)
+        switch state.backing {
+        case .inline(let data):
+            let start = Int(min(offset, UInt64(data.count)))
+            let end = min(data.count, start + Int(length))
+            return data.subdata(in: start..<end)
+        case .remote:
+            remoteOperationSnapshot.lookup &+= 1
+            let response = try await sendControlRequest(
+                type: "control.mount_file_read_v2",
+                expectedType: "control.mount_file_read_v2",
+                payload: [
+                    "path": state.path,
+                    "offset": offset,
+                    "length": length,
+                ]
+            )
+            guard
+                let payload = response["payload"] as? [String: Any],
+                let dataB64 = stringValue(payload["data_b64"]),
+                let data = Data(base64Encoded: dataB64)
+            else {
+                throw SpiderwebProtocolFailure.invalidEnvelope
+            }
+            return data
+        }
     }
 
-    private func writeHandle(handleID: UInt64, offset: UInt64, data: Data) async throws -> UInt32 {
+    private func localRelease(handleID: UInt64) async throws {
+        openHandles.removeValue(forKey: handleID)
+    }
+
+    private func localWrite(handleID: UInt64, offset: UInt64, data: Data) async throws -> UInt32 {
         guard let state = openHandles[handleID] else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(EBADF), userInfo: [NSLocalizedDescriptionKey: "Unknown Spiderweb handle"])
         }
         guard state.writable else {
             throw readOnlyError(message: "Spiderweb path \(state.path) is read-only")
         }
-        let written = try await writeFid(fid: state.fid, offset: offset, data: data)
-        try await flushNamespaceWrites()
-        return written
-    }
-
-    private func walkPathToNewFid(_ path: String) async throws -> UInt32 {
-        guard rootAttached else {
-            throw URLError(.networkConnectionLost)
+        guard case .remote = state.backing else {
+            throw readOnlyError(message: "Spiderweb path \(state.path) is read-only")
         }
-
-        let normalized = normalizeAbsolutePath(path)
-        let segments = normalized == "/" ? [] : normalized
-            .split(separator: "/")
-            .filter { !$0.isEmpty && $0 != "." }
-            .map(String.init)
-
-        let fid = nextFid()
-        _ = try await sendAcheronRequest(
-            type: "acheron.t_walk",
-            expectedType: "acheron.r_walk",
-            fields: [
-                "fid": 1,
-                "newfid": fid,
-                "path": segments,
-            ]
-        )
-        return fid
-    }
-
-    private func openFid(fid: UInt32, mode: String) async throws {
-        _ = try await sendAcheronRequest(
-            type: "acheron.t_open",
-            expectedType: "acheron.r_open",
-            fields: [
-                "fid": fid,
-                "mode": mode,
-            ]
-        )
-    }
-
-    private func clunk(fid: UInt32) async throws {
-        _ = try await sendAcheronRequest(
-            type: "acheron.t_clunk",
-            expectedType: "acheron.r_clunk",
-            fields: ["fid": fid]
-        )
-    }
-
-    private func flushNamespaceWrites() async throws {
-        _ = try await sendAcheronRequest(
-            type: "acheron.t_flush",
-            expectedType: "acheron.r_flush",
-            fields: [:]
-        )
-    }
-
-    private func readAll(fid: UInt32, initialOffset: UInt64, maxBytes: Int) async throws -> Data {
-        var result = Data()
-        var offset = initialOffset
-        while result.count < maxBytes {
-            let remaining = maxBytes - result.count
-            let count = UInt32(min(remaining, 64 * 1024))
-            let chunk = try await readFid(fid: fid, offset: offset, count: count)
-            if chunk.isEmpty {
-                break
-            }
-            result.append(chunk)
-            offset += UInt64(chunk.count)
-            if chunk.count < Int(count) {
-                break
-            }
-        }
-        return result
-    }
-
-    private func readFid(fid: UInt32, offset: UInt64, count: UInt32) async throws -> Data {
-        let envelope = try await sendAcheronRequest(
-            type: "acheron.t_read",
-            expectedType: "acheron.r_read",
-            fields: [
-                "fid": fid,
-                "offset": offset,
-                "count": count,
-            ]
-        )
-        guard
-            let payload = envelope["payload"] as? [String: Any],
-            let dataB64 = stringValue(payload["data_b64"]),
-            let data = Data(base64Encoded: dataB64)
-        else {
-            throw SpiderwebProtocolFailure.invalidEnvelope
-        }
-        return data
-    }
-
-    private func writeFid(fid: UInt32, offset: UInt64, data: Data) async throws -> UInt32 {
-        let envelope = try await sendAcheronRequest(
-            type: "acheron.t_write",
-            expectedType: "acheron.r_write",
-            fields: [
-                "fid": fid,
+        remoteOperationSnapshot.lookup &+= 1
+        let response = try await sendControlRequest(
+            type: "control.mount_file_write_v2",
+            expectedType: "control.mount_file_write_v2",
+            payload: [
+                "path": state.path,
                 "offset": offset,
                 "data_b64": data.base64EncodedString(),
             ]
         )
         guard
-            let payload = envelope["payload"] as? [String: Any],
-            let count = uint32Value(payload["n"] ?? payload["count"])
+            let payload = response["payload"] as? [String: Any],
+            let count = uint32Value(payload["n"])
         else {
             throw SpiderwebProtocolFailure.invalidEnvelope
         }
+        mountGraphFetchedAt = nil
+        scheduleMountGraphRefreshIfStale(force: true)
         return count
     }
 
-    private func parseNamespaceStat(payload: [String: Any]) throws -> SpiderwebNamespaceStat {
-        guard
-            let id = uint64Value(payload["id"]),
-            let size = uint64Value(payload["size"]),
-            let mode = uint32Value(payload["mode"]),
-            let kindString = stringValue(payload["kind"])
-        else {
-            throw SpiderwebProtocolFailure.invalidEnvelope
+    private func reserveNamespaceHandleID() -> UInt64 {
+        let handleID = nextHandleID
+        nextHandleID &+= 1
+        if nextHandleID == 0 {
+            nextHandleID = 1
         }
-
-        let kind: SpiderwebNamespaceStat.Kind
-        switch kindString {
-        case "dir":
-            kind = .directory
-        case "file":
-            kind = .file
-        default:
-            throw SpiderwebProtocolFailure.unexpectedMessage(kindString)
-        }
-
-        return SpiderwebNamespaceStat(
-            id: id,
-            kind: kind,
-            size: size,
-            mode: mode,
-            writable: boolValue(payload["writable"]) ?? false
-        )
+        return handleID
     }
 
-    private func remoteAttr(from stat: SpiderwebNamespaceStat) -> SpiderwebRemoteAttr {
-        let kindCode: UInt8 = stat.kind == .directory ? 2 : 1
-        let mode = stat.mode == 0
-            ? (stat.kind == .directory ? UInt32(0o040755) : UInt32(0o100644))
-            : stat.mode
+    private func remoteAttr(from node: SpiderwebMountGraphNode) -> SpiderwebRemoteAttr {
+        let kindCode: UInt8 = (node.kind == .syntheticDirectory || node.kind == .exportRoot) ? 2 : 1
+        let defaultMode: UInt32 = kindCode == 2 ? 0o040755 : 0o100644
         let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
         return SpiderwebRemoteAttr(
-            id: stat.id,
+            id: node.canonicalNodeID ?? node.id,
             kindCode: kindCode,
-            mode: mode,
-            linkCount: stat.kind == .directory ? 2 : 1,
+            mode: node.mode == 0 ? defaultMode : node.mode,
+            linkCount: kindCode == 2 ? 2 : 1,
             uid: UInt32(getuid()),
             gid: UInt32(getgid()),
             flags: 0,
-            size: stat.size,
+            size: node.size,
             accessTimeNS: now,
             modifyTimeNS: now,
             changeTimeNS: now
@@ -991,20 +1225,23 @@ actor SpiderwebNamespaceSession {
         return "swift-control-\(nextControlID)"
     }
 
-    private func nextAcheronTag() -> UInt32 {
-        defer { nextTag &+= 1 }
-        if nextTag == 0 {
-            nextTag = 1
-        }
-        return nextTag
+    func remoteOperationsSnapshot() -> SpiderwebRemoteOperationSnapshot {
+        remoteOperationSnapshot
     }
 
-    private func nextFid() -> UInt32 {
-        defer { nextTag &+= 1 }
-        if nextTag <= 1 {
-            nextTag = 2
+    private func failPendingControlResponse(id: String, throwing error: Error) {
+        guard let continuation = pendingControlResponses.removeValue(forKey: id) else {
+            return
         }
-        return nextTag
+        continuation.resume(throwing: error)
+    }
+
+    private func failPendingResponses(throwing error: Error) {
+        let controlContinuations = pendingControlResponses.values
+        pendingControlResponses.removeAll()
+        for continuation in controlContinuations {
+            continuation.resume(throwing: error)
+        }
     }
 }
 
@@ -1044,11 +1281,66 @@ struct SpiderwebEndpointInvalidation {
     let kind: SpiderwebMountedInvalidationKind
 }
 
+private struct SpiderwebTimedCacheEntry<Value> {
+    let value: Value
+    let fetchedAt: Date
+}
+
+private struct SpiderwebEndpointChildCacheKey: Hashable {
+    let parentNodeID: UInt64
+    let name: String
+}
+
+private struct SpiderwebNamespaceDirectoryCacheKey: Hashable {
+    let path: String
+    let cookie: UInt64
+    let maxEntries: UInt32
+}
+
+private struct SpiderwebEndpointDirectoryCacheKey: Hashable {
+    let path: String
+    let cookie: UInt64
+    let maxEntries: UInt32
+}
+
+struct SpiderwebRemoteOperationSnapshot {
+    var lookup: UInt64 = 0
+    var getattr: UInt64 = 0
+    var readdir: UInt64 = 0
+
+    static let zero = SpiderwebRemoteOperationSnapshot()
+
+    func delta(since earlier: SpiderwebRemoteOperationSnapshot) -> SpiderwebRemoteOperationSnapshot {
+        SpiderwebRemoteOperationSnapshot(
+            lookup: lookup &- earlier.lookup,
+            getattr: getattr &- earlier.getattr,
+            readdir: readdir &- earlier.readdir
+        )
+    }
+
+    func adding(_ other: SpiderwebRemoteOperationSnapshot) -> SpiderwebRemoteOperationSnapshot {
+        SpiderwebRemoteOperationSnapshot(
+            lookup: lookup &+ other.lookup,
+            getattr: getattr &+ other.getattr,
+            readdir: readdir &+ other.readdir
+        )
+    }
+
+    var total: UInt64 {
+        lookup &+ getattr &+ readdir
+    }
+}
+
+private let spiderwebEndpointCacheTTL: TimeInterval = 5.0
+private let spiderwebNamespaceCacheTTL: TimeInterval = 5.0
+private let spiderwebNamespaceInitialSnapshotDepth: UInt32 = 1
+
 actor SpiderwebFsEndpointSession {
     private let config: SpiderwebMountRequest.LaunchConfig.Endpoint
 
     private var urlSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
+    private var launchTask: Task<Void, Error>?
     private var receiveLoopTask: Task<Void, Never>?
     private var connectionGeneration: UInt64 = 0
     private var nextTag: UInt32 = 1
@@ -1057,6 +1349,16 @@ actor SpiderwebFsEndpointSession {
     private var nodePaths: [UInt64: String] = [:]
     private var invalidationHandler: (@Sendable (SpiderwebMountedInvalidation) -> Void)?
     private var pendingResponses: [UInt32: CheckedContinuation<[String: Any], Error>] = [:]
+    private var resolvedPathCache: [String: SpiderwebTimedCacheEntry<SpiderwebEndpointResolvedNode>] = [:]
+    private var childLookupCache: [SpiderwebEndpointChildCacheKey: SpiderwebTimedCacheEntry<SpiderwebEndpointResolvedNode>] = [:]
+    private var negativeLookupCache: [SpiderwebEndpointChildCacheKey: Date] = [:]
+    private var nodeAttrCache: [UInt64: SpiderwebTimedCacheEntry<SpiderwebRemoteAttr>] = [:]
+    private var directoryPageCache: [SpiderwebEndpointDirectoryCacheKey: SpiderwebTimedCacheEntry<SpiderwebRemoteDirectoryListing>] = [:]
+    private var inFlightResolutions: [String: Task<SpiderwebEndpointResolvedNode, Error>] = [:]
+    private var inFlightLookups: [SpiderwebEndpointChildCacheKey: Task<SpiderwebEndpointResolvedNode, Error>] = [:]
+    private var inFlightAttrs: [UInt64: Task<SpiderwebRemoteAttr, Error>] = [:]
+    private var inFlightReaddirs: [SpiderwebEndpointDirectoryCacheKey: Task<SpiderwebRemoteDirectoryListing, Error>] = [:]
+    private var remoteOperationSnapshot = SpiderwebRemoteOperationSnapshot.zero
 
     init(config: SpiderwebMountRequest.LaunchConfig.Endpoint) {
         self.config = config
@@ -1067,13 +1369,30 @@ actor SpiderwebFsEndpointSession {
     }
 
     func launchIfNeeded() async throws {
-        if webSocketTask != nil {
+        if webSocketTask != nil, exportSelection != nil {
             return
         }
-        try await connectFresh()
+        if let launchTask {
+            try await launchTask.value
+            return
+        }
+
+        let task = Task { [self] in
+            try await self.connectFresh()
+        }
+        launchTask = task
+        do {
+            try await task.value
+            launchTask = nil
+        } catch {
+            launchTask = nil
+            throw error
+        }
     }
 
     func shutdown() async {
+        launchTask?.cancel()
+        launchTask = nil
         receiveLoopTask?.cancel()
         receiveLoopTask = nil
         if let task = webSocketTask {
@@ -1082,10 +1401,7 @@ actor SpiderwebFsEndpointSession {
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
         urlSession = nil
-        exportSelection = nil
-        openHandles.removeAll()
-        nodePaths.removeAll()
-        failPendingResponses(throwing: URLError(.cancelled))
+        resetEndpointState(throwing: URLError(.cancelled))
     }
 
     func ping() async throws {
@@ -1094,36 +1410,38 @@ actor SpiderwebFsEndpointSession {
 
     func getattr(path: String) async throws -> SpiderwebRemoteAttr {
         try await launchIfNeeded()
-        let resolved = try await resolveNode(path)
-        rememberNode(path: path, nodeID: resolved.nodeID)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        if let cached = cachedResolvedNode(path: normalizedPath), let attr = cached.attr {
+            return attr
+        }
+
+        let resolved = try await resolveNode(normalizedPath)
+        rememberNode(path: normalizedPath, nodeID: resolved.nodeID)
         if let attr = resolved.attr {
             return attr
         }
         let attr = try await getattrNode(nodeID: resolved.nodeID)
-        rememberNode(path: path, nodeID: attr.id)
+        cacheResolvedNode(path: normalizedPath, resolved: SpiderwebEndpointResolvedNode(nodeID: attr.id, attr: attr))
         return attr
     }
 
     func readdir(path: String, cookie: UInt64, maxEntries: UInt32) async throws -> SpiderwebRemoteDirectoryListing {
         try await launchIfNeeded()
-        let resolved = try await resolveNode(path)
-        rememberNode(path: path, nodeID: resolved.nodeID)
-        let envelope = try await sendFsRequest(
-            type: "acheron.t_fs_readdirp",
-            expectedType: "acheron.r_fs_readdirp",
-            node: resolved.nodeID,
-            handle: nil,
-            payload: [
-                "cookie": cookie,
-                "max": maxEntries,
-            ]
-        )
-        let listing = try parseFsDirectoryListing(envelope)
-        for entry in listing.entries {
-            guard let attr = entry.attr else { continue }
-            rememberNode(path: join(directoryPath: path, childName: entry.name), nodeID: attr.id)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let cacheKey = SpiderwebEndpointDirectoryCacheKey(path: normalizedPath, cookie: cookie, maxEntries: maxEntries)
+        if let cached = cachedDirectoryPage(for: cacheKey) {
+            return cached
         }
-        return listing
+        if let task = inFlightReaddirs[cacheKey] {
+            return try await task.value
+        }
+
+        let task = Task { [self] in
+            try await self.performReaddir(path: normalizedPath, cookie: cookie, maxEntries: maxEntries)
+        }
+        inFlightReaddirs[cacheKey] = task
+        defer { inFlightReaddirs.removeValue(forKey: cacheKey) }
+        return try await task.value
     }
 
     func statfs(path: String) async throws -> SpiderwebRemoteStatFS {
@@ -1159,8 +1477,9 @@ actor SpiderwebFsEndpointSession {
 
     func open(path: String, flags: UInt32) async throws -> SpiderwebOpenHandleResponse {
         try await launchIfNeeded()
-        let resolved = try await resolveNode(path)
-        rememberNode(path: path, nodeID: resolved.nodeID)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let resolved = try await resolveNode(normalizedPath)
+        rememberNode(path: normalizedPath, nodeID: resolved.nodeID)
         let envelope = try await sendFsRequest(
             type: "acheron.t_fs_open",
             expectedType: "acheron.r_fs_open",
@@ -1170,7 +1489,7 @@ actor SpiderwebFsEndpointSession {
         )
         let response = try parseFsOpenHandle(envelope)
         openHandles[response.handleID] = SpiderwebEndpointHandleState(
-            path: normalizeRelativeEndpointPath(path),
+            path: normalizedPath,
             nodeID: resolved.nodeID,
             flags: flags,
             writable: response.writable
@@ -1226,13 +1545,16 @@ actor SpiderwebFsEndpointSession {
                 "data_b64": data.base64EncodedString(),
             ]
         )
-        return try parseFsWriteCount(envelope)
+        let written = try parseFsWriteCount(envelope)
+        invalidateCachesForMutation(path: handle.path, parentPath: endpointParentPath(handle.path), includeDescendants: false)
+        return written
     }
 
     func create(path: String, mode: UInt32, flags: UInt32) async throws -> SpiderwebCreateHandleResponse {
         try await launchIfNeeded()
         try ensureWritable()
-        let split = try splitEndpointParentChild(path)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let split = try splitEndpointParentChild(normalizedPath)
         let parent = try await resolveNode(split.parentPath)
         rememberNode(path: split.parentPath, nodeID: parent.nodeID)
         let envelope = try await sendFsRequest(
@@ -1247,9 +1569,10 @@ actor SpiderwebFsEndpointSession {
             ]
         )
         let created = try parseFsCreateResponse(envelope)
-        rememberNode(path: path, nodeID: created.attr.id)
+        invalidateCachesForMutation(path: normalizedPath, parentPath: split.parentPath, includeDescendants: false)
+        cacheResolvedNode(path: normalizedPath, resolved: SpiderwebEndpointResolvedNode(nodeID: created.attr.id, attr: created.attr))
         openHandles[created.handleID] = SpiderwebEndpointHandleState(
-            path: normalizeRelativeEndpointPath(path),
+            path: normalizedPath,
             nodeID: created.attr.id,
             flags: flags,
             writable: created.writable
@@ -1260,8 +1583,9 @@ actor SpiderwebFsEndpointSession {
     func truncate(path: String, size: UInt64) async throws {
         try await launchIfNeeded()
         try ensureWritable()
-        let resolved = try await resolveNode(path)
-        rememberNode(path: path, nodeID: resolved.nodeID)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let resolved = try await resolveNode(normalizedPath)
+        rememberNode(path: normalizedPath, nodeID: resolved.nodeID)
         _ = try await sendFsRequest(
             type: "acheron.t_fs_truncate",
             expectedType: "acheron.r_fs_truncate",
@@ -1269,19 +1593,21 @@ actor SpiderwebFsEndpointSession {
             handle: nil,
             payload: ["sz": size]
         )
+        invalidateCachesForMutation(path: normalizedPath, parentPath: endpointParentPath(normalizedPath), includeDescendants: false)
     }
 
     func setattr(path: String, request: SpiderwebSetAttrRequest) async throws -> SpiderwebRemoteAttr {
         try await launchIfNeeded()
         try ensureWritable()
-        let resolved = try await resolveNode(path)
-        rememberNode(path: path, nodeID: resolved.nodeID)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let resolved = try await resolveNode(normalizedPath)
+        rememberNode(path: normalizedPath, nodeID: resolved.nodeID)
         guard !request.isEmpty else {
             if let attr = resolved.attr {
                 return attr
             }
             let attr = try await getattrNode(nodeID: resolved.nodeID)
-            rememberNode(path: path, nodeID: attr.id)
+            cacheResolvedNode(path: normalizedPath, resolved: SpiderwebEndpointResolvedNode(nodeID: attr.id, attr: attr))
             return attr
         }
         var payload: [String: Any] = [:]
@@ -1311,14 +1637,16 @@ actor SpiderwebFsEndpointSession {
             payload: payload
         )
         let attr = try parseFsWrappedAttr(envelope)
-        rememberNode(path: path, nodeID: attr.id)
+        invalidateCachesForMutation(path: normalizedPath, parentPath: endpointParentPath(normalizedPath), includeDescendants: false)
+        cacheResolvedNode(path: normalizedPath, resolved: SpiderwebEndpointResolvedNode(nodeID: attr.id, attr: attr))
         return attr
     }
 
     func getxattr(path: String, name: String) async throws -> Data {
         try await launchIfNeeded()
-        let resolved = try await resolveNode(path)
-        rememberNode(path: path, nodeID: resolved.nodeID)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let resolved = try await resolveNode(normalizedPath)
+        rememberNode(path: normalizedPath, nodeID: resolved.nodeID)
         let envelope = try await sendFsRequest(
             type: "acheron.t_fs_getxattr",
             expectedType: "acheron.r_fs_getxattr",
@@ -1332,8 +1660,9 @@ actor SpiderwebFsEndpointSession {
     func setxattr(path: String, name: String, value: Data, flags: UInt32) async throws {
         try await launchIfNeeded()
         try ensureWritable()
-        let resolved = try await resolveNode(path)
-        rememberNode(path: path, nodeID: resolved.nodeID)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let resolved = try await resolveNode(normalizedPath)
+        rememberNode(path: normalizedPath, nodeID: resolved.nodeID)
         _ = try await sendFsRequest(
             type: "acheron.t_fs_setxattr",
             expectedType: "acheron.r_fs_setxattr",
@@ -1345,12 +1674,14 @@ actor SpiderwebFsEndpointSession {
                 "flags": flags,
             ]
         )
+        invalidatePathCaches(normalizedPath, includeDescendants: false, invalidateParentDirectory: false)
     }
 
     func listxattrs(path: String) async throws -> [String] {
         try await launchIfNeeded()
-        let resolved = try await resolveNode(path)
-        rememberNode(path: path, nodeID: resolved.nodeID)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let resolved = try await resolveNode(normalizedPath)
+        rememberNode(path: normalizedPath, nodeID: resolved.nodeID)
         let envelope = try await sendFsRequest(
             type: "acheron.t_fs_listxattr",
             expectedType: "acheron.r_fs_listxattr",
@@ -1364,8 +1695,9 @@ actor SpiderwebFsEndpointSession {
     func removexattr(path: String, name: String) async throws {
         try await launchIfNeeded()
         try ensureWritable()
-        let resolved = try await resolveNode(path)
-        rememberNode(path: path, nodeID: resolved.nodeID)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let resolved = try await resolveNode(normalizedPath)
+        rememberNode(path: normalizedPath, nodeID: resolved.nodeID)
         _ = try await sendFsRequest(
             type: "acheron.t_fs_removexattr",
             expectedType: "acheron.r_fs_removexattr",
@@ -1373,12 +1705,14 @@ actor SpiderwebFsEndpointSession {
             handle: nil,
             payload: ["name": name]
         )
+        invalidatePathCaches(normalizedPath, includeDescendants: false, invalidateParentDirectory: false)
     }
 
     func unlink(path: String) async throws {
         try await launchIfNeeded()
         try ensureWritable()
-        let split = try splitEndpointParentChild(path)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let split = try splitEndpointParentChild(normalizedPath)
         let parent = try await resolveNode(split.parentPath)
         rememberNode(path: split.parentPath, nodeID: parent.nodeID)
         _ = try await sendFsRequest(
@@ -1388,12 +1722,14 @@ actor SpiderwebFsEndpointSession {
             handle: nil,
             payload: ["name": split.name]
         )
+        invalidateCachesForMutation(path: normalizedPath, parentPath: split.parentPath, includeDescendants: false)
     }
 
     func mkdir(path: String) async throws {
         try await launchIfNeeded()
         try ensureWritable()
-        let split = try splitEndpointParentChild(path)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let split = try splitEndpointParentChild(normalizedPath)
         let parent = try await resolveNode(split.parentPath)
         rememberNode(path: split.parentPath, nodeID: parent.nodeID)
         _ = try await sendFsRequest(
@@ -1403,12 +1739,14 @@ actor SpiderwebFsEndpointSession {
             handle: nil,
             payload: ["name": split.name]
         )
+        invalidateCachesForMutation(path: normalizedPath, parentPath: split.parentPath, includeDescendants: false)
     }
 
     func rmdir(path: String) async throws {
         try await launchIfNeeded()
         try ensureWritable()
-        let split = try splitEndpointParentChild(path)
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let split = try splitEndpointParentChild(normalizedPath)
         let parent = try await resolveNode(split.parentPath)
         rememberNode(path: split.parentPath, nodeID: parent.nodeID)
         _ = try await sendFsRequest(
@@ -1418,13 +1756,16 @@ actor SpiderwebFsEndpointSession {
             handle: nil,
             payload: ["name": split.name]
         )
+        invalidateCachesForMutation(path: normalizedPath, parentPath: split.parentPath, includeDescendants: true)
     }
 
     func rename(oldPath: String, newPath: String) async throws {
         try await launchIfNeeded()
         try ensureWritable()
-        let oldSplit = try splitEndpointParentChild(oldPath)
-        let newSplit = try splitEndpointParentChild(newPath)
+        let normalizedOldPath = normalizeRelativeEndpointPath(oldPath)
+        let normalizedNewPath = normalizeRelativeEndpointPath(newPath)
+        let oldSplit = try splitEndpointParentChild(normalizedOldPath)
+        let newSplit = try splitEndpointParentChild(normalizedNewPath)
         let oldParent = try await resolveNode(oldSplit.parentPath)
         let newParent = try await resolveNode(newSplit.parentPath)
         rememberNode(path: oldSplit.parentPath, nodeID: oldParent.nodeID)
@@ -1441,13 +1782,16 @@ actor SpiderwebFsEndpointSession {
                 "new_name": newSplit.name,
             ]
         )
+        invalidateCachesForMutation(path: normalizedOldPath, parentPath: oldSplit.parentPath, includeDescendants: true)
+        invalidateCachesForMutation(path: normalizedNewPath, parentPath: newSplit.parentPath, includeDescendants: true)
     }
 
     func symlink(target: String, linkPath: String) async throws {
         try await launchIfNeeded()
         try ensureWritable()
         try ensureSymlinkSupported()
-        let split = try splitEndpointParentChild(linkPath)
+        let normalizedPath = normalizeRelativeEndpointPath(linkPath)
+        let split = try splitEndpointParentChild(normalizedPath)
         let parent = try await resolveNode(split.parentPath)
         rememberNode(path: split.parentPath, nodeID: parent.nodeID)
         _ = try await sendFsRequest(
@@ -1460,6 +1804,7 @@ actor SpiderwebFsEndpointSession {
                 "target": target,
             ]
         )
+        invalidateCachesForMutation(path: normalizedPath, parentPath: split.parentPath, includeDescendants: false)
     }
 
     private func connectFresh() async throws {
@@ -1475,10 +1820,7 @@ actor SpiderwebFsEndpointSession {
 
         self.urlSession = urlSession
         self.webSocketTask = task
-        self.exportSelection = nil
-        self.openHandles.removeAll()
-        self.nodePaths.removeAll()
-        failPendingResponses(throwing: URLError(.cancelled))
+        resetEndpointState(throwing: URLError(.cancelled))
         connectionGeneration &+= 1
         let generation = connectionGeneration
         receiveLoopTask?.cancel()
@@ -1504,7 +1846,7 @@ actor SpiderwebFsEndpointSession {
             )
             let selection = try parseFsExportSelection(exportsEnvelope, desiredName: config.exportName)
             exportSelection = selection
-            rememberNode(path: "/", nodeID: selection.rootNodeID)
+            cacheResolvedNode(path: "/", resolved: SpiderwebEndpointResolvedNode(nodeID: selection.rootNodeID, attr: nil))
         } catch {
             await shutdown()
             throw error
@@ -1528,56 +1870,70 @@ actor SpiderwebFsEndpointSession {
     }
 
     private func resolveNode(_ path: String) async throws -> SpiderwebEndpointResolvedNode {
-        guard let exportSelection else {
+        guard exportSelection != nil else {
             throw URLError(.networkConnectionLost)
         }
         let normalizedPath = normalizeRelativeEndpointPath(path)
-        if normalizedPath == "/" {
-            rememberNode(path: normalizedPath, nodeID: exportSelection.rootNodeID)
-            return SpiderwebEndpointResolvedNode(
-                nodeID: exportSelection.rootNodeID,
-                attr: try await getattrNode(nodeID: exportSelection.rootNodeID)
-            )
+        if let cached = cachedResolvedNode(path: normalizedPath) {
+            return cached
+        }
+        if let task = inFlightResolutions[normalizedPath] {
+            return try await task.value
         }
 
-        var currentNodeID = exportSelection.rootNodeID
-        var currentAttr: SpiderwebRemoteAttr?
-        var currentPath = "/"
-        for segment in endpointPathSegments(normalizedPath) {
-            let lookup = try await lookupChild(parentNodeID: currentNodeID, name: segment)
-            currentNodeID = lookup.nodeID
-            currentAttr = lookup.attr
-            currentPath = join(directoryPath: currentPath, childName: segment)
-            rememberNode(path: currentPath, nodeID: currentNodeID)
+        let task = Task { [self] in
+            try await self.performResolveNode(normalizedPath)
         }
-
-        if currentAttr == nil {
-            currentAttr = try await getattrNode(nodeID: currentNodeID)
-        }
-
-        return SpiderwebEndpointResolvedNode(nodeID: currentNodeID, attr: currentAttr)
+        inFlightResolutions[normalizedPath] = task
+        defer { inFlightResolutions.removeValue(forKey: normalizedPath) }
+        return try await task.value
     }
 
-    private func lookupChild(parentNodeID: UInt64, name: String) async throws -> SpiderwebEndpointResolvedNode {
-        let envelope = try await sendFsRequest(
-            type: "acheron.t_fs_lookup",
-            expectedType: "acheron.r_fs_lookup",
-            node: parentNodeID,
-            handle: nil,
-            payload: ["name": name]
-        )
-        return try parseFsLookupResponse(envelope)
+    private func lookupChild(parentNodeID: UInt64, name: String, childPath: String) async throws -> SpiderwebEndpointResolvedNode {
+        let normalizedChildPath = normalizeRelativeEndpointPath(childPath)
+        let key = SpiderwebEndpointChildCacheKey(parentNodeID: parentNodeID, name: name)
+        if isNegativeLookupFresh(for: key) {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT), userInfo: [NSLocalizedDescriptionKey: "Spiderweb path \(normalizedChildPath) was not found"])
+        }
+        if let cached = cachedLookupChild(for: key) {
+            cacheResolvedNode(path: normalizedChildPath, resolved: cached)
+            return cached
+        }
+        if let task = inFlightLookups[key] {
+            let resolved = try await task.value
+            cacheResolvedNode(path: normalizedChildPath, resolved: resolved)
+            return resolved
+        }
+
+        let task = Task { [self] in
+            try await self.performLookupChild(
+                parentNodeID: parentNodeID,
+                name: name,
+                childPath: normalizedChildPath,
+                key: key
+            )
+        }
+        inFlightLookups[key] = task
+        defer { inFlightLookups.removeValue(forKey: key) }
+        let resolved = try await task.value
+        cacheResolvedNode(path: normalizedChildPath, resolved: resolved)
+        return resolved
     }
 
     private func getattrNode(nodeID: UInt64) async throws -> SpiderwebRemoteAttr {
-        let envelope = try await sendFsRequest(
-            type: "acheron.t_fs_getattr",
-            expectedType: "acheron.r_fs_getattr",
-            node: nodeID,
-            handle: nil,
-            payload: [:]
-        )
-        return try parseFsWrappedAttr(envelope)
+        if let cached = cachedAttr(nodeID: nodeID) {
+            return cached
+        }
+        if let task = inFlightAttrs[nodeID] {
+            return try await task.value
+        }
+
+        let task = Task { [self] in
+            try await self.performGetattrNode(nodeID: nodeID)
+        }
+        inFlightAttrs[nodeID] = task
+        defer { inFlightAttrs.removeValue(forKey: nodeID) }
+        return try await task.value
     }
 
     private func fsHelloPayload() -> [String: Any] {
@@ -1618,7 +1974,7 @@ actor SpiderwebFsEndpointSession {
                 do {
                     try await self.sendEnvelope(envelope)
                 } catch {
-                    await self.failPendingResponse(tag: tag, throwing: error)
+                    self.failPendingResponse(tag: tag, throwing: error)
                 }
             }
         }
@@ -1675,19 +2031,21 @@ actor SpiderwebFsEndpointSession {
 
     private func handleInvalidationEnvelope(_ envelope: [String: Any]) {
         guard let invalidation = parseFsInvalidationEnvelope(envelope),
-              let path = nodePaths[invalidation.nodeID],
-              let invalidationHandler
+              let path = nodePaths[invalidation.nodeID]
         else {
             return
         }
 
+        applyEndpointInvalidation(path: path, kind: invalidation.kind, nodeID: invalidation.nodeID)
         let kindDescription = String(describing: invalidation.kind)
         Logger.spiderwebfs.notice(
             "Received FS invalidation for node \(invalidation.nodeID) path \(path, privacy: .public) kind \(kindDescription, privacy: .public)"
         )
-        let mountedInvalidation = SpiderwebMountedInvalidation(path: path, kind: invalidation.kind)
-        Task {
-            invalidationHandler(mountedInvalidation)
+        if let invalidationHandler {
+            let mountedInvalidation = SpiderwebMountedInvalidation(path: path, kind: invalidation.kind)
+            Task {
+                invalidationHandler(mountedInvalidation)
+            }
         }
     }
 
@@ -1703,7 +2061,7 @@ actor SpiderwebFsEndpointSession {
         do {
             while !Task.isCancelled {
                 let envelope = try await receiveEnvelope()
-                await processIncomingEnvelope(envelope, generation: generation)
+                processIncomingEnvelope(envelope, generation: generation)
             }
         } catch is CancellationError {
             return
@@ -1741,10 +2099,7 @@ actor SpiderwebFsEndpointSession {
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
         urlSession = nil
-        exportSelection = nil
-        openHandles.removeAll()
-        nodePaths.removeAll()
-        failPendingResponses(throwing: error)
+        resetEndpointState(throwing: error)
     }
 
     private func failPendingResponse(tag: UInt32, throwing error: Error) {
@@ -1760,6 +2115,328 @@ actor SpiderwebFsEndpointSession {
         for continuation in continuations {
             continuation.resume(throwing: error)
         }
+    }
+
+    private func performReaddir(path: String, cookie: UInt64, maxEntries: UInt32) async throws -> SpiderwebRemoteDirectoryListing {
+        let resolved = try await resolveNode(path)
+        rememberNode(path: path, nodeID: resolved.nodeID)
+        remoteOperationSnapshot.readdir &+= 1
+        let envelope = try await sendFsRequest(
+            type: "acheron.t_fs_readdirp",
+            expectedType: "acheron.r_fs_readdirp",
+            node: resolved.nodeID,
+            handle: nil,
+            payload: [
+                "cookie": cookie,
+                "max": maxEntries,
+            ]
+        )
+        let listing = try parseFsDirectoryListing(envelope)
+        cacheDirectoryPage(path: path, parentNodeID: resolved.nodeID, cookie: cookie, maxEntries: maxEntries, listing: listing)
+        return listing
+    }
+
+    private func performResolveNode(_ path: String) async throws -> SpiderwebEndpointResolvedNode {
+        guard let exportSelection else {
+            throw URLError(.networkConnectionLost)
+        }
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        if normalizedPath == "/" {
+            let rootAttr = try await getattrNode(nodeID: exportSelection.rootNodeID)
+            let resolvedRoot = SpiderwebEndpointResolvedNode(nodeID: exportSelection.rootNodeID, attr: rootAttr)
+            cacheResolvedNode(path: normalizedPath, resolved: resolvedRoot)
+            return resolvedRoot
+        }
+
+        var currentNodeID = exportSelection.rootNodeID
+        var currentAttr: SpiderwebRemoteAttr?
+        var currentPath = "/"
+        for segment in endpointPathSegments(normalizedPath) {
+            currentPath = join(directoryPath: currentPath, childName: segment)
+            if let cachedSegment = cachedResolvedNode(path: currentPath) {
+                currentNodeID = cachedSegment.nodeID
+                currentAttr = cachedSegment.attr
+                rememberNode(path: currentPath, nodeID: currentNodeID)
+                continue
+            }
+            let lookup = try await lookupChild(parentNodeID: currentNodeID, name: segment, childPath: currentPath)
+            currentNodeID = lookup.nodeID
+            currentAttr = lookup.attr
+            rememberNode(path: currentPath, nodeID: currentNodeID)
+        }
+
+        if currentAttr == nil {
+            currentAttr = try await getattrNode(nodeID: currentNodeID)
+        }
+
+        let resolved = SpiderwebEndpointResolvedNode(nodeID: currentNodeID, attr: currentAttr)
+        cacheResolvedNode(path: normalizedPath, resolved: resolved)
+        return resolved
+    }
+
+    private func performLookupChild(
+        parentNodeID: UInt64,
+        name: String,
+        childPath: String,
+        key: SpiderwebEndpointChildCacheKey
+    ) async throws -> SpiderwebEndpointResolvedNode {
+        remoteOperationSnapshot.lookup &+= 1
+        do {
+            let envelope = try await sendFsRequest(
+                type: "acheron.t_fs_lookup",
+                expectedType: "acheron.r_fs_lookup",
+                node: parentNodeID,
+                handle: nil,
+                payload: ["name": name]
+            )
+            let resolved = try parseFsLookupResponse(envelope)
+            cacheLookupChild(for: key, childPath: childPath, resolved: resolved)
+            return resolved
+        } catch {
+            let nsError = error as NSError
+            if nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOENT) {
+                negativeLookupCache[key] = Date()
+            }
+            throw error
+        }
+    }
+
+    private func performGetattrNode(nodeID: UInt64) async throws -> SpiderwebRemoteAttr {
+        remoteOperationSnapshot.getattr &+= 1
+        let envelope = try await sendFsRequest(
+            type: "acheron.t_fs_getattr",
+            expectedType: "acheron.r_fs_getattr",
+            node: nodeID,
+            handle: nil,
+            payload: [:]
+        )
+        let attr = try parseFsWrappedAttr(envelope)
+        cacheAttr(attr)
+        return attr
+    }
+
+    func remoteOperationsSnapshot() -> SpiderwebRemoteOperationSnapshot {
+        remoteOperationSnapshot
+    }
+
+    private func resetEndpointState(throwing error: Error) {
+        exportSelection = nil
+        openHandles.removeAll()
+        nodePaths.removeAll()
+        resolvedPathCache.removeAll()
+        childLookupCache.removeAll()
+        negativeLookupCache.removeAll()
+        nodeAttrCache.removeAll()
+        directoryPageCache.removeAll()
+        inFlightResolutions.removeAll()
+        inFlightLookups.removeAll()
+        inFlightAttrs.removeAll()
+        inFlightReaddirs.removeAll()
+        failPendingResponses(throwing: error)
+    }
+
+    private func cachedResolvedNode(path: String) -> SpiderwebEndpointResolvedNode? {
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        guard let cached = resolvedPathCache[normalizedPath] else {
+            return nil
+        }
+        guard isFresh(cached.fetchedAt) else {
+            resolvedPathCache.removeValue(forKey: normalizedPath)
+            return nil
+        }
+        if let attr = cachedAttr(nodeID: cached.value.nodeID) {
+            return SpiderwebEndpointResolvedNode(nodeID: cached.value.nodeID, attr: attr)
+        }
+        return cached.value
+    }
+
+    private func cacheResolvedNode(path: String, resolved: SpiderwebEndpointResolvedNode) {
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        resolvedPathCache[normalizedPath] = SpiderwebTimedCacheEntry(value: resolved, fetchedAt: Date())
+        rememberNode(path: normalizedPath, nodeID: resolved.nodeID)
+        if let attr = resolved.attr {
+            cacheAttr(attr)
+        }
+    }
+
+    private func cachedLookupChild(for key: SpiderwebEndpointChildCacheKey) -> SpiderwebEndpointResolvedNode? {
+        guard let cached = childLookupCache[key] else {
+            return nil
+        }
+        guard isFresh(cached.fetchedAt) else {
+            childLookupCache.removeValue(forKey: key)
+            return nil
+        }
+        if let attr = cachedAttr(nodeID: cached.value.nodeID) {
+            return SpiderwebEndpointResolvedNode(nodeID: cached.value.nodeID, attr: attr)
+        }
+        return cached.value
+    }
+
+    private func cacheLookupChild(
+        for key: SpiderwebEndpointChildCacheKey,
+        childPath: String,
+        resolved: SpiderwebEndpointResolvedNode
+    ) {
+        childLookupCache[key] = SpiderwebTimedCacheEntry(value: resolved, fetchedAt: Date())
+        negativeLookupCache.removeValue(forKey: key)
+        cacheResolvedNode(path: childPath, resolved: resolved)
+    }
+
+    private func isNegativeLookupFresh(for key: SpiderwebEndpointChildCacheKey) -> Bool {
+        guard let recordedAt = negativeLookupCache[key] else {
+            return false
+        }
+        if isFresh(recordedAt) {
+            return true
+        }
+        negativeLookupCache.removeValue(forKey: key)
+        return false
+    }
+
+    private func cachedAttr(nodeID: UInt64) -> SpiderwebRemoteAttr? {
+        guard let cached = nodeAttrCache[nodeID] else {
+            return nil
+        }
+        guard isFresh(cached.fetchedAt) else {
+            nodeAttrCache.removeValue(forKey: nodeID)
+            return nil
+        }
+        return cached.value
+    }
+
+    private func cacheAttr(_ attr: SpiderwebRemoteAttr) {
+        nodeAttrCache[attr.id] = SpiderwebTimedCacheEntry(value: attr, fetchedAt: Date())
+    }
+
+    private func cachedDirectoryPage(for key: SpiderwebEndpointDirectoryCacheKey) -> SpiderwebRemoteDirectoryListing? {
+        guard let cached = directoryPageCache[key] else {
+            return nil
+        }
+        guard isFresh(cached.fetchedAt) else {
+            directoryPageCache.removeValue(forKey: key)
+            return nil
+        }
+        return cached.value
+    }
+
+    private func cacheDirectoryPage(
+        path: String,
+        parentNodeID: UInt64,
+        cookie: UInt64,
+        maxEntries: UInt32,
+        listing: SpiderwebRemoteDirectoryListing
+    ) {
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let key = SpiderwebEndpointDirectoryCacheKey(path: normalizedPath, cookie: cookie, maxEntries: maxEntries)
+        directoryPageCache[key] = SpiderwebTimedCacheEntry(value: listing, fetchedAt: Date())
+
+        for entry in listing.entries {
+            let childPath = join(directoryPath: normalizedPath, childName: entry.name)
+            if let attr = entry.attr {
+                let resolved = SpiderwebEndpointResolvedNode(nodeID: attr.id, attr: attr)
+                let childKey = SpiderwebEndpointChildCacheKey(parentNodeID: parentNodeID, name: entry.name)
+                cacheLookupChild(for: childKey, childPath: childPath, resolved: resolved)
+            }
+        }
+    }
+
+    private func invalidateCachesForMutation(path: String, parentPath: String, includeDescendants: Bool) {
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let normalizedParentPath = normalizeRelativeEndpointPath(parentPath)
+        if normalizedPath != "/",
+           let split = try? splitEndpointParentChild(normalizedPath),
+           let parentResolved = cachedResolvedNode(path: normalizedParentPath)
+        {
+            let childKey = SpiderwebEndpointChildCacheKey(parentNodeID: parentResolved.nodeID, name: split.name)
+            childLookupCache.removeValue(forKey: childKey)
+            negativeLookupCache.removeValue(forKey: childKey)
+        }
+        invalidatePathCaches(normalizedPath, includeDescendants: includeDescendants, invalidateParentDirectory: true)
+        invalidateDirectoryPage(path: normalizedParentPath)
+    }
+
+    private func applyEndpointInvalidation(path: String, kind: SpiderwebMountedInvalidationKind, nodeID: UInt64) {
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        switch kind {
+        case .directory:
+            invalidatePathCaches(normalizedPath, includeDescendants: true, invalidateParentDirectory: true)
+        case .attr, .data, .all:
+            invalidatePathCaches(normalizedPath, includeDescendants: false, invalidateParentDirectory: true)
+        }
+        nodeAttrCache.removeValue(forKey: nodeID)
+    }
+
+    private func invalidatePathCaches(_ path: String, includeDescendants: Bool, invalidateParentDirectory: Bool) {
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        let parentPath = endpointParentPath(normalizedPath)
+        let prefix = normalizedPath == "/" ? "/" : normalizedPath + "/"
+        let invalidatedNodeIDs = Set(
+            nodePaths.compactMap { nodeID, cachedPath in
+                if cachedPath == normalizedPath {
+                    return nodeID
+                }
+                if includeDescendants, cachedPath.hasPrefix(prefix) {
+                    return nodeID
+                }
+                return nil
+            }
+        )
+
+        let resolvedKeysToRemove = resolvedPathCache.keys.filter { key in
+            key == normalizedPath || (includeDescendants && key.hasPrefix(prefix))
+        }
+        for key in resolvedKeysToRemove {
+            resolvedPathCache.removeValue(forKey: key)
+        }
+
+        for nodeID in invalidatedNodeIDs {
+            nodeAttrCache.removeValue(forKey: nodeID)
+            nodePaths.removeValue(forKey: nodeID)
+        }
+
+        let lookupKeysToRemove = childLookupCache.compactMap { entry -> SpiderwebEndpointChildCacheKey? in
+            if invalidatedNodeIDs.contains(entry.value.value.nodeID) {
+                return entry.key
+            }
+            guard let childPath = nodePaths[entry.value.value.nodeID] else {
+                return nil
+            }
+            if childPath == normalizedPath {
+                return entry.key
+            }
+            if includeDescendants, childPath.hasPrefix(prefix) {
+                return entry.key
+            }
+            return nil
+        }
+        for key in lookupKeysToRemove {
+            childLookupCache.removeValue(forKey: key)
+            negativeLookupCache.removeValue(forKey: key)
+        }
+
+        if includeDescendants {
+            for key in directoryPageCache.keys.filter({ $0.path == normalizedPath || $0.path.hasPrefix(prefix) }) {
+                directoryPageCache.removeValue(forKey: key)
+            }
+        } else {
+            invalidateDirectoryPage(path: normalizedPath)
+        }
+
+        if invalidateParentDirectory {
+            invalidateDirectoryPage(path: parentPath)
+        }
+    }
+
+    private func invalidateDirectoryPage(path: String) {
+        let normalizedPath = normalizeRelativeEndpointPath(path)
+        for key in directoryPageCache.keys.filter({ $0.path == normalizedPath }) {
+            directoryPageCache.removeValue(forKey: key)
+        }
+    }
+
+    private func isFresh(_ recordedAt: Date) -> Bool {
+        Date().timeIntervalSince(recordedAt) <= spiderwebEndpointCacheTTL
     }
 }
 
@@ -1933,6 +2610,12 @@ final class SpiderwebFsEndpointBridge {
         try perform(operationName: "fs.symlink(\(linkPath))") { [session] in
             try await session.symlink(target: target, linkPath: linkPath)
         }
+    }
+
+    func remoteOperationSnapshot() -> SpiderwebRemoteOperationSnapshot {
+        (try? runBlocking(operationName: "fs.remoteOperationSnapshot") { [session] in
+            await session.remoteOperationsSnapshot()
+        }) ?? .zero
     }
 
     private func perform<T>(operationName: String, _ operation: @escaping @Sendable () async throws -> T) throws -> T {
@@ -2166,6 +2849,36 @@ final class SpiderwebMountedBridge {
         routeForPath(path) != nil
     }
 
+    func syntheticAttrHint(path: String) -> SpiderwebRemoteAttr? {
+        let normalizedPath = normalizeAbsolutePath(path)
+        guard endpointMounts.contains(where: {
+            $0.preferredDirectRouting && $0.mountPath == normalizedPath
+        }) else {
+            return nil
+        }
+
+        let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+        return SpiderwebRemoteAttr(
+            id: stableSyntheticPathID(normalizedPath),
+            kindCode: 2,
+            mode: 0o040755,
+            linkCount: 2,
+            uid: UInt32(getuid()),
+            gid: UInt32(getgid()),
+            flags: 0,
+            size: 0,
+            accessTimeNS: now,
+            modifyTimeNS: now,
+            changeTimeNS: now
+        )
+    }
+
+    func performanceSnapshot() -> SpiderwebRemoteOperationSnapshot {
+        endpointMounts.reduce(namespaceBridge.remoteOperationSnapshot()) { snapshot, endpoint in
+            snapshot.adding(endpoint.bridge.remoteOperationSnapshot())
+        }
+    }
+
     private func routeForPath(_ path: String) -> SpiderwebMountedPathRoute? {
         let normalizedPath = normalizeAbsolutePath(path)
         for (index, endpoint) in endpointMounts.enumerated() {
@@ -2315,6 +3028,12 @@ final class SpiderwebNamespaceBridge {
         }
     }
 
+    func remoteOperationSnapshot() -> SpiderwebRemoteOperationSnapshot {
+        (try? runBlocking(operationName: "namespace.remoteOperationSnapshot") { [session] in
+            await session.remoteOperationsSnapshot()
+        }) ?? .zero
+    }
+
     private func perform<T>(operationName: String, _ operation: @escaping @Sendable () async throws -> T) throws -> T {
         do {
             return try runBlocking(operationName: operationName, operation)
@@ -2347,20 +3066,38 @@ let spiderwebFailFastCooldownMS: UInt64 = {
     return 10_000
 }()
 
+let spiderwebFSKitPerfLoggingEnabled: Bool = {
+    #if DEBUG
+    let value = ProcessInfo.processInfo.environment["SPIDERWEB_FSKIT_PERF_LOG"]
+        ?? ProcessInfo.processInfo.environment["SPIDERWEB_PERF_LOG"]
+    guard let value else {
+        return false
+    }
+    switch value.lowercased() {
+    case "1", "true", "yes", "on":
+        return true
+    default:
+        return false
+    }
+    #else
+    return false
+    #endif
+}()
+
 private func runBlocking<T>(operationName: String, _ operation: @escaping @Sendable () async throws -> T) throws -> T {
     let semaphore = DispatchSemaphore(value: 0)
-    let lock = NSLock()
+    let outcomeQueue = DispatchQueue(label: "com.deanoc.spiderweb.runblocking")
     var outcome: Result<T, Error>?
     let task = Task {
         do {
             let value = try await operation()
-            lock.lock()
-            outcome = .success(value)
-            lock.unlock()
+            outcomeQueue.sync {
+                outcome = .success(value)
+            }
         } catch {
-            lock.lock()
-            outcome = .failure(error)
-            lock.unlock()
+            outcomeQueue.sync {
+                outcome = .failure(error)
+            }
         }
         semaphore.signal()
     }
@@ -2371,9 +3108,8 @@ private func runBlocking<T>(operationName: String, _ operation: @escaping @Senda
         throw timeoutError(operationName: operationName, timeoutMS: spiderwebBridgeTimeoutMS)
     }
 
-    lock.lock()
-    defer { lock.unlock() }
-    return try outcome!.get()
+    let resolvedOutcome = outcomeQueue.sync { outcome }
+    return try resolvedOutcome!.get()
 }
 
 func join(directoryPath: String, childName: String) -> String {
@@ -2392,6 +3128,31 @@ func normalizeAbsolutePath(_ path: String) -> String {
         return path.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
     }
     return path
+}
+
+private func stableSyntheticPathID(_ path: String) -> UInt64 {
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    for byte in path.utf8 {
+        hash ^= UInt64(byte)
+        hash &*= 1_099_511_628_211
+    }
+    return hash == 0 ? 1 : hash
+}
+
+func pathMatchesPrefixBoundary(_ path: String, _ prefix: String) -> Bool {
+    let normalizedPath = normalizeAbsolutePath(path)
+    let normalizedPrefix = normalizeAbsolutePath(prefix)
+    if normalizedPrefix == "/" {
+        return normalizedPath.hasPrefix("/")
+    }
+    guard normalizedPath.hasPrefix(normalizedPrefix) else {
+        return false
+    }
+    if normalizedPath == normalizedPrefix {
+        return true
+    }
+    let boundaryIndex = normalizedPath.index(normalizedPath.startIndex, offsetBy: normalizedPrefix.count)
+    return boundaryIndex < normalizedPath.endIndex && normalizedPath[boundaryIndex] == "/"
 }
 
 private func flagsRequireWrite(_ flags: UInt32) -> Bool {
@@ -2497,6 +3258,14 @@ func splitEndpointParentChild(_ path: String) throws -> (parentPath: String, nam
         return ("/", name)
     }
     return (String(normalized[..<slashIndex]), name)
+}
+
+func endpointParentPath(_ path: String) -> String {
+    let normalized = normalizeRelativeEndpointPath(path)
+    guard normalized != "/" else {
+        return "/"
+    }
+    return (try? splitEndpointParentChild(normalized).parentPath) ?? "/"
 }
 
 private func mapControlError(_ envelope: [String: Any]) -> NSError {

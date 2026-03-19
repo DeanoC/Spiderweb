@@ -3,12 +3,39 @@ set -euo pipefail
 
 APP_PATH="/Applications/Spiderweb.app"
 APP_BINARY="$APP_PATH/Contents/MacOS/Spiderweb"
+DAEMON_BINARY="$APP_PATH/Contents/Resources/spiderweb"
 EXTENSION_PATH="$APP_PATH/Contents/Extensions/SpiderwebFSKitExtension.appex"
 FILESYSTEM_BUNDLE="/Library/Filesystems/spiderweb.fs"
 EXTENSION_BUNDLE_ID="com.deanoc.spiderweb.fskit.app.extension"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+LAUNCH_AGENT_LABEL="spiderweb"
+
+bootout_user_launch_agent() {
+  local console_user console_uid console_home plist_path domain_target service_target
+  console_user="$(stat -f%Su /dev/console 2>/dev/null || true)"
+  if [[ -z "$console_user" || "$console_user" == "root" ]]; then
+    return 0
+  fi
+
+  console_uid="$(id -u "$console_user" 2>/dev/null || true)"
+  console_home="$(dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+  if [[ -z "$console_uid" || -z "$console_home" ]]; then
+    return 0
+  fi
+
+  plist_path="$console_home/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist"
+  domain_target="gui/$console_uid"
+  service_target="$domain_target/$LAUNCH_AGENT_LABEL"
+
+  if [[ -f "$plist_path" ]]; then
+    launchctl bootout "$domain_target" "$plist_path" >/dev/null 2>&1 || true
+  fi
+  launchctl bootout "$service_target" >/dev/null 2>&1 || true
+}
 
 quit_running_spiderweb() {
+  bootout_user_launch_agent
+
   if pgrep -x Spiderweb >/dev/null 2>&1; then
     pkill -x Spiderweb >/dev/null 2>&1 || true
   fi
@@ -17,8 +44,12 @@ quit_running_spiderweb() {
     pkill -f "$APP_BINARY" >/dev/null 2>&1 || true
   fi
 
+  if [[ -x "$DAEMON_BINARY" ]]; then
+    pkill -f "$DAEMON_BINARY" >/dev/null 2>&1 || true
+  fi
+
   for _ in $(seq 1 20); do
-    if ! pgrep -x Spiderweb >/dev/null 2>&1; then
+    if ! pgrep -x Spiderweb >/dev/null 2>&1 && ! pgrep -f "$DAEMON_BINARY" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.25
@@ -27,6 +58,9 @@ quit_running_spiderweb() {
   pkill -9 -x Spiderweb >/dev/null 2>&1 || true
   if [[ -x "$APP_BINARY" ]]; then
     pkill -9 -f "$APP_BINARY" >/dev/null 2>&1 || true
+  fi
+  if [[ -x "$DAEMON_BINARY" ]]; then
+    pkill -9 -f "$DAEMON_BINARY" >/dev/null 2>&1 || true
   fi
 }
 

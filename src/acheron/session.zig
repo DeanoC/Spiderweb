@@ -8412,6 +8412,22 @@ pub const Session = struct {
     }
 
     pub fn tryReadInternalPath(self: *Session, absolute_path: []const u8) anyerror!?[]u8 {
+        return self.readInternalPathMaterialized(absolute_path, null) catch |err| switch (err) {
+            error.FileNotFound,
+            error.AccessDenied,
+            error.IsDir,
+            error.NotDir,
+            error.OperationNotSupported,
+            => null,
+            else => return err,
+        };
+    }
+
+    fn readInternalPathMaterialized(
+        self: *Session,
+        absolute_path: []const u8,
+        max_bytes: ?usize,
+    ) ![]u8 {
         const ids = self.nextInternalFsrpcIds();
         const segments = try self.allocAbsolutePathSegments(absolute_path);
         defer freePathSegments(self.allocator, segments);
@@ -8427,9 +8443,8 @@ pub const Session = struct {
         const attach_frame = try self.handle(&attach);
         defer self.allocator.free(attach_frame);
         if (try self.parseInternalFsrpcError(attach_frame)) |err| {
-            var owned_err = err;
-            owned_err.deinit(self.allocator);
-            return null;
+            defer err.deinit(self.allocator);
+            return mapInternalMountReadError(err.code);
         }
 
         var walk = unified.ParsedMessage{
@@ -8443,9 +8458,8 @@ pub const Session = struct {
         const walk_frame = try self.handle(&walk);
         defer self.allocator.free(walk_frame);
         if (try self.parseInternalFsrpcError(walk_frame)) |err| {
-            var owned_err = err;
-            owned_err.deinit(self.allocator);
-            return null;
+            defer err.deinit(self.allocator);
+            return mapInternalMountReadError(err.code);
         }
 
         var open = unified.ParsedMessage{
@@ -8458,36 +8472,54 @@ pub const Session = struct {
         const open_frame = try self.handle(&open);
         defer self.allocator.free(open_frame);
         if (try self.parseInternalFsrpcError(open_frame)) |err| {
-            var owned_err = err;
-            owned_err.deinit(self.allocator);
-            return null;
+            defer err.deinit(self.allocator);
+            return mapInternalMountReadError(err.code);
         }
 
-        var read = unified.ParsedMessage{
-            .channel = .acheron,
-            .acheron_type = .t_read,
-            .tag = ids.tag_base + 3,
-            .fid = ids.walk_fid,
-            .offset = 0,
-            .count = 1_048_576,
-        };
-        const read_frame = try self.handle(&read);
-        defer self.allocator.free(read_frame);
-        if (try self.parseInternalFsrpcError(read_frame)) |err| {
-            var owned_err = err;
-            owned_err.deinit(self.allocator);
-            return null;
+        const max_total = max_bytes orelse std.math.maxInt(usize);
+        var offset: u64 = 0;
+        var content = std.ArrayListUnmanaged(u8){};
+        errdefer content.deinit(self.allocator);
+
+        while (content.items.len < max_total) {
+            const remaining = max_total - content.items.len;
+            const request_count: usize = @min(remaining, 1_048_576);
+            if (request_count == 0) break;
+
+            var read = unified.ParsedMessage{
+                .channel = .acheron,
+                .acheron_type = .t_read,
+                .tag = ids.tag_base + 3,
+                .fid = ids.walk_fid,
+                .offset = offset,
+                .count = @intCast(request_count),
+            };
+            const read_frame = try self.handle(&read);
+            defer self.allocator.free(read_frame);
+            if (try self.parseInternalFsrpcError(read_frame)) |err| {
+                defer err.deinit(self.allocator);
+                return mapInternalMountReadError(err.code);
+            }
+
+            const chunk = try self.decodeAcheronReadPayload(read_frame);
+            defer self.allocator.free(chunk);
+            if (chunk.len == 0) break;
+
+            try content.appendSlice(self.allocator, chunk);
+            offset = std.math.add(u64, offset, @as(u64, chunk.len)) catch return error.InvalidOffset;
+            if (chunk.len < request_count) break;
         }
-        return try self.decodeAcheronReadPayload(read_frame);
+        return content.toOwnedSlice(self.allocator);
     }
 
     pub fn readMountGraphFile(self: *Session, absolute_path: []const u8, offset: u64, max_bytes: usize) ![]u8 {
-        const content = (try self.tryReadInternalPath(absolute_path)) orelse return error.FileNotFound;
+        const start = std.math.cast(usize, offset) orelse return error.InvalidOffset;
+        const required_len = std.math.add(usize, start, max_bytes) catch return error.InvalidOffset;
+        const content = try self.readInternalPathMaterialized(absolute_path, required_len);
         defer self.allocator.free(content);
 
-        const start = std.math.cast(usize, offset) orelse return error.InvalidOffset;
         if (start >= content.len) return self.allocator.dupe(u8, "");
-        const end = @min(content.len, start + max_bytes);
+        const end = @min(content.len, required_len);
         return self.allocator.dupe(u8, content[start..end]);
     }
 
@@ -8782,12 +8814,9 @@ pub const Session = struct {
 
         const alias_target = self.node_aliases.get(node_id);
         const canonical_node_id: ?u64 = if (alias_target) |target| @min(node_id, target) else null;
-        const is_alias = canonical_node_id != null and canonical_node_id.? != node_id;
         const is_export_root = export_root_paths.contains(absolute_path);
         const kind_name: []const u8 = if (is_export_root)
             "export_root"
-        else if (is_alias)
-            "alias"
         else switch (node.kind) {
             .dir => "synthetic_directory",
             .file => "synthetic_file",
@@ -9063,6 +9092,17 @@ pub const Session = struct {
     fn mapInternalMountWriteError(code: []const u8) anyerror {
         if (std.mem.eql(u8, code, "enoent")) return error.FileNotFound;
         if (std.mem.eql(u8, code, "eperm")) return error.AccessDenied;
+        if (std.mem.eql(u8, code, "eacces")) return error.AccessDenied;
+        if (std.mem.eql(u8, code, "eisdir")) return error.IsDir;
+        if (std.mem.eql(u8, code, "enotdir")) return error.NotDir;
+        if (std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;
+        return error.OperationNotSupported;
+    }
+
+    fn mapInternalMountReadError(code: []const u8) anyerror {
+        if (std.mem.eql(u8, code, "enoent")) return error.FileNotFound;
+        if (std.mem.eql(u8, code, "eperm")) return error.AccessDenied;
+        if (std.mem.eql(u8, code, "eacces")) return error.AccessDenied;
         if (std.mem.eql(u8, code, "eisdir")) return error.IsDir;
         if (std.mem.eql(u8, code, "enotdir")) return error.NotDir;
         if (std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;
@@ -11002,6 +11042,186 @@ test "acheron_session: mount graph snapshot keeps synthetic file contents remote
 
     try std.testing.expect(found_agents);
     try std.testing.expect(found_protocol);
+}
+
+test "acheron_session: mount graph snapshot preserves alias directory and file kinds" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/AGENTS.md",
+        .data = "## Workspace Owner Notes\n\nKeep alias kinds honest.\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const project_json = try control_plane.createProject(
+        "{\"name\":\"MountGraphAliasKinds\",\"vision\":\"Keep alias nodes traversable\"}",
+    );
+    defer allocator.free(project_json);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var job_index = chat_job_index.ChatJobIndex.init(allocator, "");
+    defer job_index.deinit();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        &job_index,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayload("{\"mounts\":[]}", "mount-test");
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_agents_alias = false;
+    var found_mounts_alias = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/AGENTS.md")) {
+            try std.testing.expectEqualStrings("synthetic_file", node_value.object.get("kind").?.string);
+            try std.testing.expect(node_value.object.get("canonical_node_id").? != .null);
+            found_agents_alias = true;
+        } else if (std.mem.eql(u8, path_value.string, "/global/mounts")) {
+            try std.testing.expectEqualStrings("synthetic_directory", node_value.object.get("kind").?.string);
+            try std.testing.expect(node_value.object.get("canonical_node_id").? != .null);
+            found_mounts_alias = true;
+        }
+    }
+
+    try std.testing.expect(found_agents_alias);
+    try std.testing.expect(found_mounts_alias);
+}
+
+test "acheron_session: readMountGraphFile preserves internal file-type errors" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/child");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var job_index = chat_job_index.ChatJobIndex.init(allocator, "");
+    defer job_index.deinit();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        &job_index,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expectError(
+        error.IsDir,
+        session.readMountGraphFile("/nodes/local/fs/child", 0, 16),
+    );
+}
+
+test "acheron_session: readMountGraphFile reads beyond the first chunk" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const prefix_len: usize = 1_048_576;
+    const total_len = prefix_len + 32;
+    var content = try allocator.alloc(u8, total_len);
+    defer allocator.free(content);
+    @memset(content[0..prefix_len], 'a');
+    @memset(content[prefix_len..], 'b');
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/big.txt",
+        .data = content,
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var job_index = chat_job_index.ChatJobIndex.init(allocator, "");
+    defer job_index.deinit();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        &job_index,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    const tail = try session.readMountGraphFile("/nodes/local/fs/big.txt", prefix_len, 32);
+    defer allocator.free(tail);
+    try std.testing.expectEqual(@as(usize, 32), tail.len);
+    for (tail) |byte| try std.testing.expectEqual(@as(u8, 'b'), byte);
 }
 
 test "acheron_session: services terminal exec updates live service status and result" {

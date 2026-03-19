@@ -9197,14 +9197,14 @@ fn controlPlaneErrorCode(err: anyerror) []const u8 {
 
 fn mountGraphErrorCode(err: anyerror) []const u8 {
     return switch (err) {
-        error.FileNotFound => "not_found",
-        error.AccessDenied => "forbidden",
-        error.InvalidPayload => "invalid_payload",
-        error.InvalidOffset => "invalid_payload",
-        error.NotDir => "not_directory",
-        error.IsDir => "is_directory",
-        error.OperationNotSupported => "operation_not_supported",
-        else => "mount_graph_error",
+        error.FileNotFound => "enoent",
+        error.AccessDenied => "eacces",
+        error.InvalidPayload => "einval",
+        error.InvalidOffset => "einval",
+        error.NotDir => "enotdir",
+        error.IsDir => "eisdir",
+        error.OperationNotSupported => "enosys",
+        else => "eio",
     };
 }
 
@@ -11797,6 +11797,15 @@ test "server: mergeMountGraphWriteData rejects oversized materialized writes" {
 
 test "server: mountGraphWriteResponseCount reports request byte length" {
     try std.testing.expectEqual(@as(u32, 2), try mountGraphWriteResponseCount(2));
+}
+
+test "server: mountGraphErrorCode emits errno-compatible tokens" {
+    try std.testing.expectEqualStrings("enoent", mountGraphErrorCode(error.FileNotFound));
+    try std.testing.expectEqualStrings("eacces", mountGraphErrorCode(error.AccessDenied));
+    try std.testing.expectEqualStrings("einval", mountGraphErrorCode(error.InvalidPayload));
+    try std.testing.expectEqualStrings("enotdir", mountGraphErrorCode(error.NotDir));
+    try std.testing.expectEqualStrings("eisdir", mountGraphErrorCode(error.IsDir));
+    try std.testing.expectEqualStrings("enosys", mountGraphErrorCode(error.OperationNotSupported));
 }
 
 test "server: parseArchiveTimestamp accepts rotated debug archive names" {

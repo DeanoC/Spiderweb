@@ -643,6 +643,7 @@ fn rewriteWorkspaceStatusFsUrls(
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
     defer parsed.deinit();
+    const json_allocator = parsed.arena.allocator();
     if (parsed.value != .object) return allocator.dupe(u8, workspace_json);
 
     var rewrote_any = false;
@@ -663,7 +664,7 @@ fn rewriteWorkspaceStatusFsUrls(
             defer allocator.free(rewritten);
 
             if (std.mem.eql(u8, rewritten, fs_url_value.string)) continue;
-            fs_url_value.* = .{ .string = try allocator.dupe(u8, rewritten) };
+            fs_url_value.* = .{ .string = try json_allocator.dupe(u8, rewritten) };
             rewrote_any = true;
         }
     }

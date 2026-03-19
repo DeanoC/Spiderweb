@@ -1086,6 +1086,7 @@ test "Config validation rejects overlapping sandbox roots" {
     var config = try Config.init(allocator, cfg_path);
     defer config.deinit();
 
+    config.runtime.sandbox_enabled = true;
     config.allocator.free(config.runtime.sandbox_mounts_root);
     config.runtime.sandbox_mounts_root = try allocator.dupe(u8, "/tmp/spiderweb-overlap");
     config.allocator.free(config.runtime.sandbox_overlay_root);
@@ -1108,6 +1109,7 @@ test "Config validation rejects empty rootfs base ref" {
     var config = try Config.init(allocator, cfg_path);
     defer config.deinit();
 
+    config.runtime.sandbox_enabled = true;
     config.allocator.free(config.runtime.sandbox_rootfs_base_ref);
     config.runtime.sandbox_rootfs_base_ref = try allocator.dupe(u8, "   ");
 

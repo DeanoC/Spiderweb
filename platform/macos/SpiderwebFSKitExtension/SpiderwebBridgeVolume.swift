@@ -11,7 +11,6 @@ import FSKit
 import OSLog
 
 let modeAllBits: Int32 = 0o7777
-private let spiderwebInvalidationTraceNeedle = "/test-env/fskit-invalidation-traced/existing.txt"
 
 private struct SpiderwebBridgeOpenState {
     var handleID: UInt64
@@ -69,6 +68,8 @@ final class SpiderwebBridgeVolume:
 
     private let rootItem: SpiderwebBridgeItem
     private let directoryCacheTTL: TimeInterval = 5.0
+    private let attributeCacheTTL: TimeInterval = 5.0
+    private let directoryPageSize: UInt32 = 256
 
     let supportedVolumeCapabilities: FSVolume.SupportedCapabilities = {
         let capabilities = FSVolume.SupportedCapabilities()
@@ -92,15 +93,12 @@ final class SpiderwebBridgeVolume:
 
     init(requestURL: URL) throws {
         runtime = try SpiderwebMountRuntime(requestURL: requestURL)
-        let bridge = try runtime.ensureBridge()
-        let rootAttr = try bridge.getattr(path: "/")
-        rootItem = SpiderwebBridgeItem(path: "/", itemIdentifier: .rootDirectory, cachedAttr: rootAttr)
+        rootItem = SpiderwebBridgeItem(path: "/", itemIdentifier: .rootDirectory, cachedAttr: nil)
         super.init(volumeID: FSVolume.Identifier(), volumeName: FSFileName(string: runtime.request.volumeNameOrDefault))
         runtime.setInvalidationHandler { [weak self] invalidation in
             self?.applyMountedInvalidation(invalidation)
         }
         pathToItem["/"] = rootItem
-        try refreshVolumeStatistics()
     }
 
     deinit {
@@ -126,17 +124,8 @@ final class SpiderwebBridgeVolume:
 
     func activate(options: FSTaskOptions, replyHandler reply: @escaping (FSItem?, (any Error)?) -> Void) {
         _ = options
-        do {
-            _ = try runtime.ensureBridge()
-            let attr = try refreshAttributes(for: rootItem)
-            rootItem.cachedAttr = attr
-            warmDirectoryListing(path: "/")
-            warmDirectoryListing(path: "/agents")
-            warmDirectoryListing(path: "/meta")
-            reply(rootItem, nil)
-        } catch {
-            reply(nil, error)
-        }
+        primeBridgeInBackground()
+        reply(rootItem, nil)
     }
 
     func deactivate(options: FSDeactivateOptions, replyHandler reply: @escaping ((any Error)?) -> Void) {
@@ -148,12 +137,8 @@ final class SpiderwebBridgeVolume:
 
     func mount(options: FSTaskOptions, replyHandler reply: @escaping ((any Error)?) -> Void) {
         _ = options
-        do {
-            try refreshVolumeStatistics()
-            reply(nil)
-        } catch {
-            reply(error)
-        }
+        primeBridgeInBackground()
+        reply(nil)
     }
 
     func unmount(replyHandler reply: @escaping () -> Void) {
@@ -164,11 +149,21 @@ final class SpiderwebBridgeVolume:
 
     func synchronize(flags: FSSyncFlags, replyHandler reply: @escaping ((any Error)?) -> Void) {
         _ = flags
-        do {
-            try refreshVolumeStatistics()
-            reply(nil)
-        } catch {
-            reply(error)
+        primeBridgeInBackground()
+        reply(nil)
+    }
+
+    private func primeBridgeInBackground() {
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else {
+                return
+            }
+            do {
+                _ = try self.runtime.ensureBridge()
+                try self.refreshVolumeStatistics()
+            } catch {
+                self.logger.notice("Background bridge warmup failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -179,7 +174,7 @@ final class SpiderwebBridgeVolume:
                 reply(true, nil)
                 return
             }
-            let allowWrites = try runtime.ensureBridge().isWritablePath(bridgeItem.path)
+            let allowWrites = runtime.isWritablePath(bridgeItem.path)
             reply(allowWrites, nil)
         } catch {
             reply(false, error)
@@ -194,9 +189,6 @@ final class SpiderwebBridgeVolume:
 
         let normalizedPath = normalize(path: bridgeItem.path)
         var handleIDToRelease: UInt64?
-        if normalizedPath.contains(spiderwebInvalidationTraceNeedle) {
-            logger.notice("deactivateItem for \(normalizedPath, privacy: .public)")
-        }
         stateLock.lock()
         bridgeItem.cachedAttr = nil
         blockedPaths.removeValue(forKey: normalizedPath)
@@ -216,10 +208,9 @@ final class SpiderwebBridgeVolume:
     func getAttributes(_ desiredAttributes: FSItem.GetAttributesRequest, of item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
-            if bridgeItem.path.contains(spiderwebInvalidationTraceNeedle) {
-                logger.notice("getAttributes for \(bridgeItem.path, privacy: .public)")
+            let attr = try withPerformanceLogging(operation: "getAttributes", path: bridgeItem.path) {
+                return try currentAttributes(for: bridgeItem)
             }
-            let attr = try refreshAttributes(for: bridgeItem)
             reply(makeAttributes(for: bridgeItem, attr: attr, desiredAttributes: desiredAttributes), nil)
         } catch {
             reply(nil, error)
@@ -229,49 +220,47 @@ final class SpiderwebBridgeVolume:
     func setAttributes(_ newAttributes: FSItem.SetAttributesRequest, on item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
-            let bridge = try runtime.ensureBridge()
+            let attr = try withPerformanceLogging(operation: "setAttributes", path: bridgeItem.path) {
+                let bridge = try runtime.ensureBridge()
 
-            if requestedUnsupportedAttributeMutation(newAttributes) {
-                reply(nil, POSIXError(.EINVAL))
-                return
-            }
+                if requestedUnsupportedAttributeMutation(newAttributes) {
+                    throw POSIXError(.EINVAL)
+                }
 
-            if newAttributes.isValid(.size) {
-                try bridge.truncate(path: bridgeItem.path, size: newAttributes.size)
-                invalidateCachedPath(bridgeItem.path)
-                let attr = try refreshAttributes(for: bridgeItem)
-                reply(makeAttributes(for: bridgeItem, attr: attr, desiredAttributes: attributeSnapshotRequest()), nil)
-                return
-            }
+                if newAttributes.isValid(.size) {
+                    try bridge.truncate(path: bridgeItem.path, size: newAttributes.size)
+                    invalidateCachedPath(bridgeItem.path)
+                    return try currentAttributes(for: bridgeItem)
+                }
 
-            if requestedSoftMetadataMutation(newAttributes) {
-                guard bridge.isWritablePath(bridgeItem.path) else {
-                    reply(nil, readOnlyError(message: "Spiderweb path \(bridgeItem.path) is read-only"))
-                    return
-                }
-                if hasIgnoredMetadataMutation(newAttributes) {
-                    logger.notice("Ignoring unsupported metadata fields for \(bridgeItem.path, privacy: .public): \(self.describeIgnoredMetadataRequest(newAttributes), privacy: .public)")
-                }
-                let request = makeSetAttrRequest(newAttributes)
-                if newAttributes.isValid(.flags) {
-                    logger.notice(
-                        "Applying FSKit flags request for \(bridgeItem.path, privacy: .public): raw=\(newAttributes.flags) mapped=\(request.flags ?? 0) request=\(self.describeSetAttributesRequest(newAttributes), privacy: .public)"
-                    )
-                }
-                let attr: SpiderwebRemoteAttr
-                if request.isEmpty {
-                    logger.notice("Ignoring metadata-only no-op for writable Spiderweb path \(bridgeItem.path, privacy: .public): \(self.describeSetAttributesRequest(newAttributes), privacy: .public)")
-                    attr = try currentAttributes(for: bridgeItem)
-                } else {
-                    attr = try bridge.setattr(path: bridgeItem.path, request: request)
+                if requestedSoftMetadataMutation(newAttributes) {
+                    guard runtime.isWritablePath(bridgeItem.path) else {
+                        throw readOnlyError(message: "Spiderweb path \(bridgeItem.path) is read-only")
+                    }
+                    if hasIgnoredMetadataMutation(newAttributes) {
+                        logger.notice("Ignoring unsupported metadata fields for \(bridgeItem.path, privacy: .public): \(self.describeIgnoredMetadataRequest(newAttributes), privacy: .public)")
+                    }
+                    let request = makeSetAttrRequest(newAttributes)
+                    if newAttributes.isValid(.flags) {
+                        logger.notice(
+                            "Applying FSKit flags request for \(bridgeItem.path, privacy: .public): raw=\(newAttributes.flags) mapped=\(request.flags ?? 0) request=\(self.describeSetAttributesRequest(newAttributes), privacy: .public)"
+                        )
+                    }
+                    if request.isEmpty {
+                        logger.notice("Ignoring metadata-only no-op for writable Spiderweb path \(bridgeItem.path, privacy: .public): \(self.describeSetAttributesRequest(newAttributes), privacy: .public)")
+                        return try currentAttributes(for: bridgeItem)
+                    }
+
+                    let attr = try bridge.setattr(path: bridgeItem.path, request: request)
+                    invalidateCachedPath(bridgeItem.path)
                     clearBlockedPath(bridgeItem.path)
                     bridgeItem.cachedAttr = attr
+                    return attr
                 }
-                reply(makeAttributes(for: bridgeItem, attr: attr, desiredAttributes: attributeSnapshotRequest()), nil)
-                return
-            }
 
-            reply(nil, CocoaError(.featureUnsupported))
+                throw CocoaError(.featureUnsupported)
+            }
+            reply(makeAttributes(for: bridgeItem, attr: attr, desiredAttributes: attributeSnapshotRequest()), nil)
         } catch {
             if let bridgeItem = item as? SpiderwebBridgeItem {
                 noteFailure(for: bridgeItem.path, error: error)
@@ -283,58 +272,30 @@ final class SpiderwebBridgeVolume:
     func getXattr(named name: FSFileName, of item: FSItem, replyHandler reply: @escaping (Data?, Error?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
-            let xattrName = try requireXattrName(name)
-            let value = try runtime.ensureBridge().getxattr(path: bridgeItem.path, name: xattrName)
-            reply(value, nil)
+            _ = try requireXattrName(name)
+            reply(nil, unsupportedXattrReadError(path: bridgeItem.path))
         } catch {
-            if let bridgeItem = item as? SpiderwebBridgeItem {
-                noteFailure(for: bridgeItem.path, error: error)
-            }
             reply(nil, error)
         }
     }
 
     func setXattr(named name: FSFileName, to value: Data?, on item: FSItem, policy: FSVolume.SetXattrPolicy, replyHandler reply: @escaping (Error?) -> Void) {
+        _ = value
+        _ = policy
         do {
             let bridgeItem = try requireBridgeItem(item)
-            let xattrName = try requireXattrName(name)
-            switch policy {
-            case .delete:
-                try runtime.ensureBridge().removexattr(path: bridgeItem.path, name: xattrName)
-            case .alwaysSet, .mustCreate, .mustReplace:
-                guard let value else {
-                    reply(POSIXError(.EINVAL))
-                    return
-                }
-                try runtime.ensureBridge().setxattr(
-                    path: bridgeItem.path,
-                    name: xattrName,
-                    value: value,
-                    flags: linuxXattrFlags(for: policy)
-                )
-            @unknown default:
-                reply(POSIXError(.EINVAL))
-                return
-            }
-            invalidateCachedPath(bridgeItem.path)
-            reply(nil)
+            _ = try requireXattrName(name)
+            reply(unsupportedXattrWriteError(path: bridgeItem.path))
         } catch {
-            if let bridgeItem = item as? SpiderwebBridgeItem {
-                noteFailure(for: bridgeItem.path, error: error)
-            }
             reply(error)
         }
     }
 
     func listXattrs(of item: FSItem, replyHandler reply: @escaping ([FSFileName]?, Error?) -> Void) {
         do {
-            let bridgeItem = try requireBridgeItem(item)
-            let names = try runtime.ensureBridge().listxattrs(path: bridgeItem.path)
-            reply(names.map { FSFileName(string: $0) }, nil)
+            _ = try requireBridgeItem(item)
+            reply([], nil)
         } catch {
-            if let bridgeItem = item as? SpiderwebBridgeItem {
-                noteFailure(for: bridgeItem.path, error: error)
-            }
             reply(nil, error)
         }
     }
@@ -342,15 +303,30 @@ final class SpiderwebBridgeVolume:
     func lookupItem(named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
         do {
             let directoryItem = try requireBridgeItem(directory)
+            let entryName = try fsNameString(name)
             let childPath = try append(name: name, toDirectoryPath: directoryItem.path)
-            if childPath.contains(spiderwebInvalidationTraceNeedle) {
-                logger.notice("lookupItem for \(childPath, privacy: .public)")
+            let resolved = try withPerformanceLogging(operation: "lookupItem", path: childPath) { () -> (SpiderwebBridgeItem, FSFileName) in
+                if let cachedEntry = cachedDirectoryEntry(named: entryName, inDirectoryPath: directoryItem.path) {
+                    let child = itemForPath(childPath, attr: cachedEntry.attr)
+                    if let attr = cachedEntry.attr {
+                        child.cachedAttr = attr
+                        clearBlockedPath(childPath)
+                        return (child, FSFileName(string: entryName))
+                    }
+                    if let cachedAttr = child.cachedAttr, shouldUseCachedAttributes(for: child) {
+                        child.cachedAttr = cachedAttr
+                        clearBlockedPath(childPath)
+                        return (child, FSFileName(string: entryName))
+                    }
+                }
+
+                let child = itemForPath(childPath, attr: nil)
+                let attr = try currentAttributes(for: child)
+                clearBlockedPath(childPath)
+                child.cachedAttr = attr
+                return (child, FSFileName(string: entryName))
             }
-            try ensurePathIsNotBlocked(childPath)
-            let attr = try runtime.ensureBridge().getattr(path: childPath)
-            clearBlockedPath(childPath)
-            let child = itemForPath(childPath, attr: attr)
-            reply(child, FSFileName(string: name.string ?? ""), nil)
+            reply(resolved.0, resolved.1, nil)
         } catch {
             if let directoryItem = directory as? SpiderwebBridgeItem,
                let childPath = try? append(name: name, toDirectoryPath: directoryItem.path)
@@ -397,26 +373,37 @@ final class SpiderwebBridgeVolume:
         do {
             let directoryItem = try requireBridgeItem(directory)
             let childPath = try append(name: name, toDirectoryPath: directoryItem.path)
-
-            switch type {
-            case .directory:
-                try runtime.ensureBridge().mkdir(path: childPath)
-            case .file:
-                let mode = newAttributes.isValid(.mode) ? newAttributes.mode : UInt32(0o644)
-                _ = try runtime.ensureBridge().create(path: childPath, mode: mode, flags: UInt32(O_RDWR))
-                if newAttributes.isValid(.size), newAttributes.size > 0 {
-                    try runtime.ensureBridge().truncate(path: childPath, size: newAttributes.size)
+            let resolved = try withPerformanceLogging(operation: "createItem", path: childPath) { () -> (SpiderwebBridgeItem, FSFileName) in
+                let createdAttr: SpiderwebRemoteAttr?
+                switch type {
+                case .directory:
+                    try runtime.ensureBridge().mkdir(path: childPath)
+                    createdAttr = nil
+                case .file:
+                    let mode = newAttributes.isValid(.mode) ? newAttributes.mode : UInt32(0o644)
+                    let created = try runtime.ensureBridge().create(path: childPath, mode: mode, flags: UInt32(O_RDWR))
+                    if newAttributes.isValid(.size), newAttributes.size > 0 {
+                        try runtime.ensureBridge().truncate(path: childPath, size: newAttributes.size)
+                        createdAttr = nil
+                    } else {
+                        createdAttr = created
+                    }
+                default:
+                    throw CocoaError(.featureUnsupported)
                 }
-            default:
-                reply(nil, nil, CocoaError(.featureUnsupported))
-                return
-            }
 
-            invalidateCachedPath(directoryItem.path)
-            invalidateCachedPath(childPath)
-            let attr = try runtime.ensureBridge().getattr(path: childPath)
-            let child = itemForPath(childPath, attr: attr)
-            reply(child, FSFileName(string: name.string ?? ""), nil)
+                invalidateCachedPath(directoryItem.path)
+                invalidateCachedPath(childPath)
+                let child = itemForPath(childPath, attr: createdAttr)
+                let attr = if let createdAttr {
+                    createdAttr
+                } else {
+                    try currentAttributes(for: child)
+                }
+                child.cachedAttr = attr
+                return (child, FSFileName(string: name.string ?? ""))
+            }
+            reply(resolved.0, resolved.1, nil)
         } catch {
             if let directoryItem = directory as? SpiderwebBridgeItem,
                let childPath = try? append(name: name, toDirectoryPath: directoryItem.path)
@@ -435,13 +422,16 @@ final class SpiderwebBridgeVolume:
             guard let target = contents.string, !target.isEmpty else {
                 throw POSIXError(.EINVAL)
             }
-
-            try runtime.ensureBridge().symlink(target: target, linkPath: childPath)
-            invalidateCachedPath(directoryItem.path)
-            invalidateCachedPath(childPath)
-            let attr = try runtime.ensureBridge().getattr(path: childPath)
-            let child = itemForPath(childPath, attr: attr)
-            reply(child, FSFileName(string: name.string ?? ""), nil)
+            let resolved = try withPerformanceLogging(operation: "createSymbolicLink", path: childPath) { () -> (SpiderwebBridgeItem, FSFileName) in
+                try runtime.ensureBridge().symlink(target: target, linkPath: childPath)
+                invalidateCachedPath(directoryItem.path)
+                invalidateCachedPath(childPath)
+                let child = itemForPath(childPath, attr: nil)
+                let attr = try currentAttributes(for: child)
+                child.cachedAttr = attr
+                return (child, FSFileName(string: name.string ?? ""))
+            }
+            reply(resolved.0, resolved.1, nil)
         } catch {
             if let directoryItem = directory as? SpiderwebBridgeItem,
                let childPath = try? append(name: name, toDirectoryPath: directoryItem.path)
@@ -463,15 +453,18 @@ final class SpiderwebBridgeVolume:
         do {
             let bridgeItem = try requireBridgeItem(item)
             let directoryItem = try requireBridgeItem(directory)
-            let attr = try currentAttributes(for: bridgeItem)
-            switch itemType(for: attr) {
-            case .directory:
-                try runtime.ensureBridge().rmdir(path: bridgeItem.path)
-            default:
-                try runtime.ensureBridge().unlink(path: bridgeItem.path)
+            try withPerformanceLogging(operation: "removeItem", path: bridgeItem.path) {
+                let attr = try currentAttributes(for: bridgeItem)
+                switch itemType(for: attr) {
+                case .directory:
+                    try runtime.ensureBridge().rmdir(path: bridgeItem.path)
+                    removeCachedPath(bridgeItem.path, includeDescendants: true)
+                default:
+                    try runtime.ensureBridge().unlink(path: bridgeItem.path)
+                    removeCachedPath(bridgeItem.path)
+                }
+                invalidateCachedPath(directoryItem.path)
             }
-            invalidateCachedPath(directoryItem.path)
-            removeCachedPath(bridgeItem.path)
             reply(nil)
         } catch {
             if let bridgeItem = item as? SpiderwebBridgeItem {
@@ -487,15 +480,17 @@ final class SpiderwebBridgeVolume:
             let sourceDirectoryItem = try requireBridgeItem(sourceDirectory)
             let destinationDirectoryItem = try requireBridgeItem(destinationDirectory)
             let destinationPath = try append(name: destinationName, toDirectoryPath: destinationDirectoryItem.path)
-
-            try runtime.ensureBridge().rename(oldPath: bridgeItem.path, newPath: destinationPath)
-            invalidateCachedPath(sourceDirectoryItem.path)
-            invalidateCachedPath(destinationDirectoryItem.path)
-            if let overBridgeItem = overItem as? SpiderwebBridgeItem {
-                removeCachedPath(overBridgeItem.path)
+            let resolvedName = try withPerformanceLogging(operation: "renameItem", path: bridgeItem.path) {
+                try runtime.ensureBridge().rename(oldPath: bridgeItem.path, newPath: destinationPath)
+                invalidateCachedPath(sourceDirectoryItem.path)
+                invalidateCachedPath(destinationDirectoryItem.path)
+                if let overBridgeItem = overItem as? SpiderwebBridgeItem {
+                    removeCachedPath(overBridgeItem.path, includeDescendants: true)
+                }
+                moveCachedPath(from: bridgeItem.path, to: destinationPath)
+                return destinationName
             }
-            moveCachedPath(from: bridgeItem.path, to: destinationPath)
-            reply(destinationName, nil)
+            reply(resolvedName, nil)
         } catch {
             if let bridgeItem = item as? SpiderwebBridgeItem {
                 noteFailure(for: bridgeItem.path, error: error)
@@ -508,44 +503,50 @@ final class SpiderwebBridgeVolume:
         _ = verifier
         do {
             let directoryItem = try requireBridgeItem(directory)
-            let listing = try readDirectoryListing(
-                path: directoryItem.path,
-                cookie: UInt64(cookie.rawValue),
-                maxEntries: 256
-            )
+            let directoryVerifier = try withPerformanceLogging(operation: "enumerateDirectory", path: directoryItem.path) {
+                let listing = try readDirectoryListing(
+                    path: directoryItem.path,
+                    cookie: UInt64(cookie.rawValue),
+                    maxEntries: directoryPageSize
+                )
 
-            for (index, entry) in listing.entries.enumerated() {
-                let childPath = join(directoryPath: directoryItem.path, childName: entry.name)
-                let child = itemForPath(childPath, attr: entry.attr)
-                let resolvedAttr: SpiderwebRemoteAttr
-                if let fastAttr = fastEnumeratedAttributes(for: child, entryName: entry.name, parentPath: directoryItem.path) {
-                    resolvedAttr = fastAttr
-                } else {
-                    do {
-                        resolvedAttr = try currentAttributes(for: child)
-                    } catch {
-                        if let fallbackAttr = entry.attr ?? child.cachedAttr ?? syntheticFallbackAttr(forPath: childPath, entryName: entry.name) {
-                            logger.warning("enumerateDirectory falling back to cached attrs for \(childPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                            resolvedAttr = fallbackAttr
-                        } else {
-                            logger.warning("enumerateDirectory skipping stalled entry \(childPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                            continue
+                for (index, entry) in listing.entries.enumerated() {
+                    let childPath = join(directoryPath: directoryItem.path, childName: entry.name)
+                    let child = itemForPath(childPath, attr: entry.attr)
+                    let resolvedAttr: SpiderwebRemoteAttr
+                    if let entryAttr = entry.attr {
+                        child.cachedAttr = entryAttr
+                        resolvedAttr = entryAttr
+                    } else if let fastAttr = fastEnumeratedAttributes(for: child, entryName: entry.name, parentPath: directoryItem.path) {
+                        resolvedAttr = fastAttr
+                    } else {
+                        do {
+                            resolvedAttr = try currentAttributes(for: child)
+                        } catch {
+                            if let fallbackAttr = child.cachedAttr {
+                                logger.warning("enumerateDirectory falling back to cached attrs for \(childPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                                resolvedAttr = fallbackAttr
+                            } else {
+                                logger.warning("enumerateDirectory skipping stalled entry \(childPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                                continue
+                            }
                         }
                     }
+                    let nextCookieRaw = UInt64(cookie.rawValue) + UInt64(index) + 1
+                    let packed = packer.packEntry(
+                        name: FSFileName(string: entry.name),
+                        itemType: itemType(for: resolvedAttr),
+                        itemID: child.itemIdentifier,
+                        nextCookie: FSDirectoryCookie(rawValue: listing.eof && index == listing.entries.count - 1 ? 0 : nextCookieRaw),
+                        attributes: attributes.map { makeAttributes(for: child, attr: resolvedAttr, desiredAttributes: $0) }
+                    )
+                    if !packed {
+                        break
+                    }
                 }
-                let nextCookieRaw = UInt64(cookie.rawValue) + UInt64(index) + 1
-                let packed = packer.packEntry(
-                    name: FSFileName(string: entry.name),
-                    itemType: itemType(for: resolvedAttr),
-                    itemID: child.itemIdentifier,
-                    nextCookie: FSDirectoryCookie(rawValue: listing.eof && index == listing.entries.count - 1 ? 0 : nextCookieRaw),
-                    attributes: attributes.map { makeAttributes(for: child, attr: resolvedAttr, desiredAttributes: $0) }
-                )
-                if !packed {
-                    break
-                }
+                return FSDirectoryVerifier(rawValue: listing.directoryGeneration)
             }
-            reply(FSDirectoryVerifier(rawValue: listing.directoryGeneration), nil)
+            reply(directoryVerifier, nil)
         } catch {
             if let directoryItem = directory as? SpiderwebBridgeItem {
                 noteFailure(for: directoryItem.path, error: error)
@@ -557,10 +558,14 @@ final class SpiderwebBridgeVolume:
     func openItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping ((any Error)?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
-            if bridgeItem.path.contains(spiderwebInvalidationTraceNeedle) {
-                logger.notice("openItem for \(bridgeItem.path, privacy: .public)")
+            try withPerformanceLogging(operation: "openItem", path: bridgeItem.path) {
+                let attr = try currentAttributes(for: bridgeItem)
+                if itemType(for: attr) == .directory {
+                    clearBlockedPath(bridgeItem.path)
+                    return
+                }
+                _ = try ensureHandle(for: bridgeItem, modes: modes)
             }
-            _ = try ensureHandle(for: bridgeItem, modes: modes)
             reply(nil)
         } catch {
             if let bridgeItem = item as? SpiderwebBridgeItem {
@@ -574,9 +579,6 @@ final class SpiderwebBridgeVolume:
         _ = modes
         do {
             let bridgeItem = try requireBridgeItem(item)
-            if bridgeItem.path.contains(spiderwebInvalidationTraceNeedle) {
-                logger.notice("closeItem for \(bridgeItem.path, privacy: .public)")
-            }
             try releaseHandle(for: bridgeItem)
             reply(nil)
         } catch {
@@ -587,27 +589,27 @@ final class SpiderwebBridgeVolume:
     func read(from item: FSItem, at offset: off_t, length: Int, into buffer: FSMutableFileDataBuffer, replyHandler reply: @escaping (Int, Error?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
-            if bridgeItem.path.contains(spiderwebInvalidationTraceNeedle) {
-                logger.notice("read for \(bridgeItem.path, privacy: .public) offset=\(offset) length=\(length)")
-            }
-            let (openState, transient) = try borrowHandle(for: bridgeItem, modes: [.read])
-            defer {
-                if transient {
-                    try? releaseHandle(for: bridgeItem)
+            let bytesRead = try withPerformanceLogging(operation: "read", path: bridgeItem.path) {
+                let (openState, transient) = try borrowHandle(for: bridgeItem, modes: [.read])
+                defer {
+                    if transient {
+                        try? releaseHandle(for: bridgeItem)
+                    }
                 }
-            }
-            let data = try runtime.ensureBridge().read(
-                handleID: openState.handleID,
-                offset: UInt64(offset),
-                length: UInt32(clamping: length)
-            )
-            try buffer.withUnsafeMutableBytes { rawBuffer in
-                guard data.count <= rawBuffer.count else {
-                    throw SpiderwebBridgeError.invalidEnvelope
+                let data = try runtime.ensureBridge().read(
+                    handleID: openState.handleID,
+                    offset: UInt64(offset),
+                    length: UInt32(clamping: length)
+                )
+                try buffer.withUnsafeMutableBytes { rawBuffer in
+                    guard data.count <= rawBuffer.count else {
+                        throw SpiderwebBridgeError.invalidEnvelope
+                    }
+                    rawBuffer.copyBytes(from: data)
                 }
-                rawBuffer.copyBytes(from: data)
+                return data.count
             }
-            reply(data.count, nil)
+            reply(bytesRead, nil)
         } catch {
             if let bridgeItem = item as? SpiderwebBridgeItem {
                 noteFailure(for: bridgeItem.path, error: error)
@@ -619,24 +621,26 @@ final class SpiderwebBridgeVolume:
     func write(contents: Data, to item: FSItem, at offset: off_t, replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
         do {
             let bridgeItem = try requireBridgeItem(item)
-            let (openState, transient) = try borrowHandle(for: bridgeItem, modes: [.read, .write])
-            defer {
-                if transient {
-                    try? releaseHandle(for: bridgeItem)
+            let written = try withPerformanceLogging(operation: "write", path: bridgeItem.path) {
+                let (openState, transient) = try borrowHandle(for: bridgeItem, modes: [.read, .write])
+                defer {
+                    if transient {
+                        try? releaseHandle(for: bridgeItem)
+                    }
                 }
+                guard openState.writable else {
+                    throw readOnlyError(message: "Spiderweb path \(bridgeItem.path) is read-only")
+                }
+                let written = try runtime.ensureBridge().write(
+                    handleID: openState.handleID,
+                    offset: UInt64(offset),
+                    data: contents
+                )
+                invalidateCachedPath(bridgeItem.path)
+                clearBlockedPath(bridgeItem.path)
+                return Int(written)
             }
-            guard openState.writable else {
-                reply(0, readOnlyError(message: "Spiderweb path \(bridgeItem.path) is read-only"))
-                return
-            }
-            let written = try runtime.ensureBridge().write(
-                handleID: openState.handleID,
-                offset: UInt64(offset),
-                data: contents
-            )
-            bridgeItem.cachedAttr = nil
-            clearBlockedPath(bridgeItem.path)
-            reply(Int(written), nil)
+            reply(written, nil)
         } catch {
             if let bridgeItem = item as? SpiderwebBridgeItem {
                 noteFailure(for: bridgeItem.path, error: error)
@@ -665,30 +669,23 @@ final class SpiderwebBridgeVolume:
         if let cached = item.cachedAttr, shouldUseCachedAttributes(for: item) {
             return cached
         }
+        if let hinted = hintedAttributes(for: item) {
+            item.cachedAttr = hinted
+            clearBlockedPath(item.path)
+            return hinted
+        }
         return try refreshAttributes(for: item)
     }
 
     private func refreshAttributes(for item: SpiderwebBridgeItem) throws -> SpiderwebRemoteAttr {
         try ensurePathIsNotBlocked(item.path)
-        do {
-            let attr = try runtime.ensureBridge().getattr(path: item.path)
-            item.cachedAttr = attr
-            clearBlockedPath(item.path)
-            return attr
-        } catch {
-            let entryName = URL(fileURLWithPath: item.path).lastPathComponent
-            let parent = parentPath(of: item.path)
-            if isBridgeTimeoutError(error),
-               shouldUseSyntheticEnumeration(in: parent),
-               let fallbackAttr = syntheticFallbackAttr(forPath: item.path, entryName: entryName)
-            {
-                logger.warning("refreshAttributes falling back to synthetic attrs for \(item.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                item.cachedAttr = fallbackAttr
-                noteFailure(for: item.path, error: error)
-                return fallbackAttr
-            }
-            throw error
-        }
+        let attr = try runtime.ensureBridge().getattr(path: item.path)
+        item.cachedAttr = attr
+        clearBlockedPath(item.path)
+        stateLock.lock()
+        invalidatedPaths.remove(normalize(path: item.path))
+        stateLock.unlock()
+        return attr
     }
 
     private func itemForPath(_ path: String, attr: SpiderwebRemoteAttr?) -> SpiderwebBridgeItem {
@@ -821,6 +818,22 @@ final class SpiderwebBridgeVolume:
         throw POSIXError(.EINVAL)
     }
 
+    private func unsupportedXattrReadError(path: String) -> Error {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(ENOATTR),
+            userInfo: [NSLocalizedDescriptionKey: "Extended attributes are not exposed on Spiderweb native mounts for \(path)"]
+        )
+    }
+
+    private func unsupportedXattrWriteError(path: String) -> Error {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(ENOTSUP),
+            userInfo: [NSLocalizedDescriptionKey: "Extended attributes are not supported on Spiderweb native mounts for \(path)"]
+        )
+    }
+
     private func linuxXattrFlags(for policy: FSVolume.SetXattrPolicy) -> UInt32 {
         switch policy {
         case .alwaysSet:
@@ -855,49 +868,91 @@ final class SpiderwebBridgeVolume:
         ]
     }
 
-    private func invalidateCachedPath(_ path: String) {
+    private func invalidateCachedPath(_ path: String, includeDescendants: Bool = false, invalidateParentDirectory: Bool = true) {
         let normalizedPath = normalize(path: path)
         stateLock.lock()
-        if let item = pathToItem[normalizedPath] {
-            item.cachedAttr = nil
-        }
-        blockedPaths.removeValue(forKey: normalizedPath)
-        invalidatedPaths.remove(normalizedPath)
-        clearDirectoryCacheLocked(forPath: normalizedPath)
+        invalidateCachedPathLocked(normalizedPath, includeDescendants: includeDescendants, invalidateParentDirectory: invalidateParentDirectory)
         stateLock.unlock()
     }
 
-    private func removeCachedPath(_ path: String) {
-        let normalizedPath = normalize(path: path)
-        var handleIDToRelease: UInt64?
-        stateLock.lock()
-        if let item = pathToItem.removeValue(forKey: normalizedPath) {
-            handleIDToRelease = openStates.removeValue(forKey: item.itemIdentifier.rawValue)?.handleID
+    private func invalidateCachedPathLocked(_ normalizedPath: String, includeDescendants: Bool, invalidateParentDirectory: Bool) {
+        let prefix = normalizedPath == "/" ? "/" : normalizedPath + "/"
+        let affectedPaths = pathToItem.keys.filter { cachedPath in
+            cachedPath == normalizedPath || (includeDescendants && cachedPath.hasPrefix(prefix))
         }
-        blockedPaths.removeValue(forKey: normalizedPath)
-        invalidatedPaths.remove(normalizedPath)
-        clearDirectoryCacheLocked(forPath: normalizedPath)
+        if affectedPaths.isEmpty {
+            blockedPaths.removeValue(forKey: normalizedPath)
+            invalidatedPaths.remove(normalizedPath)
+        } else {
+            for path in affectedPaths {
+                pathToItem[path]?.cachedAttr = nil
+                blockedPaths.removeValue(forKey: path)
+                invalidatedPaths.remove(path)
+            }
+        }
+        if includeDescendants {
+            clearDirectoryCacheTreeLocked(forPath: normalizedPath)
+        } else {
+            clearDirectoryCacheLocked(forPath: normalizedPath)
+        }
+        if invalidateParentDirectory {
+            clearDirectoryCacheLocked(forPath: parentPath(of: normalizedPath))
+        }
+    }
+
+    private func removeCachedPath(_ path: String, includeDescendants: Bool = false) {
+        let normalizedPath = normalize(path: path)
+        let prefix = normalizedPath == "/" ? "/" : normalizedPath + "/"
+        var handleIDsToRelease: [UInt64] = []
+        stateLock.lock()
+        let removedPaths = pathToItem.keys.filter { cachedPath in
+            cachedPath == normalizedPath || (includeDescendants && cachedPath.hasPrefix(prefix))
+        }
+        for removedPath in removedPaths {
+            if let item = pathToItem.removeValue(forKey: removedPath),
+               let handleID = openStates.removeValue(forKey: item.itemIdentifier.rawValue)?.handleID
+            {
+                handleIDsToRelease.append(handleID)
+            }
+            blockedPaths.removeValue(forKey: removedPath)
+            invalidatedPaths.remove(removedPath)
+        }
+        clearDirectoryCacheTreeLocked(forPath: normalizedPath)
+        clearDirectoryCacheLocked(forPath: parentPath(of: normalizedPath))
         stateLock.unlock()
-        if let handleIDToRelease {
-            try? runtime.ensureBridge().release(handleID: handleIDToRelease)
+        for handleID in handleIDsToRelease {
+            try? runtime.ensureBridge().release(handleID: handleID)
         }
     }
 
     private func moveCachedPath(from oldPath: String, to newPath: String) {
         let normalizedOldPath = normalize(path: oldPath)
         let normalizedNewPath = normalize(path: newPath)
+        let oldPrefix = normalizedOldPath == "/" ? "/" : normalizedOldPath + "/"
         stateLock.lock()
-        if let item = pathToItem.removeValue(forKey: normalizedOldPath) {
-            item.path = normalizedNewPath
+        let movedEntries = pathToItem.keys
+            .filter { cachedPath in
+                cachedPath == normalizedOldPath || cachedPath.hasPrefix(oldPrefix)
+            }
+            .sorted()
+        for sourcePath in movedEntries {
+            guard let item = pathToItem.removeValue(forKey: sourcePath) else {
+                continue
+            }
+            let suffix = sourcePath == normalizedOldPath ? "" : String(sourcePath.dropFirst(normalizedOldPath.count))
+            let destinationPath = suffix.isEmpty ? normalizedNewPath : normalizedNewPath + suffix
+            item.path = destinationPath
             item.cachedAttr = nil
-            pathToItem[normalizedNewPath] = item
+            pathToItem[destinationPath] = item
+            blockedPaths.removeValue(forKey: sourcePath)
+            blockedPaths.removeValue(forKey: destinationPath)
+            invalidatedPaths.remove(sourcePath)
+            invalidatedPaths.remove(destinationPath)
         }
-        blockedPaths.removeValue(forKey: normalizedOldPath)
-        blockedPaths.removeValue(forKey: normalizedNewPath)
-        invalidatedPaths.remove(normalizedOldPath)
-        invalidatedPaths.remove(normalizedNewPath)
-        clearDirectoryCacheLocked(forPath: normalizedOldPath)
-        clearDirectoryCacheLocked(forPath: normalizedNewPath)
+        clearDirectoryCacheTreeLocked(forPath: normalizedOldPath)
+        clearDirectoryCacheTreeLocked(forPath: normalizedNewPath)
+        clearDirectoryCacheLocked(forPath: parentPath(of: normalizedOldPath))
+        clearDirectoryCacheLocked(forPath: parentPath(of: normalizedNewPath))
         stateLock.unlock()
     }
 
@@ -1071,7 +1126,7 @@ final class SpiderwebBridgeVolume:
             attributes.addedTime = makeTimespec(fromNanoseconds: attr.changeTimeNS)
         }
         if desiredAttributes.isAttributeWanted(.inhibitKernelOffloadedIO) {
-            attributes.inhibitKernelOffloadedIO = (try? runtime.ensureBridge().isWritablePath(item.path)) ?? false
+            attributes.inhibitKernelOffloadedIO = runtime.isWritablePath(item.path)
         }
         return attributes
     }
@@ -1088,11 +1143,9 @@ final class SpiderwebBridgeVolume:
     }
 
     private func fastEnumeratedAttributes(for item: SpiderwebBridgeItem, entryName: String, parentPath: String) -> SpiderwebRemoteAttr? {
+        _ = entryName
+        _ = parentPath
         if let attr = item.cachedAttr, shouldUseCachedAttributes(for: item) {
-            return attr
-        }
-        if let attr = syntheticFallbackAttr(forPath: item.path, entryName: entryName), shouldUseSyntheticEnumeration(in: parentPath) {
-            item.cachedAttr = attr
             return attr
         }
         return nil
@@ -1102,6 +1155,13 @@ final class SpiderwebBridgeVolume:
         guard item.cachedAttr != nil else {
             return false
         }
+        guard let fetchedAt = item.cachedAttrFetchedAt else {
+            return false
+        }
+        if Date().timeIntervalSince(fetchedAt) > attributeCacheTTL {
+            item.cachedAttr = nil
+            return false
+        }
         let normalizedPath = normalize(path: item.path)
         stateLock.lock()
         let invalidated = invalidatedPaths.contains(normalizedPath)
@@ -1109,74 +1169,7 @@ final class SpiderwebBridgeVolume:
         if invalidated {
             return false
         }
-        if let bridge = try? runtime.ensureBridge(), bridge.isWritablePath(item.path) {
-            return false
-        }
-        return item.cachedAttrFetchedAt != nil
-    }
-
-    private func syntheticFallbackAttr(forPath path: String, entryName: String) -> SpiderwebRemoteAttr? {
-        let normalizedPath = normalize(path: path)
-        let kindCode: UInt8
-        let mode: UInt32
-
-        if isLikelyDirectoryEntry(path: normalizedPath, entryName: entryName) {
-            kindCode = 2
-            mode = 0o040755
-        } else {
-            kindCode = 1
-            mode = 0o100644
-        }
-
-        let nowNS = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
-        return SpiderwebRemoteAttr(
-            id: syntheticIdentifier(forPath: normalizedPath),
-            kindCode: kindCode,
-            mode: mode,
-            linkCount: kindCode == 2 ? 2 : 1,
-            uid: UInt32(getuid()),
-            gid: UInt32(getgid()),
-            flags: 0,
-            size: 0,
-            accessTimeNS: nowNS,
-            modifyTimeNS: nowNS,
-            changeTimeNS: nowNS
-        )
-    }
-
-    private func shouldUseSyntheticEnumeration(in directoryPath: String) -> Bool {
-        let normalized = normalize(path: directoryPath)
-        return normalized == "/" ||
-            normalized == "/agents" ||
-            normalized == "/debug" ||
-            normalized == "/global" ||
-            normalized.hasPrefix("/global/") ||
-            normalized == "/meta" ||
-            normalized.hasPrefix("/meta/") ||
-            normalized == "/projects" ||
-            normalized.hasPrefix("/projects/") ||
-            normalized == "/services" ||
-            normalized.hasPrefix("/services/")
-    }
-
-    private func isLikelyDirectoryEntry(path: String, entryName: String) -> Bool {
-        if entryName == "." || entryName == ".." {
-            return true
-        }
-        let normalized = normalize(path: path)
-        if normalized == "/" {
-            return !entryName.contains(".")
-        }
-        if entryName.contains(".") {
-            return false
-        }
         return true
-    }
-
-    private func syntheticIdentifier(forPath path: String) -> UInt64 {
-        var hasher = Hasher()
-        hasher.combine(path)
-        return UInt64(bitPattern: Int64(hasher.finalize()))
     }
 
     private func parentIdentifier(for path: String) -> FSItem.Identifier {
@@ -1230,6 +1223,14 @@ final class SpiderwebBridgeVolume:
         return parent.isEmpty ? "/" : parent
     }
 
+    private func lastPathComponent(of path: String) -> String {
+        let normalized = normalize(path: path)
+        if normalized == "/" {
+            return "/"
+        }
+        return URL(fileURLWithPath: normalized).lastPathComponent
+    }
+
     private func ensurePathIsNotBlocked(_ path: String) throws {
         let normalized = normalize(path: path)
         stateLock.lock()
@@ -1260,37 +1261,37 @@ final class SpiderwebBridgeVolume:
         stateLock.lock()
         defer { stateLock.unlock() }
 
-        applyInvalidationLocked(to: normalizedPath)
-
         switch invalidation.kind {
         case .directory:
-            let prefix = normalizedPath == "/" ? "/" : normalizedPath + "/"
-            for (path, item) in pathToItem {
-                guard path == normalizedPath || path.hasPrefix(prefix) else {
-                    continue
-                }
-                item.cachedAttr = nil
-                blockedPaths.removeValue(forKey: path)
-                invalidatedPaths.insert(path)
-            }
-
+            applyInvalidationLocked(to: normalizedPath, includeDescendants: true, invalidateParentDirectory: true)
         case .attr, .data, .all:
-            if invalidation.kind != .data {
-                pathToItem[normalizedPath]?.cachedAttr = nil
-            }
-        }
-
-        let parent = parentPath(of: normalizedPath)
-        if parent != normalizedPath {
-            applyInvalidationLocked(to: parent)
+            applyInvalidationLocked(to: normalizedPath, includeDescendants: false, invalidateParentDirectory: true)
         }
     }
 
-    private func applyInvalidationLocked(to normalizedPath: String) {
-        pathToItem[normalizedPath]?.cachedAttr = nil
-        blockedPaths.removeValue(forKey: normalizedPath)
-        invalidatedPaths.insert(normalizedPath)
-        clearDirectoryCacheLocked(forPath: normalizedPath)
+    private func applyInvalidationLocked(to normalizedPath: String, includeDescendants: Bool, invalidateParentDirectory: Bool) {
+        let prefix = normalizedPath == "/" ? "/" : normalizedPath + "/"
+        let affectedPaths = pathToItem.keys.filter { path in
+            path == normalizedPath || (includeDescendants && path.hasPrefix(prefix))
+        }
+        if affectedPaths.isEmpty {
+            blockedPaths.removeValue(forKey: normalizedPath)
+            invalidatedPaths.insert(normalizedPath)
+        } else {
+            for path in affectedPaths {
+                pathToItem[path]?.cachedAttr = nil
+                blockedPaths.removeValue(forKey: path)
+                invalidatedPaths.insert(path)
+            }
+        }
+        if includeDescendants {
+            clearDirectoryCacheTreeLocked(forPath: normalizedPath)
+        } else {
+            clearDirectoryCacheLocked(forPath: normalizedPath)
+        }
+        if invalidateParentDirectory {
+            clearDirectoryCacheLocked(forPath: parentPath(of: normalizedPath))
+        }
     }
 
     private func noteFailure(for path: String, error: Error) {
@@ -1319,27 +1320,44 @@ final class SpiderwebBridgeVolume:
 
     private func readDirectoryListing(path: String, cookie: UInt64, maxEntries: UInt32) throws -> SpiderwebRemoteDirectoryListing {
         let normalizedPath = normalize(path: path)
-        let bridge = try runtime.ensureBridge()
-        let cacheable = !bridge.isWritablePath(normalizedPath)
-        if cacheable, let cached = cachedDirectoryListing(path: normalizedPath, cookie: cookie, maxEntries: maxEntries) {
+        if let cached = cachedDirectoryListing(path: normalizedPath, cookie: cookie, maxEntries: maxEntries) {
             return cached
         }
 
         try ensurePathIsNotBlocked(normalizedPath)
+        let bridge = try runtime.ensureBridge()
         let listing = try bridge.readdir(path: normalizedPath, cookie: cookie, maxEntries: maxEntries)
         clearBlockedPath(normalizedPath)
-        if cacheable {
-            storeDirectoryListing(listing, path: normalizedPath, cookie: cookie, maxEntries: maxEntries)
-        }
+        stateLock.lock()
+        invalidatedPaths.remove(normalizedPath)
+        stateLock.unlock()
+        storeDirectoryListing(listing, path: normalizedPath, cookie: cookie, maxEntries: maxEntries)
         return listing
     }
 
-    private func warmDirectoryListing(path: String) {
-        do {
-            _ = try readDirectoryListing(path: path, cookie: 0, maxEntries: 256)
-        } catch {
-            logger.notice("Warm directory listing failed for \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+    private func hintedAttributes(for item: SpiderwebBridgeItem) -> SpiderwebRemoteAttr? {
+        let normalizedPath = normalize(path: item.path)
+        if let synthetic = runtime.syntheticAttrHint(path: normalizedPath) {
+            return synthetic
         }
+        guard normalizedPath != "/" else {
+            return nil
+        }
+        guard let entry = cachedDirectoryEntry(
+            named: lastPathComponent(of: normalizedPath),
+            inDirectoryPath: parentPath(of: normalizedPath)
+        ) else {
+            return nil
+        }
+        return entry.attr
+    }
+
+    private func cachedDirectoryEntry(named name: String, inDirectoryPath directoryPath: String) -> SpiderwebRemoteDirectoryListing.Entry? {
+        let normalizedDirectoryPath = normalize(path: directoryPath)
+        guard let listing = cachedDirectoryListing(path: normalizedDirectoryPath, cookie: 0, maxEntries: directoryPageSize) else {
+            return nil
+        }
+        return listing.entries.first { $0.name == name }
     }
 
     private func cachedDirectoryListing(path: String, cookie: UInt64, maxEntries: UInt32) -> SpiderwebRemoteDirectoryListing? {
@@ -1376,5 +1394,58 @@ final class SpiderwebBridgeVolume:
         directoryCache.keys
             .filter { $0.hasPrefix(prefix) }
             .forEach { directoryCache.removeValue(forKey: $0) }
+    }
+
+    private func clearDirectoryCacheTreeLocked(forPath path: String) {
+        let normalizedPath = normalize(path: path)
+        let descendantPrefix = normalizedPath == "/" ? "/" : normalizedPath + "/"
+        directoryCache.keys
+            .filter { key in
+                guard let cachePath = key.split(separator: "#", maxSplits: 1).first.map(String.init) else {
+                    return false
+                }
+                return cachePath == normalizedPath || cachePath.hasPrefix(descendantPrefix)
+            }
+            .forEach { directoryCache.removeValue(forKey: $0) }
+    }
+
+    private func withPerformanceLogging<T>(operation: String, path: String? = nil, _ work: () throws -> T) throws -> T {
+        guard spiderwebFSKitPerfLoggingEnabled else {
+            return try work()
+        }
+
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let before = runtime.performanceSnapshot()
+        do {
+            let value = try work()
+            logPerformance(operation: operation, path: path, startedAt: startedAt, before: before, after: runtime.performanceSnapshot(), error: nil)
+            return value
+        } catch {
+            logPerformance(operation: operation, path: path, startedAt: startedAt, before: before, after: runtime.performanceSnapshot(), error: error)
+            throw error
+        }
+    }
+
+    private func logPerformance(
+        operation: String,
+        path: String?,
+        startedAt: UInt64,
+        before: SpiderwebRemoteOperationSnapshot,
+        after: SpiderwebRemoteOperationSnapshot,
+        error: Error?
+    ) {
+        let delta = after.delta(since: before)
+        let durationMS = Double(DispatchTime.now().uptimeNanoseconds &- startedAt) / 1_000_000.0
+        guard delta.total > 0 || durationMS >= 25.0 || error != nil else {
+            return
+        }
+
+        let pathDescription = path ?? "-"
+        let message = "FSKit \(operation) path=\(pathDescription) duration_ms=\(durationMS) lookup=\(delta.lookup) getattr=\(delta.getattr) readdir=\(delta.readdir)"
+        if let error {
+            logger.warning("\(message, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        } else {
+            logger.debug("\(message, privacy: .public)")
+        }
     }
 }

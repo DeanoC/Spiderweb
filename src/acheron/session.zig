@@ -337,6 +337,43 @@ pub const InternalFsrpcErrorInfo = struct {
     }
 };
 
+const MountGraphSourceRecord = struct {
+    id: []u8,
+    mount_path: []u8,
+    fs_url: []u8,
+    export_name: ?[]u8 = null,
+
+    fn deinit(self: *MountGraphSourceRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.mount_path);
+        allocator.free(self.fs_url);
+        if (self.export_name) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
+const MountGraphNodeRecord = struct {
+    id: u64,
+    parent_id: ?u64,
+    name: []u8,
+    path: []u8,
+    kind: []const u8,
+    mode: u32,
+    writable: bool,
+    size: usize,
+    canonical_node_id: ?u64 = null,
+    content_mode: ?[]const u8 = null,
+    inline_content_b64: ?[]u8 = null,
+    source_id: ?[]const u8 = null,
+
+    fn deinit(self: *MountGraphNodeRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.path);
+        if (self.inline_content_b64) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
 const InternalFsrpcIds = struct {
     attach_fid: u32,
     walk_fid: u32,
@@ -8375,6 +8412,22 @@ pub const Session = struct {
     }
 
     pub fn tryReadInternalPath(self: *Session, absolute_path: []const u8) anyerror!?[]u8 {
+        return self.readInternalPathMaterialized(absolute_path, null) catch |err| switch (err) {
+            error.FileNotFound,
+            error.AccessDenied,
+            error.IsDir,
+            error.NotDir,
+            error.OperationNotSupported,
+            => null,
+            else => return err,
+        };
+    }
+
+    fn readInternalPathMaterialized(
+        self: *Session,
+        absolute_path: []const u8,
+        max_bytes: ?usize,
+    ) ![]u8 {
         const ids = self.nextInternalFsrpcIds();
         const segments = try self.allocAbsolutePathSegments(absolute_path);
         defer freePathSegments(self.allocator, segments);
@@ -8390,9 +8443,8 @@ pub const Session = struct {
         const attach_frame = try self.handle(&attach);
         defer self.allocator.free(attach_frame);
         if (try self.parseInternalFsrpcError(attach_frame)) |err| {
-            var owned_err = err;
-            owned_err.deinit(self.allocator);
-            return null;
+            defer err.deinit(self.allocator);
+            return mapInternalMountReadError(err.code);
         }
 
         var walk = unified.ParsedMessage{
@@ -8406,9 +8458,8 @@ pub const Session = struct {
         const walk_frame = try self.handle(&walk);
         defer self.allocator.free(walk_frame);
         if (try self.parseInternalFsrpcError(walk_frame)) |err| {
-            var owned_err = err;
-            owned_err.deinit(self.allocator);
-            return null;
+            defer err.deinit(self.allocator);
+            return mapInternalMountReadError(err.code);
         }
 
         var open = unified.ParsedMessage{
@@ -8421,27 +8472,186 @@ pub const Session = struct {
         const open_frame = try self.handle(&open);
         defer self.allocator.free(open_frame);
         if (try self.parseInternalFsrpcError(open_frame)) |err| {
-            var owned_err = err;
-            owned_err.deinit(self.allocator);
-            return null;
+            defer err.deinit(self.allocator);
+            return mapInternalMountReadError(err.code);
         }
 
-        var read = unified.ParsedMessage{
-            .channel = .acheron,
-            .acheron_type = .t_read,
-            .tag = ids.tag_base + 3,
-            .fid = ids.walk_fid,
-            .offset = 0,
-            .count = 1_048_576,
-        };
-        const read_frame = try self.handle(&read);
-        defer self.allocator.free(read_frame);
-        if (try self.parseInternalFsrpcError(read_frame)) |err| {
-            var owned_err = err;
-            owned_err.deinit(self.allocator);
-            return null;
+        const max_total = max_bytes orelse std.math.maxInt(usize);
+        var offset: u64 = 0;
+        var content = std.ArrayListUnmanaged(u8){};
+        errdefer content.deinit(self.allocator);
+
+        while (content.items.len < max_total) {
+            const remaining = max_total - content.items.len;
+            const request_count: usize = @min(remaining, 1_048_576);
+            if (request_count == 0) break;
+
+            var read = unified.ParsedMessage{
+                .channel = .acheron,
+                .acheron_type = .t_read,
+                .tag = ids.tag_base + 3,
+                .fid = ids.walk_fid,
+                .offset = offset,
+                .count = @intCast(request_count),
+            };
+            const read_frame = try self.handle(&read);
+            defer self.allocator.free(read_frame);
+            if (try self.parseInternalFsrpcError(read_frame)) |err| {
+                defer err.deinit(self.allocator);
+                return mapInternalMountReadError(err.code);
+            }
+
+            const chunk = try self.decodeAcheronReadPayload(read_frame);
+            defer self.allocator.free(chunk);
+            if (chunk.len == 0) break;
+
+            try content.appendSlice(self.allocator, chunk);
+            offset = std.math.add(u64, offset, @as(u64, chunk.len)) catch return error.InvalidOffset;
+            if (chunk.len < request_count) break;
         }
-        return try self.decodeAcheronReadPayload(read_frame);
+        return content.toOwnedSlice(self.allocator);
+    }
+
+    pub fn readMountGraphFile(self: *Session, absolute_path: []const u8, offset: u64, max_bytes: usize) ![]u8 {
+        const start = std.math.cast(usize, offset) orelse return error.InvalidOffset;
+        const required_len = std.math.add(usize, start, max_bytes) catch return error.InvalidOffset;
+        const content = try self.readInternalPathMaterialized(absolute_path, required_len);
+        defer self.allocator.free(content);
+
+        if (start >= content.len) return self.allocator.dupe(u8, "");
+        const end = @min(content.len, required_len);
+        return self.allocator.dupe(u8, content[start..end]);
+    }
+
+    pub fn writeMountGraphFile(self: *Session, absolute_path: []const u8, data: []const u8) !void {
+        if (try self.writeInternalPath(absolute_path, data)) |info| {
+            defer info.deinit(self.allocator);
+            return mapInternalMountWriteError(info.code);
+        }
+    }
+
+    pub fn buildMountGraphSnapshotPayload(
+        self: *Session,
+        workspace_json: []const u8,
+        session_key: []const u8,
+    ) ![]u8 {
+        return self.buildMountGraphSnapshotPayloadForPath(workspace_json, session_key, "/", 1);
+    }
+
+    pub fn buildMountGraphSnapshotPayloadForPath(
+        self: *Session,
+        workspace_json: []const u8,
+        session_key: []const u8,
+        requested_path: []const u8,
+        max_depth: u32,
+    ) ![]u8 {
+        const normalized_requested_path = try normalizeMountGraphPath(self.allocator, requested_path);
+        defer self.allocator.free(normalized_requested_path);
+
+        if (!std.mem.eql(u8, normalized_requested_path, "/")) {
+            if (self.resolveAbsolutePathNoBinds(normalized_requested_path)) |requested_node_id| {
+                self.refreshDynamicDirectory(requested_node_id) catch {};
+            }
+        }
+
+        var sources = try self.parseMountGraphSources(workspace_json);
+        defer {
+            for (sources.items) |*source| source.deinit(self.allocator);
+            sources.deinit(self.allocator);
+        }
+
+        var export_root_paths = std.StringHashMapUnmanaged(void){};
+        defer export_root_paths.deinit(self.allocator);
+        for (sources.items) |source| {
+            if (!mountGraphSourceRelevantToScope(normalized_requested_path, source.mount_path)) continue;
+            try export_root_paths.put(self.allocator, source.mount_path, {});
+        }
+
+        var nodes = std.ArrayListUnmanaged(MountGraphNodeRecord){};
+        defer {
+            for (nodes.items) |*node| node.deinit(self.allocator);
+            nodes.deinit(self.allocator);
+        }
+        var path_to_index = std.StringHashMapUnmanaged(usize){};
+        defer path_to_index.deinit(self.allocator);
+
+        const requested_node_id = self.resolveAbsolutePathNoBinds(normalized_requested_path) orelse return error.FileNotFound;
+        var next_overlay_id: u64 = self.next_node_id;
+        if (std.mem.eql(u8, normalized_requested_path, "/")) {
+            try self.appendMountGraphSubtree(
+                &nodes,
+                &path_to_index,
+                self.root_id,
+                "/",
+                &export_root_paths,
+                &next_overlay_id,
+                max_depth,
+            );
+        } else {
+            try self.appendMountGraphAncestorChain(
+                &nodes,
+                &path_to_index,
+                requested_node_id,
+                &export_root_paths,
+            );
+            try self.appendMountGraphSubtree(
+                &nodes,
+                &path_to_index,
+                requested_node_id,
+                normalized_requested_path,
+                &export_root_paths,
+                &next_overlay_id,
+                max_depth,
+            );
+        }
+        for (sources.items) |*source| {
+            if (!mountGraphSourceRelevantToScope(normalized_requested_path, source.mount_path)) continue;
+            try self.overlayMountGraphSource(
+                &nodes,
+                &path_to_index,
+                source,
+                &next_overlay_id,
+            );
+        }
+
+        std.mem.sort(MountGraphSourceRecord, sources.items, {}, struct {
+            fn lessThan(_: void, lhs: MountGraphSourceRecord, rhs: MountGraphSourceRecord) bool {
+                return std.mem.lessThan(u8, lhs.mount_path, rhs.mount_path);
+            }
+        }.lessThan);
+        std.mem.sort(MountGraphNodeRecord, nodes.items, {}, struct {
+            fn lessThan(_: void, lhs: MountGraphNodeRecord, rhs: MountGraphNodeRecord) bool {
+                return std.mem.lessThan(u8, lhs.path, rhs.path);
+            }
+        }.lessThan);
+
+        const nodes_json = try self.buildMountGraphNodesJson(nodes.items);
+        defer self.allocator.free(nodes_json);
+        const sources_json = try self.buildMountGraphSourcesJson(sources.items);
+        defer self.allocator.free(sources_json);
+
+        const mount_session_id = try std.fmt.allocPrint(
+            self.allocator,
+            "mount-v2:{s}:{s}",
+            .{ self.agent_id, session_key },
+        );
+        defer self.allocator.free(mount_session_id);
+        const escaped_mount_session_id = try unified.jsonEscape(self.allocator, mount_session_id);
+        defer self.allocator.free(escaped_mount_session_id);
+
+        const payload_without_generation = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"mount_session_id\":\"{s}\",\"graph_generation\":0,\"root_node_id\":{d},\"nodes\":{s},\"sources\":{s}}}",
+            .{ escaped_mount_session_id, self.root_id, nodes_json, sources_json },
+        );
+        defer self.allocator.free(payload_without_generation);
+        const graph_generation = std.hash.Wyhash.hash(0, payload_without_generation);
+
+        return std.fmt.allocPrint(
+            self.allocator,
+            "{{\"mount_session_id\":\"{s}\",\"graph_generation\":{d},\"root_node_id\":{d},\"nodes\":{s},\"sources\":{s}}}",
+            .{ escaped_mount_session_id, graph_generation, self.root_id, nodes_json, sources_json },
+        );
     }
 
     fn decodeAcheronReadPayload(self: *Session, frame: []const u8) anyerror![]u8 {
@@ -8459,6 +8669,444 @@ pub const Session = struct {
         errdefer self.allocator.free(decoded);
         try std.base64.standard.Decoder.decode(decoded, data_b64.string);
         return decoded;
+    }
+
+    fn parseMountGraphSources(self: *Session, workspace_json: []const u8) !std.ArrayListUnmanaged(MountGraphSourceRecord) {
+        var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, workspace_json, .{});
+        defer parsed.deinit();
+
+        var out = std.ArrayListUnmanaged(MountGraphSourceRecord){};
+        errdefer {
+            for (out.items) |*source| source.deinit(self.allocator);
+            out.deinit(self.allocator);
+        }
+
+        if (parsed.value != .object) return out;
+        const mounts_value = parsed.value.object.get("mounts") orelse return out;
+        if (mounts_value != .array) return out;
+
+        for (mounts_value.array.items) |mount_value| {
+            if (mount_value != .object) continue;
+            const mount_path_raw = mount_value.object.get("mount_path") orelse continue;
+            const fs_url_raw = mount_value.object.get("fs_url") orelse continue;
+            if (mount_path_raw != .string or fs_url_raw != .string) continue;
+
+            const normalized_path = try normalizeMountGraphPath(self.allocator, mount_path_raw.string);
+            errdefer self.allocator.free(normalized_path);
+            if (isSyntheticBrowseLocalMountGraphPath(normalized_path)) {
+                self.allocator.free(normalized_path);
+                continue;
+            }
+            const source_id = try self.allocator.dupe(u8, normalized_path);
+            errdefer self.allocator.free(source_id);
+            const fs_url = try self.allocator.dupe(u8, fs_url_raw.string);
+            errdefer self.allocator.free(fs_url);
+            const export_name = if (mount_value.object.get("export_name")) |value|
+                if (value == .string and value.string.len > 0) try self.allocator.dupe(u8, value.string) else null
+            else
+                null;
+            errdefer if (export_name) |value| self.allocator.free(value);
+
+            try out.append(self.allocator, .{
+                .id = source_id,
+                .mount_path = normalized_path,
+                .fs_url = fs_url,
+                .export_name = export_name,
+            });
+        }
+        return out;
+    }
+
+    fn isSyntheticBrowseLocalMountGraphPath(path: []const u8) bool {
+        if (path.len == 0 or std.mem.eql(u8, path, "/")) return false;
+        const trimmed = if (path[0] == '/') path[1..] else path;
+
+        var segments_storage: [8][]const u8 = undefined;
+        var segment_count: usize = 0;
+        var iter = std.mem.splitScalar(u8, trimmed, '/');
+        while (iter.next()) |segment| {
+            if (segment.len == 0) continue;
+            if (segment_count == segments_storage.len) return false;
+            segments_storage[segment_count] = segment;
+            segment_count += 1;
+        }
+
+        const segments = segments_storage[0..segment_count];
+        if (matchesSyntheticBrowseLocalSuffix(segments)) return true;
+        if (segments.len < 5) return false;
+        if (!std.mem.eql(u8, segments[0], "nodes")) return false;
+        if (!std.mem.eql(u8, segments[2], "projects")) return false;
+        return matchesSyntheticBrowseLocalSuffix(segments[4..]);
+    }
+
+    fn matchesSyntheticBrowseLocalSuffix(segments: []const []const u8) bool {
+        if (segments.len == 1) {
+            return std.mem.eql(u8, segments[0], "agents") or
+                std.mem.eql(u8, segments[0], "meta");
+        }
+        if (segments.len == 2 and std.mem.eql(u8, segments[0], "global")) {
+            return std.mem.eql(u8, segments[1], "chat") or
+                std.mem.eql(u8, segments[1], "jobs");
+        }
+        return false;
+    }
+
+    test "synthetic browse-local mount graph paths stay graph-backed" {
+        try std.testing.expect(isSyntheticBrowseLocalMountGraphPath("/agents"));
+        try std.testing.expect(isSyntheticBrowseLocalMountGraphPath("/meta"));
+        try std.testing.expect(isSyntheticBrowseLocalMountGraphPath("/global/chat"));
+        try std.testing.expect(isSyntheticBrowseLocalMountGraphPath("/global/jobs"));
+        try std.testing.expect(isSyntheticBrowseLocalMountGraphPath("/nodes/local/projects/proj-1/agents"));
+        try std.testing.expect(isSyntheticBrowseLocalMountGraphPath("/nodes/local/projects/proj-1/meta"));
+        try std.testing.expect(isSyntheticBrowseLocalMountGraphPath("/nodes/local/projects/proj-1/global/chat"));
+        try std.testing.expect(isSyntheticBrowseLocalMountGraphPath("/nodes/local/projects/proj-1/global/jobs"));
+
+        try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/"));
+        try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/nodes/local/fs"));
+        try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/nodes/local/projects/proj-1/fs/local::fs"));
+        try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/services"));
+        try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/foo/meta"));
+    }
+
+    fn appendMountGraphAncestorChain(
+        self: *Session,
+        nodes: *std.ArrayListUnmanaged(MountGraphNodeRecord),
+        path_to_index: *std.StringHashMapUnmanaged(usize),
+        node_id: u32,
+        export_root_paths: *const std.StringHashMapUnmanaged(void),
+    ) !void {
+        var chain = std.ArrayListUnmanaged(u32){};
+        defer chain.deinit(self.allocator);
+
+        var cursor: ?u32 = node_id;
+        while (cursor) |current| {
+            try chain.append(self.allocator, current);
+            cursor = (self.nodes.get(current) orelse return error.MissingNode).parent;
+        }
+
+        var index = chain.items.len;
+        while (index > 0) {
+            index -= 1;
+            const current_id = chain.items[index];
+            const absolute_path = try self.nodeAbsolutePath(current_id);
+            defer self.allocator.free(absolute_path);
+            try self.appendMountGraphNode(
+                nodes,
+                path_to_index,
+                current_id,
+                absolute_path,
+                export_root_paths,
+            );
+        }
+    }
+
+    fn appendMountGraphNode(
+        self: *Session,
+        nodes: *std.ArrayListUnmanaged(MountGraphNodeRecord),
+        path_to_index: *std.StringHashMapUnmanaged(usize),
+        node_id: u32,
+        absolute_path: []const u8,
+        export_root_paths: *const std.StringHashMapUnmanaged(void),
+    ) !void {
+        if (path_to_index.contains(absolute_path)) return;
+
+        const node = self.nodes.get(node_id) orelse return error.MissingNode;
+
+        const alias_target = self.node_aliases.get(node_id);
+        const canonical_node_id: ?u64 = if (alias_target) |target| @min(node_id, target) else null;
+        const is_export_root = export_root_paths.contains(absolute_path);
+        const kind_name: []const u8 = if (is_export_root)
+            "export_root"
+        else switch (node.kind) {
+            .dir => "synthetic_directory",
+            .file => "synthetic_file",
+        };
+
+        const content_mode = mountGraphContentMode(node, is_export_root);
+        const inline_content_b64 = if (content_mode != null and std.mem.eql(u8, content_mode.?, "inline_snapshot"))
+            try unified.encodeDataB64(self.allocator, node.content)
+        else
+            null;
+        errdefer if (inline_content_b64) |value| self.allocator.free(value);
+
+        const name = if (std.mem.eql(u8, absolute_path, "/"))
+            try self.allocator.dupe(u8, "/")
+        else
+            try self.allocator.dupe(u8, node.name);
+        errdefer self.allocator.free(name);
+        const path = try self.allocator.dupe(u8, absolute_path);
+        errdefer self.allocator.free(path);
+
+        try nodes.append(self.allocator, .{
+            .id = node_id,
+            .parent_id = if (node.parent) |parent_id| @as(u64, parent_id) else null,
+            .name = name,
+            .path = path,
+            .kind = kind_name,
+            .mode = if (is_export_root) 0o040755 else nodeMode(node),
+            .writable = if (is_export_root) false else node.writable,
+            .size = if (node.kind == .file and !is_export_root) node.content.len else 0,
+            .canonical_node_id = canonical_node_id,
+            .content_mode = content_mode,
+            .inline_content_b64 = inline_content_b64,
+        });
+        try path_to_index.put(self.allocator, path, nodes.items.len - 1);
+    }
+
+    fn appendMountGraphSubtree(
+        self: *Session,
+        nodes: *std.ArrayListUnmanaged(MountGraphNodeRecord),
+        path_to_index: *std.StringHashMapUnmanaged(usize),
+        node_id: u32,
+        absolute_path: []const u8,
+        export_root_paths: *const std.StringHashMapUnmanaged(void),
+        next_overlay_id: *u64,
+        remaining_depth: u32,
+    ) !void {
+        try self.appendMountGraphNode(
+            nodes,
+            path_to_index,
+            node_id,
+            absolute_path,
+            export_root_paths,
+        );
+
+        const node = self.nodes.get(node_id) orelse return error.MissingNode;
+        if (remaining_depth == 0 or export_root_paths.contains(absolute_path) or node.kind != .dir) return;
+
+        var child_names = std.ArrayListUnmanaged([]const u8){};
+        defer child_names.deinit(self.allocator);
+        var it = node.children.iterator();
+        while (it.next()) |entry| {
+            try child_names.append(self.allocator, entry.key_ptr.*);
+        }
+        std.mem.sort([]const u8, child_names.items, {}, struct {
+            fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+                return std.mem.lessThan(u8, lhs, rhs);
+            }
+        }.lessThan);
+
+        for (child_names.items) |child_name| {
+            const child_id = node.children.get(child_name) orelse continue;
+            const child_path = if (std.mem.eql(u8, absolute_path, "/"))
+                try std.fmt.allocPrint(self.allocator, "/{s}", .{child_name})
+            else
+                try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ absolute_path, child_name });
+            defer self.allocator.free(child_path);
+            try self.appendMountGraphSubtree(
+                nodes,
+                path_to_index,
+                child_id,
+                child_path,
+                export_root_paths,
+                next_overlay_id,
+                remaining_depth - 1,
+            );
+        }
+    }
+
+    fn mountGraphSourceRelevantToScope(scope_path: []const u8, source_path: []const u8) bool {
+        if (std.mem.eql(u8, scope_path, "/")) return true;
+        return pathMatchesPrefixBoundary(source_path, scope_path) or pathMatchesPrefixBoundary(scope_path, source_path);
+    }
+
+    fn overlayMountGraphSource(
+        self: *Session,
+        nodes: *std.ArrayListUnmanaged(MountGraphNodeRecord),
+        path_to_index: *std.StringHashMapUnmanaged(usize),
+        source: *const MountGraphSourceRecord,
+        next_overlay_id: *u64,
+    ) !void {
+        if (std.mem.eql(u8, source.mount_path, "/")) return;
+
+        var current_parent_path: []const u8 = "/";
+        var current_parent_id: u64 = self.root_id;
+        const segments = try self.allocAbsolutePathSegments(source.mount_path);
+        defer freePathSegments(self.allocator, segments);
+
+        for (segments, 0..) |segment, index| {
+            const is_last = index + 1 == segments.len;
+            const current_path = if (std.mem.eql(u8, current_parent_path, "/"))
+                try std.fmt.allocPrint(self.allocator, "/{s}", .{segment})
+            else
+                try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ current_parent_path, segment });
+            defer self.allocator.free(current_path);
+
+            if (path_to_index.get(current_path)) |existing_index| {
+                current_parent_path = nodes.items[existing_index].path;
+                current_parent_id = nodes.items[existing_index].id;
+                if (is_last) {
+                    var existing = &nodes.items[existing_index];
+                    existing.kind = "export_root";
+                    existing.mode = 0o040755;
+                    existing.writable = false;
+                    existing.size = 0;
+                    existing.content_mode = null;
+                    if (existing.inline_content_b64) |value| {
+                        self.allocator.free(value);
+                        existing.inline_content_b64 = null;
+                    }
+                    existing.source_id = source.id;
+                }
+                continue;
+            }
+
+            const owned_name = try self.allocator.dupe(u8, segment);
+            errdefer self.allocator.free(owned_name);
+            const owned_path = try self.allocator.dupe(u8, current_path);
+            errdefer self.allocator.free(owned_path);
+            const new_id = next_overlay_id.*;
+            next_overlay_id.* += 1;
+            try nodes.append(self.allocator, .{
+                .id = new_id,
+                .parent_id = current_parent_id,
+                .name = owned_name,
+                .path = owned_path,
+                .kind = if (is_last) "export_root" else "synthetic_directory",
+                .mode = 0o040755,
+                .writable = false,
+                .size = 0,
+                .canonical_node_id = null,
+                .content_mode = null,
+                .inline_content_b64 = null,
+                .source_id = if (is_last) source.id else null,
+            });
+            try path_to_index.put(self.allocator, owned_path, nodes.items.len - 1);
+            current_parent_path = nodes.items[nodes.items.len - 1].path;
+            current_parent_id = new_id;
+        }
+    }
+
+    fn buildMountGraphNodesJson(self: *Session, nodes: []const MountGraphNodeRecord) ![]u8 {
+        var out = std.ArrayListUnmanaged(u8){};
+        errdefer out.deinit(self.allocator);
+        try out.appendSlice(self.allocator, "[");
+        for (nodes, 0..) |node, index| {
+            if (index != 0) try out.append(self.allocator, ',');
+
+            const escaped_name = try unified.jsonEscape(self.allocator, node.name);
+            defer self.allocator.free(escaped_name);
+            const escaped_path = try unified.jsonEscape(self.allocator, node.path);
+            defer self.allocator.free(escaped_path);
+            const parent_id_json = if (node.parent_id) |value|
+                try std.fmt.allocPrint(self.allocator, "{d}", .{value})
+            else
+                try self.allocator.dupe(u8, "null");
+            defer self.allocator.free(parent_id_json);
+            const canonical_json = if (node.canonical_node_id) |value|
+                try std.fmt.allocPrint(self.allocator, "{d}", .{value})
+            else
+                try self.allocator.dupe(u8, "null");
+            defer self.allocator.free(canonical_json);
+            const content_mode_json = if (node.content_mode) |value| blk: {
+                const escaped = try unified.jsonEscape(self.allocator, value);
+                defer self.allocator.free(escaped);
+                break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
+            } else try self.allocator.dupe(u8, "null");
+            defer self.allocator.free(content_mode_json);
+            const inline_content_json = if (node.inline_content_b64) |value| blk: {
+                const escaped = try unified.jsonEscape(self.allocator, value);
+                defer self.allocator.free(escaped);
+                break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
+            } else try self.allocator.dupe(u8, "null");
+            defer self.allocator.free(inline_content_json);
+            const source_id_json = if (node.source_id) |value| blk: {
+                const escaped = try unified.jsonEscape(self.allocator, value);
+                defer self.allocator.free(escaped);
+                break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
+            } else try self.allocator.dupe(u8, "null");
+            defer self.allocator.free(source_id_json);
+
+            try out.writer(self.allocator).print(
+                "{{\"id\":{d},\"parent_id\":{s},\"name\":\"{s}\",\"path\":\"{s}\",\"kind\":\"{s}\",\"mode\":{d},\"writable\":{s},\"size\":{d},\"canonical_node_id\":{s},\"content_mode\":{s},\"inline_content_b64\":{s},\"source_id\":{s}}}",
+                .{
+                    node.id,
+                    parent_id_json,
+                    escaped_name,
+                    escaped_path,
+                    node.kind,
+                    node.mode,
+                    if (node.writable) "true" else "false",
+                    node.size,
+                    canonical_json,
+                    content_mode_json,
+                    inline_content_json,
+                    source_id_json,
+                },
+            );
+        }
+        try out.appendSlice(self.allocator, "]");
+        return out.toOwnedSlice(self.allocator);
+    }
+
+    fn buildMountGraphSourcesJson(self: *Session, sources: []const MountGraphSourceRecord) ![]u8 {
+        var out = std.ArrayListUnmanaged(u8){};
+        errdefer out.deinit(self.allocator);
+        try out.appendSlice(self.allocator, "[");
+        for (sources, 0..) |source, index| {
+            if (index != 0) try out.append(self.allocator, ',');
+            const escaped_id = try unified.jsonEscape(self.allocator, source.id);
+            defer self.allocator.free(escaped_id);
+            const escaped_mount_path = try unified.jsonEscape(self.allocator, source.mount_path);
+            defer self.allocator.free(escaped_mount_path);
+            const escaped_fs_url = try unified.jsonEscape(self.allocator, source.fs_url);
+            defer self.allocator.free(escaped_fs_url);
+            const export_name_json = if (source.export_name) |value| blk: {
+                const escaped = try unified.jsonEscape(self.allocator, value);
+                defer self.allocator.free(escaped);
+                break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
+            } else try self.allocator.dupe(u8, "null");
+            defer self.allocator.free(export_name_json);
+
+            try out.writer(self.allocator).print(
+                "{{\"id\":\"{s}\",\"mount_path\":\"{s}\",\"fs_url\":\"{s}\",\"export_name\":{s}}}",
+                .{ escaped_id, escaped_mount_path, escaped_fs_url, export_name_json },
+            );
+        }
+        try out.appendSlice(self.allocator, "]");
+        return out.toOwnedSlice(self.allocator);
+    }
+
+    fn normalizeMountGraphPath(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len == 0) return allocator.dupe(u8, "/");
+        if (trimmed.len == 1 and trimmed[0] == '/') return allocator.dupe(u8, "/");
+        const without_trailing = std.mem.trimRight(u8, trimmed, "/");
+        if (without_trailing.len == 0) return allocator.dupe(u8, "/");
+        if (without_trailing[0] == '/') return allocator.dupe(u8, without_trailing);
+        return std.fmt.allocPrint(allocator, "/{s}", .{without_trailing});
+    }
+
+    fn mountGraphContentMode(node: Node, is_export_root: bool) ?[]const u8 {
+        if (is_export_root or node.kind != .file) return null;
+        if (node.special != .none) {
+            return if (node.writable or specialWriteCommitsOnClose(node.special))
+                "remote_rw"
+            else
+                "remote_read";
+        }
+        if (node.writable) return "remote_rw";
+        return "remote_read";
+    }
+
+    fn mapInternalMountWriteError(code: []const u8) anyerror {
+        if (std.mem.eql(u8, code, "enoent")) return error.FileNotFound;
+        if (std.mem.eql(u8, code, "eperm")) return error.AccessDenied;
+        if (std.mem.eql(u8, code, "eacces")) return error.AccessDenied;
+        if (std.mem.eql(u8, code, "eisdir")) return error.IsDir;
+        if (std.mem.eql(u8, code, "enotdir")) return error.NotDir;
+        if (std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;
+        return error.OperationNotSupported;
+    }
+
+    fn mapInternalMountReadError(code: []const u8) anyerror {
+        if (std.mem.eql(u8, code, "enoent")) return error.FileNotFound;
+        if (std.mem.eql(u8, code, "eperm")) return error.AccessDenied;
+        if (std.mem.eql(u8, code, "eacces")) return error.AccessDenied;
+        if (std.mem.eql(u8, code, "eisdir")) return error.IsDir;
+        if (std.mem.eql(u8, code, "enotdir")) return error.NotDir;
+        if (std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;
+        return error.OperationNotSupported;
     }
 
     fn executeDirectBuiltinToolCall(self: *Session, tool_name: []const u8, args_json: []const u8) !?[]u8 {
@@ -10301,6 +10949,279 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     defer if (namespace_agents_updated) |value| allocator.free(value);
     try std.testing.expect(namespace_agents_updated != null);
     try std.testing.expectEqualStrings("# User Override\n", namespace_agents_updated.?);
+}
+
+test "acheron_session: mount graph snapshot keeps synthetic file contents remote by default" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/AGENTS.md",
+        .data = "## Workspace Owner Notes\n\nKeep custom lint rules in mind.\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const project_json = try control_plane.createProject(
+        "{\"name\":\"MountGraphContentMode\",\"vision\":\"Keep mount attach structural and fast\"}",
+    );
+    defer allocator.free(project_json);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var job_index = chat_job_index.ChatJobIndex.init(allocator, "");
+    defer job_index.deinit();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        &job_index,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayload("{\"mounts\":[]}", "mount-test");
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_agents = false;
+    var found_protocol = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+        if (!std.mem.eql(u8, path_value.string, "/AGENTS.md") and !std.mem.eql(u8, path_value.string, "/meta/protocol.json")) {
+            continue;
+        }
+
+        const content_mode = node_value.object.get("content_mode") orelse return error.InvalidPayload;
+        try std.testing.expect(content_mode == .string);
+        try std.testing.expectEqualStrings("remote_read", content_mode.string);
+
+        const inline_content = node_value.object.get("inline_content_b64") orelse return error.InvalidPayload;
+        try std.testing.expect(inline_content == .null);
+
+        if (std.mem.eql(u8, path_value.string, "/AGENTS.md")) {
+            found_agents = true;
+        } else if (std.mem.eql(u8, path_value.string, "/meta/protocol.json")) {
+            found_protocol = true;
+        }
+    }
+
+    try std.testing.expect(found_agents);
+    try std.testing.expect(found_protocol);
+}
+
+test "acheron_session: mount graph snapshot preserves alias directory and file kinds" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/AGENTS.md",
+        .data = "## Workspace Owner Notes\n\nKeep alias kinds honest.\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const project_json = try control_plane.createProject(
+        "{\"name\":\"MountGraphAliasKinds\",\"vision\":\"Keep alias nodes traversable\"}",
+    );
+    defer allocator.free(project_json);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var job_index = chat_job_index.ChatJobIndex.init(allocator, "");
+    defer job_index.deinit();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        &job_index,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayload("{\"mounts\":[]}", "mount-test");
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_agents_alias = false;
+    var found_mounts_alias = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/AGENTS.md")) {
+            try std.testing.expectEqualStrings("synthetic_file", node_value.object.get("kind").?.string);
+            try std.testing.expect(node_value.object.get("canonical_node_id").? != .null);
+            found_agents_alias = true;
+        } else if (std.mem.eql(u8, path_value.string, "/global/mounts")) {
+            try std.testing.expectEqualStrings("synthetic_directory", node_value.object.get("kind").?.string);
+            try std.testing.expect(node_value.object.get("canonical_node_id").? != .null);
+            found_mounts_alias = true;
+        }
+    }
+
+    try std.testing.expect(found_agents_alias);
+    try std.testing.expect(found_mounts_alias);
+}
+
+test "acheron_session: readMountGraphFile preserves internal file-type errors" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/child");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var job_index = chat_job_index.ChatJobIndex.init(allocator, "");
+    defer job_index.deinit();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        &job_index,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expectError(
+        error.IsDir,
+        session.readMountGraphFile("/nodes/local/fs/child", 0, 16),
+    );
+}
+
+test "acheron_session: readMountGraphFile reads beyond the first chunk" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const prefix_len: usize = 1_048_576;
+    const total_len = prefix_len + 32;
+    var content = try allocator.alloc(u8, total_len);
+    defer allocator.free(content);
+    @memset(content[0..prefix_len], 'a');
+    @memset(content[prefix_len..], 'b');
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/big.txt",
+        .data = content,
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var job_index = chat_job_index.ChatJobIndex.init(allocator, "");
+    defer job_index.deinit();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        &job_index,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    const tail = try session.readMountGraphFile("/nodes/local/fs/big.txt", prefix_len, 32);
+    defer allocator.free(tail);
+    try std.testing.expectEqual(@as(usize, 32), tail.len);
+    for (tail) |byte| try std.testing.expectEqual(@as(u8, 'b'), byte);
 }
 
 test "acheron_session: services terminal exec updates live service status and result" {

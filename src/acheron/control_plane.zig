@@ -8,6 +8,7 @@ const persistence_kind = "control_plane_state_v1";
 const persistence_key_env = "SPIDERWEB_CONTROL_STATE_KEY_HEX";
 const persistence_cipher = std.crypto.aead.aes_gcm.Aes256Gcm;
 const persistence_aad = "spiderweb-control-plane-state-v1";
+const max_snapshot_file_bytes: u64 = 256 * 1024 * 1024;
 pub const spider_web_project_id = "system";
 const spider_web_project_name = "System";
 const spider_web_project_status = "active";
@@ -4586,7 +4587,10 @@ pub const ControlPlane = struct {
         };
         defer file.close();
 
-        const record = try file.readToEndAlloc(self.allocator, std.math.maxInt(usize));
+        const snapshot_size = try file.getEndPos();
+        if (snapshot_size > max_snapshot_file_bytes) return error.FileTooBig;
+
+        const record = try file.readToEndAlloc(self.allocator, @intCast(snapshot_size));
         defer self.allocator.free(record);
 
         if (isEncryptedSnapshotEnvelope(record)) {

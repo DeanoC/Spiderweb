@@ -350,6 +350,7 @@ pub const HelperClient = struct {
         endpoint_configs: []const fs_router.EndpointConfig,
         endpoints: []const ReconcileEndpointRequest.Endpoint,
     ) !void {
+        try self.pruneEndpointAuthsNotInConfig(endpoint_configs);
         for (endpoint_configs, endpoints) |config_endpoint, request_endpoint| {
             if (request_endpoint.auth_token) |auth_token| {
                 try self.rememberEndpointAuthToken(config_endpoint.name, auth_token);
@@ -383,6 +384,35 @@ pub const HelperClient = struct {
         const removed = self.auth_token_by_endpoint_name.fetchRemove(endpoint_name) orelse return;
         self.allocator.free(removed.key);
         self.allocator.free(removed.value);
+    }
+
+    fn pruneEndpointAuthsNotInConfig(
+        self: *HelperClient,
+        endpoint_configs: []const fs_router.EndpointConfig,
+    ) !void {
+        var stale_endpoint_names = std.ArrayListUnmanaged([]u8){};
+        defer {
+            for (stale_endpoint_names.items) |endpoint_name| self.allocator.free(endpoint_name);
+            stale_endpoint_names.deinit(self.allocator);
+        }
+
+        var key_it = self.auth_token_by_endpoint_name.keyIterator();
+        while (key_it.next()) |endpoint_name_ptr| {
+            var found = false;
+            for (endpoint_configs) |endpoint| {
+                if (std.mem.eql(u8, endpoint.name, endpoint_name_ptr.*)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try stale_endpoint_names.append(self.allocator, try self.allocator.dupe(u8, endpoint_name_ptr.*));
+            }
+        }
+
+        for (stale_endpoint_names.items) |endpoint_name| {
+            self.removeEndpointAuthToken(endpoint_name);
+        }
     }
 };
 

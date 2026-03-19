@@ -7,17 +7,52 @@ EXTENSION_PATH="$APP_PATH/Contents/Extensions/SpiderwebFSKitExtension.appex"
 FILESYSTEM_BUNDLE="/Library/Filesystems/spiderweb.fs"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 LAUNCH_AGENT_LABEL="spiderweb"
+INSTALL_LOG="/var/log/spiderweb-installer.log"
 
-restart_user_launch_agent() {
-  local console_user console_uid console_home plist_path domain_target service_target
+mkdir -p "$(dirname "$INSTALL_LOG")"
+touch "$INSTALL_LOG"
+exec >>"$INSTALL_LOG" 2>&1
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+console_user=""
+console_uid=""
+console_home=""
+
+load_console_user() {
   console_user="$(stat -f%Su /dev/console 2>/dev/null || true)"
   if [[ -z "$console_user" || "$console_user" == "root" ]]; then
-    return 0
+    console_uid=""
+    console_home=""
+    return 1
   fi
 
   console_uid="$(id -u "$console_user" 2>/dev/null || true)"
   console_home="$(dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
   if [[ -z "$console_uid" || -z "$console_home" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+run_as_console_user() {
+  if ! load_console_user; then
+    return 1
+  fi
+
+  if launchctl asuser "$console_uid" sudo -H -u "$console_user" "$@" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  HOME="$console_home" USER="$console_user" LOGNAME="$console_user" \
+    su -l "$console_user" -c "$(printf "%q " "$@")" >/dev/null 2>&1
+}
+
+restart_user_launch_agent() {
+  local plist_path domain_target service_target
+  if ! load_console_user; then
     return 0
   fi
 
@@ -33,23 +68,28 @@ restart_user_launch_agent() {
 }
 
 if [[ -d "$LEGACY_APP_PATH" && "$LEGACY_APP_PATH" != "$APP_PATH" ]]; then
+  log "Removing legacy app at $LEGACY_APP_PATH"
   rm -rf "$LEGACY_APP_PATH" || true
 fi
 
+log "Restarting ExtensionKit helper processes"
 pkill -9 -x fskit_agent >/dev/null 2>&1 || true
 pkill -9 -x extensionkitservice >/dev/null 2>&1 || true
 
 if [[ -d "$APP_PATH" ]]; then
+  log "Registering app bundle with LaunchServices"
   "$LSREGISTER" -f -R -trusted "$APP_PATH" >/dev/null 2>&1 || true
 fi
 
 if [[ -d "$EXTENSION_PATH" ]]; then
+  log "Registering FSKit extension with PluginKit"
   pluginkit -r "$EXTENSION_PATH" >/dev/null 2>&1 || true
   pluginkit -a "$EXTENSION_PATH" >/dev/null 2>&1 || true
   pluginkit -e use -p com.apple.fskit.fsmodule -i com.deanoc.spiderweb.fskit.app.extension >/dev/null 2>&1 || true
 fi
 
 if [[ -d "$FILESYSTEM_BUNDLE" ]]; then
+  log "Registering filesystem bundle with LaunchServices and PluginKit"
   pluginkit -r "$FILESYSTEM_BUNDLE" >/dev/null 2>&1 || true
   "$LSREGISTER" -f -R "$FILESYSTEM_BUNDLE" >/dev/null 2>&1 || true
 fi
@@ -59,16 +99,14 @@ sleep 1
 restart_user_launch_agent
 
 if [[ -d "$APP_PATH" ]]; then
-  console_user="$(stat -f%Su /dev/console 2>/dev/null || true)"
-  if [[ -n "$console_user" && "$console_user" != "root" ]]; then
-    console_uid="$(id -u "$console_user" 2>/dev/null || true)"
-    if [[ -n "$console_uid" ]]; then
-      launchctl asuser "$console_uid" open -a "$APP_PATH" >/dev/null 2>&1 || \
-        su -l "$console_user" -c "open -a '$APP_PATH'" >/dev/null 2>&1 || true
-    fi
+  if run_as_console_user open -a "$APP_PATH"; then
+    log "Launched Spiderweb.app for logged-in user"
+  elif open -a "$APP_PATH" >/dev/null 2>&1; then
+    log "Launched Spiderweb.app as root fallback"
   else
-    open -a "$APP_PATH" >/dev/null 2>&1 || true
+    log "Failed to launch Spiderweb.app after install"
   fi
 fi
 
+log "Postinstall complete"
 exit 0

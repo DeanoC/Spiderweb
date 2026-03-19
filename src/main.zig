@@ -28,7 +28,7 @@ pub fn main() !void {
             "Usage: spiderweb [options]\n" ++
             "\n" ++
             "Options:\n" ++
-            "  --bind <addr>    Bind address (default: from config or 127.0.0.1)\n" ++
+            "  --bind <addr>    Bind address (default: from config or 0.0.0.0)\n" ++
             "  --port <port>    Port number (default: from config or 18790)\n" ++
             "  --help, -h       Show this help\n" ++
             "\n" ++

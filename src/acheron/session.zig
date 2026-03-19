@@ -142,6 +142,7 @@ const max_signal_events: usize = events_venom.max_signal_events;
 const local_fs_world_prefix = "/nodes/local/fs";
 const workspace_agents_contract_path = "/nodes/local/fs/AGENTS.md";
 const namespace_agents_contract_path = "/AGENTS.md";
+const workspace_agents_heading = "# Spiderweb Workspace Agent Contract";
 const workspace_agents_managed_begin = "<!-- SPIDERWEB:BEGIN MANAGED -->";
 const workspace_agents_managed_end = "<!-- SPIDERWEB:END MANAGED -->";
 const worker_reap_grace_ms: i64 = 60_000;
@@ -3883,20 +3884,48 @@ pub const Session = struct {
             const end_index = std.mem.indexOf(u8, current, workspace_agents_managed_end);
             if (begin_index != null and end_index != null and end_index.? >= begin_index.?) {
                 const suffix_start = end_index.? + workspace_agents_managed_end.len;
-                const prefix = current[0..begin_index.?];
+                const prefix = trimWorkspaceAgentsPrefixNoise(current[0..begin_index.?]);
                 const suffix = current[suffix_start..];
                 return std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ prefix, managed_block, suffix });
             }
-            if (std.mem.trim(u8, current, " \t\r\n").len != 0) {
+            const cleaned_current = trimWorkspaceAgentsPrefixNoise(current);
+            if (std.mem.trim(u8, cleaned_current, " \t\r\n").len != 0) {
                 return std.fmt.allocPrint(
                     self.allocator,
                     "{s}\n\n{s}\n{s}",
-                    .{ managed_block, placeholder, current },
+                    .{ managed_block, placeholder, cleaned_current },
                 );
             }
         }
 
         return std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ managed_block, placeholder });
+    }
+
+    fn trimWorkspaceAgentsPrefixNoise(current: []const u8) []const u8 {
+        var cursor: usize = 0;
+        var removed_heading = false;
+
+        while (cursor < current.len) {
+            const remaining = current[cursor..];
+            const trimmed = std.mem.trimLeft(u8, remaining, " \t\r\n");
+            const skipped = remaining.len - trimmed.len;
+
+            if (!std.mem.startsWith(u8, trimmed, workspace_agents_heading)) break;
+
+            const after_heading = trimmed[workspace_agents_heading.len..];
+            if (after_heading.len != 0 and after_heading[0] != '\n' and after_heading[0] != '\r') break;
+
+            cursor += skipped + workspace_agents_heading.len;
+            if (after_heading.len >= 2 and after_heading[0] == '\r' and after_heading[1] == '\n') {
+                cursor += 2;
+            } else if (after_heading.len >= 1 and (after_heading[0] == '\n' or after_heading[0] == '\r')) {
+                cursor += 1;
+            }
+            removed_heading = true;
+        }
+
+        if (!removed_heading) return current;
+        return std.mem.trimLeft(u8, current[cursor..], " \t\r\n");
     }
 
     fn readExistingWorkspaceAgentsContract(self: *Session) !?[]u8 {
@@ -8699,7 +8728,7 @@ pub const Session = struct {
             }
             const source_id = try self.allocator.dupe(u8, normalized_path);
             errdefer self.allocator.free(source_id);
-            const fs_url = try self.allocator.dupe(u8, fs_url_raw.string);
+            const fs_url = try self.rewriteMountGraphSourceFsUrl(fs_url_raw.string);
             errdefer self.allocator.free(fs_url);
             const export_name = if (mount_value.object.get("export_name")) |value|
                 if (value == .string and value.string.len > 0) try self.allocator.dupe(u8, value.string) else null
@@ -8715,6 +8744,79 @@ pub const Session = struct {
             });
         }
         return out;
+    }
+
+    fn rewriteMountGraphSourceFsUrl(self: *Session, raw_fs_url: []const u8) ![]u8 {
+        const namespace_mount_url = self.namespace_mount_url orelse return self.allocator.dupe(u8, raw_fs_url);
+        return rewriteLocalOnlyWsUrlToNamespaceAuthority(self.allocator, raw_fs_url, namespace_mount_url);
+    }
+
+    const ParsedWsUrl = struct {
+        scheme: []const u8,
+        authority: []const u8,
+        path: []const u8,
+    };
+
+    fn parseWsUrlParts(url: []const u8) ?ParsedWsUrl {
+        const scheme: []const u8 = if (std.mem.startsWith(u8, url, "ws://"))
+            "ws"
+        else if (std.mem.startsWith(u8, url, "wss://"))
+            "wss"
+        else
+            return null;
+        const prefix_len = scheme.len + 3;
+        if (url.len <= prefix_len) return null;
+        const rest = url[prefix_len..];
+        const slash_idx = std.mem.indexOfScalar(u8, rest, '/') orelse {
+            return .{
+                .scheme = scheme,
+                .authority = rest,
+                .path = "/",
+            };
+        };
+        if (slash_idx == 0) return null;
+        return .{
+            .scheme = scheme,
+            .authority = rest[0..slash_idx],
+            .path = rest[slash_idx..],
+        };
+    }
+
+    fn wsAuthorityHost(authority: []const u8) []const u8 {
+        const trimmed = std.mem.trim(u8, authority, " \t\r\n");
+        if (trimmed.len == 0) return trimmed;
+        if (trimmed[0] == '[') {
+            const closing = std.mem.indexOfScalar(u8, trimmed, ']') orelse return trimmed;
+            if (closing <= 1) return "";
+            return trimmed[1..closing];
+        }
+        const colon_idx = std.mem.lastIndexOfScalar(u8, trimmed, ':') orelse return trimmed;
+        return trimmed[0..colon_idx];
+    }
+
+    fn wsAuthorityIsLocalOnly(authority: []const u8) bool {
+        const host = wsAuthorityHost(authority);
+        if (host.len == 0) return false;
+        if (std.ascii.eqlIgnoreCase(host, "localhost")) return true;
+        if (std.mem.eql(u8, host, "::1") or std.mem.eql(u8, host, "::")) return true;
+        if (std.mem.eql(u8, host, "0.0.0.0")) return true;
+        return std.mem.startsWith(u8, host, "127.");
+    }
+
+    fn rewriteLocalOnlyWsUrlToNamespaceAuthority(
+        allocator: std.mem.Allocator,
+        raw_fs_url: []const u8,
+        namespace_mount_url: []const u8,
+    ) ![]u8 {
+        const fs_url = parseWsUrlParts(raw_fs_url) orelse return allocator.dupe(u8, raw_fs_url);
+        if (!wsAuthorityIsLocalOnly(fs_url.authority)) return allocator.dupe(u8, raw_fs_url);
+
+        const namespace_url = parseWsUrlParts(namespace_mount_url) orelse return allocator.dupe(u8, raw_fs_url);
+        return std.fmt.allocPrint(
+            allocator,
+            "{s}://{s}{s}",
+            .{ namespace_url.scheme, namespace_url.authority, fs_url.path },
+        );
     }
 
     fn isSyntheticBrowseLocalMountGraphPath(path: []const u8) bool {
@@ -8766,6 +8868,25 @@ pub const Session = struct {
         try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/nodes/local/projects/proj-1/fs/local::fs"));
         try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/services"));
         try std.testing.expect(!isSyntheticBrowseLocalMountGraphPath("/foo/meta"));
+    }
+
+    test "mount graph rewrites local-only fs sources to the connected namespace authority" {
+        const allocator = std.testing.allocator;
+        const rewritten = try rewriteLocalOnlyWsUrlToNamespaceAuthority(
+            allocator,
+            "ws://127.0.0.1:18790/v2/fs",
+            "ws://192.168.10.101:18790/",
+        );
+        defer allocator.free(rewritten);
+        try std.testing.expectEqualStrings("ws://192.168.10.101:18790/v2/fs", rewritten);
+
+        const preserved = try rewriteLocalOnlyWsUrlToNamespaceAuthority(
+            allocator,
+            "ws://edge-box.local:18790/v2/fs",
+            "ws://192.168.10.101:18790/",
+        );
+        defer allocator.free(preserved);
+        try std.testing.expectEqualStrings("ws://edge-box.local:18790/v2/fs", preserved);
     }
 
     fn appendMountGraphAncestorChain(
@@ -10949,6 +11070,86 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     defer if (namespace_agents_updated) |value| allocator.free(value);
     try std.testing.expect(namespace_agents_updated != null);
     try std.testing.expectEqualStrings("# User Override\n", namespace_agents_updated.?);
+}
+
+test "acheron_session: workspace AGENTS contract strips repeated heading noise" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/AGENTS.md",
+        .data =
+            \\# Spiderweb Workspace Agent Contract
+            \\
+            \\# Spiderweb Workspace Agent Contract
+            \\
+            \\# Spiderweb Workspace Agent Contract
+            \\
+            \\<!-- SPIDERWEB:BEGIN MANAGED -->
+            \\stale managed block
+            \\<!-- SPIDERWEB:END MANAGED -->
+            \\
+            \\## Workspace Owner Notes
+            \\
+            \\Keep custom lint rules in mind.
+            \\
+        ,
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const project_json = try control_plane.createProject(
+        "{\"name\":\"AgentsHeadingNoise\",\"vision\":\"Keep generated headers singular\"}",
+    );
+    defer allocator.free(project_json);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var job_index = chat_job_index.ChatJobIndex.init(allocator, "");
+    defer job_index.deinit();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        &job_index,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const namespace_agents = try session.tryReadInternalPath("/AGENTS.md");
+    defer if (namespace_agents) |value| allocator.free(value);
+    try std.testing.expect(namespace_agents != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, namespace_agents.?, workspace_agents_heading));
+    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "Keep custom lint rules in mind.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "Keep generated headers singular") != null);
 }
 
 test "acheron_session: mount graph snapshot keeps synthetic file contents remote by default" {

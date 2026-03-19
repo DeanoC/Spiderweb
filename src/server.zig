@@ -551,6 +551,159 @@ fn derivePublicFsUrl(allocator: std.mem.Allocator, public_base_url: []const u8) 
     return std.fmt.allocPrint(allocator, "{s}/v2/fs", .{without_trailing});
 }
 
+fn deriveConnectionWorkspaceUrl(
+    allocator: std.mem.Allocator,
+    handshake_host: ?[]const u8,
+    fallback_workspace_url: ?[]const u8,
+) !?[]u8 {
+    if (handshake_host) |value| {
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        if (trimmed.len > 0) {
+            const derived = try std.fmt.allocPrint(allocator, "ws://{s}/", .{trimmed});
+            return derived;
+        }
+    }
+    if (fallback_workspace_url) |value| {
+        const fallback = try allocator.dupe(u8, value);
+        return fallback;
+    }
+    return null;
+}
+
+const ParsedWsUrl = struct {
+    scheme: []const u8,
+    authority: []const u8,
+    path: []const u8,
+};
+
+fn parseWsUrlParts(url: []const u8) ?ParsedWsUrl {
+    const scheme: []const u8 = if (std.mem.startsWith(u8, url, "ws://"))
+        "ws"
+    else if (std.mem.startsWith(u8, url, "wss://"))
+        "wss"
+    else
+        return null;
+    const prefix_len = scheme.len + 3;
+    if (url.len <= prefix_len) return null;
+    const rest = url[prefix_len..];
+    const slash_idx = std.mem.indexOfScalar(u8, rest, '/') orelse {
+        return .{ .scheme = scheme, .authority = rest, .path = "/" };
+    };
+    if (slash_idx == 0) return null;
+    return .{
+        .scheme = scheme,
+        .authority = rest[0..slash_idx],
+        .path = rest[slash_idx..],
+    };
+}
+
+fn wsAuthorityHost(authority: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, authority, " \t\r\n");
+    if (trimmed.len == 0) return trimmed;
+    if (trimmed[0] == '[') {
+        const closing = std.mem.indexOfScalar(u8, trimmed, ']') orelse return trimmed;
+        if (closing <= 1) return "";
+        return trimmed[1..closing];
+    }
+    const colon_idx = std.mem.lastIndexOfScalar(u8, trimmed, ':') orelse return trimmed;
+    return trimmed[0..colon_idx];
+}
+
+fn wsAuthorityIsLocalOnly(authority: []const u8) bool {
+    const host = wsAuthorityHost(authority);
+    if (host.len == 0) return false;
+    if (std.ascii.eqlIgnoreCase(host, "localhost")) return true;
+    if (std.mem.eql(u8, host, "::1") or std.mem.eql(u8, host, "::")) return true;
+    if (std.mem.eql(u8, host, "0.0.0.0")) return true;
+    return std.mem.startsWith(u8, host, "127.");
+}
+
+fn rewriteLocalOnlyFsUrlForWorkspaceConnection(
+    allocator: std.mem.Allocator,
+    raw_fs_url: []const u8,
+    connection_workspace_url: []const u8,
+) ![]u8 {
+    const fs_url = parseWsUrlParts(raw_fs_url) orelse return allocator.dupe(u8, raw_fs_url);
+    if (!wsAuthorityIsLocalOnly(fs_url.authority)) return allocator.dupe(u8, raw_fs_url);
+
+    const workspace_url = parseWsUrlParts(connection_workspace_url) orelse return allocator.dupe(u8, raw_fs_url);
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}://{s}{s}",
+        .{ workspace_url.scheme, workspace_url.authority, fs_url.path },
+    );
+}
+
+fn rewriteWorkspaceStatusFsUrls(
+    allocator: std.mem.Allocator,
+    workspace_json: []const u8,
+    connection_workspace_url: ?[]const u8,
+) ![]u8 {
+    const workspace_url = connection_workspace_url orelse return allocator.dupe(u8, workspace_json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed.deinit();
+    const json_allocator = parsed.arena.allocator();
+    if (parsed.value != .object) return allocator.dupe(u8, workspace_json);
+
+    var rewrote_any = false;
+    for ([_][]const u8{ "mounts", "desired_mounts", "actual_mounts" }) |field_name| {
+        const mounts_value = parsed.value.object.getPtr(field_name) orelse continue;
+        if (mounts_value.* != .array) continue;
+
+        for (mounts_value.array.items) |*mount_value| {
+            if (mount_value.* != .object) continue;
+            const fs_url_value = mount_value.object.getPtr("fs_url") orelse continue;
+            if (fs_url_value.* != .string) continue;
+
+            const rewritten = try rewriteLocalOnlyFsUrlForWorkspaceConnection(
+                allocator,
+                fs_url_value.string,
+                workspace_url,
+            );
+            defer allocator.free(rewritten);
+
+            if (std.mem.eql(u8, rewritten, fs_url_value.string)) continue;
+            fs_url_value.* = .{ .string = try json_allocator.dupe(u8, rewritten) };
+            rewrote_any = true;
+        }
+    }
+
+    if (!rewrote_any) return allocator.dupe(u8, workspace_json);
+    return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(parsed.value, .{})});
+}
+
+fn trustedNamespaceMountUrl(
+    runtime_workspace_url: ?[]const u8,
+    connection_workspace_url: ?[]const u8,
+) ?[]const u8 {
+    // Helper/probe subprocesses must always use the server's trusted listener URL.
+    // The connection authority is only for rewriting payloads we send back to the caller.
+    _ = connection_workspace_url;
+    return runtime_workspace_url;
+}
+
+test "server: rewriteWorkspaceStatusFsUrls rewrites local-only mount endpoints to the connection authority" {
+    const allocator = std.testing.allocator;
+    const rewritten = try rewriteWorkspaceStatusFsUrls(
+        allocator,
+        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18790/v2/fs\"}],\"desired_mounts\":[{\"mount_path\":\"/meta\",\"fs_url\":\"ws://127.0.0.1:18790/v2/fs\"}],\"actual_mounts\":[{\"mount_path\":\"/agents\",\"fs_url\":\"ws://127.0.0.1:18790/v2/fs\"}]}",
+        "ws://192.168.10.101:18790/",
+    );
+    defer allocator.free(rewritten);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"fs_url\":\"ws://192.168.10.101:18790/v2/fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"desired_mounts\":[{\"mount_path\":\"/meta\",\"fs_url\":\"ws://192.168.10.101:18790/v2/fs\"}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"actual_mounts\":[{\"mount_path\":\"/agents\",\"fs_url\":\"ws://192.168.10.101:18790/v2/fs\"}]") != null);
+}
+
+test "server: trustedNamespaceMountUrl ignores connection authority" {
+    const trusted = trustedNamespaceMountUrl(
+        "ws://127.0.0.1:18790/",
+        "wss://attacker.example.com/",
+    ) orelse return error.TestExpectedResponse;
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18790/", trusted);
+}
+
 fn resolveSiblingExecutablePath(allocator: std.mem.Allocator, executable_name: []const u8) ![]u8 {
     const self_path = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(self_path);
@@ -6037,6 +6190,12 @@ fn handleWebSocketConnection(
 ) !void {
     var handshake = try websocket_transport.performHandshakeWithInfo(allocator, stream);
     defer handshake.deinit(allocator);
+    const connection_workspace_url = try deriveConnectionWorkspaceUrl(
+        allocator,
+        handshake.host,
+        runtime_registry.workspace_url,
+    );
+    defer if (connection_workspace_url) |value| allocator.free(value);
 
     if (std.mem.eql(u8, handshake.path, "/v2/fs")) {
         const local_node = runtime_registry.getLocalFsNode() orelse {
@@ -6286,6 +6445,7 @@ fn handleWebSocketConnection(
                                     allocator,
                                     runtime_registry,
                                     active_binding,
+                                    connection_workspace_url,
                                     principal.role == .admin,
                                 );
                                 defer allocator.free(workspace_json);
@@ -6851,6 +7011,7 @@ fn handleWebSocketConnection(
                                     allocator,
                                     runtime_registry,
                                     active_binding,
+                                    connection_workspace_url,
                                     principal.role == .admin,
                                 );
                                 defer allocator.free(workspace_json);
@@ -7059,6 +7220,7 @@ fn handleWebSocketConnection(
                                     allocator,
                                     runtime_registry,
                                     binding,
+                                    connection_workspace_url,
                                     principal.role == .admin,
                                 );
                                 defer allocator.free(workspace_json);
@@ -7434,6 +7596,7 @@ fn handleWebSocketConnection(
                                     control_agent_id,
                                     principal.role == .admin,
                                     parsed.payload_json,
+                                    connection_workspace_url,
                                 ) catch |err| {
                                     const code = controlPlaneErrorCode(err);
                                     if (scope != .none) {
@@ -7544,6 +7707,7 @@ fn handleWebSocketConnection(
                                 runtime_registry,
                                 active_binding,
                                 active_session_key,
+                                trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                 principal.role == .admin,
                             ) catch |err| {
                                 const response = try unified.buildFsrpcError(
@@ -7602,6 +7766,7 @@ fn getOrInitNamespaceSessionForBinding(
     runtime_registry: *AgentRuntimeRegistry,
     binding: SessionBinding,
     session_key: []const u8,
+    trusted_namespace_mount_url: ?[]const u8,
     is_admin: bool,
 ) !*acheron_session_mod.Session {
     if (namespace_session.* == null) {
@@ -7610,6 +7775,7 @@ fn getOrInitNamespaceSessionForBinding(
             runtime_registry,
             binding,
             session_key,
+            trusted_namespace_mount_url,
             is_admin,
         );
     }
@@ -7627,6 +7793,7 @@ fn initNamespaceSessionForBinding(
     runtime_registry: *AgentRuntimeRegistry,
     binding: SessionBinding,
     session_key: []const u8,
+    trusted_namespace_mount_url: ?[]const u8,
     is_admin: bool,
 ) !acheron_session_mod.Session {
     const project_id = binding.project_id orelse return error.InvalidState;
@@ -7648,7 +7815,7 @@ fn initNamespaceSessionForBinding(
         .{
             .project_id = project_id,
             .project_token = binding.project_token,
-            .namespace_mount_url = runtime_registry.workspace_url,
+            .namespace_mount_url = trusted_namespace_mount_url orelse runtime_registry.workspace_url,
             .namespace_session_key = session_key,
             .agents_dir = runtime_registry.runtime_config.agents_dir,
             .assets_dir = runtime_registry.runtime_config.assets_dir,
@@ -7880,6 +8047,7 @@ fn buildWorkspaceStatusPayloadForBinding(
     allocator: std.mem.Allocator,
     runtime_registry: *AgentRuntimeRegistry,
     binding: SessionBinding,
+    connection_workspace_url: ?[]const u8,
     is_admin: bool,
 ) ![]u8 {
     const status_req = if (binding.project_id) |project_id|
@@ -7888,13 +8056,15 @@ fn buildWorkspaceStatusPayloadForBinding(
         try allocator.dupe(u8, "{}");
     defer allocator.free(status_req);
 
-    return runtime_registry.control_plane.workspaceStatusWithRole(binding.agent_id, status_req, is_admin) catch |err| {
+    const workspace_json = runtime_registry.control_plane.workspaceStatusWithRole(binding.agent_id, status_req, is_admin) catch |err| {
         std.log.warn(
             "workspace status unavailable for agent={s} project={s}: {s}",
             .{ binding.agent_id, binding.project_id orelse "null", @errorName(err) },
         );
         return try allocator.dupe(u8, "{}");
     };
+    defer allocator.free(workspace_json);
+    return rewriteWorkspaceStatusFsUrls(allocator, workspace_json, connection_workspace_url);
 }
 
 fn buildSessionAttachStateJson(allocator: std.mem.Allocator, state: SessionAttachStateSnapshot) ![]u8 {
@@ -8675,6 +8845,7 @@ fn handleControlPlaneCommand(
     agent_id: []const u8,
     is_admin: bool,
     payload_json: ?[]const u8,
+    connection_workspace_url: ?[]const u8,
 ) ![]u8 {
     const control_type_canonical = canonicalProjectControlType(control_type);
     const request_json = if (isWorkspaceAliasControlType(control_type) or control_type == .workspace_status)
@@ -8684,7 +8855,7 @@ fn handleControlPlaneCommand(
     defer if (request_json) |value| runtime_registry.allocator.free(value);
 
     const effective_payload = if (request_json) |value| @as(?[]const u8, value) else payload_json;
-    const response_json = switch (control_type_canonical) {
+    const raw_response_json = switch (control_type_canonical) {
         .node_invite_create => try runtime_registry.control_plane.createNodeInvite(effective_payload),
         .node_join_request => try runtime_registry.control_plane.nodeJoinRequest(effective_payload),
         .node_join_pending_list => try runtime_registry.control_plane.listPendingNodeJoins(effective_payload),
@@ -8724,6 +8895,13 @@ fn handleControlPlaneCommand(
         .audit_tail => try runtime_registry.buildAuditTailPayload(effective_payload),
         else => return error.UnsupportedControlPlaneOperation,
     };
+    errdefer runtime_registry.allocator.free(raw_response_json);
+
+    const response_json = if (control_type_canonical == .workspace_status)
+        try rewriteWorkspaceStatusFsUrls(runtime_registry.allocator, raw_response_json, connection_workspace_url)
+    else
+        raw_response_json;
+    if (response_json.ptr != raw_response_json.ptr) runtime_registry.allocator.free(raw_response_json);
     errdefer runtime_registry.allocator.free(response_json);
 
     if (isWorkspaceAliasControlType(control_type) or control_type == .workspace_status) {
@@ -9049,6 +9227,7 @@ test "server: workspace template control ops expose dev catalog entries" {
         system_agent_id,
         true,
         null,
+        null,
     );
     defer allocator.free(listed);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"minimum\"") != null);
@@ -9061,6 +9240,7 @@ test "server: workspace template control ops expose dev catalog entries" {
         system_agent_id,
         true,
         "{\"template_id\":\"dev\"}",
+        null,
     );
     defer allocator.free(fetched);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"template_id\":\"dev\"") != null);
@@ -9099,6 +9279,7 @@ test "server: workspace bind control ops rewrite workspace payload and response 
         system_agent_id,
         false,
         bind_req,
+        null,
     );
     defer allocator.free(bound);
     try std.testing.expect(std.mem.indexOf(u8, bound, "\"workspace_id\":\"") != null);
@@ -9117,6 +9298,7 @@ test "server: workspace bind control ops rewrite workspace payload and response 
         system_agent_id,
         false,
         list_req,
+        null,
     );
     defer allocator.free(listed);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"workspace_id\":\"") != null);
@@ -9135,6 +9317,7 @@ test "server: workspace bind control ops rewrite workspace payload and response 
         system_agent_id,
         false,
         remove_req,
+        null,
     );
     defer allocator.free(removed);
     try std.testing.expect(std.mem.indexOf(u8, removed, "\"workspace_id\":\"") != null);

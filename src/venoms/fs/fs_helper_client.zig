@@ -10,6 +10,7 @@ pub const HelperClient = struct {
     stdin_file: std.fs.File,
     stdout_file: std.fs.File,
     config_path: []u8,
+    shared_auth_token: ?[]u8 = null,
     mutex: std.Thread.Mutex = .{},
 
     pub fn start(allocator: std.mem.Allocator, config: native_protocol.LaunchConfig) !HelperClient {
@@ -32,6 +33,14 @@ pub const HelperClient = struct {
 
         const stdin_file = child.stdin.?;
         const stdout_file = child.stdout.?;
+        const shared_auth_token = if (config.namespace) |namespace|
+            if (namespace.auth_token) |auth_token|
+                try allocator.dupe(u8, auth_token)
+            else
+                null
+        else
+            null;
+        errdefer if (shared_auth_token) |auth_token| allocator.free(auth_token);
 
         var client = HelperClient{
             .allocator = allocator,
@@ -39,6 +48,7 @@ pub const HelperClient = struct {
             .stdin_file = stdin_file,
             .stdout_file = stdout_file,
             .config_path = config_path,
+            .shared_auth_token = shared_auth_token,
         };
         errdefer client.deinit();
 
@@ -53,6 +63,7 @@ pub const HelperClient = struct {
         _ = self.child.wait() catch {};
         deleteConfigFileBestEffort(self.config_path);
         self.allocator.free(self.config_path);
+        if (self.shared_auth_token) |auth_token| self.allocator.free(auth_token);
         self.* = undefined;
     }
 
@@ -259,13 +270,21 @@ pub const HelperClient = struct {
     pub fn tryReconcileEndpointsIfIdle(self: *HelperClient, endpoint_configs: []const fs_router.EndpointConfig) !bool {
         const endpoints = try self.allocator.alloc(ReconcileEndpointRequest.Endpoint, endpoint_configs.len);
         defer self.allocator.free(endpoints);
+        const owned_mount_paths = try self.allocator.alloc(?[]u8, endpoint_configs.len);
+        defer self.allocator.free(owned_mount_paths);
+        for (owned_mount_paths) |*slot| slot.* = null;
+        defer {
+            for (owned_mount_paths) |maybe_path| {
+                if (maybe_path) |path| self.allocator.free(path);
+            }
+        }
         for (endpoint_configs, 0..) |endpoint, idx| {
             endpoints[idx] = .{
                 .name = endpoint.name,
                 .url = endpoint.url,
                 .export_name = endpoint.export_name,
-                .mount_path = endpoint.mount_path orelse "/",
-                .auth_token = endpoint.auth_token,
+                .mount_path = try resolveReconcileEndpointMountPath(self.allocator, endpoint, &owned_mount_paths[idx]),
+                .auth_token = endpoint.auth_token orelse self.shared_auth_token,
             };
         }
 
@@ -303,6 +322,21 @@ pub const HelperClient = struct {
         return ParsedResponse.parse(self.allocator, line);
     }
 };
+
+fn resolveReconcileEndpointMountPath(
+    allocator: std.mem.Allocator,
+    endpoint: fs_router.EndpointConfig,
+    owned_mount_path: *?[]u8,
+) ![]const u8 {
+    if (endpoint.mount_path) |mount_path| {
+        owned_mount_path.* = null;
+        return mount_path;
+    }
+
+    const default_mount_path = try std.fmt.allocPrint(allocator, "/{s}", .{endpoint.name});
+    owned_mount_path.* = default_mount_path;
+    return default_mount_path;
+}
 
 const ReconcileEndpointRequest = struct {
     op: []const u8,

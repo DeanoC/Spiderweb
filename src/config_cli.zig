@@ -42,6 +42,9 @@ const ServiceStatusJson = struct {
     unit_path: []const u8,
     installed: bool,
     loaded: bool,
+    bind: []const u8,
+    port: u16,
+    remote_reachable: bool,
     enabled: ?[]const u8 = null,
     active: ?[]const u8 = null,
 };
@@ -275,6 +278,7 @@ fn handleConfigCommand(allocator: std.mem.Allocator, args: []const []const u8) !
         }
 
         try config.setServer(bind, port);
+        _ = try restartManagedServiceIfInstalled(allocator);
         std.log.info("Updated server config", .{});
     } else if (std.mem.eql(u8, subcommand, "set-log")) {
         if (args.len < 2) {
@@ -339,6 +343,7 @@ const CommandResult = struct {
 };
 
 fn installService(allocator: std.mem.Allocator) !void {
+    _ = try ensureRemoteReachableServerBindConfig(allocator);
     try ensureDefaultLocalWorkspaceRootConfig(allocator);
     try ensureDefaultRuntimeStorageConfig(allocator);
     return switch (detectServiceManager()) {
@@ -532,6 +537,7 @@ fn setRemoteNodeConfig(allocator: std.mem.Allocator, args: []const []const u8) !
     replaceOwnedString(allocator, &config.runtime.remote_node.node_id, next_node_id) catch return error.OutOfMemory;
     config.runtime.remote_node.export_ro = export_ro;
     config.runtime.remote_node.enabled = true;
+    const bind_upgraded = try upgradeLoopbackBindForRemoteAccess(&config);
     const next_lease_ttl_ms = lease_ttl_ms orelse config.runtime.remote_node.lease_ttl_ms;
     const next_heartbeat_ms = heartbeat_ms orelse config.runtime.remote_node.heartbeat_ms;
     try validateRemoteNodeHeartbeatSettings(next_lease_ttl_ms, next_heartbeat_ms);
@@ -543,6 +549,11 @@ fn setRemoteNodeConfig(allocator: std.mem.Allocator, args: []const []const u8) !
         const store = credential_store_mod.CredentialStore.init(allocator);
         try store.setRemoteNodeSecret(next_node_id, secret);
     }
+
+    if (bind_upgraded) {
+        std.log.info("Updated Spiderweb bind address to {s} for remote access", .{config.server.bind});
+    }
+    _ = try restartManagedServiceIfInstalled(allocator);
 }
 
 fn validateRemoteNodeHeartbeatSettings(lease_ttl_ms: u64, heartbeat_ms: u64) !void {
@@ -580,6 +591,23 @@ fn clearRemoteNodeConfig(allocator: std.mem.Allocator) !void {
         const store = credential_store_mod.CredentialStore.init(allocator);
         store.clearRemoteNodeSecret(previous_node_id) catch {};
     }
+
+    _ = try restartManagedServiceIfInstalled(allocator);
+}
+
+fn upgradeLoopbackBindForRemoteAccess(config: *Config) !bool {
+    if (Config.serverBindAllowsRemoteConnections(config.server.bind)) return false;
+    try replaceOwnedString(config.allocator, &config.server.bind, Config.defaultRemoteReachableServerBind());
+    return true;
+}
+
+fn ensureRemoteReachableServerBindConfig(allocator: std.mem.Allocator) !bool {
+    var config = try Config.init(allocator, null);
+    defer config.deinit();
+
+    const changed = try upgradeLoopbackBindForRemoteAccess(&config);
+    if (changed) try config.save();
+    return changed;
 }
 
 fn replaceOwnedString(allocator: std.mem.Allocator, target: *[]const u8, next: []const u8) !void {
@@ -597,13 +625,22 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
     if (!status.supported_os) return error.UnsupportedMacosVersion;
     const target_app_path = status.app_path;
     const source_app_path = blk: {
-        if (status.source_app_path) |value| break :blk value;
         if (pathExists(target_app_path)) break :blk target_app_path;
+        if (status.source_app_path) |value| break :blk value;
         std.log.err("Could not find Spiderweb.app to register. Reinstall Spiderweb.app or build it from Xcode under platform/macos.", .{});
         return error.NativeFsExtensionNotInstalled;
     };
     const source_is_installed_app = std.mem.eql(u8, source_app_path, target_app_path);
-    const install_script_path = try native_mount_support.resolveFilesystemBundleInstallScriptPath(allocator);
+    const filesystem_source_path = if (status.source_filesystem_bundle_path) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    defer if (filesystem_source_path) |value| allocator.free(value);
+
+    const install_script_path = if (filesystem_source_path == null)
+        try native_mount_support.resolveFilesystemBundleInstallScriptPath(allocator)
+    else
+        null;
     defer if (install_script_path) |value| allocator.free(value);
 
     stopNativeFsExtensionProcesses(allocator);
@@ -643,11 +680,21 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
     }
 
     if (!status.filesystem_bundle_installed or !status.mount_helper_present or !source_is_installed_app) {
-        const script_path = install_script_path orelse {
-            std.log.err("Could not find install-spiderweb-fskit-filesystem-bundle.sh under platform/macos/scripts.", .{});
-            return error.NativeFsExtensionNotInstalled;
-        };
-        try runCommandSuccess(allocator, &.{ "/bin/bash", script_path });
+        if (filesystem_source_path) |source_path| {
+            try installBundleTreeFromSource(
+                allocator,
+                source_path,
+                status.filesystem_bundle_path,
+                true,
+                null,
+            );
+        } else {
+            const script_path = install_script_path orelse {
+                std.log.err("Could not find a Spiderweb filesystem bundle install source. Reinstall Spiderweb.app or build it from Xcode under platform/macos.", .{});
+                return error.NativeFsExtensionNotInstalled;
+            };
+            try runCommandSuccess(allocator, &.{ "/bin/bash", script_path });
+        }
     }
     try runCommandSuccess(allocator, &.{
         "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
@@ -974,6 +1021,14 @@ fn detectServiceManager() ServiceManager {
     };
 }
 
+fn restartManagedServiceIfInstalled(allocator: std.mem.Allocator) !bool {
+    return switch (detectServiceManager()) {
+        .systemd_user => restartSystemdUserServiceIfInstalled(allocator),
+        .launchd_user => restartLaunchdUserServiceIfInstalled(allocator),
+        .unsupported => false,
+    };
+}
+
 fn installSystemdUserService(allocator: std.mem.Allocator) !void {
     const exec_path = try resolveServiceExecutablePath(allocator);
     defer allocator.free(exec_path);
@@ -1037,6 +1092,8 @@ fn printSystemdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool
     const service_path = try systemdUserServicePath(allocator);
     defer allocator.free(service_path);
     const installed = pathExists(service_path);
+    var config = try Config.init(allocator, null);
+    defer config.deinit();
 
     if (!installed) {
         if (json_output) {
@@ -1045,6 +1102,9 @@ fn printSystemdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool
                 .unit_path = service_path,
                 .installed = false,
                 .loaded = false,
+                .bind = config.server.bind,
+                .port = config.server.port,
+                .remote_reachable = Config.serverBindAllowsRemoteConnections(config.server.bind),
                 .enabled = null,
                 .active = null,
             }, .{});
@@ -1055,8 +1115,8 @@ fn printSystemdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool
         }
         const out = try std.fmt.allocPrint(
             allocator,
-            "Service manager: systemd\n  unit:      {s}\n  installed: no\n",
-            .{service_path},
+            "Service manager: systemd\n  unit:      {s}\n  installed: no\n  bind:      {s}:{d}\n",
+            .{ service_path, config.server.bind, config.server.port },
         );
         defer allocator.free(out);
         try std.fs.File.stdout().writeAll(out);
@@ -1083,6 +1143,9 @@ fn printSystemdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool
             .unit_path = service_path,
             .installed = true,
             .loaded = active != null and commandExitedSuccessfully(active.?),
+            .bind = config.server.bind,
+            .port = config.server.port,
+            .remote_reachable = Config.serverBindAllowsRemoteConnections(config.server.bind),
             .enabled = enabled_text,
             .active = active_text,
         }, .{});
@@ -1094,11 +1157,31 @@ fn printSystemdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool
 
     const out = try std.fmt.allocPrint(
         allocator,
-        "Service manager: systemd\n  unit:      {s}\n  installed: yes\n  enabled:   {s}\n  active:    {s}\n",
-        .{ service_path, enabled_text, active_text },
+        "Service manager: systemd\n  unit:      {s}\n  installed: yes\n  enabled:   {s}\n  active:    {s}\n  bind:      {s}:{d}\n",
+        .{ service_path, enabled_text, active_text, config.server.bind, config.server.port },
     );
     defer allocator.free(out);
     try std.fs.File.stdout().writeAll(out);
+}
+
+fn restartSystemdUserServiceIfInstalled(allocator: std.mem.Allocator) !bool {
+    const service_path = try systemdUserServicePath(allocator);
+    defer allocator.free(service_path);
+    if (!pathExists(service_path)) return false;
+
+    if (try runCommandBestEffort(allocator, &.{ "systemctl", "--user", "daemon-reload" })) |result| {
+        var owned_result = result;
+        owned_result.deinit(allocator);
+    }
+
+    if (try runCommandBestEffort(allocator, &.{ "systemctl", "--user", "restart", service_name })) |result| {
+        var owned_result = result;
+        defer owned_result.deinit(allocator);
+        if (commandExitedSuccessfully(owned_result)) return true;
+    }
+
+    try runCommandSuccess(allocator, &.{ "systemctl", "--user", "enable", "--now", service_name });
+    return true;
 }
 
 fn installLaunchdUserService(allocator: std.mem.Allocator) !void {
@@ -1184,6 +1267,8 @@ fn printLaunchdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool
     const installed = pathExists(plist_path);
     const service_target = try launchdServiceTarget(allocator);
     defer allocator.free(service_target);
+    var config = try Config.init(allocator, null);
+    defer config.deinit();
 
     var printed = if (installed)
         try runCommandBestEffort(allocator, &.{ "launchctl", "print", service_target })
@@ -1197,6 +1282,9 @@ fn printLaunchdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool
             .unit_path = plist_path,
             .installed = installed,
             .loaded = printed != null and commandExitedSuccessfully(printed.?),
+            .bind = config.server.bind,
+            .port = config.server.port,
+            .remote_reachable = Config.serverBindAllowsRemoteConnections(config.server.bind),
             .enabled = null,
             .active = null,
         }, .{});
@@ -1208,15 +1296,36 @@ fn printLaunchdUserServiceStatus(allocator: std.mem.Allocator, json_output: bool
 
     const out = try std.fmt.allocPrint(
         allocator,
-        "Service manager: launchd\n  plist:      {s}\n  installed:  {s}\n  loaded:     {s}\n",
+        "Service manager: launchd\n  plist:      {s}\n  installed:  {s}\n  loaded:     {s}\n  bind:       {s}:{d}\n",
         .{
             plist_path,
             if (installed) "yes" else "no",
             if (printed != null and commandExitedSuccessfully(printed.?)) "yes" else "no",
+            config.server.bind,
+            config.server.port,
         },
     );
     defer allocator.free(out);
     try std.fs.File.stdout().writeAll(out);
+}
+
+fn restartLaunchdUserServiceIfInstalled(allocator: std.mem.Allocator) !bool {
+    const plist_path = try launchdPlistPath(allocator);
+    defer allocator.free(plist_path);
+    if (!pathExists(plist_path)) return false;
+
+    const domain_target = try launchdDomainTarget(allocator);
+    defer allocator.free(domain_target);
+    const service_target = try launchdServiceTarget(allocator);
+    defer allocator.free(service_target);
+
+    if (try runCommandBestEffort(allocator, &.{ "launchctl", "bootout", domain_target, plist_path })) |result| {
+        var owned_result = result;
+        owned_result.deinit(allocator);
+    }
+    try runCommandSuccess(allocator, &.{ "launchctl", "bootstrap", domain_target, plist_path });
+    try runCommandSuccess(allocator, &.{ "launchctl", "kickstart", "-k", service_target });
+    return true;
 }
 
 fn resolveServiceExecutablePath(allocator: std.mem.Allocator) ![]u8 {
@@ -1959,4 +2068,24 @@ test "config_cli: remote-node heartbeat validation rejects invalid settings" {
     try std.testing.expectError(error.InvalidArguments, validateRemoteNodeHeartbeatSettings(10, 11));
     try validateRemoteNodeHeartbeatSettings(10, 10);
     try validateRemoteNodeHeartbeatSettings(10, 5);
+}
+
+test "config_cli: upgradeLoopbackBindForRemoteAccess upgrades legacy local-only bind" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_root);
+    const cfg_path = try std.fs.path.join(allocator, &.{ tmp_root, "config.json" });
+
+    var config = try Config.init(allocator, cfg_path);
+    defer config.deinit();
+
+    try config.setServer("127.0.0.1", null);
+    try std.testing.expect(!Config.serverBindAllowsRemoteConnections(config.server.bind));
+    try std.testing.expect(try upgradeLoopbackBindForRemoteAccess(&config));
+    try std.testing.expectEqualStrings(Config.defaultRemoteReachableServerBind(), config.server.bind);
+    try std.testing.expect(Config.serverBindAllowsRemoteConnections(config.server.bind));
+    try std.testing.expect(!(try upgradeLoopbackBindForRemoteAccess(&config)));
 }

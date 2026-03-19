@@ -13,6 +13,10 @@ All notable changes to this project are documented in this file.
 - Removed the extracted `ziggy-memory-store` persistence path from Spiderweb and switched the control plane to the in-memory startup path.
 - Dropped stale `sandbox_enabled` gating and old `mount_*_v2` namespace control branches that no longer match the current workspace-first model.
 - Updated the pinned `zwasm` branch and local wrapper so the full `zig build` succeeds on Windows.
+### Remote Connectivity and Packaging
+- Fixed remote workspace status and mount graph endpoint URLs so routed `/v2/fs` operations no longer leak `127.0.0.1` to other machines.
+- Defaulted new and upgraded installs to LAN-reachable server binds and surfaced that reachability clearly in the macOS app.
+- Kept the macOS packaged filesystem repair path self-contained so installed builds do not depend on a local Xcode checkout.
 
 ## 0.3.1 - 2026-03-13
 

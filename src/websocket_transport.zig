@@ -36,10 +36,12 @@ pub const Frame = struct {
 pub const HandshakeInfo = struct {
     path: []u8,
     authorization: ?[]u8 = null,
+    host: ?[]u8 = null,
 
     pub fn deinit(self: *HandshakeInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
         if (self.authorization) |value| allocator.free(value);
+        if (self.host) |value| allocator.free(value);
         self.* = undefined;
     }
 };
@@ -65,6 +67,11 @@ pub fn performHandshakeWithInfo(allocator: std.mem.Allocator, stream: *std.net.S
     else
         null;
     errdefer if (authorization) |value| allocator.free(value);
+    const host = if (extractHostHeader(request)) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (host) |value| allocator.free(value);
 
     const ws_key = extractWebSocketKey(request) orelse return Error.NoWebSocketKey;
     const accept_key = try computeWebSocketAcceptKey(allocator, ws_key);
@@ -81,7 +88,7 @@ pub fn performHandshakeWithInfo(allocator: std.mem.Allocator, stream: *std.net.S
     defer allocator.free(response);
 
     try stream.writeAll(response);
-    return .{ .path = owned_path, .authorization = authorization };
+    return .{ .path = owned_path, .authorization = authorization, .host = host };
 }
 
 pub fn readFrame(allocator: std.mem.Allocator, stream: *std.net.Stream, max_payload_bytes: usize) !Frame {
@@ -203,6 +210,14 @@ fn extractRequestPath(request: []const u8) ?[]const u8 {
 }
 
 fn extractAuthorizationHeader(request: []const u8) ?[]const u8 {
+    return extractHeaderValue(request, "Authorization");
+}
+
+fn extractHostHeader(request: []const u8) ?[]const u8 {
+    return extractHeaderValue(request, "Host");
+}
+
+fn extractHeaderValue(request: []const u8, expected_header_name: []const u8) ?[]const u8 {
     var line_start: usize = 0;
     var first_line = true;
     while (line_start < request.len) {
@@ -219,7 +234,7 @@ fn extractAuthorizationHeader(request: []const u8) ?[]const u8 {
                 continue;
             };
             const header_name = std.mem.trim(u8, line[0..colon_idx], " \t");
-            if (!std.ascii.eqlIgnoreCase(header_name, "Authorization")) {
+            if (!std.ascii.eqlIgnoreCase(header_name, expected_header_name)) {
                 if (line_end == request.len) break;
                 line_start = line_end + 2;
                 continue;
@@ -292,4 +307,15 @@ test "websocket_transport: extract authorization header ignores x-authorization 
         "X-Authorization: Bearer wrong\r\n" ++
         "\r\n";
     try std.testing.expect(extractAuthorizationHeader(request) == null);
+}
+
+test "websocket_transport: extract host header matches exact header name only" {
+    const request =
+        "GET / HTTP/1.1\r\n" ++
+        "X-Host: wrong.example\r\n" ++
+        "Host: remote.example:18790\r\n" ++
+        "\r\n";
+
+    const value = extractHostHeader(request) orelse return error.TestExpectedHostHeader;
+    try std.testing.expectEqualStrings("remote.example:18790", value);
 }

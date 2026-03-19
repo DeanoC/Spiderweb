@@ -1777,7 +1777,7 @@ fn listActiveSpiderwebMountpointsWithinRoot(
 ) ![][]u8 {
     const result = try std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &.{ "mount" },
+        .argv = &.{"mount"},
         .max_output_bytes = 512 * 1024,
     });
     defer allocator.free(result.stdout);
@@ -5627,8 +5627,7 @@ const AgentRuntimeRegistry = struct {
         defer if (export_name_owned) |value| self.allocator.free(value);
         const workspace_export_name = if (export_name_owned) |value|
             if (std.mem.trim(u8, value, " \t\r\n").len > 0) std.mem.trim(u8, value, " \t\r\n") else if (std.mem.trim(u8, remote_node_config.export_name, " \t\r\n").len > 0) std.mem.trim(u8, remote_node_config.export_name, " \t\r\n") else local_node_default_workspace_export_name
-        else
-            if (std.mem.trim(u8, remote_node_config.export_name, " \t\r\n").len > 0) std.mem.trim(u8, remote_node_config.export_name, " \t\r\n") else local_node_default_workspace_export_name;
+        else if (std.mem.trim(u8, remote_node_config.export_name, " \t\r\n").len > 0) std.mem.trim(u8, remote_node_config.export_name, " \t\r\n") else local_node_default_workspace_export_name;
 
         const export_ro = blk: {
             const env_value = std.process.getEnvVarOwned(self.allocator, local_node_export_ro_env) catch |err| switch (err) {
@@ -7315,10 +7314,9 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
 
-                                const write_data = if (offset == 0) blk: {
-                                    break :blk try allocator.dupe(u8, decoded);
-                                } else blk: {
-                                    const existing = session.readMountGraphFile(path, 0, std.math.maxInt(usize)) catch |err| {
+                                const existing = session.readMountGraphFile(path, 0, std.math.maxInt(usize)) catch |err| switch (err) {
+                                    error.FileNotFound, error.AccessDenied, error.OperationNotSupported => try allocator.dupe(u8, ""),
+                                    else => {
                                         const response = try unified.buildControlError(
                                             allocator,
                                             parsed.id,
@@ -7328,10 +7326,12 @@ fn handleWebSocketConnection(
                                         defer allocator.free(response);
                                         try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                         continue;
-                                    };
-                                    defer allocator.free(existing);
+                                    },
+                                };
+                                defer allocator.free(existing);
 
-                                    const base_offset = std.math.cast(usize, offset) orelse {
+                                const write_data = mergeMountGraphWriteData(allocator, existing, offset, decoded) catch |err| switch (err) {
+                                    error.InvalidOffset => {
                                         const response = try unified.buildControlError(
                                             allocator,
                                             parsed.id,
@@ -7341,26 +7341,8 @@ fn handleWebSocketConnection(
                                         defer allocator.free(response);
                                         try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                         continue;
-                                    };
-                                    const required_len = std.math.add(usize, base_offset, decoded.len) catch {
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            "invalid_payload",
-                                            "offset is out of range",
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    };
-                                    var merged = try allocator.alloc(u8, required_len);
-                                    @memset(merged, 0);
-                                    if (existing.len > 0) {
-                                        const prefix_len = @min(existing.len, merged.len);
-                                        @memcpy(merged[0..prefix_len], existing[0..prefix_len]);
-                                    }
-                                    @memcpy(merged[base_offset .. base_offset + decoded.len], decoded);
-                                    break :blk merged;
+                                    },
+                                    else => return err,
                                 };
                                 defer allocator.free(write_data);
 
@@ -8211,6 +8193,27 @@ fn decodeStandardBase64Owned(allocator: std.mem.Allocator, encoded: []const u8) 
     errdefer allocator.free(decoded);
     try std.base64.standard.Decoder.decode(decoded, encoded);
     return decoded;
+}
+
+fn mergeMountGraphWriteData(
+    allocator: std.mem.Allocator,
+    existing: []const u8,
+    offset: u64,
+    data: []const u8,
+) ![]u8 {
+    const base_offset = std.math.cast(usize, offset) orelse return error.InvalidOffset;
+    const write_end = std.math.add(usize, base_offset, data.len) catch return error.InvalidOffset;
+    const merged_len = @max(existing.len, write_end);
+    var merged = try allocator.alloc(u8, merged_len);
+    errdefer allocator.free(merged);
+    @memset(merged, 0);
+    if (existing.len > 0) {
+        @memcpy(merged[0..existing.len], existing);
+    }
+    if (data.len > 0) {
+        @memcpy(merged[base_offset..write_end], data);
+    }
+    return merged;
 }
 
 fn optionalStringsEqual(left: ?[]const u8, right: ?[]const u8) bool {
@@ -11701,6 +11704,20 @@ test "server: invalid configured default agent falls back to built-in default" {
 
     const registry = AgentRuntimeRegistry.initWithLimits(allocator, cfg, null, 8);
     try std.testing.expectEqualStrings(system_agent_id, registry.default_agent_id);
+}
+
+test "server: mergeMountGraphWriteData preserves suffix on offset zero partial writes" {
+    const allocator = std.testing.allocator;
+    const merged = try mergeMountGraphWriteData(allocator, "abcdef", 0, "xy");
+    defer allocator.free(merged);
+    try std.testing.expectEqualStrings("xycdef", merged);
+}
+
+test "server: mergeMountGraphWriteData preserves suffix on middle writes" {
+    const allocator = std.testing.allocator;
+    const merged = try mergeMountGraphWriteData(allocator, "abcdef", 2, "XY");
+    defer allocator.free(merged);
+    try std.testing.expectEqualStrings("abXYef", merged);
 }
 
 test "server: parseArchiveTimestamp accepts rotated debug archive names" {

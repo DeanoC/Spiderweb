@@ -545,9 +545,15 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Connection URLs")
                         .font(.subheadline.weight(.semibold))
-                    Text("Use the local-only URL on this Mac. For another machine, copy one of the network URLs below.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    if controller.serviceStatus?.remoteReachable == false {
+                        Text("Spiderweb is currently bound to \(controller.serviceStatus?.bind ?? "127.0.0.1"), so only this Mac can connect. Install / Start Service again or enable remote-node setup to switch to a LAN-reachable bind.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Use the local-only URL on this Mac. For another machine, copy one of the network URLs below.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
 
                     ForEach(controller.localAccessEndpoints) { endpoint in
                         SecretValueRow(

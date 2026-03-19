@@ -316,6 +316,8 @@ xcodebuild \
 
 echo "==> Building signed spiderweb.fs bundle"
 filesystem_bundle_path="$(build_signed_filesystem_bundle "$work_root")"
+filesystem_bundle_zip="$work_root/spiderweb.fs.install-source.zip"
+ditto -c -k --keepParent "$filesystem_bundle_path" "$filesystem_bundle_zip"
 
 echo "==> Staging installer payload"
 mkdir -p "$payload_root/Applications" "$payload_root/Library/Filesystems" "$payload_root/usr/local/bin" "$scripts_root"
@@ -329,6 +331,7 @@ chmod 755 "$scripts_root/postinstall"
 echo "==> Embedding Spiderweb CLI tools into Spiderweb.app"
 app_resources_dir="$payload_root/Applications/$APP_NAME/Contents/Resources"
 mkdir -p "$app_resources_dir"
+cp "$filesystem_bundle_zip" "$app_resources_dir/spiderweb.fs.install-source.zip"
 for binary in "${ZIG_BINARIES[@]}"; do
   cp "$payload_root/usr/local/bin/$binary" "$app_resources_dir/$binary"
   chmod 755 "$app_resources_dir/$binary"

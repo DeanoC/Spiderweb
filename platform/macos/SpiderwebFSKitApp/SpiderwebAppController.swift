@@ -160,12 +160,18 @@ struct SpiderwebServiceStatusSnapshot: Decodable {
     let unitPath: String
     let installed: Bool
     let loaded: Bool
+    let bind: String?
+    let port: UInt16?
+    let remoteReachable: Bool?
 
     enum CodingKeys: String, CodingKey {
         case manager
         case unitPath = "unit_path"
         case installed
         case loaded
+        case bind
+        case port
+        case remoteReachable = "remote_reachable"
     }
 }
 
@@ -414,7 +420,10 @@ final class SpiderwebAppController: ObservableObject {
     var diagnosticsSummary: String {
         let serviceLine: String
         if let serviceStatus {
-            serviceLine = "service installed=\(serviceStatus.installed) loaded=\(serviceStatus.loaded)"
+            let bind = serviceStatus.bind ?? "unknown"
+            let port = serviceStatus.port.map(String.init) ?? "unknown"
+            let remoteReachable = serviceStatus.remoteReachable.map(String.init) ?? "unknown"
+            serviceLine = "service installed=\(serviceStatus.installed) loaded=\(serviceStatus.loaded) bind=\(bind):\(port) remote_reachable=\(remoteReachable)"
         } else {
             serviceLine = "service unknown"
         }
@@ -461,14 +470,19 @@ final class SpiderwebAppController: ObservableObject {
     }
 
     var localAccessEndpoints: [SpiderwebAccessEndpoint] {
+        let port = Int(serviceStatus?.port ?? 18790)
         var endpoints: [SpiderwebAccessEndpoint] = [
             .init(
                 id: "localhost",
                 title: "Local-only URL",
                 detail: "Use this on the same Mac. Other machines cannot reach 127.0.0.1 on your Mac.",
-                url: Self.localServerURL
+                url: "ws://127.0.0.1:\(port)/"
             )
         ]
+
+        if serviceStatus?.remoteReachable == false {
+            return endpoints
+        }
 
         let networkHostnames = Self.discoverLocalHostnames()
         for hostname in networkHostnames {
@@ -477,7 +491,7 @@ final class SpiderwebAppController: ObservableObject {
                     id: "host-\(hostname)",
                     title: "Network hostname",
                     detail: "Works from another machine on the same network if mDNS or local DNS resolves this Mac.",
-                    url: "ws://\(hostname):18790/"
+                    url: "ws://\(hostname):\(port)/"
                 )
             )
         }
@@ -489,7 +503,7 @@ final class SpiderwebAppController: ObservableObject {
                     id: "ipv4-\(address)",
                     title: "Network IPv4",
                     detail: "Direct LAN address for another Mac or tool to connect to this Spiderweb service.",
-                    url: "ws://\(address):18790/"
+                    url: "ws://\(address):\(port)/"
                 )
             )
         }
@@ -529,6 +543,10 @@ final class SpiderwebAppController: ObservableObject {
                 self.localWorkspaces = workspaces
                 self.launchAtLoginEnabled = launchAtLoginEnabled
                 self.buildInfo = buildInfo
+                if Self.shouldAutofillRemoteNodePublicBaseURL(current: self.remoteNodeDraft.publicBaseURL),
+                   let suggested = Self.preferredRemoteNodePublicBaseURL(from: serviceStatus) {
+                    self.remoteNodeDraft.publicBaseURL = suggested
+                }
                 self.statusMessage = "Last refreshed \(Self.relativeTimestampLabel())"
             }
         }
@@ -1278,13 +1296,29 @@ final class SpiderwebAppController: ObservableObject {
                 String(line.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? "")
             } ?? ""
         let manager = text.contains("launchd") ? "launchd" : "systemd"
-        return SpiderwebServiceStatusSnapshot(manager: manager, unitPath: unitPath, installed: installed, loaded: loaded)
+        return SpiderwebServiceStatusSnapshot(
+            manager: manager,
+            unitPath: unitPath,
+            installed: installed,
+            loaded: loaded,
+            bind: nil,
+            port: nil,
+            remoteReachable: nil
+        )
     }
 
     private static func fallbackServiceStatus() -> SpiderwebServiceStatusSnapshot? {
         let plistPath = "\(NSHomeDirectory())/Library/LaunchAgents/spiderweb.plist"
         guard FileManager.default.fileExists(atPath: plistPath) else { return nil }
-        return SpiderwebServiceStatusSnapshot(manager: "launchd", unitPath: plistPath, installed: true, loaded: false)
+        return SpiderwebServiceStatusSnapshot(
+            manager: "launchd",
+            unitPath: plistPath,
+            installed: true,
+            loaded: false,
+            bind: "127.0.0.1",
+            port: 18790,
+            remoteReachable: false
+        )
     }
 
     private static func deriveSavedMountsURL() -> URL {
@@ -1420,6 +1454,27 @@ final class SpiderwebAppController: ObservableObject {
         }
 
         return results.sorted()
+    }
+
+    private static func shouldAutofillRemoteNodePublicBaseURL(current: String) -> Bool {
+        let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        let normalized = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return normalized == "ws://127.0.0.1:18790"
+    }
+
+    private static func preferredRemoteNodePublicBaseURL(from serviceStatus: SpiderwebServiceStatusSnapshot?) -> String? {
+        let port = Int(serviceStatus?.port ?? 18790)
+        if serviceStatus?.remoteReachable == false {
+            return "ws://127.0.0.1:\(port)"
+        }
+        if let address = discoverLocalIPv4Addresses().first {
+            return "ws://\(address):\(port)"
+        }
+        if let hostname = discoverLocalHostnames().first {
+            return "ws://\(hostname):\(port)"
+        }
+        return "ws://127.0.0.1:\(port)"
     }
 
     private static func installFileSystemStatusMessage(

@@ -34,7 +34,15 @@ pub const HelperClient = struct {
 
         const stdin_file = child.stdin.?;
         const stdout_file = child.stdout.?;
-        const shared_auth_token = try duplicateSharedAuthToken(allocator, config);
+        const shared_auth_token = if (config.shared_auth_token) |auth_token|
+            try allocator.dupe(u8, auth_token)
+        else if (config.namespace) |namespace|
+            if (namespace.auth_token) |auth_token|
+                try allocator.dupe(u8, auth_token)
+            else
+                null
+        else
+            null;
         errdefer if (shared_auth_token) |auth_token| allocator.free(auth_token);
 
         var client = HelperClient{
@@ -343,10 +351,10 @@ pub const HelperClient = struct {
         endpoints: []const ReconcileEndpointRequest.Endpoint,
     ) !void {
         for (endpoint_configs, endpoints) |config_endpoint, request_endpoint| {
-            if (config_endpoint.auth_token != null or self.authTokenForEndpoint(config_endpoint.name) == null) {
-                if (request_endpoint.auth_token) |auth_token| {
-                    try self.rememberEndpointAuthToken(config_endpoint.name, auth_token);
-                }
+            if (request_endpoint.auth_token) |auth_token| {
+                try self.rememberEndpointAuthToken(config_endpoint.name, auth_token);
+            } else {
+                self.removeEndpointAuthToken(config_endpoint.name);
             }
         }
     }
@@ -369,6 +377,12 @@ pub const HelperClient = struct {
 
     fn authTokenForEndpoint(self: *const HelperClient, endpoint_name: []const u8) ?[]const u8 {
         return self.auth_token_by_endpoint_name.get(endpoint_name);
+    }
+
+    fn removeEndpointAuthToken(self: *HelperClient, endpoint_name: []const u8) void {
+        const removed = self.auth_token_by_endpoint_name.fetchRemove(endpoint_name) orelse return;
+        self.allocator.free(removed.key);
+        self.allocator.free(removed.value);
     }
 };
 
@@ -476,39 +490,6 @@ fn expectNamespaceHandle(file: mount_provider.OpenFile) !mount_provider.Namespac
         .namespace => |handle| handle,
         else => error.InvalidResponse,
     };
-}
-
-fn duplicateSharedAuthToken(
-    allocator: std.mem.Allocator,
-    config: native_protocol.LaunchConfig,
-) !?[]u8 {
-    if (config.namespace) |namespace| {
-        if (namespace.auth_token) |auth_token| {
-            return allocator.dupe(u8, auth_token);
-        }
-    }
-    const inferred_auth_token = inferSharedAuthTokenFromEndpoints(config.endpoints) orelse return null;
-    return allocator.dupe(u8, inferred_auth_token);
-}
-
-fn inferSharedAuthTokenFromEndpoints(endpoints: []const native_protocol.EndpointSpec) ?[]const u8 {
-    var best_auth_token: ?[]const u8 = null;
-    var best_count: usize = 0;
-    for (endpoints) |candidate_endpoint| {
-        const candidate_auth_token = candidate_endpoint.auth_token orelse continue;
-        var candidate_count: usize = 0;
-        for (endpoints) |endpoint| {
-            const endpoint_auth_token = endpoint.auth_token orelse continue;
-            if (std.mem.eql(u8, endpoint_auth_token, candidate_auth_token)) {
-                candidate_count += 1;
-            }
-        }
-        if (candidate_count > best_count) {
-            best_auth_token = candidate_auth_token;
-            best_count = candidate_count;
-        }
-    }
-    return best_auth_token;
 }
 
 fn writeLaunchConfig(allocator: std.mem.Allocator, config: native_protocol.LaunchConfig) ![]u8 {

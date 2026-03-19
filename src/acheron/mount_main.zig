@@ -840,6 +840,7 @@ fn buildSharedHelperLaunchConfig(
         .mountpoint = mountpoint,
         .workspace_sync_interval_ms = workspace_sync_interval_ms,
         .namespace_keepalive_interval_ms = namespace_keepalive_interval_ms,
+        .shared_auth_token = auth_token,
         .endpoints = helper_endpoints,
         .namespace = namespace_binding,
     };

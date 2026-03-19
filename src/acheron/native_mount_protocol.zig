@@ -24,6 +24,7 @@ pub const LaunchConfig = struct {
     mountpoint: []const u8,
     workspace_sync_interval_ms: u64 = 5_000,
     namespace_keepalive_interval_ms: u64 = 60_000,
+    shared_auth_token: ?[]const u8 = null,
     endpoints: []const EndpointSpec,
     namespace: ?NamespaceBinding = null,
 };
@@ -38,11 +39,13 @@ pub const OwnedLaunchConfig = struct {
     mountpoint: []u8,
     workspace_sync_interval_ms: u64,
     namespace_keepalive_interval_ms: u64,
+    shared_auth_token: ?[]u8 = null,
     endpoints: []OwnedEndpointSpec,
     namespace: ?OwnedNamespaceBinding = null,
 
     pub fn deinit(self: *OwnedLaunchConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.mountpoint);
+        if (self.shared_auth_token) |value| allocator.free(value);
         for (self.endpoints) |*endpoint| endpoint.deinit(allocator);
         allocator.free(self.endpoints);
         if (self.namespace) |*namespace| namespace.deinit(allocator);
@@ -332,6 +335,8 @@ pub fn parseLaunchConfigOwned(allocator: std.mem.Allocator, json: []const u8) !O
 
     const workspace_sync_interval_ms = integerFieldToU64(parsed.value.object.get("workspace_sync_interval_ms")) orelse 5_000;
     const namespace_keepalive_interval_ms = integerFieldToU64(parsed.value.object.get("namespace_keepalive_interval_ms")) orelse 60_000;
+    const shared_auth_token = try duplicateOptionalString(allocator, parsed.value.object.get("shared_auth_token"));
+    errdefer if (shared_auth_token) |value| allocator.free(value);
 
     const endpoints_value = parsed.value.object.get("endpoints") orelse return error.InvalidResponse;
     if (endpoints_value != .array) return error.InvalidResponse;
@@ -370,6 +375,7 @@ pub fn parseLaunchConfigOwned(allocator: std.mem.Allocator, json: []const u8) !O
         .mountpoint = mountpoint,
         .workspace_sync_interval_ms = workspace_sync_interval_ms,
         .namespace_keepalive_interval_ms = namespace_keepalive_interval_ms,
+        .shared_auth_token = shared_auth_token,
         .endpoints = endpoints,
         .namespace = namespace,
     };
@@ -551,6 +557,7 @@ test "native_mount_protocol: launch config roundtrips endpoint and namespace fie
         .mountpoint = "/Volumes/spiderweb",
         .workspace_sync_interval_ms = 12_000,
         .namespace_keepalive_interval_ms = 90_000,
+        .shared_auth_token = "sw-shared-456",
         .endpoints = &.{
             .{
                 .name = "local",
@@ -574,6 +581,7 @@ test "native_mount_protocol: launch config roundtrips endpoint and namespace fie
     try std.testing.expectEqualStrings("/Volumes/spiderweb", parsed.mountpoint);
     try std.testing.expectEqual(@as(usize, 1), parsed.endpoints.len);
     try std.testing.expect(parsed.namespace != null);
+    try std.testing.expectEqualStrings("sw-shared-456", parsed.shared_auth_token.?);
     try std.testing.expectEqualStrings("/nodes/local/fs", parsed.endpoints[0].mount_path);
     try std.testing.expectEqualStrings("proj-1", parsed.namespace.?.project_id);
 }

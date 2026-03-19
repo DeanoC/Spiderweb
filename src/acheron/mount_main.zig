@@ -394,7 +394,12 @@ pub fn main() !void {
                 workspace_sync_interval_ms,
                 namespace_keepalive_interval_ms,
             )) |helper_config| {
-                defer allocator.free(helper_config.endpoints);
+                defer {
+                    for (endpoint_specs.items, 0..) |endpoint, idx| {
+                        if (endpoint.mount_path == null) allocator.free(helper_config.endpoints[idx].mount_path);
+                    }
+                    allocator.free(helper_config.endpoints);
+                }
                 adapter.enableHelperTransport(helper_config) catch |err| {
                     std.log.warn(
                         "windows shared mount helper unavailable, falling back to in-process WinFsp path: {s}",
@@ -765,12 +770,21 @@ fn requestNativeMount(
 ) !void {
     const native_endpoints = try allocator.alloc(native_mount_protocol.EndpointSpec, endpoint_specs.len);
     defer allocator.free(native_endpoints);
+    const owned_mount_paths = try allocator.alloc(?[]u8, endpoint_specs.len);
+    for (owned_mount_paths) |*slot| slot.* = null;
+    defer {
+        for (owned_mount_paths) |maybe_path| {
+            if (maybe_path) |path| allocator.free(path);
+        }
+        allocator.free(owned_mount_paths);
+    }
     for (endpoint_specs, 0..) |endpoint, idx| {
+        const mount_path = try resolveNativeEndpointMountPath(allocator, endpoint, &owned_mount_paths[idx]);
         native_endpoints[idx] = .{
             .name = endpoint.name,
             .url = endpoint.url,
             .export_name = endpoint.export_name,
-            .mount_path = endpoint.mount_path orelse "/",
+            .mount_path = mount_path,
             .auth_token = endpoint.auth_token orelse auth_token,
         };
     }
@@ -798,12 +812,21 @@ fn buildSharedHelperLaunchConfig(
 ) !native_mount_protocol.LaunchConfig {
     const helper_endpoints = try allocator.alloc(native_mount_protocol.EndpointSpec, endpoint_specs.len);
     errdefer allocator.free(helper_endpoints);
+    const owned_mount_paths = try allocator.alloc(?[]u8, endpoint_specs.len);
+    for (owned_mount_paths) |*slot| slot.* = null;
+    defer allocator.free(owned_mount_paths);
+    errdefer {
+        for (owned_mount_paths) |maybe_path| {
+            if (maybe_path) |path| allocator.free(path);
+        }
+    }
     for (endpoint_specs, 0..) |endpoint, idx| {
+        const mount_path = try resolveNativeEndpointMountPath(allocator, endpoint, &owned_mount_paths[idx]);
         helper_endpoints[idx] = .{
             .name = endpoint.name,
             .url = endpoint.url,
             .export_name = endpoint.export_name,
-            .mount_path = endpoint.mount_path orelse "/",
+            .mount_path = mount_path,
             .auth_token = endpoint.auth_token orelse auth_token,
         };
     }
@@ -820,6 +843,21 @@ fn buildSharedHelperLaunchConfig(
         .endpoints = helper_endpoints,
         .namespace = namespace_binding,
     };
+}
+
+fn resolveNativeEndpointMountPath(
+    allocator: std.mem.Allocator,
+    endpoint: fs_router.EndpointConfig,
+    owned_mount_path: *?[]u8,
+) ![]const u8 {
+    if (endpoint.mount_path) |mount_path| {
+        owned_mount_path.* = null;
+        return mount_path;
+    }
+
+    const default_mount_path = try std.fmt.allocPrint(allocator, "/{s}", .{endpoint.name});
+    owned_mount_path.* = default_mount_path;
+    return default_mount_path;
 }
 
 fn makeNativeNamespaceBinding(

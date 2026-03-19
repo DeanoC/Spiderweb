@@ -1734,9 +1734,7 @@ fn localFsNodeChatInputSubmitHook(
     return node.submitChatInput(input, correlation_id);
 }
 
-fn localFsNodeBeforeOperationHook(raw_ctx: ?*anyopaque) anyerror!void {
-    const ctx = raw_ctx orelse return error.InvalidContext;
-    const node: *LocalFsNode = @ptrCast(@alignCast(ctx));
+fn refreshLocalFsNodeExclusionsBeforeRequest(node: *LocalFsNode) void {
     node.refreshActiveMountpointExclusions() catch |err| {
         std.log.warn("local fs mount exclusion refresh failed: {s}", .{@errorName(err)});
     };
@@ -1983,6 +1981,8 @@ fn handleLocalFsConnection(
                         }
                     }
                 }
+
+                refreshLocalFsNodeExclusionsBeforeRequest(local_node);
 
                 var handled = local_node.service.handleRequestJsonWithEvents(frame.payload) catch |err| blk: {
                     const fallback = try unified.buildFsrpcFsError(

@@ -8491,12 +8491,11 @@ pub const Session = struct {
         return self.allocator.dupe(u8, content[start..end]);
     }
 
-    pub fn writeMountGraphFile(self: *Session, absolute_path: []const u8, data: []const u8) !u32 {
+    pub fn writeMountGraphFile(self: *Session, absolute_path: []const u8, data: []const u8) !void {
         if (try self.writeInternalPath(absolute_path, data)) |info| {
             defer info.deinit(self.allocator);
             return mapInternalMountWriteError(info.code);
         }
-        return @intCast(data.len);
     }
 
     pub fn buildMountGraphSnapshotPayload(

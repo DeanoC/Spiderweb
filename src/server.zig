@@ -77,6 +77,7 @@ const venom_presence_dispatch_queue_max: usize = 256;
 // Internal fs-mount/runtime fan-out can exceed 16 steady-state connections,
 // which starves new control/gui handshakes and appears as "can't connect".
 const min_connection_worker_threads: usize = 64;
+const max_mount_graph_materialized_file_bytes: usize = 16 * 1024 * 1024;
 const runtime_warmup_stale_timeout_ms: i64 = 30_000;
 const runtime_warmup_error_retry_backoff_ms: i64 = 10_000;
 const runtime_residency_worker_interval_ms_default: u64 = 1_000;
@@ -7314,7 +7315,33 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
 
-                                const existing = session.readMountGraphFile(path, 0, std.math.maxInt(usize)) catch |err| switch (err) {
+                                _ = validateMountGraphWriteRange(offset, decoded.len) catch |err| switch (err) {
+                                    error.InvalidOffset => {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            "invalid_payload",
+                                            "offset is out of range",
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                        continue;
+                                    },
+                                    error.WriteTooLarge => {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            "invalid_payload",
+                                            "mount graph write exceeds max materialized size",
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                        continue;
+                                    },
+                                    else => return err,
+                                };
+
+                                const existing = session.readMountGraphFile(path, 0, max_mount_graph_materialized_file_bytes + 1) catch |err| switch (err) {
                                     error.FileNotFound, error.AccessDenied, error.OperationNotSupported => try allocator.dupe(u8, ""),
                                     else => {
                                         const response = try unified.buildControlError(
@@ -7329,6 +7356,17 @@ fn handleWebSocketConnection(
                                     },
                                 };
                                 defer allocator.free(existing);
+                                if (existing.len > max_mount_graph_materialized_file_bytes) {
+                                    const response = try unified.buildControlError(
+                                        allocator,
+                                        parsed.id,
+                                        "invalid_payload",
+                                        "mount graph file is too large to rewrite",
+                                    );
+                                    defer allocator.free(response);
+                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    continue;
+                                }
 
                                 const write_data = mergeMountGraphWriteData(allocator, existing, offset, decoded) catch |err| switch (err) {
                                     error.InvalidOffset => {
@@ -7342,11 +7380,22 @@ fn handleWebSocketConnection(
                                         try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                         continue;
                                     },
+                                    error.WriteTooLarge => {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            "invalid_payload",
+                                            "mount graph write exceeds max materialized size",
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                        continue;
+                                    },
                                     else => return err,
                                 };
                                 defer allocator.free(write_data);
 
-                                const bytes_written = session.writeMountGraphFile(path, write_data) catch |err| {
+                                session.writeMountGraphFile(path, write_data) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
                                         parsed.id,
@@ -7357,6 +7406,7 @@ fn handleWebSocketConnection(
                                     try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                     continue;
                                 };
+                                const bytes_written = mountGraphWriteResponseCount(decoded.len) catch unreachable;
                                 const escaped_path = try unified.jsonEscape(allocator, path);
                                 defer allocator.free(escaped_path);
                                 const payload_json = try std.fmt.allocPrint(
@@ -8201,9 +8251,9 @@ fn mergeMountGraphWriteData(
     offset: u64,
     data: []const u8,
 ) ![]u8 {
-    const base_offset = std.math.cast(usize, offset) orelse return error.InvalidOffset;
-    const write_end = std.math.add(usize, base_offset, data.len) catch return error.InvalidOffset;
-    const merged_len = @max(existing.len, write_end);
+    const range = try validateMountGraphWriteRange(offset, data.len);
+    if (existing.len > max_mount_graph_materialized_file_bytes) return error.WriteTooLarge;
+    const merged_len = @max(existing.len, range.write_end);
     var merged = try allocator.alloc(u8, merged_len);
     errdefer allocator.free(merged);
     @memset(merged, 0);
@@ -8211,9 +8261,26 @@ fn mergeMountGraphWriteData(
         @memcpy(merged[0..existing.len], existing);
     }
     if (data.len > 0) {
-        @memcpy(merged[base_offset..write_end], data);
+        @memcpy(merged[range.base_offset..range.write_end], data);
     }
     return merged;
+}
+
+fn validateMountGraphWriteRange(offset: u64, data_len: usize) !struct {
+    base_offset: usize,
+    write_end: usize,
+} {
+    const base_offset = std.math.cast(usize, offset) orelse return error.InvalidOffset;
+    const write_end = std.math.add(usize, base_offset, data_len) catch return error.InvalidOffset;
+    if (write_end > max_mount_graph_materialized_file_bytes) return error.WriteTooLarge;
+    return .{
+        .base_offset = base_offset,
+        .write_end = write_end,
+    };
+}
+
+fn mountGraphWriteResponseCount(request_bytes: usize) !u32 {
+    return std.math.cast(u32, request_bytes) orelse error.InvalidPayload;
 }
 
 fn optionalStringsEqual(left: ?[]const u8, right: ?[]const u8) bool {
@@ -11718,6 +11785,18 @@ test "server: mergeMountGraphWriteData preserves suffix on middle writes" {
     const merged = try mergeMountGraphWriteData(allocator, "abcdef", 2, "XY");
     defer allocator.free(merged);
     try std.testing.expectEqualStrings("abXYef", merged);
+}
+
+test "server: mergeMountGraphWriteData rejects oversized materialized writes" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(
+        error.WriteTooLarge,
+        mergeMountGraphWriteData(allocator, "", max_mount_graph_materialized_file_bytes, "x"),
+    );
+}
+
+test "server: mountGraphWriteResponseCount reports request byte length" {
+    try std.testing.expectEqual(@as(u32, 2), try mountGraphWriteResponseCount(2));
 }
 
 test "server: parseArchiveTimestamp accepts rotated debug archive names" {

@@ -672,6 +672,16 @@ fn rewriteWorkspaceStatusFsUrls(
     return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(parsed.value, .{})});
 }
 
+fn trustedNamespaceMountUrl(
+    runtime_workspace_url: ?[]const u8,
+    connection_workspace_url: ?[]const u8,
+) ?[]const u8 {
+    // Helper/probe subprocesses must always use the server's trusted listener URL.
+    // The connection authority is only for rewriting payloads we send back to the caller.
+    _ = connection_workspace_url;
+    return runtime_workspace_url;
+}
+
 test "server: rewriteWorkspaceStatusFsUrls rewrites local-only mount endpoints to the connection authority" {
     const allocator = std.testing.allocator;
     const rewritten = try rewriteWorkspaceStatusFsUrls(
@@ -683,6 +693,14 @@ test "server: rewriteWorkspaceStatusFsUrls rewrites local-only mount endpoints t
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"fs_url\":\"ws://192.168.10.101:18790/v2/fs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"desired_mounts\":[{\"mount_path\":\"/meta\",\"fs_url\":\"ws://192.168.10.101:18790/v2/fs\"}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"actual_mounts\":[{\"mount_path\":\"/agents\",\"fs_url\":\"ws://192.168.10.101:18790/v2/fs\"}]") != null);
+}
+
+test "server: trustedNamespaceMountUrl ignores connection authority" {
+    const trusted = trustedNamespaceMountUrl(
+        "ws://127.0.0.1:18790/",
+        "wss://attacker.example.com/",
+    ) orelse return error.TestExpectedResponse;
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18790/", trusted);
 }
 
 fn resolveSiblingExecutablePath(allocator: std.mem.Allocator, executable_name: []const u8) ![]u8 {
@@ -7208,7 +7226,7 @@ fn handleWebSocketConnection(
                                     runtime_registry,
                                     active_binding,
                                     active_session_key,
-                                    connection_workspace_url,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
@@ -7329,7 +7347,7 @@ fn handleWebSocketConnection(
                                     runtime_registry,
                                     active_binding,
                                     active_session_key,
-                                    connection_workspace_url,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
@@ -7447,7 +7465,7 @@ fn handleWebSocketConnection(
                                     runtime_registry,
                                     active_binding,
                                     active_session_key,
-                                    connection_workspace_url,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
@@ -8124,7 +8142,7 @@ fn handleWebSocketConnection(
                                 runtime_registry,
                                 active_binding,
                                 active_session_key,
-                                connection_workspace_url,
+                                trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                 principal.role == .admin,
                             ) catch |err| {
                                 const response = try unified.buildFsrpcError(
@@ -8183,7 +8201,7 @@ fn getOrInitNamespaceSessionForBinding(
     runtime_registry: *AgentRuntimeRegistry,
     binding: SessionBinding,
     session_key: []const u8,
-    namespace_mount_url: ?[]const u8,
+    trusted_namespace_mount_url: ?[]const u8,
     is_admin: bool,
 ) !*acheron_session_mod.Session {
     if (namespace_session.* == null) {
@@ -8192,7 +8210,7 @@ fn getOrInitNamespaceSessionForBinding(
             runtime_registry,
             binding,
             session_key,
-            namespace_mount_url,
+            trusted_namespace_mount_url,
             is_admin,
         );
     }
@@ -8210,7 +8228,7 @@ fn initNamespaceSessionForBinding(
     runtime_registry: *AgentRuntimeRegistry,
     binding: SessionBinding,
     session_key: []const u8,
-    namespace_mount_url: ?[]const u8,
+    trusted_namespace_mount_url: ?[]const u8,
     is_admin: bool,
 ) !acheron_session_mod.Session {
     const project_id = binding.project_id orelse return error.InvalidState;
@@ -8232,7 +8250,7 @@ fn initNamespaceSessionForBinding(
         .{
             .project_id = project_id,
             .project_token = binding.project_token,
-            .namespace_mount_url = namespace_mount_url orelse runtime_registry.workspace_url,
+            .namespace_mount_url = trusted_namespace_mount_url orelse runtime_registry.workspace_url,
             .namespace_session_key = session_key,
             .agents_dir = runtime_registry.runtime_config.agents_dir,
             .assets_dir = runtime_registry.runtime_config.assets_dir,

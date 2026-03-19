@@ -379,8 +379,9 @@ fn printServiceStatus(allocator: std.mem.Allocator, json_output: bool) !void {
 
 fn handleRemoteNodeConfigCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const subcommand = if (args.len > 0) args[0] else "status";
+    const subcommand_args = commandTail(args);
     if (std.mem.eql(u8, subcommand, "status")) {
-        const json_output = try parseJsonOnlyFlag(args[1..]);
+        const json_output = try parseJsonOnlyFlag(subcommand_args);
         try printRemoteNodeStatus(allocator, json_output);
         return;
     }
@@ -389,13 +390,17 @@ fn handleRemoteNodeConfigCommand(allocator: std.mem.Allocator, args: []const []c
         return;
     }
     if (std.mem.eql(u8, subcommand, "set")) {
-        try setRemoteNodeConfig(allocator, args[1..]);
+        try setRemoteNodeConfig(allocator, subcommand_args);
         return;
     }
 
     std.log.err("Unknown remote-node command: {s}", .{subcommand});
     std.log.info("Available: status, set, clear", .{});
     return error.UnknownCommand;
+}
+
+fn commandTail(args: []const []const u8) []const []const u8 {
+    return if (args.len > 0) args[1..] else args[0..0];
 }
 
 fn printRemoteNodeStatus(allocator: std.mem.Allocator, json_output: bool) !void {
@@ -527,13 +532,28 @@ fn setRemoteNodeConfig(allocator: std.mem.Allocator, args: []const []const u8) !
     replaceOwnedString(allocator, &config.runtime.remote_node.node_id, next_node_id) catch return error.OutOfMemory;
     config.runtime.remote_node.export_ro = export_ro;
     config.runtime.remote_node.enabled = true;
-    config.runtime.remote_node.lease_ttl_ms = lease_ttl_ms orelse config.runtime.remote_node.lease_ttl_ms;
-    config.runtime.remote_node.heartbeat_ms = heartbeat_ms orelse config.runtime.remote_node.heartbeat_ms;
+    const next_lease_ttl_ms = lease_ttl_ms orelse config.runtime.remote_node.lease_ttl_ms;
+    const next_heartbeat_ms = heartbeat_ms orelse config.runtime.remote_node.heartbeat_ms;
+    try validateRemoteNodeHeartbeatSettings(next_lease_ttl_ms, next_heartbeat_ms);
+    config.runtime.remote_node.lease_ttl_ms = next_lease_ttl_ms;
+    config.runtime.remote_node.heartbeat_ms = next_heartbeat_ms;
     try config.save();
 
     if (node_secret) |secret| {
         const store = credential_store_mod.CredentialStore.init(allocator);
         try store.setRemoteNodeSecret(next_node_id, secret);
+    }
+}
+
+fn validateRemoteNodeHeartbeatSettings(lease_ttl_ms: u64, heartbeat_ms: u64) !void {
+    if (lease_ttl_ms == 0 or heartbeat_ms == 0 or heartbeat_ms > lease_ttl_ms) {
+        if (!builtin.is_test) {
+            std.log.err(
+                "invalid remote-node heartbeat/lease settings (heartbeat={d} lease={d})",
+                .{ heartbeat_ms, lease_ttl_ms },
+            );
+        }
+        return error.InvalidArguments;
     }
 }
 
@@ -1925,4 +1945,17 @@ test "config_cli: parse working directory from launchd plist" {
     const parsed = (try parseServiceWorkingDirectory(allocator, plist_path)) orelse return error.TestExpectedWorkingDirectory;
     defer allocator.free(parsed);
     try std.testing.expectEqualStrings("/Users/example/Spiderweb", parsed);
+}
+
+test "config_cli: command tail handles empty args" {
+    const args = [_][]const u8{};
+    try std.testing.expectEqual(@as(usize, 0), commandTail(&args).len);
+}
+
+test "config_cli: remote-node heartbeat validation rejects invalid settings" {
+    try std.testing.expectError(error.InvalidArguments, validateRemoteNodeHeartbeatSettings(0, 1));
+    try std.testing.expectError(error.InvalidArguments, validateRemoteNodeHeartbeatSettings(10, 0));
+    try std.testing.expectError(error.InvalidArguments, validateRemoteNodeHeartbeatSettings(10, 11));
+    try validateRemoteNodeHeartbeatSettings(10, 10);
+    try validateRemoteNodeHeartbeatSettings(10, 5);
 }

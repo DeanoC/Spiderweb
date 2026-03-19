@@ -301,6 +301,7 @@ xcodebuild \
   -archivePath "$archive_path" \
   DEVELOPMENT_TEAM="$SPIDERWEB_MACOS_TEAM_ID" \
   CODE_SIGN_STYLE=Automatic \
+  MARKETING_VERSION="$version" \
   ONLY_ACTIVE_ARCH=NO \
   archive
 

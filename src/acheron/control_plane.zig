@@ -440,6 +440,9 @@ pub const ControlPlane = struct {
     primary_agent_id: []const u8 = default_primary_agent_id,
     spider_web_root: []const u8 = default_spider_web_root,
     node_venom_event_history_max: usize = node_venom_event_history_max_default,
+    snapshot_directory: ?[]u8 = null,
+    snapshot_filename: ?[]u8 = null,
+    state_encryption_key: ?[persistence_cipher.key_length]u8 = null,
     mutex: std.Thread.Mutex = .{},
 
     invites: std.StringHashMapUnmanaged(Invite) = .{},
@@ -544,9 +547,33 @@ pub const ControlPlane = struct {
         ltm_filename: []const u8,
         options: InitOptions,
     ) ControlPlane {
-        _ = ltm_directory;
-        _ = ltm_filename;
-        return ControlPlane.initWithOptions(allocator, options);
+        var plane = ControlPlane.initWithOptions(allocator, options);
+        plane.state_encryption_key = loadStateEncryptionKey(allocator);
+        if (ltm_directory.len == 0 or ltm_filename.len == 0) return plane;
+
+        plane.snapshot_directory = allocator.dupe(u8, ltm_directory) catch |err| {
+            std.log.warn("control-plane persistence disabled: failed duplicating snapshot directory: {s}", .{@errorName(err)});
+            return plane;
+        };
+        errdefer if (plane.snapshot_directory) |directory| allocator.free(directory);
+
+        plane.snapshot_filename = allocator.dupe(u8, ltm_filename) catch |err| {
+            std.log.warn("control-plane persistence disabled: failed duplicating snapshot filename: {s}", .{@errorName(err)});
+            if (plane.snapshot_directory) |directory| allocator.free(directory);
+            plane.snapshot_directory = null;
+            return plane;
+        };
+
+        plane.loadSnapshotLocked() catch |err| {
+            plane.clearState();
+            plane.next_invite_id = 1;
+            plane.next_node_id = 1;
+            plane.next_pending_join_id = 1;
+            plane.next_project_id = 1;
+            std.log.warn("control-plane snapshot load failed: {s}", .{@errorName(err)});
+        };
+        plane.ensureBuiltinProjectBestEffortLocked(std.time.milliTimestamp());
+        return plane;
     }
 
     fn ensureBuiltinProjectBestEffortLocked(self: *ControlPlane, now_ms: i64) void {
@@ -936,6 +963,21 @@ pub const ControlPlane = struct {
 
     pub fn deinit(self: *ControlPlane) void {
         self.clearState();
+        if (self.snapshot_directory) |directory| self.allocator.free(directory);
+        if (self.snapshot_filename) |filename| self.allocator.free(filename);
+    }
+
+    pub fn dumpState(self: *ControlPlane) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.buildSnapshotJsonLocked();
+    }
+
+    pub fn loadState(self: *ControlPlane, snapshot_json: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.restoreSnapshotFromJsonLocked(snapshot_json);
+        self.ensureBuiltinProjectBestEffortLocked(std.time.milliTimestamp());
     }
 
     fn clearState(self: *ControlPlane) void {
@@ -4504,6 +4546,53 @@ pub const ControlPlane = struct {
 
     fn persistSnapshotBestEffortLocked(self: *ControlPlane) void {
         self.requestReconcileLocked(std.time.milliTimestamp());
+        self.persistSnapshotLocked() catch |err| {
+            std.log.warn("control-plane snapshot persist failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    fn persistSnapshotLocked(self: *ControlPlane) !void {
+        const snapshot_directory = self.snapshot_directory orelse return;
+        const snapshot_filename = self.snapshot_filename orelse return;
+
+        const snapshot_json = try self.buildSnapshotJsonLocked();
+        defer self.allocator.free(snapshot_json);
+        const persisted_json = if (self.state_encryption_key) |key|
+            try encryptSnapshotJson(self.allocator, snapshot_json, key)
+        else
+            try self.allocator.dupe(u8, snapshot_json);
+        defer self.allocator.free(persisted_json);
+
+        try std.fs.cwd().makePath(snapshot_directory);
+        const snapshot_path = try std.fs.path.join(self.allocator, &.{ snapshot_directory, snapshot_filename });
+        defer self.allocator.free(snapshot_path);
+        try std.fs.cwd().writeFile(.{
+            .sub_path = snapshot_path,
+            .data = persisted_json,
+        });
+    }
+
+    fn loadSnapshotLocked(self: *ControlPlane) !void {
+        const snapshot_directory = self.snapshot_directory orelse return;
+        const snapshot_filename = self.snapshot_filename orelse return;
+        const snapshot_path = try std.fs.path.join(self.allocator, &.{ snapshot_directory, snapshot_filename });
+        defer self.allocator.free(snapshot_path);
+
+        const record = std.fs.cwd().readFileAlloc(self.allocator, snapshot_path, 16 * 1024 * 1024) catch |err| switch (err) {
+            error.FileNotFound, error.PathAlreadyExists, error.NameTooLong => return,
+            error.NotDir => return,
+            else => return err,
+        };
+        defer self.allocator.free(record);
+
+        if (isEncryptedSnapshotEnvelope(record)) {
+            const key = self.state_encryption_key orelse return error.MissingSnapshotEncryptionKey;
+            const snapshot_json = try decryptSnapshotJson(self.allocator, record, key);
+            defer self.allocator.free(snapshot_json);
+            try self.restoreSnapshotFromJsonLocked(snapshot_json);
+            return;
+        }
+        try self.restoreSnapshotFromJsonLocked(record);
     }
 
     fn buildSnapshotJsonLocked(self: *ControlPlane) ![]u8 {

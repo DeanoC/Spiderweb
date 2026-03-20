@@ -216,6 +216,33 @@ pub fn build(b: *std.Build) void {
     spiderweb_fs_node.linkLibC();
     b.installArtifact(spiderweb_fs_node);
 
+    const local_node_mod = b.createModule(.{
+        .root_source_file = b.path("src/local_node_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    local_node_mod.addImport("spiderweb_node", spiderweb_node_module);
+    const spiderweb_local_node = b.addExecutable(.{
+        .name = "spiderweb-local-node",
+        .root_module = local_node_mod,
+    });
+    spiderweb_local_node.linkLibC();
+    b.installArtifact(spiderweb_local_node);
+
+    const local_node_service_mod = b.createModule(.{
+        .root_source_file = b.path("src/local_node_service_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    local_node_service_mod.addImport("spider-protocol", spider_protocol_module);
+    local_node_service_mod.addImport("ziggy-tool-runtime", ziggy_tool_runtime_module);
+    const spiderweb_local_service = b.addExecutable(.{
+        .name = "spiderweb-local-service",
+        .root_module = local_node_service_mod,
+    });
+    spiderweb_local_service.linkLibC();
+    b.installArtifact(spiderweb_local_service);
+
     // Distributed filesystem mount/router executable
     const fs_mount_mod = b.createModule(.{
         .root_source_file = b.path("src/acheron/mount_main.zig"),

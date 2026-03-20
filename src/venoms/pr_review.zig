@@ -2546,7 +2546,7 @@ fn executeSyncOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
     if (service_error_code == null and sync_checkout_input.enabled) {
         const request_payload = try self.buildPrReviewGitSyncCheckoutRequestJson(context, sync_checkout_input.overrides);
         defer self.allocator.free(request_payload);
-        var git_sync_target = try resolvePreferredServiceTarget(self, "git", "/control/sync_checkout.json");
+        var git_sync_target = try resolvePreferredServiceTarget(self, "git", "/control/invoke.json");
         defer git_sync_target.deinit(self.allocator);
         checkout_sync_capture = try self.invokePrReviewServiceCapture(
             store,
@@ -2575,7 +2575,7 @@ fn executeSyncOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
     if (service_error_code == null and repo_status_input.enabled) {
         const request_payload = try self.buildPrReviewGitStatusRequestJson(context, repo_status_input.overrides);
         defer self.allocator.free(request_payload);
-        var git_status_target = try resolvePreferredServiceTarget(self, "git", "/control/status.json");
+        var git_status_target = try resolvePreferredServiceTarget(self, "git", "/control/invoke.json");
         defer git_status_target.deinit(self.allocator);
         repo_status_capture = try self.invokePrReviewServiceCapture(
             store,
@@ -2604,7 +2604,7 @@ fn executeSyncOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
     if (service_error_code == null and diff_range_input.enabled) {
         const request_payload = try self.buildPrReviewGitDiffRangeRequestJson(context, diff_range_input.overrides);
         defer self.allocator.free(request_payload);
-        var git_diff_target = try resolvePreferredServiceTarget(self, "git", "/control/diff_range.json");
+        var git_diff_target = try resolvePreferredServiceTarget(self, "git", "/control/invoke.json");
         defer git_diff_target.deinit(self.allocator);
         diff_range_capture = try self.invokePrReviewServiceCapture(
             store,

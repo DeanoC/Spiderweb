@@ -2,7 +2,7 @@ const std = @import("std");
 const persona_pack = @import("persona_pack.zig");
 
 pub const AgentCapability = enum {
-    chat,
+    general,
     code,
     plan,
     research,
@@ -212,7 +212,7 @@ pub const AgentRegistry = struct {
 
         // Infer capabilities from agent_id
         var capabilities = std.ArrayListUnmanaged(AgentCapability){};
-        try capabilities.append(self.allocator, .chat);
+        try capabilities.append(self.allocator, .general);
 
         if (std.mem.containsAtLeast(u8, agent_id, 1, "code") or
             std.mem.containsAtLeast(u8, agent_id, 1, "dev") or
@@ -553,7 +553,7 @@ const optional_persona_files = [_][]const u8{
 };
 
 fn parseCapability(str: []const u8) !AgentCapability {
-    if (std.mem.eql(u8, str, "chat")) return .chat;
+    if (std.mem.eql(u8, str, "chat") or std.mem.eql(u8, str, "general")) return .general;
     if (std.mem.eql(u8, str, "code")) return .code;
     if (std.mem.eql(u8, str, "plan")) return .plan;
     if (std.mem.eql(u8, str, "research")) return .research;
@@ -586,7 +586,7 @@ test "agent_registry: scan supports absolute agents_dir path" {
         \\  "name": "Mother",
         \\  "description": "Primary orchestrator",
         \\  "is_default": true,
-        \\  "capabilities": ["chat","plan"]
+        \\  "capabilities": ["general","plan"]
         \\}
         ,
     });

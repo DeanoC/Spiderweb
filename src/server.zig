@@ -1,19 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
-const credential_store_mod = @import("credential_store.zig");
 const connection_dispatcher = @import("connection_dispatcher.zig");
 const protocol = @import("spider-protocol").protocol;
 const runtime_handle_mod = @import("agents/runtime_handle.zig");
 const websocket_transport = @import("websocket_transport.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
 const acheron_session_mod = @import("acheron/session.zig");
-const chat_job_index = @import("agents/chat_job_index.zig");
 const fs_protocol = @import("spiderweb_fs").fs_protocol;
 const spiderweb_node = @import("spiderweb_node");
-const fs_node_ops = spiderweb_node.fs_node_ops;
-const fs_node_service = spiderweb_node.fs_node_service;
-const fs_watch_runtime = spiderweb_node.fs_watch_runtime;
 const agent_config_mod = @import("agents/agent_config.zig");
 const agent_registry_mod = @import("agents/agent_registry.zig");
 const unified = @import("spider-protocol").unified;
@@ -40,24 +35,15 @@ const local_node_name_env = "SPIDERWEB_LOCAL_NODE_NAME";
 const local_node_lease_ttl_env = "SPIDERWEB_LOCAL_NODE_LEASE_TTL_MS";
 const local_node_heartbeat_ms_env = "SPIDERWEB_LOCAL_NODE_HEARTBEAT_MS";
 const local_node_watcher_enabled_env = "SPIDERWEB_LOCAL_NODE_WATCHER_ENABLED";
+const local_node_supervisor_dirname = "local-node";
+const local_node_state_filename = "state.json";
+const local_node_manifests_dirname = "services.d";
+const local_node_default_name = "spiderweb-local";
+const local_node_service_binary_name = "spiderweb-local-service";
+const local_node_ready_timeout_ms: u64 = 10_000;
+const local_node_ready_poll_ms: u64 = 100;
 const system_agent_id = "spiderweb";
 const system_project_id = control_plane_mod.spider_web_project_id;
-const local_node_default_workspace_export_name = "system-workspace";
-const local_node_agents_export_name = "system-agents";
-const local_node_meta_export_name = "system-meta";
-const local_node_chat_export_name = "system-chat";
-const local_node_jobs_export_name = "system-jobs";
-const local_node_mount_agents_root = "/agents";
-const local_node_mount_meta = "/meta";
-const local_node_mount_agents_self_chat = "/global/chat";
-const local_node_mount_agents_self_jobs = "/global/jobs";
-const local_node_mount_nodes_local_fs = "/nodes/local/fs";
-const local_node_mount_projects_system_agents_root = "/nodes/local/projects/" ++ system_project_id ++ "/agents";
-const local_node_mount_projects_system_meta = "/nodes/local/projects/" ++ system_project_id ++ "/meta";
-const local_node_mount_projects_system_agents_self_chat = "/nodes/local/projects/" ++ system_project_id ++ "/global/chat";
-const local_node_mount_projects_system_agents_self_jobs = "/nodes/local/projects/" ++ system_project_id ++ "/global/jobs";
-const local_node_mount_projects_system_nodes_local_fs = "/nodes/local/projects/" ++ system_project_id ++ "/nodes/local/fs";
-const local_node_mount_projects_system_fs_local = "/nodes/local/projects/" ++ system_project_id ++ "/fs/local::fs";
 const legacy_local_node_mount_agents_self_capabilities = "/global/capabilities";
 const legacy_local_node_mount_projects_system_agents_self_capabilities = "/nodes/local/projects/" ++ system_project_id ++ "/global/capabilities";
 const control_operator_token_env = "SPIDERWEB_CONTROL_OPERATOR_TOKEN";
@@ -716,6 +702,83 @@ fn resolveSiblingExecutablePath(allocator: std.mem.Allocator, executable_name: [
     return allocator.dupe(u8, executable_name);
 }
 
+fn deleteTreeIfPresent(dir_path: []const u8) !void {
+    if (!pathExists(dir_path)) return;
+
+    const parent = std.fs.path.dirname(dir_path) orelse return;
+    const base = std.fs.path.basename(dir_path);
+    if (base.len == 0) return;
+
+    if (std.fs.path.isAbsolute(parent)) {
+        var dir = std.fs.openDirAbsolute(parent, .{}) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return err,
+        };
+        defer dir.close();
+        try dir.deleteTree(base);
+        return;
+    }
+
+    var dir = std.fs.cwd().openDir(parent, .{}) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer dir.close();
+    try dir.deleteTree(base);
+}
+
+fn writeFileReplacing(path: []const u8, data: []const u8) !void {
+    const parent = std.fs.path.dirname(path) orelse return error.InvalidPath;
+    const base = std.fs.path.basename(path);
+    if (base.len == 0) return error.InvalidPath;
+    try ensureDirectoryExists(parent);
+
+    if (std.fs.path.isAbsolute(parent)) {
+        var dir = try std.fs.openDirAbsolute(parent, .{});
+        defer dir.close();
+        var file = try dir.createFile(base, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(data);
+        return;
+    }
+
+    var dir = try std.fs.cwd().openDir(parent, .{});
+    defer dir.close();
+    var file = try dir.createFile(base, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(data);
+}
+
+fn warnDeprecatedEmbeddedLocalNodeEnv(allocator: std.mem.Allocator) void {
+    const deprecated_vars = [_][]const u8{
+        local_node_export_path_env,
+        local_node_export_name_env,
+        local_node_export_ro_env,
+        local_node_fs_url_env,
+        local_node_name_env,
+        local_node_lease_ttl_env,
+        local_node_heartbeat_ms_env,
+        local_node_watcher_enabled_env,
+    };
+
+    for (deprecated_vars) |env_name| {
+        const raw = std.process.getEnvVarOwned(allocator, env_name) catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => continue,
+            else => {
+                std.log.warn("failed reading deprecated {s}: {s}", .{ env_name, @errorName(err) });
+                continue;
+            },
+        };
+        defer allocator.free(raw);
+
+        if (std.mem.trim(u8, raw, " \t\r\n").len == 0) continue;
+        std.log.warn(
+            "{s} is deprecated and ignored; use runtime.local_node in config.json instead",
+            .{env_name},
+        );
+    }
+}
+
 fn runRemoteControlOperation(
     allocator: std.mem.Allocator,
     control_url: []const u8,
@@ -786,90 +849,6 @@ fn initNodeVenomEventLogPath(
     try file.seekFromEnd(0);
     return path;
 }
-
-const FsHubConnection = struct {
-    id: u64,
-    stream: *std.net.Stream,
-    write_mutex: std.Thread.Mutex = .{},
-    allow_invalidations: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
-};
-
-const FsConnectionHub = struct {
-    allocator: std.mem.Allocator,
-    connections: std.ArrayListUnmanaged(*FsHubConnection) = .{},
-    mutex: std.Thread.Mutex = .{},
-    next_id: u64 = 1,
-
-    fn deinit(self: *FsConnectionHub) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        for (self.connections.items) |conn| self.allocator.destroy(conn);
-        self.connections.deinit(self.allocator);
-    }
-
-    fn register(self: *FsConnectionHub, stream: *std.net.Stream, allow_invalidations: bool) !*FsHubConnection {
-        const conn = try self.allocator.create(FsHubConnection);
-        errdefer self.allocator.destroy(conn);
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        conn.* = .{
-            .id = self.next_id,
-            .stream = stream,
-        };
-        conn.allow_invalidations.store(allow_invalidations, .release);
-        self.next_id +%= 1;
-        if (self.next_id == 0) self.next_id = 1;
-        try self.connections.append(self.allocator, conn);
-        return conn;
-    }
-
-    fn unregister(self: *FsConnectionHub, conn: *FsHubConnection) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        for (self.connections.items, 0..) |item, idx| {
-            if (item != conn) continue;
-            _ = self.connections.swapRemove(idx);
-            self.allocator.destroy(conn);
-            return;
-        }
-    }
-
-    fn broadcastInvalidations(self: *FsConnectionHub, origin_id: u64, events: []const fs_protocol.InvalidationEvent) void {
-        for (events) |event| {
-            const payload = fs_node_service.buildInvalidationEventJson(self.allocator, event) catch continue;
-            defer self.allocator.free(payload);
-            self.broadcastText(origin_id, payload);
-        }
-    }
-
-    fn broadcastText(self: *FsConnectionHub, origin_id: u64, payload: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        for (self.connections.items) |conn| {
-            if (conn.id == origin_id) continue;
-            if (!conn.allow_invalidations.load(.acquire)) continue;
-            // Drop invalidation frames when a connection is busy to avoid starving
-            // in-band request/response traffic on the same websocket.
-            if (!conn.write_mutex.tryLock()) continue;
-            websocket_transport.writeFrame(conn.stream, payload, .text) catch {
-                conn.stream.close();
-            };
-            conn.write_mutex.unlock();
-        }
-    }
-
-    fn disableInvalidations(self: *FsConnectionHub, conn_id: u64) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        for (self.connections.items) |conn| {
-            if (conn.id != conn_id) continue;
-            conn.allow_invalidations.store(false, .release);
-            return;
-        }
-    }
-};
 
 const NodeTunnelPendingRequest = struct {
     mutex: std.Thread.Mutex = .{},
@@ -1301,598 +1280,6 @@ const AuditRecord = struct {
     }
 };
 
-const LocalFsMountSpec = struct {
-    mount_path: []u8,
-    export_name: []u8,
-
-    fn deinit(self: *LocalFsMountSpec, allocator: std.mem.Allocator) void {
-        allocator.free(self.mount_path);
-        allocator.free(self.export_name);
-        self.* = undefined;
-    }
-};
-
-const RemoteNodeRegistration = struct {
-    control_url: []u8,
-    node_name: []u8,
-    public_base_url: []u8,
-    public_fs_url: []u8,
-    export_path: []u8,
-    export_name: []u8,
-    export_ro: bool,
-    node_id: []u8,
-    node_secret: []u8,
-    lease_ttl_ms: u64,
-    heartbeat_ms: u64,
-
-    fn clone(self: RemoteNodeRegistration, allocator: std.mem.Allocator) !RemoteNodeRegistration {
-        return .{
-            .control_url = try allocator.dupe(u8, self.control_url),
-            .node_name = try allocator.dupe(u8, self.node_name),
-            .public_base_url = try allocator.dupe(u8, self.public_base_url),
-            .public_fs_url = try allocator.dupe(u8, self.public_fs_url),
-            .export_path = try allocator.dupe(u8, self.export_path),
-            .export_name = try allocator.dupe(u8, self.export_name),
-            .export_ro = self.export_ro,
-            .node_id = try allocator.dupe(u8, self.node_id),
-            .node_secret = try allocator.dupe(u8, self.node_secret),
-            .lease_ttl_ms = self.lease_ttl_ms,
-            .heartbeat_ms = self.heartbeat_ms,
-        };
-    }
-
-    fn deinit(self: *RemoteNodeRegistration, allocator: std.mem.Allocator) void {
-        allocator.free(self.control_url);
-        allocator.free(self.node_name);
-        allocator.free(self.public_base_url);
-        allocator.free(self.public_fs_url);
-        allocator.free(self.export_path);
-        allocator.free(self.export_name);
-        allocator.free(self.node_id);
-        allocator.free(self.node_secret);
-        self.* = undefined;
-    }
-};
-
-const LocalFsNode = struct {
-    allocator: std.mem.Allocator,
-    runtime_registry: *AgentRuntimeRegistry,
-    service: fs_node_service.NodeService,
-    hub: FsConnectionHub,
-    node_name: []u8,
-    workspace_export_name: []u8,
-    workspace_export_root: []u8,
-    mount_specs: std.ArrayListUnmanaged(LocalFsMountSpec) = .{},
-    fs_url: []u8,
-    fs_export_count: usize,
-    fs_rw_export_count: usize,
-    lease_ttl_ms: u64,
-    heartbeat_interval_ms: u64,
-    heartbeat_stop: bool = false,
-    heartbeat_mutex: std.Thread.Mutex = .{},
-    heartbeat_thread: ?std.Thread = null,
-    registration_mutex: std.Thread.Mutex = .{},
-    registered_node_id: ?[]u8 = null,
-    session_auth_token: ?[]u8 = null,
-    remote_registration: ?RemoteNodeRegistration = null,
-    chat_jobs_mutex: std.Thread.Mutex = .{},
-    chat_jobs_cond: std.Thread.Condition = .{},
-    chat_jobs_inflight: usize = 0,
-    chat_jobs_stopping: bool = false,
-    exclusion_refresh_mutex: std.Thread.Mutex = .{},
-    last_exclusion_refresh_ms: i64 = 0,
-
-    fn create(
-        allocator: std.mem.Allocator,
-        runtime_registry: *AgentRuntimeRegistry,
-        export_specs: []const fs_node_ops.ExportSpec,
-        mount_specs: []const control_plane_mod.SpiderWebMountSpec,
-        node_name: []const u8,
-        fs_url: []const u8,
-        lease_ttl_ms: u64,
-        heartbeat_interval_ms: u64,
-        watcher_enabled: bool,
-        remote_registration: ?RemoteNodeRegistration,
-    ) !*LocalFsNode {
-        const endpoint = try allocator.create(LocalFsNode);
-        errdefer allocator.destroy(endpoint);
-
-        if (export_specs.len == 0) return error.InvalidPayload;
-        if (mount_specs.len == 0) return error.InvalidPayload;
-
-        var owned_mount_specs = std.ArrayListUnmanaged(LocalFsMountSpec){};
-        errdefer {
-            for (owned_mount_specs.items) |*item| item.deinit(allocator);
-            owned_mount_specs.deinit(allocator);
-        }
-        for (mount_specs) |spec| {
-            try owned_mount_specs.append(allocator, .{
-                .mount_path = try allocator.dupe(u8, spec.mount_path),
-                .export_name = try allocator.dupe(u8, spec.export_name),
-            });
-        }
-
-        endpoint.* = .{
-            .allocator = allocator,
-            .runtime_registry = runtime_registry,
-            .service = try fs_node_service.NodeService.initWithOptions(
-                allocator,
-                export_specs,
-                .{
-                    .chat_input_hook = .{
-                        .ctx = @ptrCast(endpoint),
-                        .on_submit = localFsNodeChatInputSubmitHook,
-                    },
-                },
-            ),
-            .hub = .{ .allocator = allocator },
-            .node_name = try allocator.dupe(u8, node_name),
-            .workspace_export_name = try allocator.dupe(u8, export_specs[0].name),
-            .workspace_export_root = try normalizeAbsolutePathOwned(allocator, export_specs[0].path),
-            .mount_specs = owned_mount_specs,
-            .fs_url = try allocator.dupe(u8, fs_url),
-            .fs_export_count = countLocalFsExports(export_specs),
-            .fs_rw_export_count = countLocalFsRwExports(export_specs),
-            .lease_ttl_ms = lease_ttl_ms,
-            .heartbeat_interval_ms = heartbeat_interval_ms,
-            .remote_registration = if (remote_registration) |registration| try registration.clone(allocator) else null,
-        };
-        errdefer {
-            endpoint.hub.deinit();
-            endpoint.service.deinit();
-            allocator.free(endpoint.node_name);
-            allocator.free(endpoint.workspace_export_name);
-            allocator.free(endpoint.workspace_export_root);
-            for (endpoint.mount_specs.items) |*item| item.deinit(allocator);
-            endpoint.mount_specs.deinit(allocator);
-            allocator.free(endpoint.fs_url);
-            if (endpoint.remote_registration) |*registration| registration.deinit(allocator);
-        }
-
-        const watch_source_export = export_specs[0];
-        const watch_disabled_for_root_export = std.mem.eql(u8, std.mem.trim(u8, watch_source_export.path, " \t\r\n"), "/");
-        const should_enable_watcher = watcher_enabled and !watch_disabled_for_root_export;
-        if (!should_enable_watcher) {
-            // Full-root recursive watcher scans can block on special mount points
-            // and starve fsrpc request handling (shared NodeService mutex).
-            if (watch_disabled_for_root_export) {
-                std.log.warn("local fs node watcher disabled: export root '/' can block fsrpc under recursive scans", .{});
-            } else {
-                std.log.warn("local fs node watcher disabled by runtime policy", .{});
-            }
-        } else if (fs_watch_runtime.spawnDetached(
-            allocator,
-            &endpoint.service,
-            emitLocalFsWatcherEvents,
-            @ptrCast(endpoint),
-            .{},
-        )) |backend| {
-            std.log.info("local fs node watcher backend active: {s}", .{@tagName(backend)});
-        } else |err| {
-            std.log.warn("local fs node watcher disabled: {s}", .{@errorName(err)});
-        }
-
-        return endpoint;
-    }
-
-    fn deinit(self: *LocalFsNode, control_plane: *control_plane_mod.ControlPlane) void {
-        self.stopAndWaitForChatJobWorkers();
-        self.requestHeartbeatStop();
-        if (self.heartbeat_thread) |thread| {
-            thread.join();
-            self.heartbeat_thread = null;
-        }
-
-        var owned_node_id: ?[]u8 = null;
-        var owned_auth_token: ?[]u8 = null;
-        self.registration_mutex.lock();
-        owned_node_id = self.registered_node_id;
-        self.registered_node_id = null;
-        owned_auth_token = self.session_auth_token;
-        self.session_auth_token = null;
-        self.registration_mutex.unlock();
-
-        if (owned_node_id) |node_id| {
-            control_plane.unregisterNodeById(node_id) catch |err| {
-                std.log.warn("local fs node unregister failed for {s}: {s}", .{ node_id, @errorName(err) });
-            };
-            self.allocator.free(node_id);
-        }
-        if (owned_auth_token) |token| self.allocator.free(token);
-        self.registration_mutex.lock();
-        if (self.remote_registration) |*registration| {
-            registration.deinit(self.allocator);
-            self.remote_registration = null;
-        }
-        self.registration_mutex.unlock();
-
-        self.hub.deinit();
-        self.service.deinit();
-        self.allocator.free(self.node_name);
-        self.allocator.free(self.workspace_export_name);
-        self.allocator.free(self.workspace_export_root);
-        for (self.mount_specs.items) |*item| item.deinit(self.allocator);
-        self.mount_specs.deinit(self.allocator);
-        self.allocator.free(self.fs_url);
-        self.allocator.destroy(self);
-    }
-
-    fn refreshActiveMountpointExclusions(self: *LocalFsNode) !void {
-        if (builtin.os.tag != .macos) return;
-
-        const now_ms = std.time.milliTimestamp();
-        self.exclusion_refresh_mutex.lock();
-        defer self.exclusion_refresh_mutex.unlock();
-
-        if (self.last_exclusion_refresh_ms != 0 and now_ms - self.last_exclusion_refresh_ms < 1_000) {
-            return;
-        }
-        self.last_exclusion_refresh_ms = now_ms;
-
-        const mountpoints = try listActiveSpiderwebMountpointsWithinRoot(
-            self.allocator,
-            self.workspace_export_root,
-        );
-        defer freeOwnedPathList(self.allocator, mountpoints);
-
-        const path_views = try self.allocator.alloc([]const u8, mountpoints.len);
-        defer self.allocator.free(path_views);
-        for (mountpoints, 0..) |mountpoint, idx| path_views[idx] = mountpoint;
-
-        try self.service.setExportExcludedSubtreesByName(self.workspace_export_name, path_views);
-    }
-
-    fn beginChatJobWorker(self: *LocalFsNode) !void {
-        self.chat_jobs_mutex.lock();
-        defer self.chat_jobs_mutex.unlock();
-        if (self.chat_jobs_stopping) return error.ShuttingDown;
-        self.chat_jobs_inflight += 1;
-    }
-
-    fn finishChatJobWorker(self: *LocalFsNode) void {
-        self.chat_jobs_mutex.lock();
-        if (self.chat_jobs_inflight > 0) {
-            self.chat_jobs_inflight -= 1;
-        }
-        if (self.chat_jobs_stopping and self.chat_jobs_inflight == 0) {
-            self.chat_jobs_cond.broadcast();
-        } else if (self.chat_jobs_inflight == 0) {
-            self.chat_jobs_cond.signal();
-        }
-        self.chat_jobs_mutex.unlock();
-    }
-
-    fn stopAndWaitForChatJobWorkers(self: *LocalFsNode) void {
-        self.chat_jobs_mutex.lock();
-        self.chat_jobs_stopping = true;
-        while (self.chat_jobs_inflight > 0) {
-            self.chat_jobs_cond.wait(&self.chat_jobs_mutex);
-        }
-        self.chat_jobs_mutex.unlock();
-    }
-
-    fn startRegistrationAndHeartbeat(self: *LocalFsNode, control_plane: *control_plane_mod.ControlPlane) !void {
-        try self.refreshRegistration(control_plane);
-        self.refreshRemoteRegistration() catch |err| {
-            std.log.warn("initial remote fs node registration failed: {s}", .{@errorName(err)});
-        };
-        self.heartbeat_thread = try std.Thread.spawn(.{}, localFsHeartbeatThreadMain, .{ self, control_plane });
-    }
-
-    fn refreshRegistration(self: *LocalFsNode, control_plane: *control_plane_mod.ControlPlane) !void {
-        const payload_json = try control_plane.ensureNode(self.node_name, self.fs_url, self.lease_ttl_ms);
-        defer self.allocator.free(payload_json);
-        const registration = try parseNodeRegistrationFromJoinPayload(self.allocator, payload_json);
-        var mount_node_id: []u8 = undefined;
-        self.registration_mutex.lock();
-        var unlock_needed = true;
-        defer if (unlock_needed) self.registration_mutex.unlock();
-
-        if (self.registered_node_id) |prev| {
-            if (std.mem.eql(u8, prev, registration.node_id)) {
-                mount_node_id = try self.allocator.dupe(u8, prev);
-                self.registration_mutex.unlock();
-                unlock_needed = false;
-                defer self.allocator.free(mount_node_id);
-                self.allocator.free(registration.node_id);
-                self.allocator.free(registration.node_secret);
-                try self.ensureSpiderWebMounts(control_plane, mount_node_id);
-                try self.registerLocalVenoms(control_plane, mount_node_id, self.session_auth_token.?);
-                return;
-            }
-            self.allocator.free(prev);
-        }
-        if (self.session_auth_token) |existing| self.allocator.free(existing);
-
-        self.registered_node_id = registration.node_id;
-        self.session_auth_token = registration.node_secret;
-        mount_node_id = try self.allocator.dupe(u8, self.registered_node_id.?);
-        self.registration_mutex.unlock();
-        unlock_needed = false;
-        defer self.allocator.free(mount_node_id);
-        try self.ensureSpiderWebMounts(control_plane, mount_node_id);
-        try self.registerLocalVenoms(control_plane, mount_node_id, self.session_auth_token.?);
-    }
-
-    fn ensureSpiderWebMounts(self: *LocalFsNode, control_plane: *control_plane_mod.ControlPlane, node_id: []const u8) !void {
-        const specs = try self.allocator.alloc(control_plane_mod.SpiderWebMountSpec, self.mount_specs.items.len);
-        defer self.allocator.free(specs);
-        for (self.mount_specs.items, 0..) |spec, idx| {
-            specs[idx] = .{
-                .mount_path = spec.mount_path,
-                .export_name = spec.export_name,
-            };
-        }
-        try control_plane.ensureSpiderWebMounts(node_id, specs);
-    }
-
-    fn registerLocalVenoms(
-        self: *LocalFsNode,
-        control_plane: *control_plane_mod.ControlPlane,
-        node_id: []const u8,
-        node_secret: []const u8,
-    ) !void {
-        const payload_json = try self.buildLocalVenomUpsertPayload(node_id, node_secret);
-        defer self.allocator.free(payload_json);
-        const response_json = try control_plane.nodeVenomUpsert(payload_json);
-        defer self.allocator.free(response_json);
-    }
-
-    fn buildLocalVenomUpsertPayload(self: *LocalFsNode, node_id: []const u8, node_secret: []const u8) ![]u8 {
-        const escaped_node_id = try unified.jsonEscape(self.allocator, node_id);
-        defer self.allocator.free(escaped_node_id);
-        const escaped_node_secret = try unified.jsonEscape(self.allocator, node_secret);
-        defer self.allocator.free(escaped_node_secret);
-        const escaped_platform_os = try unified.jsonEscape(self.allocator, @tagName(builtin.os.tag));
-        defer self.allocator.free(escaped_platform_os);
-        const escaped_platform_arch = try unified.jsonEscape(self.allocator, @tagName(builtin.cpu.arch));
-        defer self.allocator.free(escaped_platform_arch);
-
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.writer(self.allocator).print(
-            "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"{s}\",\"arch\":\"{s}\",\"runtime_kind\":\"spiderweb\"}},\"venoms\":[",
-            .{ escaped_node_id, escaped_node_secret, escaped_platform_os, escaped_platform_arch },
-        );
-        try self.appendLocalFsVenomJson(&out, escaped_node_id);
-        try out.append(self.allocator, ',');
-        try self.appendLocalChatVenomJson(&out, escaped_node_id);
-        try out.append(self.allocator, ',');
-        try self.appendLocalJobsVenomJson(&out, escaped_node_id);
-        try out.appendSlice(self.allocator, "]}");
-        return out.toOwnedSlice(self.allocator);
-    }
-
-    fn buildFsOnlyVenomUpsertPayload(self: *LocalFsNode, node_id: []const u8, node_secret: []const u8) ![]u8 {
-        const escaped_node_id = try unified.jsonEscape(self.allocator, node_id);
-        defer self.allocator.free(escaped_node_id);
-        const escaped_node_secret = try unified.jsonEscape(self.allocator, node_secret);
-        defer self.allocator.free(escaped_node_secret);
-        const escaped_platform_os = try unified.jsonEscape(self.allocator, @tagName(builtin.os.tag));
-        defer self.allocator.free(escaped_platform_os);
-        const escaped_platform_arch = try unified.jsonEscape(self.allocator, @tagName(builtin.cpu.arch));
-        defer self.allocator.free(escaped_platform_arch);
-
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.writer(self.allocator).print(
-            "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"{s}\",\"arch\":\"{s}\",\"runtime_kind\":\"spiderweb\"}},\"venoms\":[",
-            .{ escaped_node_id, escaped_node_secret, escaped_platform_os, escaped_platform_arch },
-        );
-        try self.appendLocalFsVenomJson(&out, escaped_node_id);
-        try out.appendSlice(self.allocator, "]}");
-        return out.toOwnedSlice(self.allocator);
-    }
-
-    fn appendLocalFsVenomJson(
-        self: *LocalFsNode,
-        out: *std.ArrayListUnmanaged(u8),
-        escaped_node_id: []const u8,
-    ) !void {
-        const endpoint_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/fs", .{escaped_node_id});
-        defer self.allocator.free(endpoint_path);
-        const payload = try spiderweb_node.venom_contracts.fs.renderDescriptorJson(
-            self.allocator,
-            endpoint_path,
-            endpoint_path,
-            "spiderweb-local-fs",
-            self.fs_rw_export_count > 0,
-            self.fs_export_count,
-        );
-        defer self.allocator.free(payload);
-        try out.appendSlice(self.allocator, payload);
-    }
-
-    fn appendLocalChatVenomJson(
-        self: *LocalFsNode,
-        out: *std.ArrayListUnmanaged(u8),
-        escaped_node_id: []const u8,
-    ) !void {
-        const endpoint_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/chat", .{escaped_node_id});
-        defer self.allocator.free(endpoint_path);
-        const jobs_root_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/jobs", .{escaped_node_id});
-        defer self.allocator.free(jobs_root_path);
-        const payload = try spiderweb_node.venom_contracts.chat.renderDescriptorJson(
-            self.allocator,
-            endpoint_path,
-            endpoint_path,
-            jobs_root_path,
-            "spiderweb-local-chat",
-        );
-        defer self.allocator.free(payload);
-        try out.appendSlice(self.allocator, payload);
-    }
-
-    fn appendLocalJobsVenomJson(
-        self: *LocalFsNode,
-        out: *std.ArrayListUnmanaged(u8),
-        escaped_node_id: []const u8,
-    ) !void {
-        const endpoint_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/jobs", .{escaped_node_id});
-        defer self.allocator.free(endpoint_path);
-        const payload = try spiderweb_node.venom_contracts.jobs.renderDescriptorJson(
-            self.allocator,
-            endpoint_path,
-            endpoint_path,
-            "spiderweb-local-jobs",
-        );
-        defer self.allocator.free(payload);
-        try out.appendSlice(self.allocator, payload);
-    }
-
-    fn requestHeartbeatStop(self: *LocalFsNode) void {
-        self.heartbeat_mutex.lock();
-        self.heartbeat_stop = true;
-        self.heartbeat_mutex.unlock();
-    }
-
-    fn shouldStopHeartbeat(self: *LocalFsNode) bool {
-        self.heartbeat_mutex.lock();
-        defer self.heartbeat_mutex.unlock();
-        return self.heartbeat_stop;
-    }
-
-    fn copySessionAuthToken(self: *LocalFsNode, allocator: std.mem.Allocator) !?[]u8 {
-        self.registration_mutex.lock();
-        defer self.registration_mutex.unlock();
-        if (self.session_auth_token) |token| {
-            const copy = try allocator.dupe(u8, token);
-            return @as(?[]u8, copy);
-        }
-        return null;
-    }
-
-    fn copyAcceptedSessionAuthTokens(self: *LocalFsNode, allocator: std.mem.Allocator) ![][]u8 {
-        self.registration_mutex.lock();
-        defer self.registration_mutex.unlock();
-
-        var tokens = std.ArrayListUnmanaged([]u8){};
-        errdefer {
-            for (tokens.items) |item| allocator.free(item);
-            tokens.deinit(allocator);
-        }
-
-        if (self.session_auth_token) |token| {
-            try tokens.append(allocator, try allocator.dupe(u8, token));
-        }
-        if (self.remote_registration) |registration| {
-            const already_present = if (self.session_auth_token) |token|
-                std.mem.eql(u8, token, registration.node_secret)
-            else
-                false;
-            if (!already_present) {
-                try tokens.append(allocator, try allocator.dupe(u8, registration.node_secret));
-            }
-        }
-        return tokens.toOwnedSlice(allocator);
-    }
-
-    fn refreshRemoteRegistration(self: *LocalFsNode) !void {
-        self.registration_mutex.lock();
-        errdefer self.registration_mutex.unlock();
-        var remote = if (self.remote_registration) |registration|
-            try registration.clone(self.allocator)
-        else
-            null;
-        self.registration_mutex.unlock();
-        defer if (remote) |*registration| registration.deinit(self.allocator);
-        const active_remote = remote orelse return;
-
-        const refresh_payload = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"fs_url\":\"{s}\",\"lease_ttl_ms\":{d}}}",
-            .{ active_remote.node_id, active_remote.node_secret, active_remote.public_fs_url, active_remote.lease_ttl_ms },
-        );
-        defer self.allocator.free(refresh_payload);
-        const refresh_reply = try runRemoteControlOperation(self.allocator, active_remote.control_url, "node_lease_refresh", refresh_payload);
-        defer self.allocator.free(refresh_reply);
-
-        const upsert_payload = try self.buildFsOnlyVenomUpsertPayload(active_remote.node_id, active_remote.node_secret);
-        defer self.allocator.free(upsert_payload);
-        const upsert_reply = try runRemoteControlOperation(self.allocator, active_remote.control_url, "venom_upsert", upsert_payload);
-        defer self.allocator.free(upsert_reply);
-    }
-
-    fn submitChatInput(
-        self: *LocalFsNode,
-        input: []const u8,
-        correlation_id: ?[]const u8,
-    ) !fs_node_service.NodeService.ChatInputSubmission {
-        const job_id = try self.runtime_registry.job_index.createJob(system_agent_id, correlation_id);
-        errdefer self.allocator.free(job_id);
-        self.runtime_registry.job_index.setRequestText(job_id, input) catch |err| {
-            const message = try std.fmt.allocPrint(self.allocator, "chat job request persistence failed: {s}", .{@errorName(err)});
-            defer self.allocator.free(message);
-            try self.runtime_registry.job_index.markCompleted(
-                job_id,
-                false,
-                message,
-                message,
-                "[local fs chat queue failure]\n",
-            );
-            return .{
-                .job_id = job_id,
-                .correlation_id = if (correlation_id) |value| try self.allocator.dupe(u8, value) else null,
-                .state = .failed,
-                .error_text = try self.allocator.dupe(u8, message),
-                .result_text = try self.allocator.dupe(u8, message),
-                .log_text = try self.allocator.dupe(u8, "[local fs chat queue failure]\n"),
-            };
-        };
-
-        return .{
-            .job_id = job_id,
-            .correlation_id = if (correlation_id) |value| try self.allocator.dupe(u8, value) else null,
-            .state = .queued,
-        };
-    }
-
-    fn publishChatJobUpdate(self: *LocalFsNode, update: fs_node_ops.NamespaceChatJobUpdate) void {
-        const events = self.service.upsertNamespaceChatJobWithEvents(update) catch |err| {
-            std.log.warn("local fs chat job namespace update failed for {s}: {s}", .{ update.job_id, @errorName(err) });
-            return;
-        };
-        defer self.allocator.free(events);
-        if (events.len > 0) self.hub.broadcastInvalidations(0, events);
-    }
-};
-
-fn countLocalFsExports(specs: []const fs_node_ops.ExportSpec) usize {
-    var count: usize = 0;
-    for (specs) |spec| {
-        if (spec.source_kind != null and spec.source_kind.? == .namespace) continue;
-        count += 1;
-    }
-    return count;
-}
-
-fn countLocalFsRwExports(specs: []const fs_node_ops.ExportSpec) usize {
-    var count: usize = 0;
-    for (specs) |spec| {
-        if (spec.source_kind != null and spec.source_kind.? == .namespace) continue;
-        if (!spec.ro) count += 1;
-    }
-    return count;
-}
-
-fn localFsNodeChatInputSubmitHook(
-    raw_ctx: ?*anyopaque,
-    allocator: std.mem.Allocator,
-    input: []const u8,
-    correlation_id: ?[]const u8,
-) anyerror!fs_node_service.NodeService.ChatInputSubmission {
-    _ = allocator;
-    const ctx = raw_ctx orelse return error.InvalidContext;
-    const node: *LocalFsNode = @ptrCast(@alignCast(ctx));
-    return node.submitChatInput(input, correlation_id);
-}
-
-fn refreshLocalFsNodeExclusionsBeforeRequest(node: *LocalFsNode) void {
-    node.refreshActiveMountpointExclusions() catch |err| {
-        std.log.warn("local fs mount exclusion refresh failed: {s}", .{@errorName(err)});
-    };
-}
-
 const NodeRegistration = struct {
     node_id: []u8,
     node_secret: []u8,
@@ -1911,289 +1298,6 @@ fn parseNodeRegistrationFromJoinPayload(allocator: std.mem.Allocator, payload_js
         .node_id = try allocator.dupe(u8, node_id.string),
         .node_secret = try allocator.dupe(u8, node_secret.string),
     };
-}
-
-fn emitLocalFsWatcherEvents(ctx: ?*anyopaque, events: []const fs_protocol.InvalidationEvent) void {
-    const raw = ctx orelse return;
-    const node: *LocalFsNode = @ptrCast(@alignCast(raw));
-    node.hub.broadcastInvalidations(0, events);
-}
-
-fn listActiveSpiderwebMountpointsWithinRoot(
-    allocator: std.mem.Allocator,
-    root_path: []const u8,
-) ![][]u8 {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{"mount"},
-        .max_output_bytes = 512 * 1024,
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    switch (result.term) {
-        .Exited => |code| if (code != 0) return error.ProcessFailed,
-        else => return error.ProcessFailed,
-    }
-
-    var mountpoints = std.ArrayListUnmanaged([]u8){};
-    errdefer {
-        for (mountpoints.items) |mountpoint| allocator.free(mountpoint);
-        mountpoints.deinit(allocator);
-    }
-
-    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r\n");
-        if (line.len == 0) continue;
-        if (std.mem.indexOf(u8, line, " (spiderwebfs") == null) continue;
-
-        const on_index = std.mem.indexOf(u8, line, " on ") orelse continue;
-        const paren_index = std.mem.indexOf(u8, line, " (") orelse continue;
-        if (paren_index <= on_index + 4) continue;
-
-        const mountpoint = normalizeAbsolutePathOwned(allocator, line[on_index + 4 .. paren_index]) catch continue;
-
-        if (!pathIsAncestorOrEqual(root_path, mountpoint) or std.mem.eql(u8, root_path, mountpoint)) {
-            allocator.free(mountpoint);
-            continue;
-        }
-
-        var duplicate = false;
-        for (mountpoints.items) |existing| {
-            if (std.mem.eql(u8, existing, mountpoint)) {
-                duplicate = true;
-                break;
-            }
-        }
-        if (duplicate) {
-            allocator.free(mountpoint);
-            continue;
-        }
-
-        try mountpoints.append(allocator, mountpoint);
-    }
-
-    return mountpoints.toOwnedSlice(allocator);
-}
-
-fn freeOwnedPathList(allocator: std.mem.Allocator, paths: [][]u8) void {
-    for (paths) |path| allocator.free(path);
-    allocator.free(paths);
-}
-
-fn normalizeAbsolutePathOwned(allocator: std.mem.Allocator, raw_path: []const u8) ![]u8 {
-    var trimmed = std.mem.trim(u8, raw_path, " \t\r\n");
-    if (trimmed.len == 0 or !std.fs.path.isAbsolute(trimmed)) return error.InvalidPath;
-    while (trimmed.len > 1 and trimmed[trimmed.len - 1] == '/') {
-        trimmed = trimmed[0 .. trimmed.len - 1];
-    }
-    return allocator.dupe(u8, trimmed);
-}
-
-fn writeFsHubFrame(conn: *FsHubConnection, payload: []const u8, frame_type: websocket_transport.FrameType) !void {
-    conn.write_mutex.lock();
-    defer conn.write_mutex.unlock();
-    try websocket_transport.writeFrame(conn.stream, payload, frame_type);
-}
-
-fn writeStreamFrameWithMutex(
-    stream: *std.net.Stream,
-    write_mutex: *std.Thread.Mutex,
-    payload: []const u8,
-    frame_type: websocket_transport.FrameType,
-) !void {
-    write_mutex.lock();
-    defer write_mutex.unlock();
-    try websocket_transport.writeFrame(stream, payload, frame_type);
-}
-
-fn writeFsHubFrameMaybe(
-    connection: ?*FsHubConnection,
-    stream: *std.net.Stream,
-    write_mutex: *std.Thread.Mutex,
-    payload: []const u8,
-    frame_type: websocket_transport.FrameType,
-) !void {
-    if (connection) |conn| {
-        return writeFsHubFrame(conn, payload, frame_type);
-    }
-    return writeStreamFrameWithMutex(stream, write_mutex, payload, frame_type);
-}
-
-fn handleLocalFsConnection(
-    allocator: std.mem.Allocator,
-    local_node: *LocalFsNode,
-    stream: *std.net.Stream,
-) !void {
-    const accepted_auth_tokens = try local_node.copyAcceptedSessionAuthTokens(allocator);
-    defer {
-        for (accepted_auth_tokens) |token| allocator.free(token);
-        allocator.free(accepted_auth_tokens);
-    }
-
-    var connection: ?*FsHubConnection = null;
-    defer if (connection) |conn| local_node.hub.unregister(conn);
-    var connection_write_mutex: std.Thread.Mutex = .{};
-    var acheron_negotiated = false;
-    var hello_allow_invalidations = false;
-
-    while (true) {
-        var frame = websocket_transport.readFrame(
-            allocator,
-            stream,
-            4 * 1024 * 1024,
-        ) catch |err| switch (err) {
-            error.EndOfStream, websocket_transport.Error.ConnectionClosed => return,
-            else => return err,
-        };
-        defer frame.deinit(allocator);
-
-        switch (frame.opcode) {
-            0x1 => {
-                var parsed = unified.parseMessage(allocator, frame.payload) catch |err| {
-                    const response = try unified.buildFsrpcFsError(
-                        allocator,
-                        null,
-                        fs_protocol.Errno.EINVAL,
-                        @errorName(err),
-                    );
-                    defer allocator.free(response);
-                    try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, response, .text);
-                    try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, "", .close);
-                    return;
-                };
-                defer parsed.deinit(allocator);
-
-                var register_after_response = false;
-                if (!acheron_negotiated) {
-                    if (parsed.channel == .control) {
-                        const response = try unified.buildControlError(
-                            allocator,
-                            parsed.id,
-                            "invalid_endpoint",
-                            "wrong websocket endpoint: use / for control protocol (/v2/fs is fsrpc-only)",
-                        );
-                        defer allocator.free(response);
-                        try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, response, .text);
-                        try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, "", .close);
-                        return;
-                    }
-                    if (parsed.channel != .acheron or parsed.acheron_type != .fs_t_hello) {
-                        const response = try unified.buildFsrpcFsError(
-                            allocator,
-                            parsed.tag,
-                            fs_protocol.Errno.EINVAL,
-                            "acheron.t_fs_hello must be negotiated first",
-                        );
-                        defer allocator.free(response);
-                        try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, response, .text);
-                        try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, "", .close);
-                        return;
-                    }
-                    const hello_opts = validateFsNodeHelloPayloadWithAcceptedTokens(
-                        allocator,
-                        parsed.payload_json,
-                        if (accepted_auth_tokens.len > 0) accepted_auth_tokens else null,
-                    ) catch |err| {
-                        const response = try unified.buildFsrpcFsError(
-                            allocator,
-                            parsed.tag,
-                            fs_protocol.Errno.EINVAL,
-                            @errorName(err),
-                        );
-                        defer allocator.free(response);
-                        try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, response, .text);
-                        try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, "", .close);
-                        return;
-                    };
-                    hello_allow_invalidations = hello_opts.allow_invalidations;
-                    acheron_negotiated = true;
-                    register_after_response = true;
-                } else if (parsed.acheron_type == .fs_t_hello) {
-                    const hello_opts = validateFsNodeHelloPayloadWithAcceptedTokens(
-                        allocator,
-                        parsed.payload_json,
-                        if (accepted_auth_tokens.len > 0) accepted_auth_tokens else null,
-                    ) catch |err| {
-                        const response = try unified.buildFsrpcFsError(
-                            allocator,
-                            parsed.tag,
-                            fs_protocol.Errno.EINVAL,
-                            @errorName(err),
-                        );
-                        defer allocator.free(response);
-                        try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, response, .text);
-                        try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, "", .close);
-                        return;
-                    };
-                    hello_allow_invalidations = hello_opts.allow_invalidations;
-                    if (connection) |live_connection| {
-                        if (!hello_allow_invalidations) {
-                            local_node.hub.disableInvalidations(live_connection.id);
-                        }
-                    }
-                }
-
-                refreshLocalFsNodeExclusionsBeforeRequest(local_node);
-
-                var handled = local_node.service.handleRequestJsonWithEvents(frame.payload) catch |err| blk: {
-                    const fallback = try unified.buildFsrpcFsError(
-                        allocator,
-                        null,
-                        fs_protocol.Errno.EIO,
-                        @errorName(err),
-                    );
-                    break :blk fs_node_service.NodeService.HandledRequest{
-                        .response_json = fallback,
-                        .events = try allocator.alloc(fs_protocol.InvalidationEvent, 0),
-                    };
-                };
-                defer handled.deinit(allocator);
-                if (connection) |live_connection| {
-                    for (handled.events) |event| {
-                        const event_json = try fs_node_service.buildInvalidationEventJson(allocator, event);
-                        defer allocator.free(event_json);
-                        try writeFsHubFrame(live_connection, event_json, .text);
-                    }
-
-                    if (handled.events.len > 0) {
-                        local_node.hub.broadcastInvalidations(live_connection.id, handled.events);
-                    }
-                    try writeFsHubFrame(live_connection, handled.response_json, .text);
-                } else {
-                    for (handled.events) |event| {
-                        const event_json = try fs_node_service.buildInvalidationEventJson(allocator, event);
-                        defer allocator.free(event_json);
-                        try writeStreamFrameWithMutex(stream, &connection_write_mutex, event_json, .text);
-                    }
-                    try writeStreamFrameWithMutex(stream, &connection_write_mutex, handled.response_json, .text);
-                }
-
-                if (register_after_response) {
-                    connection = try local_node.hub.register(stream, hello_allow_invalidations);
-                }
-            },
-            0x8 => {
-                writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, "", .close) catch {};
-                return;
-            },
-            0x9 => {
-                try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, frame.payload, .pong);
-            },
-            0xA => {},
-            else => {
-                const response = try unified.buildFsrpcFsError(
-                    allocator,
-                    null,
-                    fs_protocol.Errno.EINVAL,
-                    "unsupported websocket opcode",
-                );
-                defer allocator.free(response);
-                try writeFsHubFrameMaybe(connection, stream, &connection_write_mutex, response, .text);
-            },
-        }
-    }
 }
 
 const NodeTunnelHello = struct {
@@ -2688,26 +1792,6 @@ fn rewriteAcheronTag(
     if (channel_val != .string or !std.mem.eql(u8, channel_val.string, "acheron")) return error.InvalidPayload;
     try parsed.value.object.put("tag", .{ .integer = @as(i64, next_tag) });
     return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(parsed.value, .{})});
-}
-
-fn localFsHeartbeatThreadMain(local_node: *LocalFsNode, control_plane: *control_plane_mod.ControlPlane) void {
-    while (true) {
-        var elapsed: u64 = 0;
-        while (elapsed < local_node.heartbeat_interval_ms) {
-            if (local_node.shouldStopHeartbeat()) return;
-            const step_ms: u64 = @min(@as(u64, 500), local_node.heartbeat_interval_ms - elapsed);
-            std.Thread.sleep(step_ms * std.time.ns_per_ms);
-            elapsed += step_ms;
-        }
-        if (local_node.shouldStopHeartbeat()) return;
-
-        local_node.refreshRegistration(control_plane) catch |err| {
-            std.log.warn("local fs node heartbeat refresh failed: {s}", .{@errorName(err)});
-        };
-        local_node.refreshRemoteRegistration() catch |err| {
-            std.log.warn("remote fs node heartbeat refresh failed: {s}", .{@errorName(err)});
-        };
-    }
 }
 
 const auth_tokens_filename = "auth_tokens.json";
@@ -3626,13 +2710,12 @@ const AgentRuntimeRegistry = struct {
     max_runtimes: usize,
     debug_stream_sink: DebugStreamFileSink,
     control_plane: control_plane_mod.ControlPlane,
-    job_index: chat_job_index.ChatJobIndex,
     auth_tokens: AuthTokenStore,
     missions: mission_store_mod.MissionStore,
     control_operator_token: ?[]u8 = null,
     control_project_scope_token: ?[]u8 = null,
     control_node_scope_token: ?[]u8 = null,
-    local_fs_node: ?*LocalFsNode = null,
+    local_node_supervisor: ?*LocalNodeSupervisor = null,
     node_tunnels: NodeTunnelRegistry,
     workspace_url: ?[]u8 = null,
     mutex: std.Thread.Mutex = .{},
@@ -3762,10 +2845,6 @@ const AgentRuntimeRegistry = struct {
                     .node_venom_event_history_max = history_max,
                 },
             ),
-            .job_index = chat_job_index.ChatJobIndex.init(
-                allocator,
-                runtime_config.ltm_directory,
-            ),
             .auth_tokens = AuthTokenStore.init(allocator, runtime_config),
             .missions = mission_store_mod.MissionStore.init(allocator, runtime_config),
             .control_operator_token = operator_token,
@@ -3816,10 +2895,11 @@ const AgentRuntimeRegistry = struct {
         self.runtime_warmup_lifecycle_mutex.unlock();
 
         self.mutex.lock();
-        const local_fs_node_for_shutdown = self.local_fs_node;
+        const local_node_supervisor_for_shutdown = self.local_node_supervisor;
         self.mutex.unlock();
-        if (local_fs_node_for_shutdown) |local_fs_node| {
-            local_fs_node.stopAndWaitForChatJobWorkers();
+        if (local_node_supervisor_for_shutdown) |supervisor| {
+            supervisor.requestStop();
+            supervisor.join();
         }
 
         self.mutex.lock();
@@ -3848,9 +2928,9 @@ const AgentRuntimeRegistry = struct {
         self.runtime_warmups.deinit(self.allocator);
         self.runtime_warmups = .{};
         self.runtime_warmups_mutex.unlock();
-        if (self.local_fs_node) |local_fs_node| {
-            local_fs_node.deinit(&self.control_plane);
-            self.local_fs_node = null;
+        if (self.local_node_supervisor) |supervisor| {
+            supervisor.deinit();
+            self.local_node_supervisor = null;
         }
         if (self.control_operator_token) |token| {
             self.allocator.free(token);
@@ -3880,7 +2960,6 @@ const AgentRuntimeRegistry = struct {
         self.audit_records = .{};
         self.next_audit_record_id = 1;
         self.audit_records_mutex.unlock();
-        self.job_index.deinit();
         self.control_plane.deinit();
         self.debug_stream_sink.deinit();
         self.auth_tokens.deinit();
@@ -3991,25 +3070,68 @@ const AgentRuntimeRegistry = struct {
         );
     }
 
-    fn getLocalFsNode(self: *AgentRuntimeRegistry) ?*LocalFsNode {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.local_fs_node;
-    }
+    fn startLocalNodeSupervisor(self: *AgentRuntimeRegistry, bind_addr: []const u8, port: u16) !void {
+        if (!self.runtime_config.local_node.enabled) return;
 
-    fn copyLocalFsWorkspaceRoot(self: *AgentRuntimeRegistry, allocator: std.mem.Allocator) !?[]u8 {
-        const local_node = self.getLocalFsNode() orelse return null;
-        const roots = try local_node.service.copyExportRootPaths(allocator);
-        if (roots.len == 0) {
-            allocator.free(roots);
-            return null;
+        self.mutex.lock();
+        const existing = self.local_node_supervisor;
+        self.mutex.unlock();
+        if (existing != null) return;
+
+        const control_auth_token = try self.auth_tokens.copyAdminToken();
+        defer self.allocator.free(control_auth_token);
+
+        const supervisor = try LocalNodeSupervisor.create(
+            self.allocator,
+            &self.control_plane,
+            self.runtime_config,
+            bind_addr,
+            port,
+            control_auth_token,
+        );
+        errdefer supervisor.deinit();
+        try supervisor.start();
+
+        self.pruneLegacySystemCapabilityMounts();
+
+        var installed = false;
+        self.mutex.lock();
+        if (self.local_node_supervisor == null) {
+            self.local_node_supervisor = supervisor;
+            installed = true;
+        }
+        self.mutex.unlock();
+        if (!installed) {
+            supervisor.requestStop();
+            supervisor.join();
+            supervisor.deinit();
+            return;
         }
 
-        const selected = roots[0];
-        var idx: usize = 1;
-        while (idx < roots.len) : (idx += 1) allocator.free(roots[idx]);
-        allocator.free(roots);
-        return @as(?[]u8, selected);
+        self.waitForPreferredLocalNodeServices(local_node_ready_timeout_ms) catch |err| {
+            std.log.warn("local node started but core services are not ready yet: {s}", .{@errorName(err)});
+        };
+    }
+
+    fn waitForPreferredLocalNodeServices(self: *AgentRuntimeRegistry, timeout_ms: u64) !void {
+        const deadline = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+        while (true) {
+            if (try self.hasPreferredLocalNodeServices()) return;
+            if (std.time.milliTimestamp() >= deadline) return error.TimedOut;
+            std.Thread.sleep(local_node_ready_poll_ms * std.time.ns_per_ms);
+        }
+    }
+
+    fn hasPreferredLocalNodeServices(self: *AgentRuntimeRegistry) !bool {
+        for ([_][]const u8{ "fs", "terminal", "git", "search_code" }) |venom_id| {
+            var provider = (try self.control_plane.resolvePreferredVenomProvider(
+                self.allocator,
+                venom_id,
+                &.{ local_node_default_name, "local" },
+            )) orelse return false;
+            defer provider.deinit(self.allocator);
+        }
+        return true;
     }
 
     fn rotateAuthToken(self: *AgentRuntimeRegistry, role: ConnectionRole) ![]u8 {
@@ -5699,239 +4821,349 @@ const AgentRuntimeRegistry = struct {
         }
     }
 
-    fn maybeInitLocalFsNode(self: *AgentRuntimeRegistry, bind_addr: []const u8, port: u16) !void {
+};
+
+const LocalNodeSupervisor = struct {
+    allocator: std.mem.Allocator,
+    control_plane: *control_plane_mod.ControlPlane,
+    control_url: []u8,
+    control_auth_token: []u8,
+    binary_path: []u8,
+    service_binary_path: []u8,
+    export_root: []u8,
+    export_name: []u8,
+    profile: []u8,
+    state_dir: []u8,
+    state_path: []u8,
+    manifests_dir: []u8,
+    extra_venoms_dir: ?[]u8 = null,
+    restart_on_exit: bool,
+    thread: ?std.Thread = null,
+    mutex: std.Thread.Mutex = .{},
+    stop_requested: bool = false,
+    child_pid: ?std.process.Child.Id = null,
+
+    fn create(
+        allocator: std.mem.Allocator,
+        control_plane: *control_plane_mod.ControlPlane,
+        runtime_config: Config.RuntimeConfig,
+        bind_addr: []const u8,
+        port: u16,
+        control_auth_token: []const u8,
+    ) !*LocalNodeSupervisor {
+        const local_cfg = runtime_config.local_node;
+        const export_root_trimmed = blk: {
+            const local_export = std.mem.trim(u8, local_cfg.export_path, " \t\r\n");
+            if (local_export.len > 0) break :blk local_export;
+            break :blk std.mem.trim(u8, runtime_config.spider_web_root, " \t\r\n");
+        };
+        if (export_root_trimmed.len == 0) return error.InvalidArguments;
+
+        const supervisor = try allocator.create(LocalNodeSupervisor);
+        errdefer allocator.destroy(supervisor);
+
+        const state_dir = try std.fs.path.join(allocator, &.{ runtime_config.ltm_directory, local_node_supervisor_dirname });
+        errdefer allocator.free(state_dir);
+        const state_path = try std.fs.path.join(allocator, &.{ state_dir, local_node_state_filename });
+        errdefer allocator.free(state_path);
+        const manifests_dir = try std.fs.path.join(allocator, &.{ state_dir, local_node_manifests_dirname });
+        errdefer allocator.free(manifests_dir);
+
+        supervisor.* = .{
+            .allocator = allocator,
+            .control_plane = control_plane,
+            .control_url = try formatInternalWsUrl(allocator, bind_addr, port, "/"),
+            .control_auth_token = try allocator.dupe(u8, control_auth_token),
+            .binary_path = if (std.fs.path.isAbsolute(local_cfg.binary))
+                try allocator.dupe(u8, local_cfg.binary)
+            else
+                try resolveSiblingExecutablePath(allocator, local_cfg.binary),
+            .service_binary_path = try resolveSiblingExecutablePath(allocator, local_node_service_binary_name),
+            .export_root = try allocator.dupe(u8, export_root_trimmed),
+            .export_name = try allocator.dupe(u8, std.mem.trim(u8, local_cfg.export_name, " \t\r\n")),
+            .profile = try allocator.dupe(u8, std.mem.trim(u8, local_cfg.profile, " \t\r\n")),
+            .state_dir = state_dir,
+            .state_path = state_path,
+            .manifests_dir = manifests_dir,
+            .extra_venoms_dir = blk: {
+                const trimmed = std.mem.trim(u8, local_cfg.extra_venoms_dir, " \t\r\n");
+                if (trimmed.len == 0) break :blk null;
+                break :blk try allocator.dupe(u8, trimmed);
+            },
+            .restart_on_exit = local_cfg.restart_on_exit,
+        };
+        errdefer supervisor.deinit();
+
+        if (supervisor.export_name.len == 0 or supervisor.profile.len == 0) return error.InvalidArguments;
+        if (!std.mem.eql(u8, supervisor.profile, "external-agent-core")) {
+            std.log.warn("unsupported runtime.local_node.profile '{s}', using external-agent-core only", .{supervisor.profile});
+            return error.InvalidArguments;
+        }
+        return supervisor;
+    }
+
+    fn deinit(self: *LocalNodeSupervisor) void {
+        if (self.thread != null) @panic("LocalNodeSupervisor.deinit called before join");
+        self.allocator.free(self.control_url);
+        self.allocator.free(self.control_auth_token);
+        self.allocator.free(self.binary_path);
+        self.allocator.free(self.service_binary_path);
+        self.allocator.free(self.export_root);
+        self.allocator.free(self.export_name);
+        self.allocator.free(self.profile);
+        self.allocator.free(self.state_dir);
+        self.allocator.free(self.state_path);
+        self.allocator.free(self.manifests_dir);
+        if (self.extra_venoms_dir) |value| self.allocator.free(value);
+        self.allocator.destroy(self);
+    }
+
+    fn start(self: *LocalNodeSupervisor) !void {
+        if (self.thread != null) return;
+        self.thread = try std.Thread.spawn(.{}, localNodeSupervisorMain, .{self});
+    }
+
+    fn join(self: *LocalNodeSupervisor) void {
+        if (self.thread) |thread| {
+            thread.join();
+            self.thread = null;
+        }
+    }
+
+    fn requestStop(self: *LocalNodeSupervisor) void {
+        var child_to_kill: ?std.process.Child.Id = null;
         self.mutex.lock();
-        const existing_node = self.local_fs_node;
+        self.stop_requested = true;
+        child_to_kill = self.child_pid;
         self.mutex.unlock();
-        if (existing_node != null) return;
+        if (child_to_kill) |child_id| terminateChildPid(child_id);
+    }
 
-        const remote_node_config = self.runtime_config.remote_node;
+    fn shouldStop(self: *LocalNodeSupervisor) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.stop_requested;
+    }
 
-        const export_path_owned = std.process.getEnvVarOwned(self.allocator, local_node_export_path_env) catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => null,
-            else => return err,
-        };
-        defer if (export_path_owned) |value| self.allocator.free(value);
-        const configured_export_path = std.mem.trim(u8, self.runtime_config.spider_web_root, " \t\r\n");
-        const configured_remote_export_path = std.mem.trim(u8, remote_node_config.export_path, " \t\r\n");
-        const export_path = if (export_path_owned) |value| blk: {
-            const trimmed = std.mem.trim(u8, value, " \t\r\n");
-            if (trimmed.len > 0) break :blk trimmed;
-            if (configured_export_path.len > 0) break :blk configured_export_path;
-            break :blk configured_remote_export_path;
-        } else blk: {
-            if (configured_export_path.len > 0) break :blk configured_export_path;
-            break :blk configured_remote_export_path;
-        };
-        if (std.mem.eql(u8, export_path, "/")) {
-            std.log.warn(
-                "local fs export scope is host filesystem root '/' (set {s} or runtime.spider_web_root to restrict scope)",
-                .{local_node_export_path_env},
-            );
-        }
-        if (export_path.len == 0) {
-            std.log.warn(
-                "local fs node disabled: both {s} and runtime.spider_web_root are empty",
-                .{local_node_export_path_env},
-            );
-            return;
-        }
-        const mounts_root_trimmed = std.mem.trim(u8, self.runtime_config.sandbox_mounts_root, " \t\r\n");
-        const watch_overlaps_sandbox = pathIsAncestorOrEqual(export_path, mounts_root_trimmed) or
-            pathIsAncestorOrEqual(mounts_root_trimmed, export_path);
-        const watcher_requested = parseBoolEnv(self.allocator, local_node_watcher_enabled_env, true);
-        if (watcher_requested and watch_overlaps_sandbox) {
-            std.log.warn(
-                "local fs node watcher disabled: export path {s} overlaps sandbox mounts root {s}",
-                .{ export_path, mounts_root_trimmed },
-            );
-        }
+    fn setChildPid(self: *LocalNodeSupervisor, child_pid: ?std.process.Child.Id) void {
+        self.mutex.lock();
+        self.child_pid = child_pid;
+        self.mutex.unlock();
+    }
 
-        const export_name_owned = std.process.getEnvVarOwned(self.allocator, local_node_export_name_env) catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => null,
-            else => return err,
-        };
-        defer if (export_name_owned) |value| self.allocator.free(value);
-        const workspace_export_name = if (export_name_owned) |value|
-            if (std.mem.trim(u8, value, " \t\r\n").len > 0) std.mem.trim(u8, value, " \t\r\n") else if (std.mem.trim(u8, remote_node_config.export_name, " \t\r\n").len > 0) std.mem.trim(u8, remote_node_config.export_name, " \t\r\n") else local_node_default_workspace_export_name
-        else if (std.mem.trim(u8, remote_node_config.export_name, " \t\r\n").len > 0) std.mem.trim(u8, remote_node_config.export_name, " \t\r\n") else local_node_default_workspace_export_name;
+    fn prepareLaunch(self: *LocalNodeSupervisor) !void {
+        try ensureDirectoryExists(self.state_dir);
+        try deleteTreeIfPresent(self.manifests_dir);
+        try ensureDirectoryExists(self.manifests_dir);
+        const join_payload = try self.control_plane.ensureNode(local_node_default_name, "", 15 * 60 * 1000);
+        defer self.allocator.free(join_payload);
+        const node_id = try parseNodeIdFromJoinPayload(self.allocator, join_payload);
+        defer self.allocator.free(node_id);
+        try writeFileReplacing(self.state_path, join_payload);
+        try self.control_plane.ensureSpiderWebMount(node_id, self.export_name);
+        try self.writeManifestFiles();
+    }
 
-        const export_ro = blk: {
-            const env_value = std.process.getEnvVarOwned(self.allocator, local_node_export_ro_env) catch |err| switch (err) {
-                error.EnvironmentVariableNotFound => null,
-                else => return err,
-            };
-            defer if (env_value) |value| self.allocator.free(value);
-            if (env_value) |value| {
-                const trimmed = std.mem.trim(u8, value, " \t\r\n");
-                if (trimmed.len == 0) break :blk remote_node_config.export_ro;
-                if (std.ascii.eqlIgnoreCase(trimmed, "1") or std.ascii.eqlIgnoreCase(trimmed, "true") or std.ascii.eqlIgnoreCase(trimmed, "yes") or std.ascii.eqlIgnoreCase(trimmed, "on")) break :blk true;
-                if (std.ascii.eqlIgnoreCase(trimmed, "0") or std.ascii.eqlIgnoreCase(trimmed, "false") or std.ascii.eqlIgnoreCase(trimmed, "no") or std.ascii.eqlIgnoreCase(trimmed, "off")) break :blk false;
-            }
-            break :blk remote_node_config.export_ro;
-        };
+    fn writeManifestFiles(self: *LocalNodeSupervisor) !void {
+        try self.writeManifestFile("terminal", "terminal");
+        try self.writeManifestFile("git", "git");
+        try self.writeManifestFile("search_code", "search_code");
+    }
 
-        const node_name_owned = std.process.getEnvVarOwned(self.allocator, local_node_name_env) catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => null,
-            else => return err,
-        };
-        defer if (node_name_owned) |value| self.allocator.free(value);
-        const node_name = if (node_name_owned) |value|
-            if (std.mem.trim(u8, value, " \t\r\n").len > 0) std.mem.trim(u8, value, " \t\r\n") else "spiderweb-local"
+    fn writeManifestFile(self: *LocalNodeSupervisor, venom_id: []const u8, mode: []const u8) !void {
+        const manifest_json = try self.buildManifestJson(venom_id, mode);
+        defer self.allocator.free(manifest_json);
+        const manifest_name = try std.fmt.allocPrint(self.allocator, "{s}.json", .{mode});
+        defer self.allocator.free(manifest_name);
+        const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, manifest_name });
+        defer self.allocator.free(manifest_path);
+        try writeFileReplacing(manifest_path, manifest_json);
+    }
+
+    fn buildManifestJson(self: *LocalNodeSupervisor, venom_id: []const u8, mode: []const u8) ![]u8 {
+        const escaped_exec = try unified.jsonEscape(self.allocator, self.service_binary_path);
+        defer self.allocator.free(escaped_exec);
+        const escaped_export_root = try unified.jsonEscape(self.allocator, self.export_root);
+        defer self.allocator.free(escaped_export_root);
+        const escaped_mode = try unified.jsonEscape(self.allocator, mode);
+        defer self.allocator.free(escaped_mode);
+
+        const kind: []const u8 = mode;
+        const categories_json = if (std.mem.eql(u8, mode, "terminal"))
+            "[\"terminal\",\"exec\"]"
+        else if (std.mem.eql(u8, mode, "git"))
+            "[\"developer\",\"scm\"]"
         else
-            "spiderweb-local";
-
-        const fs_url_owned = std.process.getEnvVarOwned(self.allocator, local_node_fs_url_env) catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => null,
-            else => return err,
-        };
-        defer if (fs_url_owned) |value| self.allocator.free(value);
-        const fs_url = if (fs_url_owned) |value| blk: {
-            const trimmed = std.mem.trim(u8, value, " \t\r\n");
-            if (trimmed.len == 0) break :blk try formatInternalWsUrl(self.allocator, bind_addr, port, "/v2/fs");
-            break :blk try self.allocator.dupe(u8, trimmed);
-        } else try formatInternalWsUrl(self.allocator, bind_addr, port, "/v2/fs");
-        defer self.allocator.free(fs_url);
-
-        const lease_ttl_ms = parseUnsignedEnv(self.allocator, local_node_lease_ttl_env, 15 * 60 * 1000);
-        var heartbeat_ms = parseUnsignedEnv(self.allocator, local_node_heartbeat_ms_env, lease_ttl_ms / 2);
-        if (heartbeat_ms == 0) heartbeat_ms = 1_000;
-        if (heartbeat_ms > lease_ttl_ms) heartbeat_ms = lease_ttl_ms;
-        const configured_agents_path = std.mem.trim(u8, self.runtime_config.agents_dir, " \t\r\n");
-        const agents_export_rel = if (configured_agents_path.len > 0) configured_agents_path else "agents";
-        const agents_export_path = if (std.fs.path.isAbsolute(agents_export_rel))
-            try self.allocator.dupe(u8, agents_export_rel)
+            "[\"search\",\"code\"]";
+        const requirements_json = if (std.mem.eql(u8, mode, "git"))
+            "{\"host_capabilities\":[\"local_fs_export\"]}"
         else
-            try std.fs.path.join(self.allocator, &.{ export_path, agents_export_rel });
-        defer self.allocator.free(agents_export_path);
-        ensureDirectoryExists(agents_export_path) catch |err| {
-            std.log.warn("local fs node agents export init failed for {s}: {s}", .{ agents_export_path, @errorName(err) });
-            return err;
-        };
+            "{}";
+        const capabilities_json = if (std.mem.eql(u8, mode, "terminal"))
+            "{\"invoke\":true,\"discoverable\":true,\"operations\":[\"exec\"]}"
+        else if (std.mem.eql(u8, mode, "git"))
+            "{\"invoke\":true,\"discoverable\":true,\"operations\":[\"sync_checkout\",\"status\",\"diff_range\"]}"
+        else
+            "{\"invoke\":true,\"discoverable\":true,\"operations\":[\"search\"]}";
+        const help_md = if (std.mem.eql(u8, mode, "terminal"))
+            "Workspace terminal service backed by the supervised spiderweb-local-node process."
+        else if (std.mem.eql(u8, mode, "git"))
+            "Workspace git service backed by the supervised spiderweb-local-node process."
+        else
+            "Workspace code search service backed by the supervised spiderweb-local-node process.";
+        const escaped_help = try unified.jsonEscape(self.allocator, help_md);
+        defer self.allocator.free(escaped_help);
+        const invoke_template_json = if (std.mem.eql(u8, mode, "terminal"))
+            "{\"op\":\"exec\",\"arguments\":{\"command\":\"pwd\",\"cwd\":\"/nodes/local/fs\"}}"
+        else if (std.mem.eql(u8, mode, "git"))
+            "{\"op\":\"status\",\"arguments\":{\"checkout_path\":\"/nodes/local/fs\"}}"
+        else
+            "{\"op\":\"search\",\"arguments\":{\"query\":\"TODO\",\"path\":\"/nodes/local/fs\"}}";
 
-        var remote_registration: ?RemoteNodeRegistration = null;
-        defer if (remote_registration) |*registration| registration.deinit(self.allocator);
-        if (remote_node_config.enabled) {
-            const remote_control_url = std.mem.trim(u8, remote_node_config.remote_control_url, " \t\r\n");
-            const remote_node_name = std.mem.trim(u8, remote_node_config.node_name, " \t\r\n");
-            const public_base_url = std.mem.trim(u8, remote_node_config.public_base_url, " \t\r\n");
-            const node_id = std.mem.trim(u8, remote_node_config.node_id, " \t\r\n");
-            if (remote_control_url.len == 0 or remote_node_name.len == 0 or public_base_url.len == 0 or node_id.len == 0) {
-                std.log.warn("remote node pairing is enabled but incomplete; skipping remote registration until setup is finished", .{});
-            } else {
-                const store = credential_store_mod.CredentialStore.init(self.allocator);
-                const remote_node_secret = store.getRemoteNodeSecret(node_id);
-                if (remote_node_secret) |secret| {
-                    defer self.allocator.free(secret);
-                    const public_fs_url = try derivePublicFsUrl(self.allocator, public_base_url);
-                    errdefer self.allocator.free(public_fs_url);
-                    remote_registration = .{
-                        .control_url = try self.allocator.dupe(u8, remote_control_url),
-                        .node_name = try self.allocator.dupe(u8, remote_node_name),
-                        .public_base_url = try self.allocator.dupe(u8, public_base_url),
-                        .public_fs_url = public_fs_url,
-                        .export_path = try self.allocator.dupe(u8, export_path),
-                        .export_name = try self.allocator.dupe(u8, workspace_export_name),
-                        .export_ro = export_ro,
-                        .node_id = try self.allocator.dupe(u8, node_id),
-                        .node_secret = try self.allocator.dupe(u8, secret),
-                        .lease_ttl_ms = remote_node_config.lease_ttl_ms,
-                        .heartbeat_ms = remote_node_config.heartbeat_ms,
-                    };
-                } else {
-                    std.log.warn("remote node pairing is enabled for {s} but no remote node secret is available in secure storage", .{node_id});
-                }
-            }
-        }
-
-        const export_specs = [_]fs_node_ops.ExportSpec{
-            .{
-                .name = workspace_export_name,
-                .path = export_path,
-                .ro = export_ro,
-                .desc = "spiderweb-workspace-export",
-            },
-            .{
-                .name = local_node_agents_export_name,
-                .path = agents_export_path,
-                .ro = false,
-                .desc = "spiderweb-agents-export",
-            },
-            .{
-                .name = local_node_meta_export_name,
-                .path = "meta",
-                .ro = true,
-                .desc = "spiderweb-meta-export",
-                .source_kind = .namespace,
-                .source_id = "meta",
-            },
-            .{
-                .name = local_node_chat_export_name,
-                .path = "chat",
-                // chat/control/input and chat/control/reply must accept writes.
-                // Per-node writable flags still enforce read-only for docs/meta files.
-                .ro = false,
-                .desc = "spiderweb-chat-export",
-                .source_kind = .namespace,
-                .source_id = "capabilities",
-            },
-            .{
-                .name = local_node_jobs_export_name,
-                .path = "jobs",
-                .ro = false,
-                .desc = "spiderweb-jobs-export",
-                .source_kind = .namespace,
-                .source_id = "jobs",
-            },
-        };
-        const mount_specs = [_]control_plane_mod.SpiderWebMountSpec{
-            .{ .mount_path = local_node_mount_agents_root, .export_name = local_node_agents_export_name },
-            .{ .mount_path = local_node_mount_meta, .export_name = local_node_meta_export_name },
-            .{ .mount_path = local_node_mount_agents_self_chat, .export_name = local_node_chat_export_name },
-            .{ .mount_path = local_node_mount_agents_self_jobs, .export_name = local_node_jobs_export_name },
-            .{ .mount_path = local_node_mount_nodes_local_fs, .export_name = workspace_export_name },
-            .{ .mount_path = local_node_mount_projects_system_agents_root, .export_name = local_node_agents_export_name },
-            .{ .mount_path = local_node_mount_projects_system_meta, .export_name = local_node_meta_export_name },
-            .{ .mount_path = local_node_mount_projects_system_agents_self_chat, .export_name = local_node_chat_export_name },
-            .{ .mount_path = local_node_mount_projects_system_agents_self_jobs, .export_name = local_node_jobs_export_name },
-            .{ .mount_path = local_node_mount_projects_system_nodes_local_fs, .export_name = workspace_export_name },
-            .{ .mount_path = local_node_mount_projects_system_fs_local, .export_name = workspace_export_name },
-        };
-
-        const local_node = try LocalFsNode.create(
+        return std.fmt.allocPrint(
             self.allocator,
-            self,
-            &export_specs,
-            &mount_specs,
-            node_name,
-            fs_url,
-            lease_ttl_ms,
-            heartbeat_ms,
-            watcher_requested and !watch_overlaps_sandbox,
-            remote_registration,
-        );
-        errdefer local_node.deinit(&self.control_plane);
-        try local_node.startRegistrationAndHeartbeat(&self.control_plane);
-        self.pruneLegacySystemCapabilityMounts();
-
-        var installed = false;
-        self.mutex.lock();
-        if (self.local_fs_node == null) {
-            self.local_fs_node = local_node;
-            installed = true;
-        }
-        self.mutex.unlock();
-        if (!installed) {
-            local_node.deinit(&self.control_plane);
-            return;
-        }
-
-        std.log.info(
-            "local fs node enabled at {s} workspace={s}:{s} ({s}) namespace=synthetic",
-            .{ fs_url, workspace_export_name, export_path, if (export_ro) "ro" else "rw" },
+            "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"1\",\"state\":\"online\",\"provider_scope\":\"node_export\",\"categories\":{s},\"hosts\":[\"node\"],\"projection_modes\":[\"node_export\",\"workspace_service\"],\"requirements\":{s},\"endpoints\":[\"/nodes/{{node_id}}/venoms/{s}\"],\"mounts\":[{{\"mount_id\":\"{s}\",\"mount_path\":\"/nodes/{{node_id}}/venoms/{s}\",\"state\":\"online\"}}],\"capabilities\":{s},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\",\"paths\":{{\"invoke\":\"control/invoke.json\"}}}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\",\"executable_path\":\"{s}\",\"args\":[\"{s}\",\"{s}\"],\"timeout_ms\":300000}},\"permissions\":{{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"project\"}},\"schema\":{{\"model\":\"namespace-mount\"}},\"invoke_template\":{s},\"help_md\":\"{s}\"}}",
+            .{
+                venom_id,
+                venom_id,
+                kind,
+                categories_json,
+                requirements_json,
+                venom_id,
+                venom_id,
+                venom_id,
+                capabilities_json,
+                escaped_exec,
+                escaped_mode,
+                escaped_export_root,
+                invoke_template_json,
+                escaped_help,
+            },
         );
     }
+
+    fn buildArgv(self: *LocalNodeSupervisor, allocator: std.mem.Allocator) !std.ArrayListUnmanaged([]const u8) {
+        var argv = std.ArrayListUnmanaged([]const u8){};
+        errdefer argv.deinit(allocator);
+        try argv.append(allocator, self.binary_path);
+        try argv.appendSlice(allocator, &.{
+            "--control-url",
+            self.control_url,
+            "--control-auth-token",
+            self.control_auth_token,
+            "--state-file",
+            self.state_path,
+            "--node-name",
+            local_node_default_name,
+        });
+        const export_arg = try std.fmt.allocPrint(allocator, "{s}={s}:rw", .{ self.export_name, self.export_root });
+        errdefer allocator.free(export_arg);
+        try argv.append(allocator, "--export");
+        try argv.append(allocator, export_arg);
+        try argv.append(allocator, "--venoms-dir");
+        try argv.append(allocator, self.manifests_dir);
+        if (self.extra_venoms_dir) |extra_dir| {
+            try argv.append(allocator, "--venoms-dir");
+            try argv.append(allocator, extra_dir);
+        }
+        return argv;
+    }
 };
+
+fn terminateChildPid(child_id: std.process.Child.Id) void {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
+    std.posix.kill(child_id, std.posix.SIG.KILL) catch {};
+}
+
+fn parseNodeIdFromJoinPayload(allocator: std.mem.Allocator, payload_json: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidPayload;
+    const node_id = parsed.value.object.get("node_id") orelse return error.MissingField;
+    if (node_id != .string or node_id.string.len == 0) return error.InvalidPayload;
+    return allocator.dupe(u8, node_id.string);
+}
+
+fn localNodeSupervisorMain(supervisor: *LocalNodeSupervisor) void {
+    while (true) {
+        if (supervisor.shouldStop()) return;
+
+        supervisor.prepareLaunch() catch |err| {
+            std.log.warn("local node supervisor prepare failed: {s}", .{@errorName(err)});
+            if (supervisor.shouldStop()) return;
+            std.Thread.sleep(500 * std.time.ns_per_ms);
+            continue;
+        };
+
+        var argv = supervisor.buildArgv(supervisor.allocator) catch |err| {
+            std.log.warn("local node supervisor argv failed: {s}", .{@errorName(err)});
+            if (supervisor.shouldStop()) return;
+            std.Thread.sleep(500 * std.time.ns_per_ms);
+            continue;
+        };
+        defer {
+            for (argv.items[0..]) |arg| {
+                if (arg.ptr == supervisor.binary_path.ptr) continue;
+                if (arg.ptr == supervisor.control_url.ptr) continue;
+                if (arg.ptr == supervisor.control_auth_token.ptr) continue;
+                if (arg.ptr == supervisor.state_path.ptr) continue;
+                if (arg.ptr == supervisor.manifests_dir.ptr) continue;
+                if (supervisor.extra_venoms_dir) |extra_dir| {
+                    if (arg.ptr == extra_dir.ptr) continue;
+                }
+                if (arg.ptr == supervisor.export_name.ptr) continue;
+                if (arg.ptr == supervisor.export_root.ptr) continue;
+                if (std.mem.eql(u8, arg, "--control-url") or
+                    std.mem.eql(u8, arg, "--control-auth-token") or
+                    std.mem.eql(u8, arg, "--state-file") or
+                    std.mem.eql(u8, arg, "--node-name") or
+                    std.mem.eql(u8, arg, local_node_default_name) or
+                    std.mem.eql(u8, arg, "--export") or
+                    std.mem.eql(u8, arg, "--venoms-dir"))
+                {
+                    continue;
+                }
+                supervisor.allocator.free(arg);
+            }
+            argv.deinit(supervisor.allocator);
+        }
+
+        var child = std.process.Child.init(argv.items, supervisor.allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Inherit;
+        child.stderr_behavior = .Inherit;
+        child.spawn() catch |err| {
+            std.log.warn("local node supervisor spawn failed: {s}", .{@errorName(err)});
+            if (supervisor.shouldStop()) return;
+            std.Thread.sleep(500 * std.time.ns_per_ms);
+            continue;
+        };
+        supervisor.setChildPid(child.id);
+
+        const term = child.wait() catch |err| {
+            supervisor.setChildPid(null);
+            std.log.warn("local node supervisor wait failed: {s}", .{@errorName(err)});
+            if (!supervisor.restart_on_exit or supervisor.shouldStop()) return;
+            std.Thread.sleep(500 * std.time.ns_per_ms);
+            continue;
+        };
+        supervisor.setChildPid(null);
+
+        if (supervisor.shouldStop()) return;
+        std.log.warn("local node exited: {s}", .{formatChildTerm(term)});
+        if (!supervisor.restart_on_exit) return;
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+    }
+}
+
+fn formatChildTerm(term: std.process.Child.Term) []const u8 {
+    return switch (term) {
+        .Exited => "exited",
+        .Signal => "signal",
+        .Stopped => "stopped",
+        .Unknown => "unknown",
+    };
+}
 
 fn sessionAttachStateName(state: SessionAttachState) []const u8 {
     return switch (state) {
@@ -5985,58 +5217,6 @@ fn runtimeWarmupThreadMain(ctx: *RuntimeWarmupThreadContext) void {
     runtime.release();
 
     ctx.runtime_registry.markRuntimeWarmupReady(binding_key);
-}
-
-const LocalFsBootstrapContext = struct {
-    allocator: std.mem.Allocator,
-    runtime_registry: *AgentRuntimeRegistry,
-    bind_addr: []u8,
-    port: u16,
-};
-
-fn startLocalFsBootstrapThread(
-    allocator: std.mem.Allocator,
-    runtime_registry: *AgentRuntimeRegistry,
-    bind_addr: []const u8,
-    port: u16,
-) void {
-    const bind_addr_owned = allocator.dupe(u8, bind_addr) catch |err| {
-        std.log.warn("local fs node bootstrap disabled: {s}", .{@errorName(err)});
-        return;
-    };
-    errdefer allocator.free(bind_addr_owned);
-
-    const ctx = allocator.create(LocalFsBootstrapContext) catch |err| {
-        allocator.free(bind_addr_owned);
-        std.log.warn("local fs node bootstrap disabled: {s}", .{@errorName(err)});
-        return;
-    };
-    ctx.* = .{
-        .allocator = allocator,
-        .runtime_registry = runtime_registry,
-        .bind_addr = bind_addr_owned,
-        .port = port,
-    };
-
-    const thread = std.Thread.spawn(.{}, localFsBootstrapThreadMain, .{ctx}) catch |err| {
-        allocator.free(bind_addr_owned);
-        allocator.destroy(ctx);
-        std.log.warn("local fs node bootstrap thread failed: {s}", .{@errorName(err)});
-        return;
-    };
-    thread.detach();
-}
-
-fn localFsBootstrapThreadMain(ctx: *LocalFsBootstrapContext) void {
-    defer {
-        ctx.allocator.free(ctx.bind_addr);
-        ctx.allocator.destroy(ctx);
-    }
-
-    ctx.runtime_registry.maybeInitLocalFsNode(ctx.bind_addr, ctx.port) catch |err| {
-        std.log.warn("local fs node setup skipped: {s}", .{@errorName(err)});
-        return;
-    };
 }
 
 fn reconcileWorkerMain(runtime_registry: *AgentRuntimeRegistry) void {
@@ -6099,6 +5279,8 @@ pub fn run(
     var runtime_registry = AgentRuntimeRegistry.init(allocator, runtime_config);
     defer runtime_registry.deinit();
 
+    warnDeprecatedEmbeddedLocalNodeEnv(allocator);
+
     runtime_registry.workspace_url = try formatInternalWsUrl(allocator, bind_addr, port, "/");
     try runtime_registry.startVenomPresenceWorker();
     try runtime_registry.startReconcileWorker();
@@ -6155,7 +5337,9 @@ pub fn run(
         "Runtime websocket server listening at ws://{s}:{d}",
         .{ bind_addr, port },
     );
-    startLocalFsBootstrapThread(allocator, &runtime_registry, bind_addr, port);
+    runtime_registry.startLocalNodeSupervisor(bind_addr, port) catch |err| {
+        std.log.warn("local node supervisor disabled: {s}", .{@errorName(err)});
+    };
 
     while (true) {
         var connection = tcp_server.accept() catch |err| {
@@ -6200,11 +5384,12 @@ fn handleWebSocketConnection(
     defer if (connection_workspace_url) |value| allocator.free(value);
 
     if (std.mem.eql(u8, handshake.path, "/v2/fs")) {
-        const local_node = runtime_registry.getLocalFsNode() orelse {
-            try sendWebSocketErrorAndClose(allocator, stream, .invalid_envelope, "local /v2/fs endpoint is disabled");
-            return;
-        };
-        try handleLocalFsConnection(allocator, local_node, stream);
+        try sendWebSocketErrorAndClose(
+            allocator,
+            stream,
+            .invalid_envelope,
+            "embedded /v2/fs endpoint was removed; use the local node fs_url or /v2/fs/node/<node_id>",
+        );
         return;
     }
 
@@ -6900,59 +6085,7 @@ fn handleWebSocketConnection(
                                 else
                                     false;
 
-                                if (rebind_requested) {
-                                    if (try runtime_registry.job_index.hasInFlightForAgent(existing_binding.?.agent_id)) {
-                                        runtime_registry.appendSecurityAuditAndDebug(
-                                            current_binding.agent_id,
-                                            .session_attach,
-                                            principal.role,
-                                            security_correlation,
-                                            "session_attach_rebind_session_busy",
-                                            false,
-                                            "session_busy",
-                                            "cannot rebind session while current agent has in-flight jobs",
-                                        );
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            "session_busy",
-                                            "cannot rebind session while current agent has in-flight jobs",
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    }
-                                }
-
-                                if (try runtime_registry.job_index.hasInFlightForAgent(attach_agent_id)) {
-                                    const same_existing_binding = if (existing_binding) |binding|
-                                        std.mem.eql(u8, binding.agent_id, attach_agent_id) and optionalStringsEqual(binding.project_id, attach_project_id)
-                                    else
-                                        false;
-                                    const same_runtime_binding = runtime_registry.hasRuntimeForBinding(attach_agent_id, attach_project_id);
-
-                                    if (!same_existing_binding and !same_runtime_binding) {
-                                        runtime_registry.appendSecurityAuditAndDebug(
-                                            current_binding.agent_id,
-                                            .session_attach,
-                                            principal.role,
-                                            security_correlation,
-                                            "session_attach_project_change_session_busy",
-                                            false,
-                                            "session_busy",
-                                            "cannot change project while agent has in-flight jobs",
-                                        );
-                                        const response = try unified.buildControlError(
-                                            allocator,
-                                            parsed.id,
-                                            "session_busy",
-                                            "cannot change project while agent has in-flight jobs",
-                                        );
-                                        defer allocator.free(response);
-                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    }
-                                }
+                                _ = rebind_requested;
 
                                 const activate_payload = try buildProjectActivatePayload(allocator, attach_project_id, attach_project_token);
                                 defer allocator.free(activate_payload);
@@ -7812,7 +6945,6 @@ fn initNamespaceSessionForBinding(
     return acheron_session_mod.Session.initWithOptions(
         allocator,
         runtime,
-        &runtime_registry.job_index,
         binding.agent_id,
         .{
             .project_id = project_id,
@@ -8968,7 +8100,7 @@ fn parseAgentIdFromPayload(allocator: std.mem.Allocator, payload_json: ?[]const 
 
 fn agentCapabilityName(value: agent_registry_mod.AgentCapability) []const u8 {
     return switch (value) {
-        .chat => "chat",
+        .general => "general",
         .code => "code",
         .plan => "plan",
         .research => "research",
@@ -9822,7 +8954,7 @@ test "server: control.agent_list and control.agent_get expose registry metadata"
         \\  "name": "Spiderweb",
         \\  "description": "Workspace host control identity",
         \\  "is_default": true,
-        \\  "capabilities": ["chat","plan"]
+        \\  "capabilities": ["general","plan"]
         \\}
         ,
     });
@@ -9838,7 +8970,7 @@ test "server: control.agent_list and control.agent_get expose registry metadata"
         \\{
         \\  "name": "Bob",
         \\  "description": "Worker agent",
-        \\  "capabilities": ["chat","code"]
+        \\  "capabilities": ["general","code"]
         \\}
         ,
     });
@@ -9887,7 +9019,7 @@ test "server: control.agent_list and control.agent_get expose registry metadata"
     try std.testing.expect(std.mem.indexOf(u8, list_reply.payload, "\"type\":\"control.agent_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, list_reply.payload, "\"id\":\"spiderweb\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, list_reply.payload, "\"id\":\"bob\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, list_reply.payload, "\"capabilities\":[\"chat\",\"plan\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, list_reply.payload, "\"capabilities\":[\"general\",\"plan\"]") != null);
 
     try writeClientTextFrameMasked(
         &client,
@@ -9924,7 +9056,7 @@ test "server: control.agent_ensure creates missing agents and is idempotent" {
         \\  "name": "Spiderweb",
         \\  "description": "Workspace host control identity",
         \\  "is_default": true,
-        \\  "capabilities": ["chat","plan"]
+        \\  "capabilities": ["general","plan"]
         \\}
         ,
     });
@@ -10834,77 +9966,6 @@ test "server: control.auth_rotate reports storage_error when token persistence f
     try std.testing.expect(server_ctx.err_name == null);
 }
 
-test "server: session_attach rejects project changes while jobs are in-flight" {
-    const allocator = std.testing.allocator;
-    var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
-    }, null);
-    defer runtime_registry.deinit();
-    try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
-
-    const busy_job = try runtime_registry.job_index.createJob(runtime_registry.default_agent_id, null);
-    defer allocator.free(busy_job);
-    try runtime_registry.job_index.markRunning(busy_job);
-
-    var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
-    defer listener.deinit();
-
-    var server_ctx = WsTestServerCtx{
-        .allocator = allocator,
-        .runtime_registry = &runtime_registry,
-        .listener = &listener,
-    };
-    defer server_ctx.deinit();
-
-    const server_thread = try std.Thread.spawn(.{}, runSingleWsConnection, .{&server_ctx});
-    defer server_thread.join();
-
-    var client = try std.net.tcpConnectToAddress(listener.listen_address);
-    defer client.close();
-    try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"busy-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
-    var version_ack = try readServerFrame(allocator, &client);
-    defer version_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.connect\",\"id\":\"busy-connect\"}");
-    var connect_ack = try readServerFrame(allocator, &client);
-    defer connect_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-
-    const attach_request = try std.fmt.allocPrint(
-        allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"busy-attach\",\"payload\":{{\"session_key\":\"main\",\"agent_id\":\"{s}\",\"project_id\":\"proj-busy\"}}}}",
-        .{runtime_registry.default_agent_id},
-    );
-    defer allocator.free(attach_request);
-    try writeClientTextFrameMasked(&client, attach_request);
-
-    var attach_error = try readServerFrame(allocator, &client);
-    defer attach_error.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, attach_error.payload, "\"type\":\"control.error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, attach_error.payload, "\"code\":\"session_busy\"") != null);
-
-    try writeClientTextFrameMasked(
-        &client,
-        "{\"channel\":\"control\",\"type\":\"control.audit_tail\",\"id\":\"busy-audit\",\"payload\":{\"limit\":10}}",
-    );
-    var audit_reply = try readServerFrame(allocator, &client);
-    defer audit_reply.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, audit_reply.payload, "\"type\":\"control.audit_tail\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, audit_reply.payload, "\"control_type\":\"control.session_attach\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, audit_reply.payload, "\"error_code\":\"session_busy\"") != null);
-
-    try websocket_transport.writeFrame(&client, "", .close);
-    var close_reply = try readServerFrame(allocator, &client);
-    defer close_reply.deinit(allocator);
-    try std.testing.expectEqual(@as(u8, 0x8), close_reply.opcode);
-
-    try std.testing.expect(server_ctx.err_name == null);
-}
-
 test "server: session_attach forbids reserved system agent on non-system workspace" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
@@ -11567,78 +10628,4 @@ test "server: parseArchiveTimestamp accepts rotated debug archive names" {
     try std.testing.expectEqual(@as(?u64, 1771674073992), parseArchiveTimestamp("debug-stream-1771674073992-1.ndjson"));
     try std.testing.expectEqual(@as(?u64, null), parseArchiveTimestamp("debug-stream.ndjson"));
     try std.testing.expectEqual(@as(?u64, null), parseArchiveTimestamp("debug-stream-abc.ndjson"));
-}
-
-test "server: local fs node registration upserts fs chat and jobs venoms" {
-    const allocator = std.testing.allocator;
-
-    var runtime_config = Config.RuntimeConfig{};
-    runtime_config.spider_web_root = ".";
-    var registry = AgentRuntimeRegistry.initWithLimits(allocator, runtime_config, null, 2);
-    defer registry.deinit();
-
-    const export_specs = [_]fs_node_ops.ExportSpec{
-        .{
-            .name = "workspace",
-            .path = ".",
-            .ro = false,
-            .desc = "test-workspace",
-        },
-        .{
-            .name = local_node_chat_export_name,
-            .path = "chat",
-            .ro = false,
-            .desc = "test-chat",
-            .source_kind = .namespace,
-            .source_id = "capabilities",
-        },
-        .{
-            .name = local_node_jobs_export_name,
-            .path = "jobs",
-            .ro = false,
-            .desc = "test-jobs",
-            .source_kind = .namespace,
-            .source_id = "jobs",
-        },
-    };
-    const mount_specs = [_]control_plane_mod.SpiderWebMountSpec{
-        .{ .mount_path = "/global/chat", .export_name = local_node_chat_export_name },
-        .{ .mount_path = "/global/jobs", .export_name = local_node_jobs_export_name },
-        .{ .mount_path = "/nodes/local/fs", .export_name = "workspace" },
-    };
-
-    const local_node = try LocalFsNode.create(
-        allocator,
-        &registry,
-        &export_specs,
-        &mount_specs,
-        "spiderweb-local",
-        "ws://127.0.0.1:18891/v2/fs",
-        60_000,
-        30_000,
-        false,
-        null,
-    );
-    defer local_node.deinit(&registry.control_plane);
-
-    try local_node.refreshRegistration(&registry.control_plane);
-
-    local_node.registration_mutex.lock();
-    const node_id = local_node.registered_node_id orelse {
-        local_node.registration_mutex.unlock();
-        return error.TestExpectedResponse;
-    };
-    const node_id_copy = try allocator.dupe(u8, node_id);
-    local_node.registration_mutex.unlock();
-    defer allocator.free(node_id_copy);
-
-    const get_req = try std.fmt.allocPrint(allocator, "{{\"node_id\":\"{s}\"}}", .{node_id_copy});
-    defer allocator.free(get_req);
-    const catalog_json = try registry.control_plane.nodeVenomGet(get_req);
-    defer allocator.free(catalog_json);
-
-    try std.testing.expect(std.mem.indexOf(u8, catalog_json, "\"venom_id\":\"fs\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, catalog_json, "\"venom_id\":\"chat\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, catalog_json, "\"venom_id\":\"jobs\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, catalog_json, "\"node_name\":\"spiderweb-local\"") != null);
 }

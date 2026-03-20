@@ -7330,7 +7330,6 @@ fn handleMountFileReadControl(
         getOptionalU32Field(payload.value.object, "length"),
     ) catch |err| switch (err) {
         error.InvalidOffset => return err,
-        else => return error.InvalidPayload,
     };
 
     const session = try getOrInitNamespaceSessionForBinding(

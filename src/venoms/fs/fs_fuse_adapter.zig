@@ -5,6 +5,7 @@ const mount_session = @import("spiderweb_mount_session");
 const fs_protocol = @import("acheron_fs_router").acheron_protocol;
 const fs_helper_client = @import("fs_helper_client.zig");
 const native_mount_protocol = @import("spiderweb_native_mount_protocol");
+const fuse_path_cache = @import("spiderweb_fs_fuse_path_cache");
 
 const c = @cImport({
     @cInclude("fuse_compat.h");
@@ -49,6 +50,7 @@ pub const FuseAdapter = struct {
     helper_lookup_open_handle: std.AutoHashMapUnmanaged(u64, mount_provider.OpenFile) = .{},
     helper_lookup_mutex: std.Thread.Mutex = .{},
     helper_next_local_handle: u64 = 1,
+    path_cache: fuse_path_cache.FusePathCache,
 
     pub const MountBackend = enum {
         auto,
@@ -61,6 +63,7 @@ pub const FuseAdapter = struct {
         return .{
             .allocator = allocator,
             .session = mount_session.MountSession.init(allocator, provider),
+            .path_cache = fuse_path_cache.FusePathCache.init(allocator, 5000, 5000, 2000),
         };
     }
 
@@ -71,6 +74,7 @@ pub const FuseAdapter = struct {
         self.helper_lookup_mutex.unlock();
         helper_handles.deinit(self.allocator);
         if (self.helper_client) |*client| client.deinit();
+        self.path_cache.deinit();
         self.session.deinit();
     }
 
@@ -81,12 +85,37 @@ pub const FuseAdapter = struct {
 
     pub fn getattr(self: *FuseAdapter, path: []const u8) ![]u8 {
         if (self.helper_client) |*client| return client.getattr(path);
-        return self.session.getattr(path);
+
+        const now = std.time.milliTimestamp();
+        if (self.path_cache.getAttr(path, now)) |cached| return cached;
+        if (self.path_cache.isNegative(path, now)) return error.FileNotFound;
+
+        // Snapshot generation before the network call. If a concurrent mutator
+        // fires invalidatePath while we await the response, the gen will change
+        // and we must not store the now-stale negative into the cache.
+        const gen = self.path_cache.mutationGen();
+
+        const result = self.session.getattr(path) catch |err| {
+            if (err == error.FileNotFound and self.path_cache.mutationGen() == gen) {
+                self.path_cache.putNegative(path, now) catch {};
+            }
+            return err;
+        };
+
+        self.path_cache.putAttr(path, result, now) catch {};
+        return result;
     }
 
     pub fn readdir(self: *FuseAdapter, path: []const u8, cookie: u64, max_entries: u32) ![]u8 {
         if (self.helper_client) |*client| return client.readdir(path, cookie, max_entries);
-        return self.session.readdir(path, cookie, max_entries);
+
+        const now = std.time.milliTimestamp();
+        if (self.path_cache.getDir(path, cookie, now)) |cached| return cached;
+
+        const result = self.session.readdir(path, cookie, max_entries) catch |err| return err;
+
+        self.path_cache.putDir(path, cookie, result, now) catch {};
+        return result;
     }
 
     pub fn statfs(self: *FuseAdapter, path: []const u8) ![]u8 {
@@ -120,7 +149,9 @@ pub const FuseAdapter = struct {
 
     pub fn create(self: *FuseAdapter, path: []const u8, mode: u32, flags: u32) !mount_provider.OpenFile {
         if (self.helper_client) |*client| return client.create(path, mode, flags);
-        return self.session.create(path, mode, flags);
+        const result = try self.session.create(path, mode, flags);
+        self.path_cache.invalidatePathAndParent(path);
+        return result;
     }
 
     pub fn createAndStoreHandle(self: *FuseAdapter, path: []const u8, mode: u32, flags: u32) !u64 {
@@ -129,7 +160,9 @@ pub const FuseAdapter = struct {
             errdefer client.release(open_file) catch {};
             return self.storeOpenHandle(open_file);
         }
-        return self.session.createAndStoreHandle(path, mode, flags);
+        const result = try self.session.createAndStoreHandle(path, mode, flags);
+        self.path_cache.invalidatePathAndParent(path);
+        return result;
     }
 
     pub fn write(self: *FuseAdapter, file: mount_provider.OpenFile, off: u64, data: []const u8) !u32 {
@@ -140,36 +173,47 @@ pub const FuseAdapter = struct {
     pub fn truncate(self: *FuseAdapter, path: []const u8, size: u64) !void {
         if (self.helper_client) |*client| return client.truncate(path, size);
         try self.session.truncate(path, size);
+        self.path_cache.invalidatePath(path);
     }
 
     pub fn unlink(self: *FuseAdapter, path: []const u8) !void {
         if (self.helper_client) |*client| return client.unlink(path);
         try self.session.unlink(path);
+        self.path_cache.invalidatePathAndParent(path);
     }
 
     pub fn mkdir(self: *FuseAdapter, path: []const u8) !void {
         if (self.helper_client) |*client| return client.mkdir(path);
         try self.session.mkdir(path);
+        self.path_cache.invalidatePathAndParent(path);
     }
 
     pub fn rmdir(self: *FuseAdapter, path: []const u8) !void {
         if (self.helper_client) |*client| return client.rmdir(path);
         try self.session.rmdir(path);
+        self.path_cache.invalidatePathAndParent(path);
+        self.path_cache.invalidateTree(path);
     }
 
     pub fn rename(self: *FuseAdapter, old_path: []const u8, new_path: []const u8) !void {
         if (self.helper_client) |*client| return client.rename(old_path, new_path);
         try self.session.rename(old_path, new_path);
+        self.path_cache.invalidatePathAndParent(old_path);
+        self.path_cache.invalidatePathAndParent(new_path);
+        self.path_cache.invalidateTree(old_path);
+        self.path_cache.invalidateTree(new_path);
     }
 
     pub fn symlink(self: *FuseAdapter, target: []const u8, link_path: []const u8) !void {
         if (self.helper_client) |*client| return client.symlink(target, link_path);
         try self.session.symlink(target, link_path);
+        self.path_cache.invalidatePathAndParent(link_path);
     }
 
     pub fn setxattr(self: *FuseAdapter, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
         if (self.helper_client) |*client| return client.setxattr(path, name, value, flags);
         try self.session.setxattr(path, name, value, flags);
+        self.path_cache.invalidatePath(path);
     }
 
     pub fn getxattr(self: *FuseAdapter, path: []const u8, name: []const u8) ![]u8 {
@@ -185,6 +229,7 @@ pub const FuseAdapter = struct {
     pub fn removexattr(self: *FuseAdapter, path: []const u8, name: []const u8) !void {
         if (self.helper_client) |*client| return client.removexattr(path, name);
         try self.session.removexattr(path, name);
+        self.path_cache.invalidatePath(path);
     }
 
     pub fn lock(self: *FuseAdapter, file: mount_provider.OpenFile, mode: mount_provider.LockMode, wait: bool) !void {
@@ -411,7 +456,7 @@ fn buildMountOptions(allocator: std.mem.Allocator, mountpoint: []const u8) ![]u8
 
 fn buildMountOptionsForOs(allocator: std.mem.Allocator, os_tag: std.Target.Os.Tag, mountpoint: []const u8) ![]u8 {
     return switch (os_tag) {
-        .windows => allocator.dupe(u8, "uid=-1,gid=-1,FileInfoTimeout=-1"),
+        .windows => allocator.dupe(u8, "uid=-1,gid=-1,FileInfoTimeout=0,max_read=262144"),
         .macos => blk: {
             const volume_name = try macosVolumeNameFromMountpoint(allocator, mountpoint);
             defer allocator.free(volume_name);
@@ -945,6 +990,12 @@ fn cOpen(path_c: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int
         const opened = adapter.open(path, flags) catch |err| return toFuseError(err);
         adapter.release(opened) catch {};
     }
+    // O_TRUNC (0x200) implicitly truncates the file on open. Invalidate the
+    // cached attr so the next getattr reflects the new size and mtime rather
+    // than the pre-open values.
+    if (flags & 0x200 != 0) {
+        adapter.path_cache.invalidatePath(path);
+    }
     return 0;
 }
 
@@ -1064,6 +1115,7 @@ fn cWrite(path_c: [*c]const u8, buf: [*c]const u8, size: usize, off: c.off_t, fi
         );
         return -fs_protocol.Errno.EIO;
     }
+    adapter.path_cache.invalidatePath(path);
     return @intCast(written);
 }
 
@@ -1099,6 +1151,7 @@ fn cWriteWin(path_c: [*c]const u8, buf: [*c]const u8, size: usize, off: c.fuse_o
 
     const input = if (size == 0) "" else buf[0..size];
     const written = adapter.write(open_file, @intCast(off), input) catch |err| return toFuseError(err);
+    adapter.path_cache.invalidatePath(path);
     return @intCast(written);
 }
 

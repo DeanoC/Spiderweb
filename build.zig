@@ -46,6 +46,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const spiderweb_fs_fuse_path_cache_mod = b.createModule(.{
+        .root_source_file = b.path("src/venoms/fs/fs_fuse_path_cache.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const spiderweb_fs_source_policy_mod = b.createModule(.{
         .root_source_file = b.path("src/venoms/fs/fs_source_policy.zig"),
         .target = target,
@@ -87,6 +92,7 @@ pub fn build(b: *std.Build) void {
     spiderweb_fs_fuse_adapter_mod.addImport("spiderweb_mount_provider", spiderweb_mount_provider_mod);
     spiderweb_fs_fuse_adapter_mod.addImport("spiderweb_mount_session", spiderweb_mount_session_mod);
     spiderweb_fs_fuse_adapter_mod.addImport("spiderweb_native_mount_protocol", spiderweb_native_mount_protocol_mod);
+    spiderweb_fs_fuse_adapter_mod.addImport("spiderweb_fs_fuse_path_cache", spiderweb_fs_fuse_path_cache_mod);
     const fuse_compat_stub_mod = b.createModule(.{
         .root_source_file = b.path("src/c/fuse_compat_stub.zig"),
         .target = target,

@@ -90,8 +90,13 @@ pub const FuseAdapter = struct {
         if (self.path_cache.getAttr(path, now)) |cached| return cached;
         if (self.path_cache.isNegative(path, now)) return error.FileNotFound;
 
+        // Snapshot generation before the network call. If a concurrent mutator
+        // fires invalidatePath while we await the response, the gen will change
+        // and we must not store the now-stale negative into the cache.
+        const gen = self.path_cache.mutationGen();
+
         const result = self.session.getattr(path) catch |err| {
-            if (err == error.FileNotFound) {
+            if (err == error.FileNotFound and self.path_cache.mutationGen() == gen) {
                 self.path_cache.putNegative(path, now) catch {};
             }
             return err;

@@ -3,6 +3,10 @@ const std = @import("std");
 pub const FusePathCache = struct {
     allocator: std.mem.Allocator,
     mutex: std.Thread.Mutex = .{},
+    /// Incremented inside the mutex on every invalidation. Read atomically
+    /// without the mutex to detect whether a mutating op raced a pending
+    /// putNegative from a concurrent getattr.
+    mutation_gen: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     attr_map: std.StringHashMapUnmanaged(AttrEntry) = .{},
     dir_map: std.StringHashMapUnmanaged(DirEntry) = .{},
@@ -33,6 +37,13 @@ pub const FusePathCache = struct {
             .dir_ttl_ms = dir_ttl_ms,
             .negative_ttl_ms = negative_ttl_ms,
         };
+    }
+
+    /// Returns the current mutation generation. Callers should read this
+    /// before a long network op and compare afterwards to detect a concurrent
+    /// invalidation (see getattr in fs_fuse_adapter.zig).
+    pub fn mutationGen(self: *FusePathCache) u64 {
+        return self.mutation_gen.load(.monotonic);
     }
 
     pub fn deinit(self: *FusePathCache) void {
@@ -164,6 +175,7 @@ pub const FusePathCache = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.invalidatePathLocked(path);
+        _ = self.mutation_gen.fetchAdd(1, .monotonic);
     }
 
     /// Removes dir listing entries where path is the directory being listed.
@@ -171,17 +183,20 @@ pub const FusePathCache = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.invalidateChildrenLocked(path);
+        _ = self.mutation_gen.fetchAdd(1, .monotonic);
     }
 
-    /// Invalidates path + parent directory's listings.
+    /// Invalidates path's attr/negative + parent's attr + parent's dir listings.
     pub fn invalidatePathAndParent(self: *FusePathCache, path: []const u8) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         self.invalidatePathLocked(path);
         if (parentOf(path)) |parent| {
+            self.invalidatePathLocked(parent); // clears stale mtime/nlink on parent attr
             self.invalidateChildrenLocked(parent);
         }
+        _ = self.mutation_gen.fetchAdd(1, .monotonic);
     }
 
     /// Removes all entries whose path starts with prefix.
@@ -192,6 +207,7 @@ pub const FusePathCache = struct {
         self.removeMatchingKeys(&self.attr_map, prefix, true);
         self.removeMatchingKeys(&self.dir_map, prefix, true);
         self.removeMatchingNegativeKeys(prefix);
+        _ = self.mutation_gen.fetchAdd(1, .monotonic);
     }
 
     // --- internal helpers ---
@@ -413,12 +429,13 @@ test "FusePathCache: invalidatePath removes attr and negative" {
     try std.testing.expect(!cache.isNegative("/file.txt", 1000));
 }
 
-test "FusePathCache: invalidatePathAndParent clears parent dir listings" {
+test "FusePathCache: invalidatePathAndParent clears parent dir listings and parent attr" {
     const allocator = std.testing.allocator;
     var cache = FusePathCache.init(allocator, 100, 100, 50);
     defer cache.deinit();
 
     try cache.putDir("/parent", 0, "{\"ents\":[\"child\"]}", 1000);
+    try cache.putAttr("/parent", "{\"nlink\":2}", 1000);
     try cache.putAttr("/parent/child", "{}", 1000);
 
     cache.invalidatePathAndParent("/parent/child");
@@ -427,6 +444,24 @@ test "FusePathCache: invalidatePathAndParent clears parent dir listings" {
     try std.testing.expect(cache.getAttr("/parent/child", 1000) == null);
     // Parent dir listing should be gone
     try std.testing.expect(cache.getDir("/parent", 0, 1000) == null);
+    // Parent attr (stale mtime/nlink) should also be gone
+    try std.testing.expect(cache.getAttr("/parent", 1000) == null);
+}
+
+test "FusePathCache: mutation_gen increments on each invalidation" {
+    const allocator = std.testing.allocator;
+    var cache = FusePathCache.init(allocator, 100, 100, 50);
+    defer cache.deinit();
+
+    const gen0 = cache.mutationGen();
+    cache.invalidatePath("/a");
+    try std.testing.expect(cache.mutationGen() == gen0 + 1);
+
+    cache.invalidatePathAndParent("/b/c");
+    try std.testing.expect(cache.mutationGen() == gen0 + 2);
+
+    cache.invalidateTree("/d");
+    try std.testing.expect(cache.mutationGen() == gen0 + 3);
 }
 
 test "FusePathCache: invalidateTree removes descendants" {

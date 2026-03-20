@@ -16,8 +16,11 @@ pub const HelperClient = struct {
 
     pub fn start(allocator: std.mem.Allocator, config: native_protocol.LaunchConfig) !HelperClient {
         const config_path = try writeLaunchConfig(allocator, config);
-        errdefer deleteConfigFileBestEffort(config_path);
-        errdefer allocator.free(config_path);
+        var config_path_owned = true;
+        errdefer if (config_path_owned) {
+            deleteConfigFileBestEffort(config_path);
+            allocator.free(config_path);
+        };
 
         const helper_exe = try resolveHelperExecutablePath(allocator);
         defer allocator.free(helper_exe);
@@ -27,10 +30,11 @@ pub const HelperClient = struct {
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Inherit;
         try child.spawn();
-        errdefer {
+        var child_owned = true;
+        errdefer if (child_owned) {
             _ = child.kill() catch {};
             _ = child.wait() catch {};
-        }
+        };
 
         const stdin_file = child.stdin.?;
         const stdout_file = child.stdout.?;
@@ -43,7 +47,10 @@ pub const HelperClient = struct {
                 null
         else
             null;
-        errdefer if (shared_auth_token) |auth_token| allocator.free(auth_token);
+        var shared_auth_token_owned = true;
+        errdefer if (shared_auth_token_owned) {
+            if (shared_auth_token) |auth_token| allocator.free(auth_token);
+        };
 
         var client = HelperClient{
             .allocator = allocator,
@@ -53,6 +60,10 @@ pub const HelperClient = struct {
             .config_path = config_path,
             .shared_auth_token = shared_auth_token,
         };
+        // Transfer ownership to client - disarm earlier errdeferreds
+        config_path_owned = false;
+        child_owned = false;
+        shared_auth_token_owned = false;
         errdefer client.deinit();
 
         try client.rememberConfiguredEndpointAuths(config.endpoints);
@@ -62,7 +73,9 @@ pub const HelperClient = struct {
 
     pub fn deinit(self: *HelperClient) void {
         self.stdin_file.close();
+        self.child.stdin = null; // prevent double-close in child.kill() on Windows
         self.stdout_file.close();
+        self.child.stdout = null; // prevent double-close in child.kill() on Windows
         _ = self.child.kill() catch {};
         _ = self.child.wait() catch {};
         deleteConfigFileBestEffort(self.config_path);

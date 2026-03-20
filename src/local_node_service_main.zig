@@ -262,11 +262,15 @@ const GitDriverContext = struct {
         if (trimmed.len == 0) return error.InvalidPayload;
         if (std.mem.startsWith(u8, trimmed, "/")) {
             if (!pathMatchesPrefixBoundary(trimmed, workspace_world_prefix)) return error.InvalidPayload;
-            return self.allocator.dupe(u8, trimmed);
+            const relative = try normalizeToolRelativePath(self.allocator, trimmed[workspace_world_prefix.len..]);
+            defer self.allocator.free(relative);
+            if (std.mem.eql(u8, relative, ".")) return self.allocator.dupe(u8, workspace_world_prefix);
+            return std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ workspace_world_prefix, relative });
         }
 
-        const normalized_relative = std.mem.trimLeft(u8, trimmed, "./");
-        if (normalized_relative.len == 0) return self.allocator.dupe(u8, workspace_world_prefix);
+        const normalized_relative = try normalizeToolRelativePath(self.allocator, trimmed);
+        defer self.allocator.free(normalized_relative);
+        if (std.mem.eql(u8, normalized_relative, ".")) return self.allocator.dupe(u8, workspace_world_prefix);
         return std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ workspace_world_prefix, normalized_relative });
     }
 
@@ -518,12 +522,9 @@ const CommandBuilder = struct {
 fn workspacePathToRelative(allocator: std.mem.Allocator, raw_path: []const u8) ![]u8 {
     const trimmed = std.mem.trim(u8, raw_path, " \t\r\n");
     if (trimmed.len == 0) return allocator.dupe(u8, ".");
-    if (!std.mem.startsWith(u8, trimmed, "/")) return allocator.dupe(u8, trimmed);
+    if (!std.mem.startsWith(u8, trimmed, "/")) return normalizeToolRelativePath(allocator, trimmed);
     if (!pathMatchesPrefixBoundary(trimmed, workspace_world_prefix)) return error.InvalidPayload;
-    if (std.mem.eql(u8, trimmed, workspace_world_prefix)) return allocator.dupe(u8, ".");
-    const relative = std.mem.trimLeft(u8, trimmed[workspace_world_prefix.len..], "/");
-    if (relative.len == 0) return allocator.dupe(u8, ".");
-    return allocator.dupe(u8, relative);
+    return normalizeToolRelativePath(allocator, trimmed[workspace_world_prefix.len..]);
 }
 
 fn hostOrWorldPathToRelative(
@@ -533,20 +534,40 @@ fn hostOrWorldPathToRelative(
 ) ![]u8 {
     const trimmed = std.mem.trim(u8, raw_path, " \t\r\n");
     if (trimmed.len == 0) return allocator.dupe(u8, ".");
-    if (!std.mem.startsWith(u8, trimmed, "/")) return allocator.dupe(u8, trimmed);
+    if (!std.mem.startsWith(u8, trimmed, "/")) return normalizeToolRelativePath(allocator, trimmed);
     if (pathMatchesPrefixBoundary(trimmed, workspace_world_prefix)) return workspacePathToRelative(allocator, trimmed);
     if (!pathMatchesPrefixBoundary(trimmed, export_root)) return error.InvalidPayload;
-    if (std.mem.eql(u8, trimmed, export_root)) return allocator.dupe(u8, ".");
-    const relative = std.mem.trimLeft(u8, trimmed[export_root.len..], "/");
-    if (relative.len == 0) return allocator.dupe(u8, ".");
-    return allocator.dupe(u8, relative);
+    return normalizeToolRelativePath(allocator, trimmed[export_root.len..]);
+}
+
+fn normalizeToolRelativePath(allocator: std.mem.Allocator, raw_path: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, raw_path, " \t\r\n/");
+    if (trimmed.len == 0) return allocator.dupe(u8, ".");
+
+    var normalized = std.ArrayListUnmanaged(u8){};
+    errdefer normalized.deinit(allocator);
+
+    var segments = std.mem.tokenizeScalar(u8, trimmed, '/');
+    while (segments.next()) |segment| {
+        if (segment.len == 0 or std.mem.eql(u8, segment, ".")) continue;
+        if (std.mem.eql(u8, segment, "..")) return error.InvalidPayload;
+        if (normalized.items.len != 0) try normalized.append(allocator, '/');
+        try normalized.appendSlice(allocator, segment);
+    }
+
+    if (normalized.items.len == 0) return allocator.dupe(u8, ".");
+    return normalized.toOwnedSlice(allocator);
 }
 
 fn pathMatchesPrefixBoundary(path: []const u8, prefix: []const u8) bool {
-    if (std.mem.eql(u8, path, prefix)) return true;
-    if (prefix.len == 0) return false;
-    if (!std.mem.startsWith(u8, path, prefix)) return false;
-    return path.len > prefix.len and path[prefix.len] == '/';
+    const normalized_prefix = if (prefix.len > 1)
+        std.mem.trimRight(u8, prefix, "/")
+    else
+        prefix;
+    if (std.mem.eql(u8, path, normalized_prefix)) return true;
+    if (normalized_prefix.len == 0) return false;
+    if (!std.mem.startsWith(u8, path, normalized_prefix)) return false;
+    return path.len > normalized_prefix.len and path[normalized_prefix.len] == '/';
 }
 
 fn jsonObjectOptionalString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -569,4 +590,17 @@ fn jsonObjectOptionalU64(obj: std.json.ObjectMap, key: []const u8) ?u64 {
 
 fn toolErrorCodeName(code: tool_registry.ToolErrorCode) []const u8 {
     return @tagName(code);
+}
+
+test "local_node_service_main: workspace-relative paths reject parent traversal" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectError(error.InvalidPayload, workspacePathToRelative(allocator, "../.."));
+    try std.testing.expectError(error.InvalidPayload, workspacePathToRelative(allocator, "/nodes/local/fs/../.."));
+    try std.testing.expectError(error.InvalidPayload, hostOrWorldPathToRelative(allocator, "/workspace", "/workspace/../.."));
+}
+
+test "local_node_service_main: slash-terminated export roots still match child paths" {
+    try std.testing.expect(pathMatchesPrefixBoundary("/workspace/repo", "/workspace/"));
+    try std.testing.expect(pathMatchesPrefixBoundary("/nodes/local/fs/repo", "/nodes/local/fs/"));
 }

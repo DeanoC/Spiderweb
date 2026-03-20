@@ -7325,9 +7325,10 @@ fn handleMountFileReadControl(
 
     const absolute_path = try getRequiredStringField(payload.value.object, "path");
     const offset = getOptionalU64Field(payload.value.object, "offset") orelse 0;
+    const requested_length_field = getOptionalU32Field(payload.value.object, "length");
     const requested_length = clampMountGraphReadLength(
         offset,
-        getOptionalU32Field(payload.value.object, "length"),
+        requested_length_field,
     ) catch |err| switch (err) {
         error.InvalidOffset => return err,
     };
@@ -7349,7 +7350,7 @@ fn handleMountFileReadControl(
     const escaped_path = try unified.jsonEscape(allocator, absolute_path);
     defer allocator.free(escaped_path);
     const count = try mountGraphWriteResponseCount(chunk.len);
-    const eof = chunk.len < requested_length;
+    const eof = mountGraphReadIsEof(offset, requested_length_field, requested_length, chunk.len);
 
     return std.fmt.allocPrint(
         allocator,
@@ -7366,6 +7367,15 @@ fn clampMountGraphReadLength(offset: u64, requested_length: ?u32) !u32 {
     const remaining = max_mount_graph_materialized_file_bytes - base_offset;
     const max_length = std.math.cast(u32, remaining) orelse return error.InvalidOffset;
     return if (requested_length) |value| @min(value, max_length) else max_length;
+}
+
+fn mountGraphReadIsEof(offset: u64, requested_length_field: ?u32, requested_length: u32, chunk_len: usize) bool {
+    if (chunk_len < requested_length) return true;
+    if (requested_length != 0) return false;
+
+    const materialized_limit_u64: u64 = max_mount_graph_materialized_file_bytes;
+    const requested_some_bytes = requested_length_field == null or requested_length_field.? > 0;
+    return offset == materialized_limit_u64 and requested_some_bytes;
 }
 
 fn handleMountFileWriteControl(
@@ -10893,6 +10903,16 @@ test "server: clampMountGraphReadLength clamps explicit length to remaining byte
     const near_end = max_mount_graph_materialized_file_bytes - 16;
     try std.testing.expectEqual(@as(u32, 16), try clampMountGraphReadLength(near_end, 1024));
     try std.testing.expectEqual(@as(u32, 0), try clampMountGraphReadLength(max_mount_graph_materialized_file_bytes, 1024));
+}
+
+test "server: mountGraphReadIsEof reports eof when clamp reaches materialization boundary" {
+    const limit = max_mount_graph_materialized_file_bytes;
+    try std.testing.expect(mountGraphReadIsEof(limit, null, 0, 0));
+    try std.testing.expect(mountGraphReadIsEof(limit, 1024, 0, 0));
+}
+
+test "server: mountGraphReadIsEof preserves zero-length request semantics away from boundary" {
+    try std.testing.expect(!mountGraphReadIsEof(0, 0, 0, 0));
 }
 
 test "server: mount attach and mount file read control operations are supported after session attach" {

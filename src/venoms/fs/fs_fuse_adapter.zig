@@ -144,8 +144,9 @@ pub const FuseAdapter = struct {
 
     pub fn create(self: *FuseAdapter, path: []const u8, mode: u32, flags: u32) !mount_provider.OpenFile {
         if (self.helper_client) |*client| return client.create(path, mode, flags);
+        const result = try self.session.create(path, mode, flags);
         self.path_cache.invalidatePathAndParent(path);
-        return self.session.create(path, mode, flags);
+        return result;
     }
 
     pub fn createAndStoreHandle(self: *FuseAdapter, path: []const u8, mode: u32, flags: u32) !u64 {
@@ -154,8 +155,9 @@ pub const FuseAdapter = struct {
             errdefer client.release(open_file) catch {};
             return self.storeOpenHandle(open_file);
         }
+        const result = try self.session.createAndStoreHandle(path, mode, flags);
         self.path_cache.invalidatePathAndParent(path);
-        return self.session.createAndStoreHandle(path, mode, flags);
+        return result;
     }
 
     pub fn write(self: *FuseAdapter, file: mount_provider.OpenFile, off: u64, data: []const u8) !u32 {
@@ -165,47 +167,48 @@ pub const FuseAdapter = struct {
 
     pub fn truncate(self: *FuseAdapter, path: []const u8, size: u64) !void {
         if (self.helper_client) |*client| return client.truncate(path, size);
-        self.path_cache.invalidatePath(path);
         try self.session.truncate(path, size);
+        self.path_cache.invalidatePath(path);
     }
 
     pub fn unlink(self: *FuseAdapter, path: []const u8) !void {
         if (self.helper_client) |*client| return client.unlink(path);
-        self.path_cache.invalidatePathAndParent(path);
         try self.session.unlink(path);
+        self.path_cache.invalidatePathAndParent(path);
     }
 
     pub fn mkdir(self: *FuseAdapter, path: []const u8) !void {
         if (self.helper_client) |*client| return client.mkdir(path);
-        self.path_cache.invalidatePathAndParent(path);
         try self.session.mkdir(path);
+        self.path_cache.invalidatePathAndParent(path);
     }
 
     pub fn rmdir(self: *FuseAdapter, path: []const u8) !void {
         if (self.helper_client) |*client| return client.rmdir(path);
+        try self.session.rmdir(path);
         self.path_cache.invalidatePathAndParent(path);
         self.path_cache.invalidateTree(path);
-        try self.session.rmdir(path);
     }
 
     pub fn rename(self: *FuseAdapter, old_path: []const u8, new_path: []const u8) !void {
         if (self.helper_client) |*client| return client.rename(old_path, new_path);
+        try self.session.rename(old_path, new_path);
         self.path_cache.invalidatePathAndParent(old_path);
         self.path_cache.invalidatePathAndParent(new_path);
         self.path_cache.invalidateTree(old_path);
-        try self.session.rename(old_path, new_path);
+        self.path_cache.invalidateTree(new_path);
     }
 
     pub fn symlink(self: *FuseAdapter, target: []const u8, link_path: []const u8) !void {
         if (self.helper_client) |*client| return client.symlink(target, link_path);
-        self.path_cache.invalidatePathAndParent(link_path);
         try self.session.symlink(target, link_path);
+        self.path_cache.invalidatePathAndParent(link_path);
     }
 
     pub fn setxattr(self: *FuseAdapter, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
         if (self.helper_client) |*client| return client.setxattr(path, name, value, flags);
-        self.path_cache.invalidatePath(path);
         try self.session.setxattr(path, name, value, flags);
+        self.path_cache.invalidatePath(path);
     }
 
     pub fn getxattr(self: *FuseAdapter, path: []const u8, name: []const u8) ![]u8 {
@@ -220,8 +223,8 @@ pub const FuseAdapter = struct {
 
     pub fn removexattr(self: *FuseAdapter, path: []const u8, name: []const u8) !void {
         if (self.helper_client) |*client| return client.removexattr(path, name);
-        self.path_cache.invalidatePath(path);
         try self.session.removexattr(path, name);
+        self.path_cache.invalidatePath(path);
     }
 
     pub fn lock(self: *FuseAdapter, file: mount_provider.OpenFile, mode: mount_provider.LockMode, wait: bool) !void {

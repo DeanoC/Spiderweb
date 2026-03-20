@@ -990,6 +990,12 @@ fn cOpen(path_c: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int
         const opened = adapter.open(path, flags) catch |err| return toFuseError(err);
         adapter.release(opened) catch {};
     }
+    // O_TRUNC (0x200) implicitly truncates the file on open. Invalidate the
+    // cached attr so the next getattr reflects the new size and mtime rather
+    // than the pre-open values.
+    if (flags & 0x200 != 0) {
+        adapter.path_cache.invalidatePath(path);
+    }
     return 0;
 }
 

@@ -314,70 +314,66 @@ const ProjectTemplateSpec = struct {
 };
 
 const minimum_template_bind_specs = [_]ProjectTemplateBindSpec{
-    .{ .bind_path = "/services/venom_packages", .venom_id = "venom_packages" },
     .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/services/home", .venom_id = "home" },
     .{ .bind_path = "/services/workers", .venom_id = "workers" },
-    .{ .bind_path = "/services/chat", .venom_id = "chat", .provider_scope = "session_dynamic" },
-    .{ .bind_path = "/services/jobs", .venom_id = "jobs", .provider_scope = "session_dynamic" },
+    .{ .bind_path = "/services/terminal", .venom_id = "terminal", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/git", .venom_id = "git", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/library", .venom_id = "library" },
     .{ .bind_path = "/services/events", .venom_id = "events" },
 };
 
 const system_template_bind_specs = [_]ProjectTemplateBindSpec{
-    .{ .bind_path = "/services/venom_packages", .venom_id = "venom_packages" },
     .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/services/home", .venom_id = "home" },
     .{ .bind_path = "/services/workers", .venom_id = "workers" },
-    .{ .bind_path = "/services/chat", .venom_id = "chat", .provider_scope = "session_dynamic" },
-    .{ .bind_path = "/services/jobs", .venom_id = "jobs", .provider_scope = "session_dynamic" },
+    .{ .bind_path = "/services/terminal", .venom_id = "terminal", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/git", .venom_id = "git", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/library", .venom_id = "library" },
     .{ .bind_path = "/services/events", .venom_id = "events" },
 };
 
 const github_template_bind_specs = [_]ProjectTemplateBindSpec{
-    .{ .bind_path = "/services/venom_packages", .venom_id = "venom_packages" },
     .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/services/home", .venom_id = "home" },
     .{ .bind_path = "/services/workers", .venom_id = "workers" },
-    .{ .bind_path = "/services/chat", .venom_id = "chat", .provider_scope = "session_dynamic" },
-    .{ .bind_path = "/services/jobs", .venom_id = "jobs", .provider_scope = "session_dynamic" },
-    .{ .bind_path = "/services/git", .venom_id = "git" },
+    .{ .bind_path = "/services/terminal", .venom_id = "terminal", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/git", .venom_id = "git", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/library", .venom_id = "library" },
+    .{ .bind_path = "/services/events", .venom_id = "events" },
     .{ .bind_path = "/services/github_pr", .venom_id = "github_pr" },
     .{ .bind_path = "/services/missions", .venom_id = "missions" },
     .{ .bind_path = "/services/pr_review", .venom_id = "pr_review" },
-    .{ .bind_path = "/services/terminal", .venom_id = "terminal" },
-    .{ .bind_path = "/services/events", .venom_id = "events" },
-    .{ .bind_path = "/services/library", .venom_id = "library" },
-    .{ .bind_path = "/services/search_code", .venom_id = "search_code" },
-    .{ .bind_path = "/services/web_search", .venom_id = "web_search" },
 };
 
 const dev_template_bind_specs = [_]ProjectTemplateBindSpec{
-    .{ .bind_path = "/services/venom_packages", .venom_id = "venom_packages" },
     .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/services/home", .venom_id = "home" },
     .{ .bind_path = "/services/workers", .venom_id = "workers" },
-    .{ .bind_path = "/services/git", .venom_id = "git" },
-    .{ .bind_path = "/services/terminal", .venom_id = "terminal" },
+    .{ .bind_path = "/services/terminal", .venom_id = "terminal", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/git", .venom_id = "git", .provider_scope = "node_export" },
+    .{ .bind_path = "/services/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
     .{ .bind_path = "/services/events", .venom_id = "events" },
     .{ .bind_path = "/services/library", .venom_id = "library" },
-    .{ .bind_path = "/services/search_code", .venom_id = "search_code" },
-    .{ .bind_path = "/services/web_search", .venom_id = "web_search" },
 };
 
 const builtin_project_templates = [_]ProjectTemplateSpec{
     .{
         .id = default_project_template_id,
-        .description = "Minimal bootstrap workspace with only the core mounts-management service bound into /services.",
+        .description = "Minimal external-agent workspace with the core services bound into /services.",
         .bind_specs = minimum_template_bind_specs[0..],
     },
     .{
         .id = "dev",
-        .description = "Development workspace with core filesystem, git, terminal, events, library, and search services bound into /services.",
+        .description = "Development workspace with the same external-agent core services bound into /services.",
         .bind_specs = dev_template_bind_specs[0..],
     },
     .{
         .id = "github",
-        .description = "GitHub-oriented workspace with git, GitHub PR, missions, and PR review services bound into /services.",
+        .description = "GitHub-oriented workspace that layers PR services on top of the external-agent core.",
         .bind_specs = github_template_bind_specs[0..],
     },
 };
@@ -6614,12 +6610,10 @@ test "acheron_control_plane: builtin system mounts support namespace topology" {
         .{ .mount_path = "/agents", .export_name = "agents" },
         .{ .mount_path = "/meta", .export_name = "meta" },
         .{ .mount_path = "/global/capabilities", .export_name = "capabilities" },
-        .{ .mount_path = "/global/jobs", .export_name = "jobs" },
         .{ .mount_path = "/nodes/local/fs", .export_name = "workspace" },
         .{ .mount_path = "/nodes/local/projects/system/agents", .export_name = "agents" },
         .{ .mount_path = "/nodes/local/projects/system/meta", .export_name = "meta" },
         .{ .mount_path = "/nodes/local/projects/system/global/capabilities", .export_name = "capabilities" },
-        .{ .mount_path = "/nodes/local/projects/system/global/jobs", .export_name = "jobs" },
         .{ .mount_path = "/nodes/local/projects/system/nodes/local/fs", .export_name = "workspace" },
         .{ .mount_path = "/nodes/local/projects/system/fs/local::fs", .export_name = "workspace" },
     };
@@ -6630,12 +6624,10 @@ test "acheron_control_plane: builtin system mounts support namespace topology" {
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/agents\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/meta\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/global/capabilities\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/global/jobs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/fs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/projects/system/agents\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/projects/system/meta\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/projects/system/global/capabilities\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/projects/system/global/jobs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/projects/system/nodes/local/fs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/projects/system/fs/local::fs\"") != null);
 }
@@ -8059,7 +8051,7 @@ test "acheron_control_plane: explicit venom bind overrides heuristic provider se
 
     const local_upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"chat\",\"kind\":\"chat\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/chat\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"chat\",\"mount_path\":\"/nodes/{s}/chat\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/input\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-chat-v1\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal-v2\"}}}}]}}",
         .{ local_node_id, local_node_secret, local_node_id, local_node_id },
     );
     defer allocator.free(local_upsert_req);
@@ -8067,19 +8059,19 @@ test "acheron_control_plane: explicit venom bind overrides heuristic provider se
 
     const app_upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"chat\",\"kind\":\"chat\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/chat\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"chat\",\"mount_path\":\"/nodes/{s}/chat\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/input\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-chat-v1\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal-v2\"}}}}]}}",
         .{ app_node_id, app_node_secret, app_node_id, app_node_id },
     );
     defer allocator.free(app_upsert_req);
     _ = try plane.nodeVenomUpsert(app_upsert_req);
 
-    const bind_req = try std.fmt.allocPrint(allocator, "{{\"venom_id\":\"chat\",\"node_id\":\"{s}\"}}", .{app_node_id});
+    const bind_req = try std.fmt.allocPrint(allocator, "{{\"venom_id\":\"terminal\",\"node_id\":\"{s}\"}}", .{app_node_id});
     defer allocator.free(bind_req);
     const bind_json = try plane.bindPreferredVenomProvider(bind_req);
     defer allocator.free(bind_json);
     try std.testing.expect(std.mem.indexOf(u8, bind_json, app_node_id) != null);
 
-    var provider = (try plane.resolvePreferredVenomProvider(allocator, "chat", &.{ "spiderweb-local", "local" })) orelse return error.TestExpectedResponse;
+    var provider = (try plane.resolvePreferredVenomProvider(allocator, "terminal", &.{ "spiderweb-local", "local" })) orelse return error.TestExpectedResponse;
     defer provider.deinit(allocator);
     try std.testing.expectEqualStrings(app_node_id, provider.node_id);
     try std.testing.expectEqualStrings("spiderapp-default", provider.node_name);
@@ -8106,7 +8098,7 @@ test "acheron_control_plane: scoped venom binds resolve agent before project bef
 
     const local_upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"chat\",\"kind\":\"chat\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/chat\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"chat\",\"mount_path\":\"/nodes/{s}/chat\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/input\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-chat-v1\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal-v2\"}}}}]}}",
         .{ local_node_id, local_node_secret, local_node_id, local_node_id },
     );
     defer allocator.free(local_upsert_req);
@@ -8114,27 +8106,27 @@ test "acheron_control_plane: scoped venom binds resolve agent before project bef
 
     const app_upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"chat\",\"kind\":\"chat\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/chat\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"chat\",\"mount_path\":\"/nodes/{s}/chat\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/input\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-chat-v1\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal-v2\"}}}}]}}",
         .{ app_node_id, app_node_secret, app_node_id, app_node_id },
     );
     defer allocator.free(app_upsert_req);
     _ = try plane.nodeVenomUpsert(app_upsert_req);
 
-    const bind_global = try std.fmt.allocPrint(allocator, "{{\"venom_id\":\"chat\",\"scope\":\"global\",\"node_id\":\"{s}\"}}", .{local_node_id});
+    const bind_global = try std.fmt.allocPrint(allocator, "{{\"venom_id\":\"terminal\",\"scope\":\"global\",\"node_id\":\"{s}\"}}", .{local_node_id});
     defer allocator.free(bind_global);
     _ = try plane.bindPreferredVenomProvider(bind_global);
 
-    const bind_project = try std.fmt.allocPrint(allocator, "{{\"venom_id\":\"chat\",\"scope\":\"project\",\"project_id\":\"{s}\",\"node_id\":\"{s}\"}}", .{ spider_web_project_id, app_node_id });
+    const bind_project = try std.fmt.allocPrint(allocator, "{{\"venom_id\":\"terminal\",\"scope\":\"project\",\"project_id\":\"{s}\",\"node_id\":\"{s}\"}}", .{ spider_web_project_id, app_node_id });
     defer allocator.free(bind_project);
     _ = try plane.bindPreferredVenomProvider(bind_project);
 
-    const bind_agent = try std.fmt.allocPrint(allocator, "{{\"venom_id\":\"chat\",\"scope\":\"agent\",\"agent_id\":\"alice\",\"node_id\":\"{s}\"}}", .{local_node_id});
+    const bind_agent = try std.fmt.allocPrint(allocator, "{{\"venom_id\":\"terminal\",\"scope\":\"agent\",\"agent_id\":\"alice\",\"node_id\":\"{s}\"}}", .{local_node_id});
     defer allocator.free(bind_agent);
     _ = try plane.bindPreferredVenomProvider(bind_agent);
 
     var project_provider = (try plane.resolvePreferredVenomProviderForContext(
         allocator,
-        "chat",
+        "terminal",
         &.{ "spiderweb-local", "local" },
         spider_web_project_id,
         null,
@@ -8144,7 +8136,7 @@ test "acheron_control_plane: scoped venom binds resolve agent before project bef
 
     var agent_provider = (try plane.resolvePreferredVenomProviderForContext(
         allocator,
-        "chat",
+        "terminal",
         &.{ "spiderweb-local", "local" },
         spider_web_project_id,
         "alice",
@@ -8474,6 +8466,9 @@ test "acheron_control_plane: createProject defaults to minimum template and seed
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"template_id\":\"minimum\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/mounts\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"target_path\":\"/nodes/local/venoms/mounts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/chat\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/jobs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/web_search\"") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer parsed.deinit();
@@ -8510,7 +8505,10 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/search_code\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"target_path\":\"/nodes/local/venoms/git\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"provider_scope\":\"host_local\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"provider_scope\":\"node_export\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/chat\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/jobs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/web_search\"") == null);
 
     try std.testing.expectError(ControlPlaneError.TemplateNotFound, plane.getWorkspaceTemplate("{\"template_id\":\"unknown\"}"));
 }
@@ -8546,7 +8544,9 @@ test "acheron_control_plane: dev template seeds development service binds" {
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/events\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/library\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/search_code\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/web_search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/chat\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/jobs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/web_search\"") == null);
 }
 
 test "acheron_control_plane: github template merges desired binds with template service binds" {
@@ -8583,6 +8583,9 @@ test "acheron_control_plane: github template merges desired binds with template 
     try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/events\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/library\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/chat\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/jobs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/web_search\"") == null);
 
     const resolve_req = try std.fmt.allocPrint(
         allocator,
@@ -8823,7 +8826,7 @@ test "acheron_control_plane: node venom upsert rejects runtime mismatch with ins
     try std.testing.expectError(ControlPlaneError.VenomPackageRuntimeMismatch, plane.nodeVenomUpsert(upsert_req));
 }
 
-test "acheron_control_plane: builtin jobs package accepts local node export upsert" {
+test "acheron_control_plane: builtin terminal package accepts local node export upsert" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -8837,14 +8840,14 @@ test "acheron_control_plane: builtin jobs package accepts local node export upse
 
     const upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"spiderweb\"}},\"venoms\":[{{\"venom_id\":\"jobs\",\"kind\":\"jobs\",\"version\":\"1\",\"state\":\"online\",\"package_id\":\"jobs\",\"provider_scope\":\"node_export\",\"hosts\":[\"spiderweb\",\"node\"],\"projection_modes\":[\"session_dynamic\",\"host_local\",\"node_export\"],\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/jobs\"],\"capabilities\":{{\"invoke\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"allow-by-default\"}},\"schema\":{{\"model\":\"namespace-jobs-v1\"}}}}]}}",
-        .{ node_id, node_secret, node_id },
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"spiderweb\"}},\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"package_id\":\"terminal\",\"provider_scope\":\"node_export\",\"hosts\":[\"node\"],\"projection_modes\":[\"node_export\",\"workspace_service\"],\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/terminal\"],\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/venoms/terminal\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"discoverable\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"allow-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}]}}",
+        .{ node_id, node_secret, node_id, node_id },
     );
     defer allocator.free(upsert_req);
 
     const upserted = try plane.nodeVenomUpsert(upsert_req);
     defer allocator.free(upserted);
-    try std.testing.expect(std.mem.indexOf(u8, upserted, "\"venom_id\":\"jobs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, upserted, "\"venom_id\":\"terminal\"") != null);
 }
 
 test "acheron_control_plane: node venom upsert honors package_id alias" {

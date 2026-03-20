@@ -1081,6 +1081,7 @@ final class SpiderwebAppController: ObservableObject {
         runSimpleAction(message: isMounting ? "Mounted “\(mount.name)”" : "Unmounted “\(mount.name)”") {
             if isMounting {
                 let trimmedWorkspaceID = mount.workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+                let revealedAuth = Self.fetchAuthStatus(revealTokens: true)
                 if mount.kind == .local {
                     if trimmedWorkspaceID.isEmpty {
                         throw SpiderwebAppError.message("Local mounts need a real workspace. Create one in This Mac first.")
@@ -1088,13 +1089,23 @@ final class SpiderwebAppController: ObservableObject {
                     if trimmedWorkspaceID == "system" {
                         throw SpiderwebAppError.message("That workspace is reserved. Create a normal workspace first.")
                     }
+                    guard let auth = revealedAuth, auth.adminToken != nil else {
+                        throw SpiderwebAppError.message("Local Spiderweb auth token is unavailable.")
+                    }
+                    let workspaces = Self.fetchLocalWorkspaces(using: auth)
+                    guard let workspace = workspaces.first(where: { $0.id == trimmedWorkspaceID }) else {
+                        throw SpiderwebAppError.message("This saved mount points to workspace “\(trimmedWorkspaceID)”, but that workspace no longer exists. Delete or edit the saved mount, or recreate the workspace in This Mac.")
+                    }
+                    guard workspace.isMountable else {
+                        throw SpiderwebAppError.message("Workspace “\(workspace.name)” is not mountable yet because the local filesystem node is not ready.")
+                    }
                 } else if trimmedWorkspaceID.isEmpty {
                     throw SpiderwebAppError.message("This saved remote mount is missing a workspace ID.")
                 }
                 var env: [String: String] = [:]
                 switch mount.authSource {
                 case .localRuntime:
-                    guard let auth = Self.fetchAuthStatus(revealTokens: true), let adminToken = auth.adminToken else {
+                    guard let adminToken = revealedAuth?.adminToken else {
                         throw SpiderwebAppError.message("Local Spiderweb auth token is unavailable.")
                     }
                     env["SPIDERWEB_AUTH_TOKEN"] = adminToken
@@ -1769,6 +1780,8 @@ final class SpiderwebAppController: ObservableObject {
             "/bin/rm -f /usr/local/bin/spiderweb-control",
             "/bin/rm -f /usr/local/bin/spiderweb-fs-mount",
             "/bin/rm -f /usr/local/bin/spiderweb-fs-node",
+            "/bin/rm -f /usr/local/bin/spiderweb-local-node",
+            "/bin/rm -f /usr/local/bin/spiderweb-local-service",
             "/usr/sbin/pkgutil --forget com.deanoc.spiderweb.filesystems.fs.spiderweb.pkg >/dev/null 2>&1 || true",
         ].joined(separator: "; ")
 

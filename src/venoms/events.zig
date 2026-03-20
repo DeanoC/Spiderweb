@@ -1,17 +1,12 @@
 const std = @import("std");
 const unified = @import("spider-protocol").unified;
 const shared_node = @import("spiderweb_node");
-const chat_job_index = @import("../agents/chat_job_index.zig");
-const job_projection = @import("../acheron/job_projection.zig");
 
 pub const default_wait_timeout_ms: i64 = 60_000;
 pub const wait_poll_interval_ms: u64 = 100;
 pub const max_signal_events: usize = 512;
 
 pub const WaitSourceKind = enum {
-    chat_input,
-    job_status,
-    job_result,
     time_after,
     time_at,
     agent_signal,
@@ -22,16 +17,13 @@ pub const WaitSourceKind = enum {
 pub const WaitSource = struct {
     raw_path: []u8,
     kind: WaitSourceKind,
-    job_id: ?[]u8 = null,
     parameter: ?[]u8 = null,
     target_time_ms: i64 = 0,
     last_seen_updated_at_ms: i64 = 0,
-    last_seen_job_event_seq: u64 = 0,
     last_seen_signal_seq: u64 = 0,
 
     pub fn deinit(self: *WaitSource, allocator: std.mem.Allocator) void {
         allocator.free(self.raw_path);
-        if (self.job_id) |value| allocator.free(value);
         if (self.parameter) |value| allocator.free(value);
         self.* = undefined;
     }
@@ -62,7 +54,6 @@ pub const WaitCandidate = struct {
     sort_key_ms: i64,
     payload_json: []u8,
     next_last_seen_updated_at_ms: ?i64 = null,
-    next_last_seen_job_event_seq: ?u64 = null,
     next_last_seen_signal_seq: ?u64 = null,
 
     pub fn deinit(self: *WaitCandidate, allocator: std.mem.Allocator) void {
@@ -240,7 +231,6 @@ pub fn handleNextRead(self: anytype) ![]u8 {
         if (try pollWaitSources(self)) |candidate| {
             var source = &self.wait_sources.items[candidate.source_index];
             if (candidate.next_last_seen_updated_at_ms) |value| source.last_seen_updated_at_ms = value;
-            if (candidate.next_last_seen_job_event_seq) |value| source.last_seen_job_event_seq = value;
             if (candidate.next_last_seen_signal_seq) |value| source.last_seen_signal_seq = value;
             return candidate.payload_json;
         }
@@ -278,19 +268,6 @@ fn signalEventTypeName(kind: SignalEventType) []const u8 {
 }
 
 fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
-    inline for ([_][]const u8{
-        "/global/chat/control/input",
-        "/nodes/local/venoms/chat/control/input",
-        "/services/chat/control/input",
-    }) |candidate| {
-        if (std.mem.eql(u8, path, candidate) or std.mem.endsWith(u8, path, candidate)) {
-            return .{
-                .raw_path = try self.allocator.dupe(u8, path),
-                .kind = .chat_input,
-            };
-        }
-    }
-
     inline for ([_][]const u8{
         "/global/events/sources/agent.json",
         "/nodes/local/venoms/events/sources/agent.json",
@@ -407,33 +384,6 @@ fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
         }
     }
 
-    inline for ([_][]const u8{
-        "/global/jobs/",
-        "/nodes/local/venoms/jobs/",
-        "/services/jobs/",
-    }) |prefix| {
-        if (std.mem.indexOf(u8, path, prefix)) |prefix_index| {
-            const tail = path[prefix_index + prefix.len ..];
-            var tokens = std.mem.tokenizeScalar(u8, tail, '/');
-            const job_id = tokens.next() orelse return error.InvalidPayload;
-            const leaf = tokens.next() orelse return error.InvalidPayload;
-            if (tokens.next() != null) return error.InvalidPayload;
-
-            const kind: WaitSourceKind = if (std.mem.eql(u8, leaf, "status.json"))
-                .job_status
-            else if (std.mem.eql(u8, leaf, "result.txt"))
-                .job_result
-            else
-                return error.InvalidPayload;
-
-            return .{
-                .raw_path = try self.allocator.dupe(u8, path),
-                .kind = kind,
-                .job_id = try self.allocator.dupe(u8, job_id),
-            };
-        }
-    }
-
     return error.InvalidPayload;
 }
 
@@ -457,18 +407,6 @@ fn parseWaitSelectorMillis(raw: []const u8) !i64 {
 fn initializeWaitSourceCursor(self: anytype, source: *WaitSource) !void {
     source.last_seen_updated_at_ms = 0;
     switch (source.kind) {
-        .chat_input => {
-            source.last_seen_job_event_seq = try self.job_index.latestTerminalEventSeqForAgent(self.agent_id);
-        },
-        .job_status, .job_result => {
-            const job_id = source.job_id orelse return;
-            const view = try self.job_index.getJob(self.allocator, job_id);
-            if (view) |owned| {
-                var job = owned;
-                defer job.deinit(self.allocator);
-                source.last_seen_updated_at_ms = job.updated_at_ms;
-            }
-        },
         .time_after, .time_at => {},
         .agent_signal, .hook_signal, .user_signal => {
             source.last_seen_signal_seq = if (self.signal_events.items.len == 0)
@@ -503,74 +441,8 @@ fn pollWaitSources(self: anytype) !?WaitCandidate {
 
 fn buildWaitCandidate(self: anytype, source: WaitSource, source_index: usize) !?WaitCandidate {
     return switch (source.kind) {
-        .job_status, .job_result => buildJobPathCandidate(self, source, source_index),
-        .chat_input => buildChatInputCandidate(self, source, source_index),
         .time_after, .time_at => buildTimeCandidate(self, source, source_index),
         .agent_signal, .hook_signal, .user_signal => buildSignalCandidate(self, source, source_index),
-    };
-}
-
-fn buildJobPathCandidate(self: anytype, source: WaitSource, source_index: usize) !?WaitCandidate {
-    const job_id = source.job_id orelse return null;
-    const owned_view = try self.job_index.getJob(self.allocator, job_id);
-    if (owned_view == null) return null;
-
-    var view = owned_view.?;
-    errdefer view.deinit(self.allocator);
-    if (!std.mem.eql(u8, view.agent_id, self.agent_id)) return null;
-    if (!chat_job_index.isTerminalState(view.state)) return null;
-    if (view.updated_at_ms <= source.last_seen_updated_at_ms) return null;
-    try self.syncThoughtFramesFromJobTelemetry(job_id);
-
-    const event_path = switch (source.kind) {
-        .job_status => try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/jobs/{s}/status.json", .{view.job_id}),
-        .job_result => try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/jobs/{s}/result.txt", .{view.job_id}),
-        else => unreachable,
-    };
-    defer self.allocator.free(event_path);
-    const payload = try job_projection.buildJobWaitEventPayload(
-        self.allocator,
-        nextWaitEventId(self),
-        source.raw_path,
-        event_path,
-        view,
-    );
-    const updated_at_ms = view.updated_at_ms;
-    view.deinit(self.allocator);
-    return .{
-        .source_index = source_index,
-        .sort_key_ms = updated_at_ms,
-        .payload_json = payload,
-        .next_last_seen_updated_at_ms = updated_at_ms,
-    };
-}
-
-fn buildChatInputCandidate(self: anytype, source: WaitSource, source_index: usize) !?WaitCandidate {
-    const owned_event = try self.job_index.firstTerminalEventForAgentAfter(
-        self.allocator,
-        self.agent_id,
-        source.last_seen_job_event_seq,
-    );
-    if (owned_event == null) return null;
-
-    var event = owned_event.?;
-    defer event.deinit(self.allocator);
-    try self.syncThoughtFramesFromJobTelemetry(event.job_id);
-
-    const event_path = try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/jobs/{s}/status.json", .{event.job_id});
-    defer self.allocator.free(event_path);
-    const payload = try job_projection.buildTerminalJobWaitEventPayload(
-        self.allocator,
-        nextWaitEventId(self),
-        source.raw_path,
-        event_path,
-        event,
-    );
-    return .{
-        .source_index = source_index,
-        .sort_key_ms = event.created_at_ms,
-        .payload_json = payload,
-        .next_last_seen_job_event_seq = event.seq,
     };
 }
 

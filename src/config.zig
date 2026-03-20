@@ -54,6 +54,39 @@ pub const RuntimeConfig = struct {
         }
     };
 
+    pub const LocalNodeConfig = struct {
+        enabled: bool = true,
+        binary: []const u8 = "spiderweb-local-node",
+        profile: []const u8 = "external-agent-core",
+        export_path: []const u8 = "",
+        export_name: []const u8 = "fs",
+        restart_on_exit: bool = true,
+        extra_venoms_dir: []const u8 = "",
+        enable_debug: bool = false,
+
+        pub fn clone(self: LocalNodeConfig, allocator: std.mem.Allocator) !LocalNodeConfig {
+            return .{
+                .enabled = self.enabled,
+                .binary = try allocator.dupe(u8, self.binary),
+                .profile = try allocator.dupe(u8, self.profile),
+                .export_path = try allocator.dupe(u8, self.export_path),
+                .export_name = try allocator.dupe(u8, self.export_name),
+                .restart_on_exit = self.restart_on_exit,
+                .extra_venoms_dir = try allocator.dupe(u8, self.extra_venoms_dir),
+                .enable_debug = self.enable_debug,
+            };
+        }
+
+        pub fn deinit(self: *LocalNodeConfig, allocator: std.mem.Allocator) void {
+            allocator.free(self.binary);
+            allocator.free(self.profile);
+            allocator.free(self.export_path);
+            allocator.free(self.export_name);
+            allocator.free(self.extra_venoms_dir);
+            self.* = undefined;
+        }
+    };
+
     inbound_queue_max: usize = 512,
     brain_tick_queue_max: usize = 256,
     outbound_queue_max: usize = 512,
@@ -62,7 +95,6 @@ pub const RuntimeConfig = struct {
     connection_queue_max: usize = 128,
     runtime_worker_threads: usize = 2,
     runtime_request_queue_max: usize = 128,
-    chat_operation_timeout_ms: u64 = 300_000,
     control_operation_timeout_ms: u64 = 5_000,
     run_checkpoint_interval_steps: usize = 1,
     run_auto_resume_on_boot: bool = true,
@@ -83,6 +115,7 @@ pub const RuntimeConfig = struct {
     sandbox_snapshot_root: []const u8 = "/var/lib/spiderweb/rootfs/snapshots",
     sandbox_launcher: []const u8 = "bwrap",
     sandbox_fs_mount_bin: []const u8 = "spiderweb-fs-mount",
+    local_node: LocalNodeConfig = .{},
     remote_node: RemoteNodeConfig = .{},
 
     pub fn clone(self: RuntimeConfig, allocator: std.mem.Allocator) !RuntimeConfig {
@@ -95,7 +128,6 @@ pub const RuntimeConfig = struct {
             .connection_queue_max = self.connection_queue_max,
             .runtime_worker_threads = self.runtime_worker_threads,
             .runtime_request_queue_max = self.runtime_request_queue_max,
-            .chat_operation_timeout_ms = self.chat_operation_timeout_ms,
             .control_operation_timeout_ms = self.control_operation_timeout_ms,
             .run_checkpoint_interval_steps = self.run_checkpoint_interval_steps,
             .run_auto_resume_on_boot = self.run_auto_resume_on_boot,
@@ -116,8 +148,15 @@ pub const RuntimeConfig = struct {
             .sandbox_snapshot_root = try allocator.dupe(u8, self.sandbox_snapshot_root),
             .sandbox_launcher = try allocator.dupe(u8, self.sandbox_launcher),
             .sandbox_fs_mount_bin = try allocator.dupe(u8, self.sandbox_fs_mount_bin),
+            .local_node = try self.local_node.clone(allocator),
             .remote_node = try self.remote_node.clone(allocator),
         };
+    }
+
+    pub fn effectiveLocalNodeExportPath(self: RuntimeConfig) []const u8 {
+        const configured = std.mem.trim(u8, self.local_node.export_path, " \t\r\n");
+        if (configured.len > 0) return configured;
+        return std.mem.trim(u8, self.spider_web_root, " \t\r\n");
     }
 
     pub fn deinit(self: *RuntimeConfig, allocator: std.mem.Allocator) void {
@@ -134,6 +173,7 @@ pub const RuntimeConfig = struct {
         allocator.free(self.sandbox_snapshot_root);
         allocator.free(self.sandbox_launcher);
         allocator.free(self.sandbox_fs_mount_bin);
+        self.local_node.deinit(allocator);
         self.remote_node.deinit(allocator);
     }
 };
@@ -162,7 +202,6 @@ const default_config =
     \\    "connection_queue_max": 128,
     \\    "runtime_worker_threads": 2,
     \\    "runtime_request_queue_max": 128,
-    \\    "chat_operation_timeout_ms": 300000,
     \\    "control_operation_timeout_ms": 5000,
     \\    "run_checkpoint_interval_steps": 1,
     \\    "run_auto_resume_on_boot": true,
@@ -177,6 +216,16 @@ const default_config =
     \\    "assets_dir": "templates",
     \\    "agents_dir": "agents"
     \\    ,
+    \\    "local_node": {
+    \\      "enabled": true,
+    \\      "binary": "spiderweb-local-node",
+    \\      "profile": "external-agent-core",
+    \\      "export_path": "",
+    \\      "export_name": "fs",
+    \\      "restart_on_exit": true,
+    \\      "extra_venoms_dir": "",
+    \\      "enable_debug": false
+    \\    },
     \\    "remote_node": {
     \\      "enabled": false,
     \\      "remote_control_url": "",
@@ -300,7 +349,6 @@ pub fn init(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
             .connection_queue_max = 128,
             .runtime_worker_threads = 2,
             .runtime_request_queue_max = 128,
-            .chat_operation_timeout_ms = 300_000,
             .control_operation_timeout_ms = 5_000,
             .run_checkpoint_interval_steps = 1,
             .run_auto_resume_on_boot = true,
@@ -321,6 +369,16 @@ pub fn init(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
             .sandbox_snapshot_root = try allocator.dupe(u8, sandbox_defaults.snapshot_root),
             .sandbox_launcher = try allocator.dupe(u8, "bwrap"),
             .sandbox_fs_mount_bin = try allocator.dupe(u8, "spiderweb-fs-mount"),
+            .local_node = .{
+                .enabled = true,
+                .binary = try allocator.dupe(u8, "spiderweb-local-node"),
+                .profile = try allocator.dupe(u8, "external-agent-core"),
+                .export_path = try allocator.dupe(u8, ""),
+                .export_name = try allocator.dupe(u8, "fs"),
+                .restart_on_exit = true,
+                .extra_venoms_dir = try allocator.dupe(u8, ""),
+                .enable_debug = false,
+            },
             .remote_node = .{
                 .enabled = false,
                 .remote_control_url = try allocator.dupe(u8, ""),
@@ -485,11 +543,6 @@ pub fn load(self: *Config) !void {
                     self.runtime.runtime_request_queue_max = @intCast(value.integer);
                 }
             }
-            if (runtime_val.object.get("chat_operation_timeout_ms")) |value| {
-                if (value == .integer and value.integer > 0) {
-                    self.runtime.chat_operation_timeout_ms = @intCast(value.integer);
-                }
-            }
             if (runtime_val.object.get("control_operation_timeout_ms")) |value| {
                 if (value == .integer and value.integer > 0) {
                     self.runtime.control_operation_timeout_ms = @intCast(value.integer);
@@ -603,6 +656,55 @@ pub fn load(self: *Config) !void {
                     self.runtime.sandbox_fs_mount_bin = try self.allocator.dupe(u8, value.string);
                 }
             }
+            if (runtime_val.object.get("local_node")) |local_node_val| {
+                if (local_node_val == .object) {
+                    if (local_node_val.object.get("enabled")) |value| {
+                        if (value == .bool) {
+                            self.runtime.local_node.enabled = value.bool;
+                        }
+                    }
+                    if (local_node_val.object.get("binary")) |value| {
+                        if (value == .string and value.string.len > 0) {
+                            self.allocator.free(self.runtime.local_node.binary);
+                            self.runtime.local_node.binary = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (local_node_val.object.get("profile")) |value| {
+                        if (value == .string and value.string.len > 0) {
+                            self.allocator.free(self.runtime.local_node.profile);
+                            self.runtime.local_node.profile = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (local_node_val.object.get("export_path")) |value| {
+                        if (value == .string) {
+                            self.allocator.free(self.runtime.local_node.export_path);
+                            self.runtime.local_node.export_path = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (local_node_val.object.get("export_name")) |value| {
+                        if (value == .string and value.string.len > 0) {
+                            self.allocator.free(self.runtime.local_node.export_name);
+                            self.runtime.local_node.export_name = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (local_node_val.object.get("restart_on_exit")) |value| {
+                        if (value == .bool) {
+                            self.runtime.local_node.restart_on_exit = value.bool;
+                        }
+                    }
+                    if (local_node_val.object.get("extra_venoms_dir")) |value| {
+                        if (value == .string) {
+                            self.allocator.free(self.runtime.local_node.extra_venoms_dir);
+                            self.runtime.local_node.extra_venoms_dir = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (local_node_val.object.get("enable_debug")) |value| {
+                        if (value == .bool) {
+                            self.runtime.local_node.enable_debug = value.bool;
+                        }
+                    }
+                }
+            }
             if (runtime_val.object.get("remote_node")) |remote_node_val| {
                 if (remote_node_val == .object) {
                     if (remote_node_val.object.get("enabled")) |value| {
@@ -670,6 +772,7 @@ pub fn load(self: *Config) !void {
 }
 
 fn validateRuntimeConfig(self: *Config) !void {
+    try validateLocalNodeConfig(self.runtime);
     try validateRemoteNodeConfig(self.runtime.remote_node);
     if (!runtimeRequiresSandboxValidation(self.runtime)) return;
 
@@ -736,6 +839,30 @@ fn validateRemoteNodeConfig(remote_node: RuntimeConfig.RemoteNodeConfig) !void {
         }
         return error.InvalidConfig;
     }
+}
+
+fn validateLocalNodeConfig(runtime: RuntimeConfig) !void {
+    const local_node = runtime.local_node;
+    if (!local_node.enabled) return;
+
+    _ = try requireRuntimeField("runtime.local_node.binary", local_node.binary);
+    _ = try requireRuntimeField("runtime.local_node.profile", local_node.profile);
+    _ = try requireRuntimeField("runtime.local_node.export_name", local_node.export_name);
+
+    const configured_export_path = std.mem.trim(u8, local_node.export_path, " \t\r\n");
+    if (configured_export_path.len > 0) {
+        _ = try requireAbsoluteRuntimePath("runtime.local_node.export_path", configured_export_path);
+        return;
+    }
+
+    const spider_web_root = std.mem.trim(u8, runtime.spider_web_root, " \t\r\n");
+    if (spider_web_root.len == 0) {
+        if (!builtin.is_test) {
+            std.log.warn("runtime.local_node.export_path is empty; Spiderweb will fall back to runtime.spider_web_root at runtime", .{});
+        }
+        return;
+    }
+    _ = try requireAbsoluteRuntimePath("runtime.spider_web_root", spider_web_root);
 }
 
 fn requireRuntimeField(field_name: []const u8, value: []const u8) ![]const u8 {
@@ -861,8 +988,6 @@ pub fn save(self: Config) !void {
     try file.writeAll(runtime_workers_line);
     const runtime_queue_line = try std.fmt.bufPrint(&buf, "    \"runtime_request_queue_max\": {d},\n", .{self.runtime.runtime_request_queue_max});
     try file.writeAll(runtime_queue_line);
-    const chat_timeout_line = try std.fmt.bufPrint(&buf, "    \"chat_operation_timeout_ms\": {d},\n", .{self.runtime.chat_operation_timeout_ms});
-    try file.writeAll(chat_timeout_line);
     const control_timeout_line = try std.fmt.bufPrint(&buf, "    \"control_operation_timeout_ms\": {d},\n", .{self.runtime.control_operation_timeout_ms});
     try file.writeAll(control_timeout_line);
     const run_checkpoint_line = try std.fmt.bufPrint(&buf, "    \"run_checkpoint_interval_steps\": {d},\n", .{self.runtime.run_checkpoint_interval_steps});
@@ -903,6 +1028,24 @@ pub fn save(self: Config) !void {
     try file.writeAll(sandbox_launcher_line);
     const sandbox_fs_mount_line = try std.fmt.bufPrint(&buf, "    \"sandbox_fs_mount_bin\": \"{s}\",\n", .{self.runtime.sandbox_fs_mount_bin});
     try file.writeAll(sandbox_fs_mount_line);
+    try file.writeAll("    \"local_node\": {\n");
+    const local_enabled_line = try std.fmt.bufPrint(&buf, "      \"enabled\": {},\n", .{self.runtime.local_node.enabled});
+    try file.writeAll(local_enabled_line);
+    const local_binary_line = try std.fmt.bufPrint(&buf, "      \"binary\": \"{s}\",\n", .{self.runtime.local_node.binary});
+    try file.writeAll(local_binary_line);
+    const local_profile_line = try std.fmt.bufPrint(&buf, "      \"profile\": \"{s}\",\n", .{self.runtime.local_node.profile});
+    try file.writeAll(local_profile_line);
+    const local_export_path_line = try std.fmt.bufPrint(&buf, "      \"export_path\": \"{s}\",\n", .{self.runtime.local_node.export_path});
+    try file.writeAll(local_export_path_line);
+    const local_export_name_line = try std.fmt.bufPrint(&buf, "      \"export_name\": \"{s}\",\n", .{self.runtime.local_node.export_name});
+    try file.writeAll(local_export_name_line);
+    const local_restart_line = try std.fmt.bufPrint(&buf, "      \"restart_on_exit\": {},\n", .{self.runtime.local_node.restart_on_exit});
+    try file.writeAll(local_restart_line);
+    const local_extra_venoms_line = try std.fmt.bufPrint(&buf, "      \"extra_venoms_dir\": \"{s}\",\n", .{self.runtime.local_node.extra_venoms_dir});
+    try file.writeAll(local_extra_venoms_line);
+    const local_debug_line = try std.fmt.bufPrint(&buf, "      \"enable_debug\": {}\n", .{self.runtime.local_node.enable_debug});
+    try file.writeAll(local_debug_line);
+    try file.writeAll("    },\n");
     try file.writeAll("    \"remote_node\": {\n");
     const remote_enabled_line = try std.fmt.bufPrint(&buf, "      \"enabled\": {},\n", .{self.runtime.remote_node.enabled});
     try file.writeAll(remote_enabled_line);
@@ -993,7 +1136,6 @@ test "Config defaults" {
     try std.testing.expectEqual(@as(usize, 16), config.runtime.connection_worker_threads);
     try std.testing.expectEqual(@as(usize, 2), config.runtime.runtime_worker_threads);
     try std.testing.expectEqual(@as(usize, 128), config.runtime.runtime_request_queue_max);
-    try std.testing.expectEqual(@as(u64, 300_000), config.runtime.chat_operation_timeout_ms);
     try std.testing.expectEqual(@as(u64, 5_000), config.runtime.control_operation_timeout_ms);
     try std.testing.expectEqual(@as(usize, 1), config.runtime.run_checkpoint_interval_steps);
     try std.testing.expect(config.runtime.run_auto_resume_on_boot);
@@ -1004,6 +1146,14 @@ test "Config defaults" {
     try std.testing.expectEqualStrings("", config.runtime.default_agent_id);
     try std.testing.expectEqualStrings("", config.runtime.spider_web_root);
     try std.testing.expectEqualStrings(".spiderweb-ltm", config.runtime.ltm_directory);
+    try std.testing.expect(config.runtime.local_node.enabled);
+    try std.testing.expectEqualStrings("spiderweb-local-node", config.runtime.local_node.binary);
+    try std.testing.expectEqualStrings("external-agent-core", config.runtime.local_node.profile);
+    try std.testing.expectEqualStrings("", config.runtime.local_node.export_path);
+    try std.testing.expectEqualStrings("fs", config.runtime.local_node.export_name);
+    try std.testing.expect(config.runtime.local_node.restart_on_exit);
+    try std.testing.expectEqualStrings("", config.runtime.local_node.extra_venoms_dir);
+    try std.testing.expect(!config.runtime.local_node.enable_debug);
 }
 
 test "Config server bind helpers distinguish loopback from remote binds" {
@@ -1142,4 +1292,14 @@ test "Config normalizes relative sandbox_fs_mount_bin from spider_web_root" {
     const expected_bin = try std.fs.path.join(allocator, &.{ tmp_root, "zig-out/bin/spiderweb-fs-mount" });
     defer allocator.free(expected_bin);
     try std.testing.expectEqualStrings(expected_bin, config.runtime.sandbox_fs_mount_bin);
+}
+
+test "RuntimeConfig effectiveLocalNodeExportPath prefers configured local export path and falls back to spider_web_root" {
+    var runtime: RuntimeConfig = .{};
+    runtime.local_node.export_path = "/configured/export";
+    runtime.spider_web_root = "/fallback/root";
+    try std.testing.expectEqualStrings("/configured/export", runtime.effectiveLocalNodeExportPath());
+
+    runtime.local_node.export_path = "";
+    try std.testing.expectEqualStrings("/fallback/root", runtime.effectiveLocalNodeExportPath());
 }

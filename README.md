@@ -10,7 +10,7 @@ Built in Zig. The Spiderweb workspace host runs on Linux and macOS. The standalo
 
 ## Vision
 
-Spiderweb’s goal is to make agent systems feel like they are navigating a filesystem instead of stitching together bespoke APIs. Chat, jobs, memory surfaces, worker registration, files, and remote services are projected into one namespace so agents can discover and use them by path.
+Spiderweb’s goal is to make agent systems feel like they are navigating a filesystem instead of stitching together bespoke APIs. The current external-agent contract centers on files, mounts, worker registration, events, and a small core service set projected into one namespace so agents can discover and use them by path.
 
 In short: **Spiderweb hosts the namespace; workers operate through it**.
 
@@ -87,7 +87,7 @@ On macOS:
 - if a file has already been seen through the mount and is then edited directly on the underlying host path, the mounted view may continue to serve stale data for that file until it is reopened or the mount is remounted; mount-local workflows are unaffected
 
 - `--workspace-url <ws-url>` keeps the existing routed `/v2/fs` mount mode.
-- `--namespace-url <ws-url>` connects to the main Spiderweb websocket, attaches an Acheron session root, and mounts the full namespace (`/agents`, `/nodes`, `/global`, optional `/debug`).
+- `--namespace-url <ws-url>` connects to the main Spiderweb websocket, attaches an Acheron session root, and mounts the full namespace (`/agents`, `/nodes`, `/global`, `/services`).
 - In namespace mode, node-backed filesystem subtrees discovered from workspace topology still route through `/v2/fs`, so regular file mutation keeps working under mounted workspace exports.
 - Session-only synthetic paths support `stat`, `readdir`, `read`, and writes to existing writable files. `create`, `unlink`, `mkdir`, `rmdir`, `rename`, and `truncate` return unsupported errors on those paths.
 
@@ -133,15 +133,16 @@ This flow has been smoke-tested with:
 
 - Workspace creation, topology, control-plane metadata, and workspace tokens.
 - Mounted namespace projection through Acheron / WorldFS.
-- Shared workspace services such as `/services/home`, `/services/workers`, chat/job queue surfaces, and control venoms.
+- Shared workspace services such as `/services/home`, `/services/mounts`, `/services/workers`, `/services/terminal`, `/services/git`, `/services/search_code`, `/services/library`, and `/services/events`.
 - Durable per-agent home allocation inside a workspace.
 - Ephemeral worker-node projection and liveness tracking for attached workers.
+- Supervision of the internal `spiderweb-local-node` companion process that exports `/nodes/local/fs` plus the local `terminal`, `git`, and `search_code` services.
 
 ### What External Workers Own
 
 - Model/provider configuration and credentials.
 - Private loopback services such as worker-owned `memory` and `sub_brains`.
-- Job consumption and reply writing through the mounted workspace.
+- Task execution through the mounted workspace plus any worker-private loopback services they choose to expose.
 - Their own process lifecycle outside Spiderweb.
 
 ## Notes

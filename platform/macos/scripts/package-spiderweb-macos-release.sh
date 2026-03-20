@@ -28,6 +28,8 @@ ZIG_BINARIES=(
   spiderweb-control
   spiderweb-fs-mount
   spiderweb-fs-node
+  spiderweb-local-node
+  spiderweb-local-service
 )
 HOST_ARCH="$(uname -m)"
 

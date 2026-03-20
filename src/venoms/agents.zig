@@ -539,7 +539,7 @@ fn isValidManagedAgentId(agent_id: []const u8) bool {
 
 fn managedAgentCapabilityName(value: agent_registry.AgentCapability) []const u8 {
     return switch (value) {
-        .chat => "chat",
+        .general => "general",
         .code => "code",
         .plan => "plan",
         .research => "research",

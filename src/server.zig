@@ -690,6 +690,18 @@ test "server: trustedNamespaceMountUrl ignores connection authority" {
     try std.testing.expectEqualStrings("ws://127.0.0.1:18790/", trusted);
 }
 
+test "server: namespace local fs export root prefers configured local node export path" {
+    var runtime_config: Config.RuntimeConfig = .{};
+    runtime_config.spider_web_root = "/fallback/root";
+    runtime_config.local_node.export_path = "/configured/export";
+    const configured = localFsExportRootForNamespace(runtime_config) orelse return error.TestExpectedResponse;
+    try std.testing.expectEqualStrings("/configured/export", configured);
+
+    runtime_config.local_node.export_path = "";
+    const fallback = localFsExportRootForNamespace(runtime_config) orelse return error.TestExpectedResponse;
+    try std.testing.expectEqualStrings("/fallback/root", fallback);
+}
+
 fn resolveSiblingExecutablePath(allocator: std.mem.Allocator, executable_name: []const u8) ![]u8 {
     const self_path = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(self_path);
@@ -4852,11 +4864,7 @@ const LocalNodeSupervisor = struct {
         control_auth_token: []const u8,
     ) !*LocalNodeSupervisor {
         const local_cfg = runtime_config.local_node;
-        const export_root_trimmed = blk: {
-            const local_export = std.mem.trim(u8, local_cfg.export_path, " \t\r\n");
-            if (local_export.len > 0) break :blk local_export;
-            break :blk std.mem.trim(u8, runtime_config.spider_web_root, " \t\r\n");
-        };
+        const export_root_trimmed = runtime_config.effectiveLocalNodeExportPath();
         if (export_root_trimmed.len == 0) return error.InvalidArguments;
 
         const supervisor = try allocator.create(LocalNodeSupervisor);
@@ -7017,8 +7025,8 @@ fn getOrInitNamespaceSessionForBinding(
     return &(namespace_session.*.?);
 }
 
-fn localFsExportRootForNamespace(runtime_registry: *AgentRuntimeRegistry) ?[]const u8 {
-    const trimmed = std.mem.trim(u8, runtime_registry.runtime_config.spider_web_root, " \t\r\n");
+fn localFsExportRootForNamespace(runtime_config: Config.RuntimeConfig) ?[]const u8 {
+    const trimmed = runtime_config.effectiveLocalNodeExportPath();
     if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "/")) return null;
     return trimmed;
 }
@@ -7054,7 +7062,7 @@ fn initNamespaceSessionForBinding(
             .agents_dir = runtime_registry.runtime_config.agents_dir,
             .assets_dir = runtime_registry.runtime_config.assets_dir,
             .projects_dir = "projects",
-            .local_fs_export_root = localFsExportRootForNamespace(runtime_registry),
+            .local_fs_export_root = localFsExportRootForNamespace(runtime_registry.runtime_config),
             .sandbox_mounts_root = runtime_registry.runtime_config.sandbox_mounts_root,
             .sandbox_launcher = runtime_registry.runtime_config.sandbox_launcher,
             .sandbox_fs_mount_bin = runtime_registry.runtime_config.sandbox_fs_mount_bin,

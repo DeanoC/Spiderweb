@@ -153,6 +153,12 @@ pub const RuntimeConfig = struct {
         };
     }
 
+    pub fn effectiveLocalNodeExportPath(self: RuntimeConfig) []const u8 {
+        const configured = std.mem.trim(u8, self.local_node.export_path, " \t\r\n");
+        if (configured.len > 0) return configured;
+        return std.mem.trim(u8, self.spider_web_root, " \t\r\n");
+    }
+
     pub fn deinit(self: *RuntimeConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.default_agent_id);
         allocator.free(self.spider_web_root);
@@ -1286,4 +1292,14 @@ test "Config normalizes relative sandbox_fs_mount_bin from spider_web_root" {
     const expected_bin = try std.fs.path.join(allocator, &.{ tmp_root, "zig-out/bin/spiderweb-fs-mount" });
     defer allocator.free(expected_bin);
     try std.testing.expectEqualStrings(expected_bin, config.runtime.sandbox_fs_mount_bin);
+}
+
+test "RuntimeConfig effectiveLocalNodeExportPath prefers configured local export path and falls back to spider_web_root" {
+    var runtime: RuntimeConfig = .{};
+    runtime.local_node.export_path = "/configured/export";
+    runtime.spider_web_root = "/fallback/root";
+    try std.testing.expectEqualStrings("/configured/export", runtime.effectiveLocalNodeExportPath());
+
+    runtime.local_node.export_path = "";
+    try std.testing.expectEqualStrings("/fallback/root", runtime.effectiveLocalNodeExportPath());
 }

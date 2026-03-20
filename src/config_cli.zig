@@ -649,6 +649,7 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
         target_app_path,
         if (source_is_installed_app) status.filesystem_bundle_path else null,
     );
+    try cleanupRegisteredNativeFsArtifacts(allocator, target_app_path);
     try cleanupDerivedDataNativeFsArtifacts(allocator, target_app_path);
 
     if (!source_is_installed_app) {
@@ -891,6 +892,75 @@ fn cleanupDerivedDataNativeFsArtifacts(allocator: std.mem.Allocator, active_app_
                 "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
                 "-u",
                 app_path,
+            })) |ls_result| {
+                var owned_ls_result = ls_result;
+                owned_ls_result.deinit(allocator);
+            }
+        }
+    }
+}
+
+fn collectRegisteredNativeFsExtensionPaths(allocator: std.mem.Allocator) !std.ArrayListUnmanaged([]u8) {
+    var paths = std.ArrayListUnmanaged([]u8){};
+    errdefer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit(allocator);
+    }
+
+    var result = try runCommandBestEffort(allocator, &.{
+        "pluginkit",
+        "-m",
+        "-D",
+        "-vv",
+        "-i",
+        native_mount_support.extension_bundle_id,
+    });
+    defer if (result) |*value| value.deinit(allocator);
+
+    if (result) |value| {
+        if (!commandExitedSuccessfully(value)) return paths;
+        var lines = std.mem.tokenizeAny(u8, value.stdout, "\r\n");
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t");
+            if (!std.mem.startsWith(u8, trimmed, "Path = ")) continue;
+            try paths.append(allocator, try allocator.dupe(u8, trimmed["Path = ".len ..]));
+        }
+    }
+
+    return paths;
+}
+
+fn registeredExtensionAppPath(allocator: std.mem.Allocator, extension_path: []const u8) !?[]u8 {
+    const extensions_dir = std.fs.path.dirname(extension_path) orelse return null;
+    const contents_dir = std.fs.path.dirname(extensions_dir) orelse return null;
+    const app_path = std.fs.path.dirname(contents_dir) orelse return null;
+    if (!std.mem.endsWith(u8, app_path, ".app")) return null;
+    return try allocator.dupe(u8, app_path);
+}
+
+fn cleanupRegisteredNativeFsArtifacts(allocator: std.mem.Allocator, active_app_path: []const u8) !void {
+    if (builtin.os.tag != .macos) return;
+
+    var registered_paths = try collectRegisteredNativeFsExtensionPaths(allocator);
+    defer {
+        for (registered_paths.items) |path| allocator.free(path);
+        registered_paths.deinit(allocator);
+    }
+
+    for (registered_paths.items) |extension_path| {
+        if (try runCommandBestEffort(allocator, &.{ "pluginkit", "-r", extension_path })) |plugin_result| {
+            var owned_plugin_result = plugin_result;
+            owned_plugin_result.deinit(allocator);
+        }
+
+        const app_path = try registeredExtensionAppPath(allocator, extension_path);
+        defer if (app_path) |value| allocator.free(value);
+        if (app_path) |value| {
+            if (std.mem.eql(u8, value, active_app_path)) continue;
+            if (try runCommandBestEffort(allocator, &.{
+                "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+                "-u",
+                value,
             })) |ls_result| {
                 var owned_ls_result = ls_result;
                 owned_ls_result.deinit(allocator);

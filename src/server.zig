@@ -6290,6 +6290,106 @@ fn handleWebSocketConnection(
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
+                            .mount_attach_v2 => {
+                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
+                                const payload_json = handleMountAttachControl(
+                                    allocator,
+                                    runtime_registry,
+                                    &namespace_session,
+                                    active_binding,
+                                    active_session_key,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
+                                    connection_workspace_url,
+                                    principal.role == .admin,
+                                    parsed.payload_json,
+                                ) catch |err| {
+                                    const response = try unified.buildControlError(
+                                        allocator,
+                                        parsed.id,
+                                        mountGraphErrorCode(err),
+                                        @errorName(err),
+                                    );
+                                    defer allocator.free(response);
+                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    continue;
+                                };
+                                defer allocator.free(payload_json);
+                                const response = try unified.buildControlAck(
+                                    allocator,
+                                    .mount_attach_v2,
+                                    parsed.id,
+                                    payload_json,
+                                );
+                                defer allocator.free(response);
+                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                continue;
+                            },
+                            .mount_file_read_v2 => {
+                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
+                                const payload_json = handleMountFileReadControl(
+                                    allocator,
+                                    runtime_registry,
+                                    &namespace_session,
+                                    active_binding,
+                                    active_session_key,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
+                                    principal.role == .admin,
+                                    parsed.payload_json,
+                                ) catch |err| {
+                                    const response = try unified.buildControlError(
+                                        allocator,
+                                        parsed.id,
+                                        mountGraphErrorCode(err),
+                                        @errorName(err),
+                                    );
+                                    defer allocator.free(response);
+                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    continue;
+                                };
+                                defer allocator.free(payload_json);
+                                const response = try unified.buildControlAck(
+                                    allocator,
+                                    .mount_file_read_v2,
+                                    parsed.id,
+                                    payload_json,
+                                );
+                                defer allocator.free(response);
+                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                continue;
+                            },
+                            .mount_file_write_v2 => {
+                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
+                                const payload_json = handleMountFileWriteControl(
+                                    allocator,
+                                    runtime_registry,
+                                    &namespace_session,
+                                    active_binding,
+                                    active_session_key,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
+                                    principal.role == .admin,
+                                    parsed.payload_json,
+                                ) catch |err| {
+                                    const response = try unified.buildControlError(
+                                        allocator,
+                                        parsed.id,
+                                        mountGraphErrorCode(err),
+                                        @errorName(err),
+                                    );
+                                    defer allocator.free(response);
+                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    continue;
+                                };
+                                defer allocator.free(payload_json);
+                                const response = try unified.buildControlAck(
+                                    allocator,
+                                    .mount_file_write_v2,
+                                    parsed.id,
+                                    payload_json,
+                                );
+                                defer allocator.free(response);
+                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                continue;
+                            },
                             .session_resume => {
                                 var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
                                 defer payload.deinit();
@@ -7150,6 +7250,150 @@ fn validateMountGraphWriteRange(offset: u64, data_len: usize) !struct {
 
 fn mountGraphWriteResponseCount(request_bytes: usize) !u32 {
     return std.math.cast(u32, request_bytes) orelse error.InvalidPayload;
+}
+
+fn encodeStandardBase64Owned(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    const encoded_len = std.base64.standard.Encoder.calcSize(data.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    _ = std.base64.standard.Encoder.encode(encoded, data);
+    return encoded;
+}
+
+fn handleMountAttachControl(
+    allocator: std.mem.Allocator,
+    runtime_registry: *AgentRuntimeRegistry,
+    namespace_session: *?acheron_session_mod.Session,
+    binding: SessionBinding,
+    session_key: []const u8,
+    trusted_namespace_mount_url: ?[]const u8,
+    connection_workspace_url: ?[]const u8,
+    is_admin: bool,
+    payload_json: ?[]const u8,
+) ![]u8 {
+    var payload = try parseControlPayloadObject(allocator, payload_json);
+    defer payload.deinit();
+    if (payload.value != .object) return error.InvalidPayload;
+
+    const requested_path = getOptionalStringField(payload.value.object, "path") orelse "/";
+    const requested_depth = getOptionalU32Field(payload.value.object, "depth") orelse 1;
+    const session = try getOrInitNamespaceSessionForBinding(
+        allocator,
+        namespace_session,
+        runtime_registry,
+        binding,
+        session_key,
+        trusted_namespace_mount_url,
+        is_admin,
+    );
+    const workspace_json = try buildWorkspaceStatusPayloadForBinding(
+        allocator,
+        runtime_registry,
+        binding,
+        connection_workspace_url,
+        is_admin,
+    );
+    defer allocator.free(workspace_json);
+    return session.buildMountGraphSnapshotPayloadForPath(
+        workspace_json,
+        session_key,
+        requested_path,
+        requested_depth,
+    );
+}
+
+fn handleMountFileReadControl(
+    allocator: std.mem.Allocator,
+    runtime_registry: *AgentRuntimeRegistry,
+    namespace_session: *?acheron_session_mod.Session,
+    binding: SessionBinding,
+    session_key: []const u8,
+    trusted_namespace_mount_url: ?[]const u8,
+    is_admin: bool,
+    payload_json: ?[]const u8,
+) ![]u8 {
+    var payload = try parseControlPayloadObject(allocator, payload_json);
+    defer payload.deinit();
+    if (payload.value != .object) return error.InvalidPayload;
+
+    const absolute_path = try getRequiredStringField(payload.value.object, "path");
+    const offset = getOptionalU64Field(payload.value.object, "offset") orelse 0;
+    const base_offset = std.math.cast(usize, offset) orelse return error.InvalidOffset;
+    const default_length: u32 = if (base_offset >= max_mount_graph_materialized_file_bytes)
+        0
+    else
+        std.math.cast(u32, max_mount_graph_materialized_file_bytes - base_offset) orelse return error.InvalidOffset;
+    const requested_length = getOptionalU32Field(payload.value.object, "length") orelse default_length;
+
+    const session = try getOrInitNamespaceSessionForBinding(
+        allocator,
+        namespace_session,
+        runtime_registry,
+        binding,
+        session_key,
+        trusted_namespace_mount_url,
+        is_admin,
+    );
+    const chunk = try session.readMountGraphFile(absolute_path, offset, requested_length);
+    defer allocator.free(chunk);
+
+    const encoded = try encodeStandardBase64Owned(allocator, chunk);
+    defer allocator.free(encoded);
+    const escaped_path = try unified.jsonEscape(allocator, absolute_path);
+    defer allocator.free(escaped_path);
+    const count = try mountGraphWriteResponseCount(chunk.len);
+    const eof = chunk.len < requested_length;
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d},\"eof\":{},\"data_b64\":\"{s}\"}}",
+        .{ escaped_path, offset, count, eof, encoded },
+    );
+}
+
+fn handleMountFileWriteControl(
+    allocator: std.mem.Allocator,
+    runtime_registry: *AgentRuntimeRegistry,
+    namespace_session: *?acheron_session_mod.Session,
+    binding: SessionBinding,
+    session_key: []const u8,
+    trusted_namespace_mount_url: ?[]const u8,
+    is_admin: bool,
+    payload_json: ?[]const u8,
+) ![]u8 {
+    var payload = try parseControlPayloadObject(allocator, payload_json);
+    defer payload.deinit();
+    if (payload.value != .object) return error.InvalidPayload;
+
+    const absolute_path = try getRequiredStringField(payload.value.object, "path");
+    const data_b64 = try getRequiredStringField(payload.value.object, "data_b64");
+    const offset = getOptionalU64Field(payload.value.object, "offset") orelse 0;
+    const decoded = try decodeStandardBase64Owned(allocator, data_b64);
+    defer allocator.free(decoded);
+
+    const session = try getOrInitNamespaceSessionForBinding(
+        allocator,
+        namespace_session,
+        runtime_registry,
+        binding,
+        session_key,
+        trusted_namespace_mount_url,
+        is_admin,
+    );
+    const existing = try session.tryReadInternalPath(absolute_path);
+    defer if (existing) |value| allocator.free(value);
+    const merged = try mergeMountGraphWriteData(allocator, existing orelse "", offset, decoded);
+    defer allocator.free(merged);
+
+    try session.writeMountGraphFile(absolute_path, merged);
+
+    const escaped_path = try unified.jsonEscape(allocator, absolute_path);
+    defer allocator.free(escaped_path);
+    const count = try mountGraphWriteResponseCount(decoded.len);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d}}}",
+        .{ escaped_path, offset, count },
+    );
 }
 
 fn optionalStringsEqual(left: ?[]const u8, right: ?[]const u8) bool {
@@ -10620,6 +10864,82 @@ test "server: mountGraphErrorCode emits errno-compatible tokens" {
     try std.testing.expectEqualStrings("enotdir", mountGraphErrorCode(error.NotDir));
     try std.testing.expectEqualStrings("eisdir", mountGraphErrorCode(error.IsDir));
     try std.testing.expectEqualStrings("enosys", mountGraphErrorCode(error.OperationNotSupported));
+}
+
+test "server: mount attach and mount file read control operations are supported after session attach" {
+    const allocator = std.testing.allocator;
+    var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
+        .ltm_directory = "",
+        .ltm_filename = "",
+    }, null);
+    defer runtime_registry.deinit();
+    try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
+
+    const project_up = try runtime_registry.control_plane.projectUpWithRole(
+        "mount-agent",
+        "{\"name\":\"MountAttach\",\"vision\":\"MountAttach\",\"activate\":false}",
+        true,
+    );
+    defer allocator.free(project_up);
+    const project_id = (try extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    defer allocator.free(project_id);
+
+    var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
+    defer listener.deinit();
+
+    var server_ctx = WsTestServerCtx{
+        .allocator = allocator,
+        .runtime_registry = &runtime_registry,
+        .listener = &listener,
+    };
+    defer server_ctx.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, runSingleWsConnection, .{&server_ctx});
+    defer server_thread.join();
+
+    var client = try std.net.tcpConnectToAddress(listener.listen_address);
+    defer client.close();
+    try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"mount-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    var version_ack = try readServerFrame(allocator, &client);
+    defer version_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.connect\",\"id\":\"mount-connect\"}");
+    var connect_ack = try readServerFrame(allocator, &client);
+    defer connect_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
+
+    const attach_payload = try std.fmt.allocPrint(
+        allocator,
+        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"mount-attach-session\",\"payload\":{{\"session_key\":\"fskit\",\"agent_id\":\"mount-agent\",\"project_id\":\"{s}\"}}}}",
+        .{project_id},
+    );
+    defer allocator.free(attach_payload);
+    try writeClientTextFrameMasked(&client, attach_payload);
+    var attach_ack = try readServerFrame(allocator, &client);
+    defer attach_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"type\":\"control.session_attach\"") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_attach_v2\",\"id\":\"mount-attach\",\"payload\":{\"path\":\"/\",\"depth\":1}}");
+    var mount_attach_ack = try readServerFrame(allocator, &client);
+    defer mount_attach_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"type\":\"control.mount_attach_v2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"mount_session_id\":\"mount-v2:spiderweb:fskit\"") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_file_read_v2\",\"id\":\"mount-read\",\"payload\":{\"path\":\"/meta/protocol.json\",\"offset\":0,\"length\":128}}");
+    var mount_read_ack = try readServerFrame(allocator, &client);
+    defer mount_read_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"type\":\"control.mount_file_read_v2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"data_b64\":\"") != null);
+
+    try websocket_transport.writeFrame(&client, "", .close);
+    var close_reply = try readServerFrame(allocator, &client);
+    defer close_reply.deinit(allocator);
+    try std.testing.expectEqual(@as(u8, 0x8), close_reply.opcode);
+
+    try std.testing.expect(server_ctx.err_name == null);
 }
 
 test "server: parseArchiveTimestamp accepts rotated debug archive names" {

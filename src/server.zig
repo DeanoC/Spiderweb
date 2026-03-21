@@ -3673,19 +3673,7 @@ const AgentRuntimeRegistry = struct {
             legacy_local_node_mount_projects_host_agents_self_capabilities,
         };
         for (legacy_paths) |mount_path| {
-            const escaped_project = unified.jsonEscape(self.allocator, host_project_id) catch continue;
-            defer self.allocator.free(escaped_project);
-            const escaped_mount = unified.jsonEscape(self.allocator, mount_path) catch continue;
-            defer self.allocator.free(escaped_mount);
-            const payload = std.fmt.allocPrint(
-                self.allocator,
-                "{{\"project_id\":\"{s}\",\"mount_path\":\"{s}\"}}",
-                .{ escaped_project, escaped_mount },
-            ) catch continue;
-            defer self.allocator.free(payload);
-
-            const result = self.control_plane.removeProjectMountWithRole(payload, true) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.MountNotFound => continue,
+            const removed = self.control_plane.removeHostMount(mount_path, null, null) catch |err| switch (err) {
                 else => {
                     std.log.warn(
                         "failed pruning legacy host mount {s}: {s}",
@@ -3694,7 +3682,7 @@ const AgentRuntimeRegistry = struct {
                     continue;
                 },
             };
-            self.allocator.free(result);
+            if (!removed) continue;
             std.log.info("pruned legacy host mount path: {s}", .{mount_path});
         }
     }

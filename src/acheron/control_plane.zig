@@ -1898,18 +1898,12 @@ pub const ControlPlane = struct {
         const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
         try validateIdentifier(project_id, 128);
         const project_token = getOptionalString(obj, "project_token");
-        const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectAssignmentForbidden;
+        const project = try getPublicProjectPtrLocked(self, project_id);
         try requireProjectAccessToken(project, project_token, is_admin);
         const next_name = getOptionalString(obj, "name");
         const next_vision = getOptionalString(obj, "vision");
         const next_status = getOptionalString(obj, "status");
         const next_access_policy = obj.get("access_policy");
-        if (project.kind == .host_internal and
-            (next_name != null or next_vision != null or next_status != null or next_access_policy != null))
-        {
-            return ControlPlaneError.ProjectProtected;
-        }
 
         if (next_name) |value| {
             try validateDisplayString(value, 128);
@@ -1955,8 +1949,7 @@ pub const ControlPlane = struct {
         try validateIdentifier(project_id, 128);
         const project_token = getOptionalString(obj, "project_token");
 
-        const existing_project = self.projects.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (existing_project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectAssignmentForbidden;
+        const existing_project = try getPublicProjectLocked(self, project_id);
         if (existing_project.is_delete_protected) return ControlPlaneError.ProjectProtected;
         try requireProjectAccessToken(&existing_project, project_token, is_admin);
         const removed = self.projects.fetchRemove(project_id) orelse return ControlPlaneError.ProjectNotFound;
@@ -1996,6 +1989,38 @@ pub const ControlPlane = struct {
         }
         try out.appendSlice(self.allocator, "]}");
         return out.toOwnedSlice(self.allocator);
+    }
+
+    pub fn removeHostMount(
+        self: *ControlPlane,
+        mount_path_raw: []const u8,
+        node_id_filter: ?[]const u8,
+        export_name_filter: ?[]const u8,
+    ) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const now_ms = std.time.milliTimestamp();
+        _ = self.reapExpiredLeasesLocked(now_ms);
+        try self.ensureBuiltinHostProjectLocked(now_ms);
+        if ((node_id_filter == null) != (export_name_filter == null)) return ControlPlaneError.MissingField;
+        if (node_id_filter) |node_id| try validateIdentifier(node_id, 128);
+        if (export_name_filter) |export_name| try validateExportName(export_name);
+
+        const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
+        defer self.allocator.free(mount_path);
+        const project = self.projects.getPtr(host_project_id) orelse return ControlPlaneError.ProjectNotFound;
+        const removed_count = removeProjectMountEntriesLocked(
+            self.allocator,
+            project,
+            mount_path,
+            node_id_filter,
+            export_name_filter,
+        );
+        if (removed_count == 0) return false;
+        project.updated_at_ms = now_ms;
+        self.mount_removes_total +%= removed_count;
+        self.persistSnapshotBestEffortLocked();
+        return true;
     }
 
     pub fn listWorkspaceTemplates(self: *ControlPlane) ![]u8 {
@@ -2121,8 +2146,7 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
         const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
         const project_token = getOptionalString(obj, "project_token");
-        const project = self.projects.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectAssignmentForbidden;
+        const project = try getPublicProjectLocked(self, project_id);
         try requireProjectActionAccess(&project, .read, null, project_token, is_admin);
 
         return renderProjectPayload(self.allocator, project, false);
@@ -2151,8 +2175,7 @@ pub const ControlPlane = struct {
         try validateExportName(export_name);
 
         if (!self.nodes.contains(node_id)) return ControlPlaneError.NodeNotFound;
-        const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectProtected;
+        const project = try getPublicProjectPtrLocked(self, project_id);
         try requireProjectActionAccess(project, .mount, null, project_token, is_admin);
 
         const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
@@ -2213,33 +2236,15 @@ pub const ControlPlane = struct {
         const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
         defer self.allocator.free(mount_path);
 
-        const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectProtected;
+        const project = try getPublicProjectPtrLocked(self, project_id);
         try requireProjectActionAccess(project, .mount, null, project_token, is_admin);
-        var removed_count: u32 = 0;
-        var i: usize = 0;
-        while (i < project.mounts.items.len) {
-            const mount = project.mounts.items[i];
-            if (!std.mem.eql(u8, mount.mount_path, mount_path)) {
-                i += 1;
-                continue;
-            }
-            if (node_id_filter) |node_id| {
-                if (!std.mem.eql(u8, mount.node_id, node_id)) {
-                    i += 1;
-                    continue;
-                }
-                if (!std.mem.eql(u8, mount.export_name, export_name_filter.?)) {
-                    i += 1;
-                    continue;
-                }
-            }
-
-            var removed = project.mounts.orderedRemove(i);
-            removed.deinit(self.allocator);
-            removed_count +%= 1;
-            if (node_id_filter != null) break;
-        }
+        const removed_count = removeProjectMountEntriesLocked(
+            self.allocator,
+            project,
+            mount_path,
+            node_id_filter,
+            export_name_filter,
+        );
         if (removed_count == 0) return ControlPlaneError.MountNotFound;
         project.updated_at_ms = std.time.milliTimestamp();
         self.mount_removes_total +%= removed_count;
@@ -2262,8 +2267,7 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
         const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
         const project_token = getOptionalString(obj, "project_token");
-        const project = self.projects.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectAssignmentForbidden;
+        const project = try getPublicProjectLocked(self, project_id);
         try requireProjectActionAccess(&project, .read, null, project_token, is_admin);
 
         const escaped_id = try jsonEscape(self.allocator, project.id);
@@ -2298,8 +2302,7 @@ pub const ControlPlane = struct {
         const target_path_raw = getRequiredString(obj, "target_path") catch return ControlPlaneError.MissingField;
         try validateIdentifier(project_id, 128);
 
-        const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectProtected;
+        const project = try getPublicProjectPtrLocked(self, project_id);
         try requireProjectActionAccess(project, .bind, null, project_token, is_admin);
 
         const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
@@ -2358,8 +2361,7 @@ pub const ControlPlane = struct {
         const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
         defer self.allocator.free(bind_path);
 
-        const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectProtected;
+        const project = try getPublicProjectPtrLocked(self, project_id);
         try requireProjectActionAccess(project, .bind, null, project_token, is_admin);
 
         var removed = false;
@@ -2395,8 +2397,7 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
         const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
         const project_token = getOptionalString(obj, "project_token");
-        const project = self.projects.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectAssignmentForbidden;
+        const project = try getPublicProjectLocked(self, project_id);
         try requireProjectActionAccess(&project, .read, null, project_token, is_admin);
 
         const escaped_id = try jsonEscape(self.allocator, project.id);
@@ -2430,8 +2431,7 @@ pub const ControlPlane = struct {
         const path = try normalizeMountPath(self.allocator, path_raw);
         defer self.allocator.free(path);
 
-        const project = self.projects.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal and !is_admin) return ControlPlaneError.ProjectAssignmentForbidden;
+        const project = try getPublicProjectLocked(self, project_id);
         try requireProjectActionAccess(&project, .read, null, project_token, is_admin);
 
         const resolved_path = try resolveBoundPath(self.allocator, &project, path);
@@ -2468,8 +2468,7 @@ pub const ControlPlane = struct {
         const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
         const current_token = getOptionalString(obj, "project_token");
         try validateIdentifier(project_id, 128);
-        const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal) return ControlPlaneError.ProjectProtected;
+        const project = try getPublicProjectPtrLocked(self, project_id);
         try requireProjectAccessToken(project, current_token, is_admin);
 
         self.allocator.free(project.mutation_token);
@@ -2505,8 +2504,7 @@ pub const ControlPlane = struct {
         const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
         const current_token = getOptionalString(obj, "project_token");
         try validateIdentifier(project_id, 128);
-        const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal) return ControlPlaneError.ProjectProtected;
+        const project = try getPublicProjectPtrLocked(self, project_id);
         try requireProjectAccessToken(project, current_token, is_admin);
 
         project.token_locked = false;
@@ -2588,24 +2586,15 @@ pub const ControlPlane = struct {
         const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
         try validateIdentifier(project_id, 128);
         const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
+        if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
         const is_host_actor = self.isHostActor(agent_id);
         if (is_host_actor and !std.mem.eql(u8, project_id, host_project_id)) {
             return ControlPlaneError.ProjectAssignmentForbidden;
         }
-        if (project.kind == .host_internal and !(is_host_actor or is_admin)) return ControlPlaneError.ProjectAssignmentForbidden;
 
         const maybe_project_token = getOptionalString(obj, "project_token");
-        if (project.kind == .host_internal and !is_admin) {
-            const project_token = maybe_project_token orelse return ControlPlaneError.MissingField;
-            try validateSecretToken(project_token, 256);
-            if (!secureTokenEql(project.mutation_token, project_token)) return ControlPlaneError.ProjectAuthFailed;
-        } else if (project.kind != .host_internal) {
-            try requireProjectActionAccess(project, .read, agent_id, maybe_project_token, is_admin);
-        } else if (maybe_project_token) |project_token| {
-            try validateSecretToken(project_token, 256);
-            if (!secureTokenEql(project.mutation_token, project_token)) return ControlPlaneError.ProjectAuthFailed;
-        }
-        if (project.kind != .host_internal and try ensureDefaultProjectMountsLocked(self, project)) {
+        try requireProjectActionAccess(project, .read, agent_id, maybe_project_token, is_admin);
+        if (try ensureDefaultProjectMountsLocked(self, project)) {
             project.updated_at_ms = now_ms;
             self.mount_sets_total +%= 1;
             self.requestReconcileLocked(now_ms);
@@ -2623,9 +2612,6 @@ pub const ControlPlane = struct {
             );
         }
         self.project_activations_total +%= 1;
-        if (project.kind == .host_internal and project.mounts.items.len == 0 and self.spider_web_root.len > 0) {
-            std.log.info("host project active without mount; waiting for local node registration (root={s})", .{self.spider_web_root});
-        }
         self.persistSnapshotBestEffortLocked();
 
         const workspace_root = "/";
@@ -2766,58 +2752,34 @@ pub const ControlPlane = struct {
         }
 
         const project = project_ptr.?;
+        if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
         const is_host_actor = self.isHostActor(agent_id);
-        if (project.kind == .host_internal and !(is_host_actor or is_admin)) {
-            return ControlPlaneError.ProjectAssignmentForbidden;
-        }
         if (!created) {
-            if (project.kind != .host_internal) {
-                const wants_mount_update = obj.get("desired_mounts") != null;
-                const wants_bind_update = obj.get("desired_binds") != null;
-                const wants_admin_update = requested_name != null or
-                    requested_vision != null or
-                    requested_status != null or
-                    requested_template_id != null or
-                    requested_access_policy_value != null;
-                if (!is_host_actor) {
-                    if (wants_mount_update) {
-                        try requireProjectActionAccess(project, .mount, agent_id, requested_project_token, is_admin);
-                    }
-                    if (wants_bind_update) {
-                        try requireProjectActionAccess(project, .bind, agent_id, requested_project_token, is_admin);
-                    }
-                    if (wants_admin_update) {
-                        try requireProjectActionAccess(project, .admin, agent_id, requested_project_token, is_admin);
-                    }
-                    if (!wants_mount_update and !wants_bind_update and !wants_admin_update) {
-                        try requireProjectActionAccess(project, .read, agent_id, requested_project_token, is_admin);
-                    }
-                } else if (requested_project_token) |project_token| {
-                    // The host actor may bootstrap/update non-host projects without token, but when
-                    // an explicit token is supplied we still validate it to avoid silent mismatches.
-                    try validateSecretToken(project_token, 256);
-                    if (!projectTokenEnabled(project) or !secureTokenEql(project.mutation_token, project_token)) {
-                        return ControlPlaneError.ProjectAuthFailed;
-                    }
+            const wants_mount_update = obj.get("desired_mounts") != null;
+            const wants_bind_update = obj.get("desired_binds") != null;
+            const wants_admin_update = requested_name != null or
+                requested_vision != null or
+                requested_status != null or
+                requested_template_id != null or
+                requested_access_policy_value != null;
+            if (!is_host_actor) {
+                if (wants_mount_update) {
+                    try requireProjectActionAccess(project, .mount, agent_id, requested_project_token, is_admin);
                 }
-            } else if (!is_admin) {
-                const project_token = requested_project_token orelse return ControlPlaneError.MissingField;
-                try validateSecretToken(project_token, 256);
-                if (!secureTokenEql(project.mutation_token, project_token)) return ControlPlaneError.ProjectAuthFailed;
+                if (wants_bind_update) {
+                    try requireProjectActionAccess(project, .bind, agent_id, requested_project_token, is_admin);
+                }
+                if (wants_admin_update) {
+                    try requireProjectActionAccess(project, .admin, agent_id, requested_project_token, is_admin);
+                }
+                if (!wants_mount_update and !wants_bind_update and !wants_admin_update) {
+                    try requireProjectActionAccess(project, .read, agent_id, requested_project_token, is_admin);
+                }
             } else if (requested_project_token) |project_token| {
                 try validateSecretToken(project_token, 256);
-                if (!secureTokenEql(project.mutation_token, project_token)) return ControlPlaneError.ProjectAuthFailed;
-            }
-            if (project.kind == .host_internal and
-                (requested_name != null or
-                    requested_vision != null or
-                    requested_status != null or
-                    requested_template_id != null or
-                    obj.get("desired_mounts") != null or
-                    obj.get("desired_binds") != null or
-                    requested_access_policy_value != null))
-            {
-                return ControlPlaneError.ProjectProtected;
+                if (!projectTokenEnabled(project) or !secureTokenEql(project.mutation_token, project_token)) {
+                    return ControlPlaneError.ProjectAuthFailed;
+                }
             }
             if (requested_name) |next_name| {
                 try validateDisplayString(next_name, 128);
@@ -2900,7 +2862,7 @@ pub const ControlPlane = struct {
             project.mounts.deinit(self.allocator);
             project.mounts = next_mounts;
             mounts_replaced = true;
-        } else if (created and project.kind != .host_internal) {
+        } else if (created) {
             if (try ensureDefaultProjectMountsLocked(self, project)) mounts_replaced = true;
         }
 
@@ -2958,9 +2920,7 @@ pub const ControlPlane = struct {
             binds_replaced = true;
         }
 
-        if (project.kind != .host_internal) {
-            if (try ensureProjectTemplateBindsLocked(self, project)) binds_replaced = true;
-        }
+        if (try ensureProjectTemplateBindsLocked(self, project)) binds_replaced = true;
 
         project.updated_at_ms = now_ms;
         if (!created) self.project_updates_total +%= 1;
@@ -3073,11 +3033,9 @@ pub const ControlPlane = struct {
         defer self.allocator.free(escaped_agent);
         if (selected_project_id) |project_id| {
             const project = self.projects.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
+            if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
             const is_host_actor = self.isHostActor(agent_id);
             if (is_host_actor and !is_admin and !std.mem.eql(u8, project_id, host_project_id)) {
-                return ControlPlaneError.ProjectAssignmentForbidden;
-            }
-            if (project.kind == .host_internal and !(is_host_actor or is_admin)) {
                 return ControlPlaneError.ProjectAssignmentForbidden;
             }
             if (!is_admin) {
@@ -3119,7 +3077,7 @@ pub const ControlPlane = struct {
         if (self.active_project_by_agent.get(agent_id)) |active_project_id| {
             if (active_project_id.len > 0) {
                 if (self.projects.get(active_project_id)) |active_project| {
-                    if (active_project.kind == .host_internal and !(self.isHostActor(agent_id) or is_admin)) {
+                    if (active_project.kind == .host_internal) {
                         self.allocator.free(self.active_project_by_agent.getPtr(agent_id).?.*);
                         self.active_project_by_agent.getPtr(agent_id).?.* = try self.allocator.dupe(u8, "");
                         self.persistSnapshotBestEffortLocked();
@@ -6026,6 +5984,54 @@ fn normalizeMountPath(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "/{s}", .{trimmed});
 }
 
+fn getPublicProjectLocked(self: *ControlPlane, project_id: []const u8) !Project {
+    const project = self.projects.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
+    if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
+    return project;
+}
+
+fn getPublicProjectPtrLocked(self: *ControlPlane, project_id: []const u8) !*Project {
+    const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
+    if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
+    return project;
+}
+
+fn removeProjectMountEntriesLocked(
+    allocator: std.mem.Allocator,
+    project: *Project,
+    mount_path: []const u8,
+    node_id_filter: ?[]const u8,
+    export_name_filter: ?[]const u8,
+) u32 {
+    var removed_count: u32 = 0;
+    var i: usize = 0;
+    while (i < project.mounts.items.len) {
+        const mount = project.mounts.items[i];
+        if (!std.mem.eql(u8, mount.mount_path, mount_path)) {
+            i += 1;
+            continue;
+        }
+        if (node_id_filter) |node_id| {
+            if (!std.mem.eql(u8, mount.node_id, node_id)) {
+                i += 1;
+                continue;
+            }
+        }
+        if (export_name_filter) |export_name| {
+            if (!std.mem.eql(u8, mount.export_name, export_name)) {
+                i += 1;
+                continue;
+            }
+        }
+
+        var removed = project.mounts.orderedRemove(i);
+        removed.deinit(allocator);
+        removed_count +%= 1;
+        if (node_id_filter != null) break;
+    }
+    return removed_count;
+}
+
 fn ensureDefaultProjectMountsLocked(self: *ControlPlane, project: *Project) !bool {
     if (project.kind == .host_internal) return false;
 
@@ -6483,8 +6489,12 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"kind\":\"host_internal\"") == null);
 
     try std.testing.expectError(
-        ControlPlaneError.ProjectProtected,
+        ControlPlaneError.ProjectNotFound,
         plane.deleteProject("{\"project_id\":\"system\",\"project_token\":\"token\"}"),
+    );
+    try std.testing.expectError(
+        ControlPlaneError.ProjectNotFound,
+        plane.getProject("{\"project_id\":\"system\"}"),
     );
     const state_json = try plane.dumpState();
     defer allocator.free(state_json);
@@ -6512,15 +6522,15 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     );
     defer allocator.free(update_req);
     try std.testing.expectError(
-        ControlPlaneError.ProjectProtected,
+        ControlPlaneError.ProjectNotFound,
         plane.updateProject(update_req),
     );
     try std.testing.expectError(
-        ControlPlaneError.ProjectAssignmentForbidden,
+        ControlPlaneError.ProjectNotFound,
         plane.activateProject("agent-worker", "{\"project_id\":\"system\",\"project_token\":\"token\"}"),
     );
     try std.testing.expectError(
-        ControlPlaneError.ProjectAssignmentForbidden,
+        ControlPlaneError.ProjectNotFound,
         plane.workspaceStatus("agent-worker", "{\"project_id\":\"system\"}"),
     );
 
@@ -6531,7 +6541,7 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     );
     defer allocator.free(activate_missing_token);
     try std.testing.expectError(
-        ControlPlaneError.MissingField,
+        ControlPlaneError.ProjectNotFound,
         plane.activateProject(default_host_actor_id, activate_missing_token),
     );
 
@@ -6641,25 +6651,23 @@ test "acheron_control_plane: admin can set and remove builtin host mounts" {
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const set_req = try std.fmt.allocPrint(
-        allocator,
-        "{{\"project_id\":\"system\",\"node_id\":\"{s}\",\"export_name\":\"work\",\"mount_path\":\"/nodes/clawz/fs\"}}",
-        .{remote_node_id},
-    );
-    defer allocator.free(set_req);
-    const set_json = try plane.setProjectMountWithRole(set_req, true);
-    defer allocator.free(set_json);
-    try std.testing.expect(std.mem.indexOf(u8, set_json, "\"mount_path\":\"/nodes/clawz/fs\"") != null);
+    const host_mounts = [_]SpiderWebMountSpec{
+        .{ .mount_path = "/nodes/clawz/fs", .export_name = "work" },
+    };
+    try plane.ensureSpiderWebMounts(remote_node_id, &host_mounts);
 
-    const remove_req = try std.fmt.allocPrint(
-        allocator,
-        "{{\"project_id\":\"system\",\"mount_path\":\"/nodes/clawz/fs\",\"node_id\":\"{s}\",\"export_name\":\"work\"}}",
-        .{remote_node_id},
-    );
-    defer allocator.free(remove_req);
-    const remove_json = try plane.removeProjectMountWithRole(remove_req, true);
-    defer allocator.free(remove_json);
-    try std.testing.expect(std.mem.indexOf(u8, remove_json, "\"mount_path\":\"/nodes/clawz/fs\"") == null);
+    {
+        const status = try plane.hostWorkspaceStatus();
+        defer allocator.free(status);
+        try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/clawz/fs\"") != null);
+    }
+
+    try std.testing.expect(try plane.removeHostMount("/nodes/clawz/fs", remote_node_id, "work"));
+    {
+        const status = try plane.hostWorkspaceStatus();
+        defer allocator.free(status);
+        try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/clawz/fs\"") == null);
+    }
 }
 
 test "acheron_control_plane: ensureSpiderWebMounts preserves extra builtin mounts" {
@@ -6680,15 +6688,10 @@ test "acheron_control_plane: ensureSpiderWebMounts preserves extra builtin mount
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const set_req = try std.fmt.allocPrint(
-        allocator,
-        "{{\"project_id\":\"system\",\"node_id\":\"{s}\",\"export_name\":\"work\",\"mount_path\":\"/nodes/clawz/fs\"}}",
-        .{remote_node_id},
-    );
-    defer allocator.free(set_req);
-    const set_json = try plane.setProjectMountWithRole(set_req, true);
-    defer allocator.free(set_json);
-    try std.testing.expect(std.mem.indexOf(u8, set_json, "\"mount_path\":\"/nodes/clawz/fs\"") != null);
+    const host_mounts = [_]SpiderWebMountSpec{
+        .{ .mount_path = "/nodes/clawz/fs", .export_name = "work" },
+    };
+    try plane.ensureSpiderWebMounts(remote_node_id, &host_mounts);
 
     // Re-ensuring local mount specs should not wipe additional admin-managed mounts.
     try plane.ensureSpiderWebMount(local_node_id, "system-root");

@@ -1660,9 +1660,6 @@ pub const Session = struct {
         try self.registerExistingGlobalVenomBinding(global_root, "workers", "project_namespace");
         try self.registerExistingGlobalVenomBinding(global_root, "workspaces", "project_namespace");
         try self.registerExistingGlobalVenomBinding(global_root, "git", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "github_pr", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "missions", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "pr_review", "project_namespace");
         try self.registerExistingGlobalVenomBinding(global_root, "library", "global_namespace");
         const preferred_fs_node_id = try self.resolvePreferredBoundVenomNodeId("fs");
         defer if (preferred_fs_node_id) |value| self.allocator.free(value);
@@ -2534,33 +2531,6 @@ pub const Session = struct {
             self.git_result_alias_id = self.lookupChild(git_alias_dir, "result.json") orelse 0;
         }
 
-        if (self.local_fs_export_root != null) {
-            const github_pr_dir = try self.addDir(local_venoms_root, "github_pr", false);
-            try self.seedAgentGitHubPrNamespaceAt(github_pr_dir, "/nodes/local/venoms/github_pr");
-            try self.seedBuiltinPackageMetadata(github_pr_dir, "github_pr");
-            const github_pr_alias_dir = try self.cloneLocalCatalogVenomAlias(github_pr_dir, global_root, "github_pr");
-            self.github_pr_status_alias_id = self.lookupChild(github_pr_alias_dir, "status.json") orelse 0;
-            self.github_pr_result_alias_id = self.lookupChild(github_pr_alias_dir, "result.json") orelse 0;
-        }
-
-        if (self.mission_store != null) {
-            const missions_dir = try self.addDir(local_venoms_root, "missions", false);
-            try self.seedAgentMissionsNamespaceAt(missions_dir, "/nodes/local/venoms/missions");
-            try self.seedBuiltinPackageMetadata(missions_dir, "missions");
-            const missions_alias_dir = try self.cloneLocalCatalogVenomAlias(missions_dir, global_root, "missions");
-            self.missions_status_alias_id = self.lookupChild(missions_alias_dir, "status.json") orelse 0;
-            self.missions_result_alias_id = self.lookupChild(missions_alias_dir, "result.json") orelse 0;
-
-            if (self.local_fs_export_root != null) {
-                const pr_review_dir = try self.addDir(local_venoms_root, "pr_review", false);
-                try self.seedAgentPrReviewNamespaceAt(pr_review_dir, "/nodes/local/venoms/pr_review");
-                try self.seedBuiltinPackageMetadata(pr_review_dir, "pr_review");
-                const pr_review_alias_dir = try self.cloneLocalCatalogVenomAlias(pr_review_dir, global_root, "pr_review");
-                self.pr_review_status_alias_id = self.lookupChild(pr_review_alias_dir, "status.json") orelse 0;
-                self.pr_review_result_alias_id = self.lookupChild(pr_review_alias_dir, "result.json") orelse 0;
-            }
-        }
-
         try self.refreshNodeVenomsIndex("local");
         try self.registerLocalCatalogVenomBinding("library", "node_catalog");
         try self.registerLocalCatalogVenomBinding("venom_packages", "node_catalog");
@@ -2569,18 +2539,8 @@ pub const Session = struct {
         try self.registerLocalCatalogVenomBinding("search_code", "node_catalog");
         try self.registerLocalCatalogVenomBinding("terminal", "node_catalog");
         try self.registerLocalCatalogVenomBinding("mounts", "node_catalog");
-        try self.registerLocalCatalogVenomBinding("agents", "node_catalog");
         try self.registerLocalCatalogVenomBinding("workspaces", "node_catalog");
         try self.registerLocalCatalogVenomBinding("git", "node_catalog");
-        if (self.local_fs_export_root != null) {
-            try self.registerLocalCatalogVenomBinding("github_pr", "node_catalog");
-        }
-        if (self.mission_store != null) {
-            try self.registerLocalCatalogVenomBinding("missions", "node_catalog");
-            if (self.local_fs_export_root != null) {
-                try self.registerLocalCatalogVenomBinding("pr_review", "node_catalog");
-            }
-        }
     }
 
     fn addProjectFsLinksFromPolicy(
@@ -3782,7 +3742,6 @@ pub const Session = struct {
         register_worker_path: []const u8,
         local_venoms_root: []const u8,
         target_template: []const u8,
-        missions_service_root: []const u8,
 
         fn init(allocator: std.mem.Allocator, project_id: []const u8) !BootstrapContractPaths {
             _ = project_id;
@@ -3804,7 +3763,6 @@ pub const Session = struct {
                 .register_worker_path = try workspaceManagedServicesPath(allocator, "workers/control/register.json"),
                 .local_venoms_root = try workspaceManagedChildPath(allocator, workspace_managed_local_venoms_dir_name, null),
                 .target_template = try workspaceManagedLocalVenomsPath(allocator, "{venom_id}"),
-                .missions_service_root = try workspaceManagedServicesPath(allocator, "missions"),
             };
         }
 
@@ -3826,7 +3784,6 @@ pub const Session = struct {
             allocator.free(self.register_worker_path);
             allocator.free(self.local_venoms_root);
             allocator.free(self.target_template);
-            allocator.free(self.missions_service_root);
         }
     };
 
@@ -4159,7 +4116,7 @@ pub const Session = struct {
             missing_services.items
         else
             "none";
-        const vision_text = "Project vision is tracked by Spiderweb project metadata and mission sources. Follow future workspace mission files when they are materialized.";
+        const vision_text = "Project vision is tracked by Spiderweb project metadata. Follow future workspace-owned guidance files if they are materialized under .spiderweb/.";
 
         return std.fmt.allocPrint(
             self.allocator,
@@ -4219,8 +4176,8 @@ pub const Session = struct {
             \\- A `0` exit code from the walkthrough or validator means the step succeeded; do not retry just because stdout includes prompts or because the game appears to wait for redirected input.
             \\- Do not stop after creating partial outputs. Finish when all required files exist and validation succeeds.
             \\
-            \\## Future Missions
-            \\If the workspace later materializes mission files under `.spiderweb/` or exposes `{s}`, treat them as workspace-owned guidance in addition to the user prompt.
+            \\## Future Workspace Guidance
+            \\If the workspace later materializes extra guidance files under `.spiderweb/`, treat them as workspace-owned guidance in addition to the user prompt.
             \\
             \\{s}
         ,
@@ -4243,7 +4200,6 @@ pub const Session = struct {
                 available_text,
                 missing_text,
                 paths.shared_data_root,
-                paths.missions_service_root,
                 workspace_agents_managed_end,
             },
         );

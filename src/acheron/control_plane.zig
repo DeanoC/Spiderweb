@@ -335,20 +335,6 @@ const system_template_bind_specs = [_]ProjectTemplateBindSpec{
     .{ .bind_path = "/services/events", .venom_id = "events" },
 };
 
-const github_template_bind_specs = [_]ProjectTemplateBindSpec{
-    .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
-    .{ .bind_path = "/services/home", .venom_id = "home" },
-    .{ .bind_path = "/services/workers", .venom_id = "workers" },
-    .{ .bind_path = "/services/terminal", .venom_id = "terminal", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/git", .venom_id = "git", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/library", .venom_id = "library" },
-    .{ .bind_path = "/services/events", .venom_id = "events" },
-    .{ .bind_path = "/services/github_pr", .venom_id = "github_pr" },
-    .{ .bind_path = "/services/missions", .venom_id = "missions" },
-    .{ .bind_path = "/services/pr_review", .venom_id = "pr_review" },
-};
-
 const dev_template_bind_specs = [_]ProjectTemplateBindSpec{
     .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/services/home", .venom_id = "home" },
@@ -370,11 +356,6 @@ const builtin_project_templates = [_]ProjectTemplateSpec{
         .id = "dev",
         .description = "Development workspace with the same external-agent core services bound into /services.",
         .bind_specs = dev_template_bind_specs[0..],
-    },
-    .{
-        .id = "github",
-        .description = "GitHub-oriented workspace that layers PR services on top of the external-agent core.",
-        .bind_specs = github_template_bind_specs[0..],
     },
 };
 
@@ -532,29 +513,29 @@ pub const ControlPlane = struct {
 
     pub fn initWithPersistence(
         allocator: std.mem.Allocator,
-        ltm_directory: []const u8,
-        ltm_filename: []const u8,
+        state_directory: []const u8,
+        state_db_filename: []const u8,
     ) ControlPlane {
-        return initWithPersistenceOptions(allocator, ltm_directory, ltm_filename, .{});
+        return initWithPersistenceOptions(allocator, state_directory, state_db_filename, .{});
     }
 
     pub fn initWithPersistenceOptions(
         allocator: std.mem.Allocator,
-        ltm_directory: []const u8,
-        ltm_filename: []const u8,
+        state_directory: []const u8,
+        state_db_filename: []const u8,
         options: InitOptions,
     ) ControlPlane {
         var plane = ControlPlane.initWithOptions(allocator, options);
         plane.state_encryption_key = loadStateEncryptionKey(allocator);
-        if (ltm_directory.len == 0 or ltm_filename.len == 0) return plane;
+        if (state_directory.len == 0 or state_db_filename.len == 0) return plane;
 
-        plane.snapshot_directory = allocator.dupe(u8, ltm_directory) catch |err| {
+        plane.snapshot_directory = allocator.dupe(u8, state_directory) catch |err| {
             std.log.warn("control-plane persistence disabled: failed duplicating snapshot directory: {s}", .{@errorName(err)});
             return plane;
         };
         errdefer if (plane.snapshot_directory) |directory| allocator.free(directory);
 
-        plane.snapshot_filename = allocator.dupe(u8, ltm_filename) catch |err| {
+        plane.snapshot_filename = allocator.dupe(u8, state_db_filename) catch |err| {
             std.log.warn("control-plane persistence disabled: failed duplicating snapshot filename: {s}", .{@errorName(err)});
             if (plane.snapshot_directory) |directory| allocator.free(directory);
             plane.snapshot_directory = null;
@@ -6327,7 +6308,7 @@ fn validateExportName(value: []const u8) !void {
 
 fn validateFsUrl(value: []const u8) !void {
     if (!std.mem.startsWith(u8, value, "ws://")) return ControlPlaneError.InvalidPayload;
-    if (std.mem.indexOf(u8, value, "/v2/fs") == null) return ControlPlaneError.InvalidPayload;
+    if (std.mem.indexOf(u8, value, "/fs") == null) return ControlPlaneError.InvalidPayload;
     if (value.len > 512) return ControlPlaneError.InvalidPayload;
 }
 
@@ -6580,7 +6561,7 @@ test "acheron_control_plane: builtin system mount can be bound from local node" 
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(joined);
     var parsed_join = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
     defer parsed_join.deinit();
@@ -6600,7 +6581,7 @@ test "acheron_control_plane: builtin system mounts support namespace topology" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(joined);
     var parsed_join = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
     defer parsed_join.deinit();
@@ -6637,14 +6618,14 @@ test "acheron_control_plane: admin can set and remove builtin system mounts" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(local_joined);
     var local_parsed = try std.json.parseFromSlice(std.json.Value, allocator, local_joined, .{});
     defer local_parsed.deinit();
     const local_node_id = local_parsed.value.object.get("node_id").?.string;
     try plane.ensureSpiderWebMount(local_node_id, "system-root");
 
-    const remote_joined = try plane.ensureNode("clawz", "ws://100.101.192.123:18790/v2/fs/node/node-3", 60_000);
+    const remote_joined = try plane.ensureNode("clawz", "ws://100.101.192.123:18790/fs/node/node-3", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -6676,14 +6657,14 @@ test "acheron_control_plane: ensureSpiderWebMounts preserves extra builtin mount
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(local_joined);
     var local_parsed = try std.json.parseFromSlice(std.json.Value, allocator, local_joined, .{});
     defer local_parsed.deinit();
     const local_node_id = local_parsed.value.object.get("node_id").?.string;
     try plane.ensureSpiderWebMount(local_node_id, "system-root");
 
-    const remote_joined = try plane.ensureNode("clawz", "ws://100.101.192.123:18790/v2/fs/node/node-3", 60_000);
+    const remote_joined = try plane.ensureNode("clawz", "ws://100.101.192.123:18790/fs/node/node-3", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -6723,14 +6704,14 @@ test "acheron_control_plane: invite join lease flow works" {
 
     const join_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{token},
     );
     defer allocator.free(join_req);
     const join_json = try plane.nodeJoin(join_req);
     defer allocator.free(join_json);
     try std.testing.expect(std.mem.indexOf(u8, join_json, "\"node_id\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, join_json, "\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, join_json, "\"fs_url\":\"ws://127.0.0.1:18891/fs\"") != null);
 
     var join_parsed = try std.json.parseFromSlice(std.json.Value, allocator, join_json, .{});
     defer join_parsed.deinit();
@@ -6739,14 +6720,14 @@ test "acheron_control_plane: invite join lease flow works" {
 
     const refresh_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"fs_url\":\"ws://127.0.0.1:28891/v2/fs\"}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"fs_url\":\"ws://127.0.0.1:28891/fs\"}}",
         .{ node_id, secret },
     );
     defer allocator.free(refresh_req);
     const refresh_json = try plane.refreshNodeLease(refresh_req);
     defer allocator.free(refresh_json);
     try std.testing.expect(std.mem.indexOf(u8, refresh_json, "\"lease_token\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, refresh_json, "\"fs_url\":\"ws://127.0.0.1:28891/v2/fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, refresh_json, "\"fs_url\":\"ws://127.0.0.1:28891/fs\"") != null);
 }
 
 test "acheron_control_plane: project mount conflict is rejected" {
@@ -6798,7 +6779,7 @@ test "acheron_control_plane: project bind lifecycle resolves bound paths" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const joined = try plane.ensureNode("bind-lifecycle-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const joined = try plane.ensureNode("bind-lifecycle-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(joined);
     var joined_parsed = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
     defer joined_parsed.deinit();
@@ -6868,7 +6849,7 @@ test "acheron_control_plane: bind conflicts with existing mount path" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const joined = try plane.ensureNode("bind-conflict-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const joined = try plane.ensureNode("bind-conflict-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(joined);
     var joined_parsed = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
     defer joined_parsed.deinit();
@@ -6904,7 +6885,7 @@ test "acheron_control_plane: bind target must remain within mounted authority" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const joined = try plane.ensureNode("bind-authority-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const joined = try plane.ensureNode("bind-authority-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(joined);
     var joined_parsed = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
     defer joined_parsed.deinit();
@@ -6948,7 +6929,7 @@ test "acheron_control_plane: project mutation requires valid project_token" {
 
     const join_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{token},
     );
     defer allocator.free(join_req);
@@ -6980,7 +6961,7 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const ensured = try plane.ensureNode("policy-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const ensured = try plane.ensureNode("policy-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(ensured);
     var ensured_parsed = try std.json.parseFromSlice(std.json.Value, allocator, ensured, .{});
     defer ensured_parsed.deinit();
@@ -7102,7 +7083,7 @@ test "acheron_control_plane: workspace status filters invoke service mounts when
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const ensured = try plane.ensureNode("workspace-invoke-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const ensured = try plane.ensureNode("workspace-invoke-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(ensured);
     var ensured_parsed = try std.json.parseFromSlice(std.json.Value, allocator, ensured, .{});
     defer ensured_parsed.deinit();
@@ -7198,7 +7179,7 @@ test "acheron_control_plane: identical mount path can be used for failover nodes
 
     const join_a_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{token_a},
     );
     defer allocator.free(join_a_req);
@@ -7216,7 +7197,7 @@ test "acheron_control_plane: identical mount path can be used for failover nodes
 
     const join_b_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"beta\",\"fs_url\":\"ws://127.0.0.1:18892/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"beta\",\"fs_url\":\"ws://127.0.0.1:18892/fs\"}}",
         .{token_b},
     );
     defer allocator.free(join_b_req);
@@ -7268,7 +7249,7 @@ test "acheron_control_plane: removeProjectMount supports path-wide and targeted 
 
     const join_a_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{token_a},
     );
     defer allocator.free(join_a_req);
@@ -7286,7 +7267,7 @@ test "acheron_control_plane: removeProjectMount supports path-wide and targeted 
 
     const join_b_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"beta\",\"fs_url\":\"ws://127.0.0.1:18892/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"beta\",\"fs_url\":\"ws://127.0.0.1:18892/fs\"}}",
         .{token_b},
     );
     defer allocator.free(join_b_req);
@@ -7360,7 +7341,7 @@ test "acheron_control_plane: lease reaper removes expired nodes and project moun
 
     const join_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"ephemeral\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"ephemeral\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{token},
     );
     defer allocator.free(join_req);
@@ -7413,14 +7394,14 @@ test "acheron_control_plane: ensureNode upserts by node name" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const created = try plane.ensureNode("local", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const created = try plane.ensureNode("local", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(created);
     try std.testing.expect(std.mem.indexOf(u8, created, "\"node_id\":\"node-1\"") != null);
 
-    const updated = try plane.ensureNode("local", "ws://127.0.0.1:28891/v2/fs", 60_000);
+    const updated = try plane.ensureNode("local", "ws://127.0.0.1:28891/fs", 60_000);
     defer allocator.free(updated);
     try std.testing.expect(std.mem.indexOf(u8, updated, "\"node_id\":\"node-1\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, updated, "\"fs_url\":\"ws://127.0.0.1:28891/v2/fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"fs_url\":\"ws://127.0.0.1:28891/fs\"") != null);
 
     const nodes_json = try plane.listNodes();
     defer allocator.free(nodes_json);
@@ -7441,7 +7422,7 @@ test "acheron_control_plane: metricsJson reports mutation counters" {
 
     const join_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{token},
     );
     defer allocator.free(join_req);
@@ -7497,7 +7478,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
 
     const join_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{invite_token},
     );
     defer allocator.free(join_req);
@@ -7588,7 +7569,7 @@ test "acheron_control_plane: workspaceStatus supports explicit project selection
 
     const join_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{invite_token},
     );
     defer allocator.free(join_req);
@@ -7660,13 +7641,13 @@ test "acheron_control_plane: workspace topology prefers best available candidate
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const node_a_json = try plane.ensureNode("alpha", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const node_a_json = try plane.ensureNode("alpha", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(node_a_json);
     var node_a_payload = try std.json.parseFromSlice(std.json.Value, allocator, node_a_json, .{});
     defer node_a_payload.deinit();
     const node_a_id = node_a_payload.value.object.get("node_id").?.string;
 
-    const node_b_json = try plane.ensureNode("bravo", "ws://127.0.0.1:18892/v2/fs", 60_000);
+    const node_b_json = try plane.ensureNode("bravo", "ws://127.0.0.1:18892/fs", 60_000);
     defer allocator.free(node_b_json);
     var node_b_payload = try std.json.parseFromSlice(std.json.Value, allocator, node_b_json, .{});
     defer node_b_payload.deinit();
@@ -7763,7 +7744,7 @@ test "acheron_control_plane: pending join request list approve and deny flow wor
     defer plane.deinit();
 
     const request_json = try plane.nodeJoinRequest(
-        "{\"node_name\":\"delta\",\"fs_url\":\"ws://127.0.0.1:19891/v2/fs\",\"platform\":{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"native\"}}",
+        "{\"node_name\":\"delta\",\"fs_url\":\"ws://127.0.0.1:19891/fs\",\"platform\":{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"native\"}}",
     );
     defer allocator.free(request_json);
     var request = try std.json.parseFromSlice(std.json.Value, allocator, request_json, .{});
@@ -7790,7 +7771,7 @@ test "acheron_control_plane: pending join request list approve and deny flow wor
     try std.testing.expect(std.mem.indexOf(u8, listed_after, "\"pending\":[]") != null);
 
     const request2_json = try plane.nodeJoinRequest(
-        "{\"node_name\":\"epsilon\",\"fs_url\":\"ws://127.0.0.1:19892/v2/fs\"}",
+        "{\"node_name\":\"epsilon\",\"fs_url\":\"ws://127.0.0.1:19892/fs\"}",
     );
     defer allocator.free(request2_json);
     var request2 = try std.json.parseFromSlice(std.json.Value, allocator, request2_json, .{});
@@ -7826,7 +7807,7 @@ test "acheron_control_plane: node venom upsert and get stores catalog metadata" 
 
     const join_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"svc-node\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"svc-node\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{invite_token},
     );
     defer allocator.free(join_req);
@@ -7875,7 +7856,7 @@ test "acheron_control_plane: node venom upsert reports unchanged catalog delta" 
 
     const join_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"invite_token\":\"{s}\",\"node_name\":\"svc-node\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}}",
+        "{{\"invite_token\":\"{s}\",\"node_name\":\"svc-node\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}}",
         .{invite_token},
     );
     defer allocator.free(join_req);
@@ -7919,7 +7900,7 @@ test "acheron_control_plane: node venom delta changes when only package_id chang
     );
     defer allocator.free(installed_b);
 
-    const ensured = try plane.ensureNode("delta-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const ensured = try plane.ensureNode("delta-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(ensured);
     var ensured_parsed = try std.json.parseFromSlice(std.json.Value, allocator, ensured, .{});
     defer ensured_parsed.deinit();
@@ -7954,7 +7935,7 @@ test "acheron_control_plane: node venom event retention honors configured histor
     });
     defer plane.deinit();
 
-    const ensured = try plane.ensureNode("retained-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const ensured = try plane.ensureNode("retained-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(ensured);
     var ensured_parsed = try std.json.parseFromSlice(std.json.Value, allocator, ensured, .{});
     defer ensured_parsed.deinit();
@@ -7987,14 +7968,14 @@ test "acheron_control_plane: preferred venom provider favors spiderweb-local by 
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(local_joined);
     var local_parsed = try std.json.parseFromSlice(std.json.Value, allocator, local_joined, .{});
     defer local_parsed.deinit();
     const local_node_id = local_parsed.value.object.get("node_id").?.string;
     const local_node_secret = local_parsed.value.object.get("node_secret").?.string;
 
-    const remote_joined = try plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/v2/fs", 60_000);
+    const remote_joined = try plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -8035,7 +8016,7 @@ test "acheron_control_plane: explicit venom bind overrides heuristic provider se
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(local_joined);
     var local_parsed = try std.json.parseFromSlice(std.json.Value, allocator, local_joined, .{});
     defer local_parsed.deinit();
@@ -8082,7 +8063,7 @@ test "acheron_control_plane: scoped venom binds resolve agent before project bef
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const local_joined = try plane.ensureNode("spiderweb-local", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(local_joined);
     var local_parsed = try std.json.parseFromSlice(std.json.Value, allocator, local_joined, .{});
     defer local_parsed.deinit();
@@ -8367,7 +8348,7 @@ test "acheron_control_plane: projectUp auto-provisions default /nodes/local/fs m
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const node_json = try plane.ensureNode("bootstrap-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const node_json = try plane.ensureNode("bootstrap-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(node_json);
     var parsed_node = try std.json.parseFromSlice(std.json.Value, allocator, node_json, .{});
     defer parsed_node.deinit();
@@ -8399,7 +8380,7 @@ test "acheron_control_plane: default mount migration replaces legacy /workspace-
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const node_json = try plane.ensureNode("bootstrap-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const node_json = try plane.ensureNode("bootstrap-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(node_json);
     var parsed_node = try std.json.parseFromSlice(std.json.Value, allocator, node_json, .{});
     defer parsed_node.deinit();
@@ -8496,7 +8477,6 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     defer allocator.free(listed);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"minimum\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"dev\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"github\"") != null);
 
     const fetched = try plane.getWorkspaceTemplate("{\"template_id\":\"dev\"}");
     defer allocator.free(fetched);
@@ -8549,56 +8529,6 @@ test "acheron_control_plane: dev template seeds development service binds" {
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/web_search\"") == null);
 }
 
-test "acheron_control_plane: github template merges desired binds with template service binds" {
-    const allocator = std.testing.allocator;
-    var plane = ControlPlane.init(allocator);
-    defer plane.deinit();
-
-    const joined = try plane.ensureNode("template-github-node", "", 60_000);
-    defer allocator.free(joined);
-
-    const up_json = try plane.projectUp(
-        "agent-template",
-        "{\"name\":\"TemplateGitHub\",\"vision\":\"TemplateGitHub\",\"template_id\":\"github\",\"desired_binds\":[{\"bind_path\":\"/repo\",\"target_path\":\"/nodes/local/fs\"}],\"activate\":false}",
-    );
-    defer allocator.free(up_json);
-    try std.testing.expect(std.mem.indexOf(u8, up_json, "\"created\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, up_json, "\"activated\":false") != null);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, up_json, .{});
-    defer parsed.deinit();
-    const project_id = parsed.value.object.get("project_id").?.string;
-    const project_token = parsed.value.object.get("project_token").?.string;
-
-    const get_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
-    defer allocator.free(get_req);
-    const get_json = try plane.getProject(get_req);
-    defer allocator.free(get_json);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"template_id\":\"github\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/repo\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/git\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/github_pr\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/missions\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/pr_review\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/terminal\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/events\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/library\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/chat\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/jobs\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, get_json, "\"bind_path\":\"/services/web_search\"") == null);
-
-    const resolve_req = try std.fmt.allocPrint(
-        allocator,
-        "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\",\"path\":\"/services/github_pr/control/invoke.json\"}}",
-        .{ project_id, project_token },
-    );
-    defer allocator.free(resolve_req);
-    const resolved = try plane.resolveProjectPath(resolve_req);
-    defer allocator.free(resolved);
-    try std.testing.expect(std.mem.indexOf(u8, resolved, "\"matched\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resolved, "\"resolved_path\":\"/nodes/local/venoms/github_pr/control/invoke.json\"") != null);
-}
-
 test "acheron_control_plane: snapshot encryption envelope roundtrip" {
     const allocator = std.testing.allocator;
     const sample = "{\"schema\":1,\"hello\":\"world\"}";
@@ -8639,7 +8569,7 @@ test "acheron_control_plane: persistence restores nodes projects mounts and acti
 
         const join_req = try std.fmt.allocPrint(
             allocator,
-            "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:38891/v2/fs\"}}",
+            "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:38891/fs\"}}",
             .{token},
         );
         defer allocator.free(join_req);
@@ -8707,7 +8637,7 @@ test "acheron_control_plane: persistence restores nodes projects mounts and acti
         const status = try plane.workspaceStatus("agent-alpha", null);
         defer allocator.free(status);
         try std.testing.expect(std.mem.indexOf(u8, status, expected_project_id.?) != null);
-        try std.testing.expect(std.mem.indexOf(u8, status, "\"fs_url\":\"ws://127.0.0.1:38891/v2/fs\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, status, "\"fs_url\":\"ws://127.0.0.1:38891/fs\"") != null);
 
         const invite2 = try plane.createNodeInvite(null);
         defer allocator.free(invite2);
@@ -8738,7 +8668,7 @@ test "acheron_control_plane: persistence restores node venom catalogs" {
 
         const join_req = try std.fmt.allocPrint(
             allocator,
-            "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:38891/v2/fs\"}}",
+            "{{\"invite_token\":\"{s}\",\"node_name\":\"alpha\",\"fs_url\":\"ws://127.0.0.1:38891/fs\"}}",
             .{token},
         );
         defer allocator.free(join_req);

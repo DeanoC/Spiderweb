@@ -74,7 +74,7 @@ resolve_auth_token_file() {
             return
         fi
     fi
-    printf '%s\n' "$HOME/.local/share/ziggy-spiderweb/.spiderweb-ltm/auth_tokens.json"
+    printf '%s\n' "$HOME/.local/share/ziggy-spiderweb/.spiderweb-state/auth_tokens.json"
 }
 
 if [[ -z "$SPIDERWEB_AUTH_TOKEN_FILE" ]]; then

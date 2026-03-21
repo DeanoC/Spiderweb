@@ -119,7 +119,7 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
     if (std.mem.eql(u8, subcommand, "path")) {
         var config = try Config.init(allocator, null);
         defer config.deinit();
-        const path = try resolveAuthTokensPath(allocator, config.runtime.ltm_directory, config.runtime.spider_web_root, config.config_path);
+        const path = try resolveAuthTokensPath(allocator, config.runtime.state_directory, config.runtime.spider_web_root, config.config_path);
         defer allocator.free(path);
         const out = try std.fmt.allocPrint(allocator, "{s}\n", .{path});
         defer allocator.free(out);
@@ -145,7 +145,7 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
         var config = try Config.init(allocator, null);
         defer config.deinit();
-        const path = try resolveAuthTokensPath(allocator, config.runtime.ltm_directory, config.runtime.spider_web_root, config.config_path);
+        const path = try resolveAuthTokensPath(allocator, config.runtime.state_directory, config.runtime.spider_web_root, config.config_path);
         defer allocator.free(path);
 
         var snapshot = try loadAuthStatusSnapshot(allocator, path);
@@ -211,7 +211,7 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
         var config = try Config.init(allocator, null);
         defer config.deinit();
-        const path = try resolveAuthTokensPath(allocator, config.runtime.ltm_directory, config.runtime.spider_web_root, config.config_path);
+        const path = try resolveAuthTokensPath(allocator, config.runtime.state_directory, config.runtime.spider_web_root, config.config_path);
         defer allocator.free(path);
         const admin_token = try makeOpaqueToken(allocator, "sw-admin");
         defer allocator.free(admin_token);
@@ -243,8 +243,8 @@ fn handleConfigCommand(allocator: std.mem.Allocator, args: []const []const u8) !
             config.server.bind,
             config.server.port,
             config.runtime.spider_web_root,
-            config.runtime.ltm_directory,
-            config.runtime.ltm_filename,
+            config.runtime.state_directory,
+            config.runtime.state_db_filename,
             config.log.level,
         });
         try stdout_file.writeAll(msg);
@@ -1437,7 +1437,7 @@ fn defaultServiceWorkingDirectory(allocator: std.mem.Allocator) ![]u8 {
 fn defaultServiceRuntimeStorageDirectory(allocator: std.mem.Allocator) ![]u8 {
     const working_dir = try defaultServiceWorkingDirectory(allocator);
     defer allocator.free(working_dir);
-    return std.fs.path.join(allocator, &.{ working_dir, ".spiderweb-ltm" });
+    return std.fs.path.join(allocator, &.{ working_dir, ".spiderweb-state" });
 }
 
 fn defaultLocalWorkspaceRoot(allocator: std.mem.Allocator) ![]u8 {
@@ -1483,13 +1483,13 @@ fn ensureDefaultRuntimeStorageConfig(allocator: std.mem.Allocator) !void {
     var config = try Config.init(allocator, null);
     defer config.deinit();
 
-    const current = std.mem.trim(u8, config.runtime.ltm_directory, " \t\r\n");
+    const current = std.mem.trim(u8, config.runtime.state_directory, " \t\r\n");
     if (current.len > 0 and std.fs.path.isAbsolute(current)) {
         try makePathAny(current);
         return;
     }
 
-    if (current.len > 0 and !std.mem.eql(u8, current, ".spiderweb-ltm")) {
+    if (current.len > 0 and !std.mem.eql(u8, current, ".spiderweb-state")) {
         return;
     }
 
@@ -1497,8 +1497,8 @@ fn ensureDefaultRuntimeStorageConfig(allocator: std.mem.Allocator) !void {
     defer allocator.free(default_storage);
     try makePathAny(default_storage);
 
-    config.allocator.free(config.runtime.ltm_directory);
-    config.runtime.ltm_directory = try allocator.dupe(u8, default_storage);
+    config.allocator.free(config.runtime.state_directory);
+    config.runtime.state_directory = try allocator.dupe(u8, default_storage);
     try config.save();
 }
 
@@ -1590,11 +1590,11 @@ fn trimmedCommandText(text: []const u8) []const u8 {
 
 fn resolveAuthTokensPath(
     allocator: std.mem.Allocator,
-    ltm_directory: []const u8,
+    state_directory: []const u8,
     spider_web_root: []const u8,
     config_path: []const u8,
 ) ![]u8 {
-    const storage_dir = try resolveRuntimeStorageDirectory(allocator, ltm_directory, spider_web_root, config_path);
+    const storage_dir = try resolveRuntimeStorageDirectory(allocator, state_directory, spider_web_root, config_path);
     defer allocator.free(storage_dir);
     try makePathAny(storage_dir);
     return std.fs.path.join(allocator, &.{ storage_dir, auth_tokens_filename });
@@ -1602,21 +1602,21 @@ fn resolveAuthTokensPath(
 
 fn resolveRuntimeStorageDirectory(
     allocator: std.mem.Allocator,
-    ltm_directory: []const u8,
+    state_directory: []const u8,
     spider_web_root: []const u8,
     config_path: []const u8,
 ) ![]u8 {
-    const runtime_base = try resolveRuntimeBaseDirectory(allocator, ltm_directory, spider_web_root, config_path);
+    const runtime_base = try resolveRuntimeBaseDirectory(allocator, state_directory, spider_web_root, config_path);
     defer allocator.free(runtime_base);
-    return resolveRuntimeStorageDirectoryWithBase(allocator, ltm_directory, runtime_base);
+    return resolveRuntimeStorageDirectoryWithBase(allocator, state_directory, runtime_base);
 }
 
 fn resolveRuntimeStorageDirectoryWithBase(
     allocator: std.mem.Allocator,
-    ltm_directory: []const u8,
+    state_directory: []const u8,
     runtime_base: []const u8,
 ) ![]u8 {
-    const base_dir = std.mem.trim(u8, ltm_directory, " \t\r\n");
+    const base_dir = std.mem.trim(u8, state_directory, " \t\r\n");
     if (std.fs.path.isAbsolute(base_dir)) return allocator.dupe(u8, base_dir);
     if (base_dir.len == 0) return allocator.dupe(u8, runtime_base);
     return std.fs.path.join(allocator, &.{ runtime_base, base_dir });
@@ -1624,7 +1624,7 @@ fn resolveRuntimeStorageDirectoryWithBase(
 
 fn resolveRuntimeBaseDirectory(
     allocator: std.mem.Allocator,
-    ltm_directory: []const u8,
+    state_directory: []const u8,
     spider_web_root: []const u8,
     config_path: []const u8,
 ) ![]u8 {
@@ -1638,7 +1638,7 @@ fn resolveRuntimeBaseDirectory(
     }
 
     if (try detectServiceWorkingDirectory(allocator)) |service_dir| {
-        if (try currentDirectoryOwnsRuntimeStorage(allocator, ltm_directory)) {
+        if (try currentDirectoryOwnsRuntimeStorage(allocator, state_directory)) {
             defer allocator.free(service_dir);
             return currentShellWorkingDirectory(allocator);
         }
@@ -1651,12 +1651,12 @@ fn resolveRuntimeBaseDirectory(
     return currentShellWorkingDirectory(allocator);
 }
 
-fn currentDirectoryOwnsRuntimeStorage(allocator: std.mem.Allocator, ltm_directory: []const u8) !bool {
+fn currentDirectoryOwnsRuntimeStorage(allocator: std.mem.Allocator, state_directory: []const u8) !bool {
     const cwd = try currentShellWorkingDirectory(allocator);
     defer allocator.free(cwd);
     if (cwd.len == 0 or std.mem.eql(u8, cwd, "/")) return false;
 
-    const storage_dir = try resolveRuntimeStorageDirectoryWithBase(allocator, ltm_directory, cwd);
+    const storage_dir = try resolveRuntimeStorageDirectoryWithBase(allocator, state_directory, cwd);
     defer allocator.free(storage_dir);
 
     const auth_tokens_path = try std.fs.path.join(allocator, &.{ storage_dir, auth_tokens_filename });
@@ -2074,9 +2074,9 @@ test "config_cli: resolve runtime storage directory keeps absolute ltm path" {
 
 test "config_cli: resolve runtime storage directory joins relative ltm path with runtime base" {
     const allocator = std.testing.allocator;
-    const resolved = try resolveRuntimeStorageDirectoryWithBase(allocator, ".spiderweb-ltm", "/srv/spiderweb");
+    const resolved = try resolveRuntimeStorageDirectoryWithBase(allocator, ".spiderweb-state", "/srv/spiderweb");
     defer allocator.free(resolved);
-    const expected = try std.fs.path.join(allocator, &.{ "/srv/spiderweb", ".spiderweb-ltm" });
+    const expected = try std.fs.path.join(allocator, &.{ "/srv/spiderweb", ".spiderweb-state" });
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, resolved);
 }

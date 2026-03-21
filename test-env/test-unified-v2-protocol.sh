@@ -108,8 +108,8 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<JSON
   },
   "runtime": {
     "default_agent_id": "default",
-    "ltm_directory": "$LTM_DIR",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$LTM_DIR",
+    "state_db_filename": "runtime-state.db",
     "spider_web_root": "$SPIDER_WEB_ROOT"
   }
 }
@@ -288,7 +288,7 @@ def control_ready(host: str, port: int, auth_token=None) -> None:
             "channel": "control",
             "type": "control.version",
             "id": "ready-version",
-            "payload": {"protocol": "unified-v2"},
+            "payload": {"protocol": "spiderweb-control"},
         })
         version_ack = conn.read_json()
         expect_type(version_ack, "control", "control.version_ack")
@@ -332,7 +332,7 @@ def run_control_runtime_order(host: str, port: int, auth_token=None) -> None:
                 "channel": "control",
                 "type": "control.version",
                 "id": "cv1",
-                "payload": {"protocol": "unified-v2"},
+                "payload": {"protocol": "spiderweb-control"},
             })
             version_ack = conn.read_json()
             expect_type(version_ack, "control", "control.version_ack")
@@ -373,7 +373,7 @@ def run_control_runtime_order(host: str, port: int, auth_token=None) -> None:
                 "channel": "control",
                 "type": "control.version",
                 "id": "cv2",
-                "payload": {"protocol": "unified-v2"},
+                "payload": {"protocol": "spiderweb-control"},
             })
             version_ack = conn.read_json()
             expect_type(version_ack, "control", "control.version_ack")
@@ -414,14 +414,14 @@ def run_control_runtime_order(host: str, port: int, auth_token=None) -> None:
 
 
 def fs_ready(host: str, port: int, auth_token: str) -> None:
-    conn = WSConn.connect(host, port, "/v2/fs")
+    conn = WSConn.connect(host, port, "/fs")
     try:
         conn.send_json({
             "channel": "acheron",
             "type": "acheron.t_fs_hello",
             "tag": 1,
             "payload": {
-                "protocol": "unified-v2-fs",
+                "protocol": "spiderweb-fs",
                 "proto": 2,
                 "auth_token": auth_token,
             },
@@ -434,7 +434,7 @@ def fs_ready(host: str, port: int, auth_token: str) -> None:
 
 def run_fs_hello_order_and_auth(host: str, port: int, auth_token: str) -> None:
     # Sending FS op before acheron.t_fs_hello must fail.
-    conn = WSConn.connect(host, port, "/v2/fs")
+    conn = WSConn.connect(host, port, "/fs")
     try:
         conn.send_json({
             "channel": "acheron",
@@ -452,14 +452,14 @@ def run_fs_hello_order_and_auth(host: str, port: int, auth_token: str) -> None:
         conn.close()
 
     # Missing auth_token in hello must fail when node auth is enabled.
-    conn = WSConn.connect(host, port, "/v2/fs")
+    conn = WSConn.connect(host, port, "/fs")
     try:
         conn.send_json({
             "channel": "acheron",
             "type": "acheron.t_fs_hello",
             "tag": 12,
             "payload": {
-                "protocol": "unified-v2-fs",
+                "protocol": "spiderweb-fs",
                 "proto": 2,
             },
         })
@@ -473,14 +473,14 @@ def run_fs_hello_order_and_auth(host: str, port: int, auth_token: str) -> None:
         conn.close()
 
     # Wrong auth_token in hello must fail.
-    conn = WSConn.connect(host, port, "/v2/fs")
+    conn = WSConn.connect(host, port, "/fs")
     try:
         conn.send_json({
             "channel": "acheron",
             "type": "acheron.t_fs_hello",
             "tag": 13,
             "payload": {
-                "protocol": "unified-v2-fs",
+                "protocol": "spiderweb-fs",
                 "proto": 2,
                 "auth_token": "wrong-token",
             },
@@ -495,14 +495,14 @@ def run_fs_hello_order_and_auth(host: str, port: int, auth_token: str) -> None:
         conn.close()
 
     # Correct auth_token should negotiate and allow fs operation.
-    conn = WSConn.connect(host, port, "/v2/fs")
+    conn = WSConn.connect(host, port, "/fs")
     try:
         conn.send_json({
             "channel": "acheron",
             "type": "acheron.t_fs_hello",
             "tag": 14,
             "payload": {
-                "protocol": "unified-v2-fs",
+                "protocol": "spiderweb-fs",
                 "proto": 2,
                 "auth_token": auth_token,
             },
@@ -532,7 +532,7 @@ def run_source_guard(root_dir: str) -> None:
         ("src/control_cli.zig", '.msg_type = "control.version"'),
         ("src/control_cli.zig", '.msg_type = "control.connect"'),
         ("src/acheron/namespace_client.zig", '\\"channel\\":\\"control\\",\\"type\\":\\"{s}\\",\\"id\\":\\"{s}\\",\\"payload\\":{s}'),
-        ("src/acheron/namespace_client.zig", 'try self.writeControlRequest("control.version", request_id, "{\\"protocol\\":\\"unified-v2\\"}");'),
+        ("src/acheron/namespace_client.zig", 'try self.writeControlRequest("control.version", request_id, "{\\"protocol\\":\\"spiderweb-control\\"}");'),
         ("src/acheron/namespace_client.zig", 'try self.writeControlRequest("control.connect", request_id, "{}");'),
         ("src/acheron/namespace_client.zig", 'try self.writeControlRequest("control.workspace_status", request_id, payload);'),
         ("src/acheron/mount_main.zig", "var connect_info = try client.controlConnect();"),
@@ -598,7 +598,7 @@ start_spiderweb() {
 }
 
 start_fs_node() {
-    log_info "Starting standalone spiderweb-fs-node on ws://$BIND_ADDR:$FS_NODE_PORT/v2/fs ..."
+    log_info "Starting standalone spiderweb-fs-node on ws://$BIND_ADDR:$FS_NODE_PORT/fs ..."
     (
         cd "$ROOT_DIR"
         "$FS_NODE_BIN" \

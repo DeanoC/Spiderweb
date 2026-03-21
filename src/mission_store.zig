@@ -347,7 +347,7 @@ pub const MissionStore = struct {
         var store = MissionStore{
             .allocator = allocator,
         };
-        store.path = initPath(allocator, runtime_config.ltm_directory) catch |err| blk: {
+        store.path = initPath(allocator, runtime_config.state_directory) catch |err| blk: {
             std.log.warn("mission store persistence disabled: {s}", .{@errorName(err)});
             break :blk null;
         };
@@ -1208,8 +1208,8 @@ pub fn deinitMissionList(allocator: std.mem.Allocator, missions: []MissionRecord
     allocator.free(missions);
 }
 
-fn initPath(allocator: std.mem.Allocator, ltm_directory: []const u8) !?[]u8 {
-    const base = std.mem.trim(u8, ltm_directory, " \t\r\n");
+fn initPath(allocator: std.mem.Allocator, state_directory: []const u8) !?[]u8 {
+    const base = std.mem.trim(u8, state_directory, " \t\r\n");
     if (base.len == 0) return null;
     try ensureDirectoryExists(base);
     return try std.fs.path.join(allocator, &.{ base, missions_filename });

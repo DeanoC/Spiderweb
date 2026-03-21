@@ -286,12 +286,12 @@ collect_auth_token_candidates() {
     local config_cmd="${1:-}"
     local -n out_ref="$2"
     out_ref=()
-    out_ref+=("${REPO_DIR}/.spiderweb-ltm/auth_tokens.json")
+    out_ref+=("${REPO_DIR}/.spiderweb-state/auth_tokens.json")
 
     local config_file="${HOME}/.config/spiderweb/config.json"
     if [[ -f "$config_file" ]]; then
         local ltm_dir
-        ltm_dir="$(jq -r '.runtime.ltm_directory // empty' "$config_file" 2>/dev/null || true)"
+        ltm_dir="$(jq -r '.runtime.state_directory // empty' "$config_file" 2>/dev/null || true)"
         if [[ -n "$ltm_dir" ]]; then
             if [[ "$ltm_dir" == /* ]]; then
                 out_ref+=("${ltm_dir}/auth_tokens.json")

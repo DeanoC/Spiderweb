@@ -117,8 +117,8 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<EOF
   },
   "runtime": {
     "default_agent_id": "default",
-    "ltm_directory": "$LTM_DIR",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$LTM_DIR",
+    "state_db_filename": "runtime-state.db",
     "spider_web_root": "$SPIDER_WEB_ROOT"
   }
 }
@@ -294,7 +294,7 @@ try:
         "channel": "control",
         "type": "control.version",
         "id": "ready-version",
-        "payload": {"protocol": "unified-v2"},
+        "payload": {"protocol": "spiderweb-control"},
     }, separators=(",", ":")))
     msg = read_text(sock)
     if msg.get("type") != "control.version_ack":
@@ -442,7 +442,7 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"handshake failed: {status.decode('utf-8', 'replace')}")
 
-    version = call(sock, "version", {"protocol": "unified-v2"}, "gate-version")
+    version = call(sock, "version", {"protocol": "spiderweb-control"}, "gate-version")
     if version.get("type") != "control.version_ack":
         raise RuntimeError(f"expected version_ack, got {json.dumps(version)}")
 
@@ -594,7 +594,7 @@ PY
     log_pass "metrics endpoint is ready"
 fi
 
-log_info "Starting node A at ws://$BIND_ADDR:$NODE1_PORT/v2/fs ..."
+log_info "Starting node A at ws://$BIND_ADDR:$NODE1_PORT/fs ..."
 "$FS_NODE_BIN" \
     --bind "$BIND_ADDR" \
     --port "$NODE1_PORT" \
@@ -602,7 +602,7 @@ log_info "Starting node A at ws://$BIND_ADDR:$NODE1_PORT/v2/fs ..."
     > "$NODE1_LOG" 2>&1 &
 NODE1_PID="$!"
 
-log_info "Starting node B at ws://$BIND_ADDR:$NODE2_PORT/v2/fs ..."
+log_info "Starting node B at ws://$BIND_ADDR:$NODE2_PORT/fs ..."
 "$FS_NODE_BIN" \
     --bind "$BIND_ADDR" \
     --port "$NODE2_PORT" \
@@ -612,7 +612,7 @@ NODE2_PID="$!"
 
 wait_for_node_ready() {
     local port="$1"
-    local endpoint="tmp=ws://$BIND_ADDR:$port/v2/fs#work"
+    local endpoint="tmp=ws://$BIND_ADDR:$port/fs#work"
     for _ in $(seq 1 120); do
         if "$FS_MOUNT_BIN" --endpoint "$endpoint" readdir /tmp >/dev/null 2>&1; then
             return 0
@@ -641,7 +641,7 @@ CONTROL_WORKFLOW_ERR="$TEST_TMP_DIR/control-workflow.err"
 log_info "Running control workflow (invite/join/project/mount/activate)..."
 control_workflow_ok=0
 for _ in $(seq 1 20); do
-if python3 - "$BIND_ADDR" "$SPIDERWEB_PORT" "ws://$BIND_ADDR:$NODE1_PORT/v2/fs" "ws://$BIND_ADDR:$NODE2_PORT/v2/fs" "$CONTROL_SUMMARY" <<'PY' 2>"$CONTROL_WORKFLOW_ERR"
+if python3 - "$BIND_ADDR" "$SPIDERWEB_PORT" "ws://$BIND_ADDR:$NODE1_PORT/fs" "ws://$BIND_ADDR:$NODE2_PORT/fs" "$CONTROL_SUMMARY" <<'PY' 2>"$CONTROL_WORKFLOW_ERR"
 import base64
 import json
 import os
@@ -775,7 +775,7 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"handshake failed: {status.decode('utf-8', 'replace')}")
 
-    call(sock, "version", {"protocol": "unified-v2"}, "version-1")
+    call(sock, "version", {"protocol": "spiderweb-control"}, "version-1")
     call(sock, "connect", {}, "connect-1")
 
     invite_a = call(sock, "node_invite_create", {}, "inv-a")
@@ -1051,7 +1051,7 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"bad handshake: {status!r}")
 
-    call(sock, "version", {"protocol": "unified-v2"}, "restart-version")
+    call(sock, "version", {"protocol": "spiderweb-control"}, "restart-version")
     call(sock, "connect", {}, "restart-connect")
     workspace = call(sock, "workspace_status", {}, "restart-status")
     if workspace.get("project_id") != expected_project_id:
@@ -1262,7 +1262,7 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"bad handshake: {status!r}")
 
-    call(sock, "version", {"protocol": "unified-v2"}, "version-live")
+    call(sock, "version", {"protocol": "spiderweb-control"}, "version-live")
     call(sock, "connect", {}, "connect-live")
     call(sock, "project_mount_remove", with_project_scope({"project_id": project_id, "mount_path": "/src"}), "rm-src")
     call(sock, "project_mount_set", with_project_scope({"project_id": project_id, "node_id": node_a, "export_name": "work", "mount_path": "/live"}), "add-live-a")
@@ -1417,7 +1417,7 @@ project_token = sys.argv[4]
 node_host = sys.argv[5]
 node_port = int(sys.argv[6])
 node_label = sys.argv[7]
-node_url = f"ws://{node_host}:{node_port}/v2/fs"
+node_url = f"ws://{node_host}:{node_port}/fs"
 
 def with_project_scope(payload):
     scoped = dict(payload)
@@ -1537,7 +1537,7 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"bad handshake: {status!r}")
 
-    call(sock, "version", {"protocol": "unified-v2"}, "rejoin-version")
+    call(sock, "version", {"protocol": "spiderweb-control"}, "rejoin-version")
     call(sock, "connect", {}, "rejoin-connect")
     invite = call(sock, "node_invite_create", {}, "rejoin-invite")
     joined = call(sock, "node_join", {

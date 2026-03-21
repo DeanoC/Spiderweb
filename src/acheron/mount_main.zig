@@ -229,7 +229,7 @@ pub fn main() !void {
         if (namespace_url == null) {
             try endpoint_specs.append(allocator, .{
                 .name = "a",
-                .url = "ws://127.0.0.1:18891/v2/fs",
+                .url = "ws://127.0.0.1:18891/fs",
                 .export_name = null,
                 .mount_path = "/a",
             });
@@ -643,10 +643,10 @@ fn printHelp() !void {
         \\  mount <mountpoint>
         \\
         \\Examples:
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs#work readdir /a
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs#work@/src readdir /src
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs cat /a/README.md
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs status
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs#work readdir /a
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs#work@/src readdir /src
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs cat /a/README.md
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs status
         \\  spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ readdir /
         \\  spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ --workspace-id ws-demo --workspace-sync-interval-ms 5000 mount /mnt/spiderweb
         \\  spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ --workspace-id ws-demo --mount-backend native mount ~/spiderweb-demo
@@ -656,7 +656,7 @@ fn printHelp() !void {
         \\  spiderweb-fs-mount --namespace-url ws://127.0.0.1:18790/ --workspace-id ws-demo mount /mnt/spiderweb
         \\  spiderweb-fs-mount --namespace-url ws://127.0.0.1:18790/ --workspace-id ws-demo mount ~/spiderweb-demo
         \\  spiderweb-fs-mount --namespace-url ws://127.0.0.1:18790/ --workspace-id ws-demo --mount-backend winfsp mount X:
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs#work@/a --endpoint b=ws://127.0.0.1:18892/v2/fs#work@/a readdir /a
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs#work@/a --endpoint b=ws://127.0.0.1:18892/fs#work@/a readdir /a
         \\    (repeat the same mount path to enable failover)
         \\  Auth token for workspace control can also come from SPIDERWEB_AUTH_TOKEN.
         \\
@@ -1471,7 +1471,7 @@ fn appendWorkspaceMountSpecsFromStatusObject(
         if (url_val != .string) continue;
         if (url_val.string.len == 0) continue;
         if (!std.mem.startsWith(u8, url_val.string, "ws://")) continue;
-        if (std.mem.indexOf(u8, url_val.string, "/v2/fs") == null) continue;
+        if (std.mem.indexOf(u8, url_val.string, "/fs") == null) continue;
 
         const node_id = if (item.object.get("node_id")) |value|
             if (value == .string and value.string.len > 0) value.string else "node"
@@ -1508,7 +1508,7 @@ fn negotiateControlVersion(
 ) !void {
     const message = try std.fmt.allocPrint(
         allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"{s}\",\"payload\":{{\"protocol\":\"unified-v2\"}}}}",
+        "{{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"{s}\",\"payload\":{{\"protocol\":\"spiderweb-control\"}}}}",
         .{request_id},
     );
     defer allocator.free(message);
@@ -1860,17 +1860,17 @@ fn extractMissionIdFromResultPayload(allocator: std.mem.Allocator, payload_json:
 }
 
 test "acheron_mount_main: parseEndpointFlag supports explicit mount path" {
-    const parsed = try parseEndpointFlag("a=ws://127.0.0.1:18891/v2/fs#work@/src");
+    const parsed = try parseEndpointFlag("a=ws://127.0.0.1:18891/fs#work@/src");
     try std.testing.expectEqualStrings("a", parsed.name);
-    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/v2/fs", parsed.url);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/fs", parsed.url);
     try std.testing.expectEqualStrings("work", parsed.export_name.?);
     try std.testing.expectEqualStrings("/src", parsed.mount_path.?);
 }
 
 test "acheron_mount_main: parseEndpointFlag defaults mount path to endpoint name" {
-    const parsed = try parseEndpointFlag("alpha=ws://127.0.0.1:18891/v2/fs#work");
+    const parsed = try parseEndpointFlag("alpha=ws://127.0.0.1:18891/fs#work");
     try std.testing.expectEqualStrings("alpha", parsed.name);
-    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/v2/fs", parsed.url);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/fs", parsed.url);
     try std.testing.expectEqualStrings("work", parsed.export_name.?);
     try std.testing.expect(parsed.mount_path == null);
 }
@@ -1896,7 +1896,7 @@ test "acheron_mount_main: connectWorkspaceHasMounts requires non-empty mounts ar
     defer parsed_empty_mounts.deinit();
     try std.testing.expect(!connectWorkspaceHasMounts(parsed_empty_mounts.value.object.get("workspace")));
 
-    var parsed_with_mount = try std.json.parseFromSlice(std.json.Value, allocator, "{\"workspace\":{\"mounts\":[{\"mount_path\":\"/m\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}]}}", .{});
+    var parsed_with_mount = try std.json.parseFromSlice(std.json.Value, allocator, "{\"workspace\":{\"mounts\":[{\"mount_path\":\"/m\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}]}}", .{});
     defer parsed_with_mount.deinit();
     try std.testing.expect(connectWorkspaceHasMounts(parsed_with_mount.value.object.get("workspace")));
 }
@@ -1909,7 +1909,7 @@ test "acheron_mount_main: workspace status parsing tolerates deprecated metadata
     var parsed = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\",\"namespace_owned_subpaths\":[\"/AGENTS.md\",\"/.spiderweb\"]}]}",
+        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/fs\",\"namespace_owned_subpaths\":[\"/AGENTS.md\",\"/.spiderweb\"]}]}",
         .{},
     );
     defer parsed.deinit();
@@ -1917,7 +1917,7 @@ test "acheron_mount_main: workspace status parsing tolerates deprecated metadata
     try appendWorkspaceMountSpecsFromStatusObject(allocator, &specs, parsed.value.object);
     try std.testing.expectEqual(@as(usize, 1), specs.items.items.len);
     try std.testing.expectEqualStrings("/nodes/local/fs", specs.items.items[0].mount_path);
-    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/v2/fs", specs.items.items[0].url);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/fs", specs.items.items[0].url);
 }
 
 test "acheron_mount_main: standalone endpoint mode rejects Spiderweb namespace roots" {
@@ -1925,7 +1925,7 @@ test "acheron_mount_main: standalone endpoint mode rejects Spiderweb namespace r
     const endpoint_specs = [_]fs_router.EndpointConfig{
         .{
             .name = "local",
-            .url = "ws://127.0.0.1:18891/v2/fs",
+            .url = "ws://127.0.0.1:18891/fs",
             .export_name = null,
             .mount_path = "/nodes/local/fs",
         },

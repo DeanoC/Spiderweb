@@ -75,7 +75,7 @@ pub fn main() !void {
     defer tcp_server.deinit();
 
     std.log.info("embed-multi-service-node listening on ws://{s}:{d}", .{ bind_addr, port });
-    std.log.info("services: /v2/fs, /v1/health, /v1/echo", .{});
+    std.log.info("services: /fs, /v1/health, /v1/echo", .{});
 
     while (true) {
         var connection = tcp_server.accept() catch |err| {
@@ -210,7 +210,7 @@ fn handleConnection(
     var handshake = try websocket_transport.performHandshakeWithInfo(allocator, stream);
     defer handshake.deinit(allocator);
 
-    if (std.mem.startsWith(u8, handshake.path, "/v2/fs")) {
+    if (std.mem.startsWith(u8, handshake.path, "/fs")) {
         const connection = try hub.register(stream);
         defer hub.unregister(connection);
         try serveFs(allocator, connection, service, hub);
@@ -378,7 +378,7 @@ fn printHelp() !void {
         \\  embed-multi-service-node [--bind <addr>] [--port <port>] [--export <name>=<path>[:ro|:rw]]
         \\
         \\WebSocket services:
-        \\  /v2/fs      - distributed filesystem request/response JSON
+        \\  /fs      - distributed filesystem request/response JSON
         \\  /v1/health  - health status service
         \\  /v1/echo    - simple echo service
         \\

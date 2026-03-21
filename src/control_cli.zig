@@ -104,7 +104,7 @@ pub fn main() !void {
         .{
             .request_id = "control-cli-version",
             .msg_type = "control.version",
-            .payload_json = "{\"protocol\":\"unified-v2\"}",
+            .payload_json = "{\"protocol\":\"spiderweb-control\"}",
         },
     );
     const version_reply = try readControlReplyForId(allocator, &stream, "control-cli-version");

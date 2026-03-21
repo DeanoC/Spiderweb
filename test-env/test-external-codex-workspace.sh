@@ -1812,8 +1812,8 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<EOF
   },
   "runtime": {
     "default_agent_id": "default",
-    "ltm_directory": "$LTM_DIR",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$LTM_DIR",
+    "state_db_filename": "runtime-state.db",
     "spider_web_root": "$SPIDERWEB_RUNTIME_ROOT",
     "local_node": {
       "export_path": "$WORKSPACE_EXPORT_ROOT"

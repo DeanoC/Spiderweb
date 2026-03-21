@@ -151,7 +151,7 @@ PY
 
 wait_for_node_ready() {
     local port="$1"
-    local endpoint="tmp=ws://$BIND_ADDR:$port/v2/fs#work"
+    local endpoint="tmp=ws://$BIND_ADDR:$port/fs#work"
     for _ in $(seq 1 120); do
         if run_with_timeout "$FS_CHECK_TIMEOUT_SEC" "$FS_MOUNT_BIN" --endpoint "$endpoint" readdir /tmp >/dev/null 2>&1; then
             return 0
@@ -180,8 +180,8 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<EOF
   },
   "runtime": {
     "default_agent_id": "default",
-    "ltm_directory": "$LTM_DIR",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$LTM_DIR",
+    "state_db_filename": "runtime-state.db",
     "spider_web_root": "$SPIDER_WEB_ROOT"
   }
 }
@@ -228,13 +228,13 @@ log_pass "node endpoints are ready"
 
 INVITE_A="$(control_call node_invite_create)"
 INVITE_A_TOKEN="$(json_query "$INVITE_A" "payload.invite_token")"
-JOIN_A_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-a","fs_url":"ws://%s:%s/v2/fs"}' "$INVITE_A_TOKEN" "$BIND_ADDR" "$NODE1_PORT")"
+JOIN_A_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-a","fs_url":"ws://%s:%s/fs"}' "$INVITE_A_TOKEN" "$BIND_ADDR" "$NODE1_PORT")"
 JOIN_A="$(control_call node_join "$JOIN_A_PAYLOAD")"
 NODE_A_ID="$(json_query "$JOIN_A" "payload.node_id")"
 
 INVITE_B="$(control_call node_invite_create)"
 INVITE_B_TOKEN="$(json_query "$INVITE_B" "payload.invite_token")"
-JOIN_B_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-b","fs_url":"ws://%s:%s/v2/fs"}' "$INVITE_B_TOKEN" "$BIND_ADDR" "$NODE2_PORT")"
+JOIN_B_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-b","fs_url":"ws://%s:%s/fs"}' "$INVITE_B_TOKEN" "$BIND_ADDR" "$NODE2_PORT")"
 JOIN_B="$(control_call node_join "$JOIN_B_PAYLOAD")"
 NODE_B_ID="$(json_query "$JOIN_B" "payload.node_id")"
 

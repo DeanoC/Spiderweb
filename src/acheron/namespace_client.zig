@@ -265,8 +265,8 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(payload);
 
         return self.controlRequestPayloadWithReconnect(
-            "control.mount_attach_v2",
-            "control.mount_attach_v2",
+            "control.mount_attach",
+            "control.mount_attach",
             payload,
         );
     }
@@ -283,8 +283,8 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(payload);
 
         return self.controlRequestPayloadWithReconnect(
-            "control.mount_file_read_v2",
-            "control.mount_file_read_v2",
+            "control.mount_file_read",
+            "control.mount_file_read",
             payload,
         );
     }
@@ -299,8 +299,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         return self.controlRequestPayloadWithReconnect(
-            "control.mount_path_readlink_v2",
-            "control.mount_path_readlink_v2",
+            "control.mount_path_readlink",
+            "control.mount_path_readlink",
             payload,
         );
     }
@@ -311,8 +311,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_mkdir_v2",
-            "control.mount_path_mkdir_v2",
+            "control.mount_path_mkdir",
+            "control.mount_path_mkdir",
             payload,
         );
         self.allocator.free(response);
@@ -324,8 +324,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_unlink_v2",
-            "control.mount_path_unlink_v2",
+            "control.mount_path_unlink",
+            "control.mount_path_unlink",
             payload,
         );
         self.allocator.free(response);
@@ -337,8 +337,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_rmdir_v2",
-            "control.mount_path_rmdir_v2",
+            "control.mount_path_rmdir",
+            "control.mount_path_rmdir",
             payload,
         );
         self.allocator.free(response);
@@ -356,8 +356,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_rename_v2",
-            "control.mount_path_rename_v2",
+            "control.mount_path_rename",
+            "control.mount_path_rename",
             payload,
         );
         self.allocator.free(response);
@@ -375,8 +375,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_symlink_v2",
-            "control.mount_path_symlink_v2",
+            "control.mount_path_symlink",
+            "control.mount_path_symlink",
             payload,
         );
         self.allocator.free(response);
@@ -396,8 +396,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_setxattr_v2",
-            "control.mount_path_setxattr_v2",
+            "control.mount_path_setxattr",
+            "control.mount_path_setxattr",
             payload,
         );
         self.allocator.free(response);
@@ -415,8 +415,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_getxattr_v2",
-            "control.mount_path_getxattr_v2",
+            "control.mount_path_getxattr",
+            "control.mount_path_getxattr",
             payload,
         );
         defer self.allocator.free(response);
@@ -429,8 +429,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_listxattr_v2",
-            "control.mount_path_listxattr_v2",
+            "control.mount_path_listxattr",
+            "control.mount_path_listxattr",
             payload,
         );
         defer self.allocator.free(response);
@@ -449,8 +449,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_removexattr_v2",
-            "control.mount_path_removexattr_v2",
+            "control.mount_path_removexattr",
+            "control.mount_path_removexattr",
             payload,
         );
         self.allocator.free(response);
@@ -468,8 +468,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_lock_v2",
-            "control.mount_path_lock_v2",
+            "control.mount_path_lock",
+            "control.mount_path_lock",
             payload,
         );
         self.allocator.free(response);
@@ -508,8 +508,8 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(payload);
 
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_setattr_v2",
-            "control.mount_path_setattr_v2",
+            "control.mount_path_setattr",
+            "control.mount_path_setattr",
             payload,
         );
         self.allocator.free(response);
@@ -542,8 +542,8 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(payload);
 
         const payload_json = try self.controlRequestPayloadWithReconnect(
-            "control.mount_file_write_v2",
-            "control.mount_file_write_v2",
+            "control.mount_file_write",
+            "control.mount_file_write",
             payload,
         );
         defer self.allocator.free(payload_json);
@@ -899,7 +899,7 @@ pub const NamespaceClient = struct {
     fn negotiateControlVersion(self: *NamespaceClient) !void {
         const request_id = try self.nextControlRequestId();
         defer self.allocator.free(request_id);
-        try self.writeControlRequest("control.version", request_id, "{\"protocol\":\"unified-v2\"}");
+        try self.writeControlRequest("control.version", request_id, "{\"protocol\":\"spiderweb-control\"}");
         const payload_json = try readControlPayloadFor(self, request_id, "control.version_ack");
         self.allocator.free(payload_json);
     }
@@ -1836,7 +1836,7 @@ test "namespace_client: parseConnectInfo preserves workspace payload and mount p
     const allocator = std.testing.allocator;
     var info = try parseConnectInfo(
         allocator,
-        "{\"agent_id\":\"agent-a\",\"project_id\":\"proj-a\",\"session\":\"sess-a\",\"requires_session_attach\":true,\"workspace\":{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}]}}",
+        "{\"agent_id\":\"agent-a\",\"project_id\":\"proj-a\",\"session\":\"sess-a\",\"requires_session_attach\":true,\"workspace\":{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}]}}",
     );
     defer info.deinit(allocator);
 

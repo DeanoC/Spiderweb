@@ -14,7 +14,7 @@ All notable changes to this project are documented in this file.
 - Dropped stale `sandbox_enabled` gating and old `mount_*_v2` namespace control branches that no longer match the current workspace-first model.
 - Updated the pinned `zwasm` branch and local wrapper so the full `zig build` succeeds on Windows.
 ### Remote Connectivity and Packaging
-- Fixed remote workspace status and mount graph endpoint URLs so routed `/v2/fs` operations no longer leak `127.0.0.1` to other machines.
+- Fixed remote workspace status and mount graph endpoint URLs so routed `/fs` operations no longer leak `127.0.0.1` to other machines.
 - Defaulted new and upgraded installs to LAN-reachable server binds and surfaced that reachability clearly in the macOS app.
 - Kept the macOS packaged filesystem repair path self-contained so installed builds do not depend on a local Xcode checkout.
 
@@ -58,7 +58,7 @@ All notable changes to this project are documented in this file.
 - Added project-scoped topology delta push events (`control.workspace_topology_delta`) in addition to full refresh events (`control.workspace_topology`).
 
 ### Filesystem Routing and Auth
-- Added optional FS session auth on `/v2/fs` via `auth_token` in `acheron.t_fs_hello`.
+- Added optional FS session auth on `/fs` via `auth_token` in `acheron.t_fs_hello`.
 - Added `spiderweb-fs-node --auth-token` and `SPIDERWEB_FS_NODE_AUTH_TOKEN` for auth enforcement on standalone nodes.
 - Router now propagates per-endpoint auth token during HELLO negotiation (initial + health probes + event pumps).
 
@@ -77,5 +77,5 @@ All notable changes to this project are documented in this file.
 - Added long-running soak/chaos harness: `test-distributed-soak-chaos.sh`.
 
 ### Docs
-- Updated migration guidance in `docs/protocols/unified-v2-fs-migration.md`.
+- Updated migration guidance in `docs/protocols/spiderweb-fs-migration.md`.
 - Updated `README.md` and `test-env/README.md` for auth, metrics, health, and new test targets.

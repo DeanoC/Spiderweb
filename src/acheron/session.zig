@@ -519,7 +519,6 @@ pub const Session = struct {
     active_project_venoms_index_id: u32 = 0,
     node_venom_events_log_id: u32 = 0,
     event_next_id: u32 = 0,
-    debug_stream_log_id: u32 = 0,
     pairing_pending_id: u32 = 0,
     pairing_last_result_id: u32 = 0,
     pairing_last_error_id: u32 = 0,
@@ -861,123 +860,14 @@ pub const Session = struct {
     }
 
     fn shouldEmitRuntimeDebugFrames(self: *const Session) bool {
-        return self.debug_stream_log_id != 0;
+        _ = self;
+        return false;
     }
 
     fn recordRuntimeFrameForDebug(self: *Session, request_id: []const u8, frame: []const u8) !void {
-        if (!self.shouldEmitRuntimeDebugFrames()) return;
-        const debug_frame = try self.normalizeRuntimeFrameToDebugEvent(request_id, frame);
-        defer self.allocator.free(debug_frame);
-
-        try self.appendDebugStreamLogLine(debug_frame);
-    }
-
-    fn normalizeRuntimeFrameToDebugEvent(self: *Session, request_id: []const u8, frame: []const u8) ![]u8 {
-        if (std.mem.indexOf(u8, frame, "\"type\":\"debug.event\"") != null) {
-            return self.allocator.dupe(u8, frame);
-        }
-
-        const escaped_request_id = try unified.jsonEscape(self.allocator, request_id);
-        defer self.allocator.free(escaped_request_id);
-
-        const frame_type_json = blk: {
-            var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, frame, .{}) catch {
-                break :blk try self.allocator.dupe(u8, "null");
-            };
-            defer parsed.deinit();
-            if (parsed.value != .object) break :blk try self.allocator.dupe(u8, "null");
-            const type_value = parsed.value.object.get("type") orelse break :blk try self.allocator.dupe(u8, "null");
-            if (type_value != .string) break :blk try self.allocator.dupe(u8, "null");
-            const escaped_type = try unified.jsonEscape(self.allocator, type_value.string);
-            defer self.allocator.free(escaped_type);
-            break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped_type});
-        };
-        defer self.allocator.free(frame_type_json);
-
-        const payload_json = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"request_id\":\"{s}\",\"frame_type\":{s},\"frame\":{s}}}",
-            .{ escaped_request_id, frame_type_json, frame },
-        );
-        defer self.allocator.free(payload_json);
-
-        return protocol.buildDebugEvent(
-            self.allocator,
-            request_id,
-            "runtime.frame",
-            payload_json,
-        );
-    }
-
-    fn appendDebugStreamLogLine(self: *Session, line: []const u8) !void {
-        if (self.control_plane) |plane| {
-            plane.appendDebugStreamEvent(self.agent_id, line);
-        }
-        if (self.debug_stream_log_id == 0) return;
-        const node_ptr = self.nodes.getPtr(self.debug_stream_log_id) orelse return;
-        if (node_ptr.kind != .file) return;
-
-        var merged = std.ArrayListUnmanaged(u8){};
-        defer merged.deinit(self.allocator);
-        if (node_ptr.content.len > 0) {
-            try merged.appendSlice(self.allocator, node_ptr.content);
-            try merged.append(self.allocator, '\n');
-        }
-        try merged.appendSlice(self.allocator, line);
-
-        const tail = if (merged.items.len <= debug_stream_log_max_bytes) blk: {
-            break :blk merged.items;
-        } else blk: {
-            var start = merged.items.len - debug_stream_log_max_bytes;
-            if (start > 0) {
-                if (std.mem.indexOfScalarPos(u8, merged.items, start, '\n')) |nl| {
-                    start = nl + 1;
-                }
-            }
-            break :blk merged.items[start..];
-        };
-
-        const next = try self.allocator.dupe(u8, tail);
-        self.allocator.free(node_ptr.content);
-        node_ptr.content = next;
-    }
-
-    fn appendDebugEventsFromLogText(
-        allocator: std.mem.Allocator,
-        plane: *control_plane_mod.ControlPlane,
-        agent_id: []const u8,
-        log_text: []const u8,
-    ) anyerror!void {
-        var cursor: usize = 0;
-        while (cursor < log_text.len) {
-            const line_end = std.mem.indexOfScalarPos(u8, log_text, cursor, '\n') orelse log_text.len;
-            const line = std.mem.trim(u8, log_text[cursor..line_end], " \t\r\n");
-            if (line.len > 0 and line[0] == '{') {
-                var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
-                    cursor = if (line_end < log_text.len) line_end + 1 else line_end;
-                    continue;
-                };
-                defer parsed.deinit();
-                if (parsed.value == .object) {
-                    const type_value = parsed.value.object.get("type") orelse {
-                        cursor = if (line_end < log_text.len) line_end + 1 else line_end;
-                        continue;
-                    };
-                    if (type_value == .string and std.mem.eql(u8, type_value.string, "debug.event")) {
-                        plane.appendDebugStreamEvent(agent_id, line);
-                    }
-                }
-            }
-            cursor = if (line_end < log_text.len) line_end + 1 else line_end;
-        }
-    }
-
-    fn syncDebugStreamLogFromControlPlane(self: *Session) !void {
-        if (self.debug_stream_log_id == 0) return;
-        const plane = self.control_plane orelse return;
-        const snapshot = try plane.snapshotDebugStream(self.allocator, self.agent_id);
-        defer self.allocator.free(snapshot);
-        try self.setFileContent(self.debug_stream_log_id, snapshot);
+        _ = self;
+        _ = request_id;
+        _ = frame;
     }
 
     fn syncNodeVenomEventsLogFromControlPlane(self: *Session) !void {
@@ -1043,7 +933,7 @@ pub const Session = struct {
         const services_visible = self.lookupChild(self.root_id, "services") != null;
         const payload = try std.fmt.allocPrint(
             self.allocator,
-            "{{\"qid\":{{\"path\":{d},\"type\":\"dir\"}},\"layout\":\"unified-v2-fs\",\"project_id\":{s},\"roots\":[\"nodes\",\"agents\",\"global\"{s}{s}],\"dynamic_bind_paths\":{s},\"bind_count\":{d}}}",
+            "{{\"qid\":{{\"path\":{d},\"type\":\"dir\"}},\"layout\":\"spiderweb-fs\",\"project_id\":{s},\"roots\":[\"nodes\",\"agents\",\"global\"{s}{s}],\"dynamic_bind_paths\":{s},\"bind_count\":{d}}}",
             .{
                 self.root_id,
                 project_id_json,
@@ -1153,9 +1043,6 @@ pub const Session = struct {
                 }
                 if (offset == 0 and !used_bound_proxy) {
                     _ = try self.syncLocalFsFileNode(state.node_id);
-                    if (state.node_id == self.debug_stream_log_id) {
-                        try self.syncDebugStreamLogFromControlPlane();
-                    }
                     switch (node.special) {
                         .agent_venoms_index => {
                             try self.refreshScopedVenomIndexes();
@@ -1716,11 +1603,10 @@ pub const Session = struct {
             try self.addDirectoryDescriptors(
                 dir_id,
                 "Debug",
-                "{\"kind\":\"debug\",\"entries\":[\"README.md\",\"stream.log\",\"pairing\"]}",
+                "{\"kind\":\"debug\",\"entries\":[\"README.md\",\"pairing\"]}",
                 "{\"read\":true,\"write\":false}",
                 "Privileged debug surface.",
             );
-            self.debug_stream_log_id = try self.addFile(dir_id, "stream.log", "", false, .none);
             try self.addDebugPairingSurface(dir_id);
         }
 
@@ -9450,7 +9336,7 @@ pub const Session = struct {
         const namespace_url = parseWsUrlParts(namespace_mount_url) orelse return null;
         const routed = try std.fmt.allocPrint(
             self.allocator,
-            "{s}://{s}/v2/fs/node/{s}",
+            "{s}://{s}/fs/node/{s}",
             .{ namespace_url.scheme, namespace_url.authority, node_id },
         );
         return routed;
@@ -9573,19 +9459,19 @@ pub const Session = struct {
         const allocator = std.testing.allocator;
         const rewritten = try rewriteLocalOnlyWsUrlToNamespaceAuthority(
             allocator,
-            "ws://127.0.0.1:18790/v2/fs",
+            "ws://127.0.0.1:18790/fs",
             "ws://192.168.10.101:18790/",
         );
         defer allocator.free(rewritten);
-        try std.testing.expectEqualStrings("ws://192.168.10.101:18790/v2/fs", rewritten);
+        try std.testing.expectEqualStrings("ws://192.168.10.101:18790/fs", rewritten);
 
         const preserved = try rewriteLocalOnlyWsUrlToNamespaceAuthority(
             allocator,
-            "ws://edge-box.local:18790/v2/fs",
+            "ws://edge-box.local:18790/fs",
             "ws://192.168.10.101:18790/",
         );
         defer allocator.free(preserved);
-        try std.testing.expectEqualStrings("ws://edge-box.local:18790/v2/fs", preserved);
+        try std.testing.expectEqualStrings("ws://edge-box.local:18790/fs", preserved);
     }
 
     test "acheron_session: buildNamespaceRoutedNodeFsUrl uses namespace authority for node routes" {
@@ -9612,7 +9498,7 @@ pub const Session = struct {
 
         const routed = (try session.buildNamespaceRoutedNodeFsUrl("node-3")) orelse return error.TestExpectedResponse;
         defer allocator.free(routed);
-        try std.testing.expectEqualStrings("wss://namespace.example.test:4443/v2/fs/node/node-3", routed);
+        try std.testing.expectEqualStrings("wss://namespace.example.test:4443/fs/node/node-3", routed);
     }
 
     fn appendMountGraphAncestorChain(
@@ -12278,7 +12164,7 @@ test "acheron_session: workspace mount aliases project live mounts into the name
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -12376,7 +12262,7 @@ test "acheron_session: workspace bind overrides the host local fs path" {
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28892/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28892/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -12442,7 +12328,7 @@ test "acheron_session: admin namespace sessions retain workspace mount auth toke
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -12492,7 +12378,7 @@ test "acheron_session: admin namespace sessions retain workspace mount auth toke
     defer router.deinit();
     const status_json = try router.statusJson(false);
     defer allocator.free(status_json);
-    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:28893/v2/fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:28893/fs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status_json, "\"export\":\"shared\"") != null);
 }
 
@@ -12502,7 +12388,7 @@ test "acheron_session: mounted workspace proxy routers prefer routed Spiderweb n
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -12553,7 +12439,7 @@ test "acheron_session: mounted workspace proxy routers prefer routed Spiderweb n
     defer router.deinit();
     const status_json = try router.statusJson(false);
     defer allocator.free(status_json);
-    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:18790/v2/fs/node/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:18790/fs/node/") != null);
     try std.testing.expect(std.mem.indexOf(u8, status_json, "\"export\":\"shared\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status_json, "\"has_auth\":true") != null);
 }
@@ -12564,7 +12450,7 @@ test "acheron_session: server-internal mounted export routers prefer direct node
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -12612,7 +12498,7 @@ test "acheron_session: server-internal mounted export routers prefer direct node
     defer router.deinit();
     const status_json = try router.statusJson(false);
     defer allocator.free(status_json);
-    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:28893/v2/fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:28893/fs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status_json, "\"export\":\"shared\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status_json, "\"has_auth\":true") != null);
 }
@@ -12632,7 +12518,7 @@ test "acheron_session: workspace mount aliases still apply when the namespace pa
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28894/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28894/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -12803,7 +12689,7 @@ test "acheron_session: mount graph snapshots resolve projected workspace mount r
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -12924,7 +12810,7 @@ test "acheron_session: mount graph export roots preserve source writability" {
     defer session.deinit();
 
     const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
-        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"node-2\",\"export_name\":\"workspace\",\"fs_url\":\"ws://127.0.0.1:1/v2/fs/node/node-2\"},{\"mount_path\":\"/shared_data\",\"node_id\":\"node-3\",\"export_name\":\"shared\",\"fs_url\":\"ws://127.0.0.1:1/v2/fs/node/node-3\"}]}",
+        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"node-2\",\"export_name\":\"workspace\",\"fs_url\":\"ws://127.0.0.1:1/fs/node/node-2\"},{\"mount_path\":\"/shared_data\",\"node_id\":\"node-3\",\"export_name\":\"shared\",\"fs_url\":\"ws://127.0.0.1:1/fs/node/node-3\"}]}",
         "mount-test",
         "/",
         2,
@@ -12979,7 +12865,7 @@ test "acheron_session: mount graph snapshots honor workspace bind overrides for 
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -13088,7 +12974,7 @@ test "acheron_session: projected workspace .spiderweb snapshot keeps protocol fi
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -13180,7 +13066,7 @@ test "acheron_session: projected managed .spiderweb survives broader workspace m
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -13278,7 +13164,7 @@ test "acheron_session: projected managed services keep bind-only children under 
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -13355,7 +13241,7 @@ test "acheron_session: workspace mount proxy roots preserve mounted export names
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -13777,7 +13663,7 @@ test "acheron_session: projected workspace managed files remain readable through
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -13898,7 +13784,7 @@ test "acheron_session: projected managed shared_data snapshot preserves proxy at
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();
@@ -14001,7 +13887,7 @@ test "acheron_session: rebound workspace parents can walk projected managed shar
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/fs", 60_000);
     defer allocator.free(remote_joined);
     var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
     defer remote_parsed.deinit();

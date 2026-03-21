@@ -53,9 +53,9 @@ const node_venom_event_history_max_env = "SPIDERWEB_NODE_VENOM_EVENT_HISTORY_MAX
 const node_venom_event_log_rotate_max_bytes_env = "SPIDERWEB_NODE_VENOM_EVENT_LOG_ROTATE_MAX_BYTES";
 const node_venom_event_log_archive_keep_env = "SPIDERWEB_NODE_VENOM_EVENT_LOG_ARCHIVE_KEEP";
 const metrics_port_env = "SPIDERWEB_METRICS_PORT";
-const control_protocol_version = "unified-v2";
+const control_protocol_version = "spiderweb-control";
 const acheron_runtime_protocol_version = "acheron-1";
-const acheron_node_protocol_version = "unified-v2-fs";
+const acheron_node_protocol_version = "spiderweb-fs";
 const acheron_node_proto_id: i64 = 2;
 const node_tunnel_reply_timeout_ms: i32 = 45_000;
 const venom_presence_dispatch_queue_max: usize = 256;
@@ -88,9 +88,9 @@ const DebugStreamFileSink = struct {
 
     fn init(allocator: std.mem.Allocator, runtime_config: Config.RuntimeConfig) DebugStreamFileSink {
         var sink = DebugStreamFileSink{ .allocator = allocator };
-        if (runtime_config.ltm_directory.len == 0) return sink;
+        if (runtime_config.state_directory.len == 0) return sink;
 
-        const path = sink.initPath(runtime_config.ltm_directory) catch |err| {
+        const path = sink.initPath(runtime_config.state_directory) catch |err| {
             std.log.warn("Debug stream file logging disabled: {s}", .{@errorName(err)});
             return sink;
         };
@@ -124,9 +124,9 @@ const DebugStreamFileSink = struct {
         };
     }
 
-    fn initPath(self: *DebugStreamFileSink, ltm_directory: []const u8) ![]u8 {
-        try ensureDirectoryExists(ltm_directory);
-        return std.fs.path.join(self.allocator, &.{ ltm_directory, debug_stream_log_filename });
+    fn initPath(self: *DebugStreamFileSink, state_directory: []const u8) ![]u8 {
+        try ensureDirectoryExists(state_directory);
+        return std.fs.path.join(self.allocator, &.{ state_directory, debug_stream_log_filename });
     }
 
     fn touch(self: *DebugStreamFileSink) !void {
@@ -530,11 +530,11 @@ fn formatInternalWsUrl(
 fn derivePublicFsUrl(allocator: std.mem.Allocator, public_base_url: []const u8) ![]u8 {
     const trimmed = std.mem.trim(u8, public_base_url, " \t\r\n");
     if (trimmed.len == 0) return error.InvalidArguments;
-    if (std.mem.endsWith(u8, trimmed, "/v2/fs")) {
+    if (std.mem.endsWith(u8, trimmed, "/fs")) {
         return allocator.dupe(u8, trimmed);
     }
     const without_trailing = std.mem.trimRight(u8, trimmed, "/");
-    return std.fmt.allocPrint(allocator, "{s}/v2/fs", .{without_trailing});
+    return std.fmt.allocPrint(allocator, "{s}/fs", .{without_trailing});
 }
 
 fn deriveConnectionWorkspaceUrl(
@@ -673,13 +673,13 @@ test "server: rewriteWorkspaceStatusFsUrls rewrites local-only mount endpoints t
     const allocator = std.testing.allocator;
     const rewritten = try rewriteWorkspaceStatusFsUrls(
         allocator,
-        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18790/v2/fs\"}],\"desired_mounts\":[{\"mount_path\":\"/meta\",\"fs_url\":\"ws://127.0.0.1:18790/v2/fs\"}],\"actual_mounts\":[{\"mount_path\":\"/agents\",\"fs_url\":\"ws://127.0.0.1:18790/v2/fs\"}]}",
+        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18790/fs\"}],\"desired_mounts\":[{\"mount_path\":\"/meta\",\"fs_url\":\"ws://127.0.0.1:18790/fs\"}],\"actual_mounts\":[{\"mount_path\":\"/agents\",\"fs_url\":\"ws://127.0.0.1:18790/fs\"}]}",
         "ws://192.168.10.101:18790/",
     );
     defer allocator.free(rewritten);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"fs_url\":\"ws://192.168.10.101:18790/v2/fs\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"desired_mounts\":[{\"mount_path\":\"/meta\",\"fs_url\":\"ws://192.168.10.101:18790/v2/fs\"}]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"actual_mounts\":[{\"mount_path\":\"/agents\",\"fs_url\":\"ws://192.168.10.101:18790/v2/fs\"}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"fs_url\":\"ws://192.168.10.101:18790/fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"desired_mounts\":[{\"mount_path\":\"/meta\",\"fs_url\":\"ws://192.168.10.101:18790/fs\"}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"actual_mounts\":[{\"mount_path\":\"/agents\",\"fs_url\":\"ws://192.168.10.101:18790/fs\"}]") != null);
 }
 
 test "server: trustedNamespaceMountUrl ignores connection authority" {
@@ -849,9 +849,9 @@ fn parseOptionalEnvOwned(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
 
 fn initNodeVenomEventLogPath(
     allocator: std.mem.Allocator,
-    ltm_directory: []const u8,
+    state_directory: []const u8,
 ) !?[]u8 {
-    const base = std.mem.trim(u8, ltm_directory, " \t\r\n");
+    const base = std.mem.trim(u8, state_directory, " \t\r\n");
     if (base.len == 0) return null;
     try ensureDirectoryExists(base);
     const path = try std.fs.path.join(allocator, &.{ base, node_venom_event_log_filename });
@@ -1510,7 +1510,7 @@ fn handleNodeTunnelConnection(
                         try writeFrameLocked(stream, &connection_write_mutex, "", .close);
                         return;
                     };
-                    const ack_payload = "{\"protocol\":\"unified-v2-fs\",\"proto\":2}";
+                    const ack_payload = "{\"protocol\":\"spiderweb-fs\",\"proto\":2}";
                     const response = try unified.buildFsrpcResponse(
                         allocator,
                         .fs_r_hello,
@@ -1781,7 +1781,7 @@ fn isNodeTunnelPath(path: []const u8) bool {
 
 fn parseNodeFsRoute(path: []const u8) ?[]const u8 {
     const normalized = stripWsPathQuery(path);
-    const prefix = "/v2/fs/node/";
+    const prefix = "/fs/node/";
     if (!std.mem.startsWith(u8, normalized, prefix)) return null;
     const node_id = normalized[prefix.len..];
     if (!isValidNodeIdentifier(node_id)) return null;
@@ -2394,7 +2394,7 @@ const AuthTokenStore = struct {
     }
 
     fn loadOrGenerate(self: *AuthTokenStore, runtime_config: Config.RuntimeConfig) void {
-        const base_dir = std.mem.trim(u8, runtime_config.ltm_directory, " \t\r\n");
+        const base_dir = std.mem.trim(u8, runtime_config.state_directory, " \t\r\n");
         const storage_dir = if (base_dir.len == 0) "." else base_dir;
         ensureDirectoryExists(storage_dir) catch {};
         self.path = std.fs.path.join(self.allocator, &.{ storage_dir, auth_tokens_filename }) catch null;
@@ -2726,7 +2726,6 @@ const AgentRuntimeRegistry = struct {
     runtime_config: Config.RuntimeConfig,
     default_agent_id: []const u8,
     max_runtimes: usize,
-    debug_stream_sink: DebugStreamFileSink,
     control_plane: control_plane_mod.ControlPlane,
     auth_tokens: AuthTokenStore,
     missions: mission_store_mod.MissionStore,
@@ -2808,7 +2807,6 @@ const AgentRuntimeRegistry = struct {
                 effective_default = allocator.dupe(u8, agent.id) catch @panic("OOM");
             }
         }
-        const debug_stream_sink = DebugStreamFileSink.init(allocator, runtime_config);
         const operator_token = parseOptionalEnvOwned(allocator, control_operator_token_env);
         const project_scope_token = parseOptionalEnvOwned(allocator, control_project_scope_token_env);
         const node_scope_token = parseOptionalEnvOwned(allocator, control_node_scope_token_env);
@@ -2838,7 +2836,7 @@ const AgentRuntimeRegistry = struct {
             8,
         );
         const event_archive_keep: usize = @intCast(@min(event_archive_keep_raw, 64));
-        const event_log_path = initNodeVenomEventLogPath(allocator, runtime_config.ltm_directory) catch |err| blk: {
+        const event_log_path = initNodeVenomEventLogPath(allocator, runtime_config.state_directory) catch |err| blk: {
             std.log.warn("node service event persistence disabled: {s}", .{@errorName(err)});
             break :blk null;
         };
@@ -2852,11 +2850,10 @@ const AgentRuntimeRegistry = struct {
             .runtime_config = runtime_config,
             .default_agent_id = effective_default,
             .max_runtimes = if (max_runtimes == 0) 1 else max_runtimes,
-            .debug_stream_sink = debug_stream_sink,
             .control_plane = control_plane_mod.ControlPlane.initWithPersistenceOptions(
                 allocator,
-                runtime_config.ltm_directory,
-                runtime_config.ltm_filename,
+                runtime_config.state_directory,
+                runtime_config.state_db_filename,
                 .{
                     .primary_agent_id = system_agent_id,
                     .spider_web_root = runtime_config.spider_web_root,
@@ -2979,7 +2976,6 @@ const AgentRuntimeRegistry = struct {
         self.next_audit_record_id = 1;
         self.audit_records_mutex.unlock();
         self.control_plane.deinit();
-        self.debug_stream_sink.deinit();
         self.auth_tokens.deinit();
         self.missions.deinit();
         self.allocator.free(self.default_agent_id);
@@ -4336,8 +4332,9 @@ const AgentRuntimeRegistry = struct {
     }
 
     fn maybeLogDebugFrame(self: *AgentRuntimeRegistry, agent_id: []const u8, payload: []const u8) void {
-        self.debug_stream_sink.append(agent_id, payload);
-        self.control_plane.appendDebugStreamEvent(agent_id, payload);
+        _ = self;
+        _ = agent_id;
+        _ = payload;
     }
 
     fn appendAuditRecordName(
@@ -4876,7 +4873,7 @@ const LocalNodeSupervisor = struct {
         const supervisor = try allocator.create(LocalNodeSupervisor);
         errdefer allocator.destroy(supervisor);
 
-        const state_dir = try std.fs.path.join(allocator, &.{ runtime_config.ltm_directory, local_node_supervisor_dirname });
+        const state_dir = try std.fs.path.join(allocator, &.{ runtime_config.state_directory, local_node_supervisor_dirname });
         errdefer allocator.free(state_dir);
         const state_path = try std.fs.path.join(allocator, &.{ state_dir, local_node_state_filename });
         errdefer allocator.free(state_path);
@@ -5397,12 +5394,12 @@ fn handleWebSocketConnection(
     );
     defer if (connection_workspace_url) |value| allocator.free(value);
 
-    if (std.mem.eql(u8, handshake.path, "/v2/fs")) {
+    if (std.mem.eql(u8, handshake.path, "/fs")) {
         try sendWebSocketErrorAndClose(
             allocator,
             stream,
             .invalid_envelope,
-            "embedded /v2/fs endpoint was removed; use the local node fs_url or /v2/fs/node/<node_id>",
+            "embedded /fs endpoint was removed; use the local node fs_url or /fs/node/<node_id>",
         );
         return;
     }
@@ -6304,7 +6301,7 @@ fn handleWebSocketConnection(
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_attach_v2 => {
+                            .mount_attach => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountAttachControl(
                                     allocator,
@@ -6330,7 +6327,7 @@ fn handleWebSocketConnection(
                                 defer allocator.free(payload_json);
                                 const response = try unified.buildControlAck(
                                     allocator,
-                                    .mount_attach_v2,
+                                    .mount_attach,
                                     parsed.id,
                                     payload_json,
                                 );
@@ -6338,7 +6335,7 @@ fn handleWebSocketConnection(
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_file_read_v2 => {
+                            .mount_file_read => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountFileReadControl(
                                     allocator,
@@ -6363,7 +6360,7 @@ fn handleWebSocketConnection(
                                 defer allocator.free(payload_json);
                                 const response = try unified.buildControlAck(
                                     allocator,
-                                    .mount_file_read_v2,
+                                    .mount_file_read,
                                     parsed.id,
                                     payload_json,
                                 );
@@ -6371,7 +6368,7 @@ fn handleWebSocketConnection(
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_file_write_v2 => {
+                            .mount_file_write => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountFileWriteControl(
                                     allocator,
@@ -6396,7 +6393,7 @@ fn handleWebSocketConnection(
                                 defer allocator.free(payload_json);
                                 const response = try unified.buildControlAck(
                                     allocator,
-                                    .mount_file_write_v2,
+                                    .mount_file_write,
                                     parsed.id,
                                     payload_json,
                                 );
@@ -6404,7 +6401,7 @@ fn handleWebSocketConnection(
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_readlink_v2 => {
+                            .mount_path_readlink => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6415,7 +6412,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_readlink_v2,
+                                    .mount_path_readlink,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6428,12 +6425,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_readlink_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_readlink, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_mkdir_v2 => {
+                            .mount_path_mkdir => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6444,7 +6441,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_mkdir_v2,
+                                    .mount_path_mkdir,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6457,12 +6454,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_mkdir_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_mkdir, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_unlink_v2 => {
+                            .mount_path_unlink => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6473,7 +6470,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_unlink_v2,
+                                    .mount_path_unlink,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6486,12 +6483,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_unlink_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_unlink, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_rmdir_v2 => {
+                            .mount_path_rmdir => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6502,7 +6499,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_rmdir_v2,
+                                    .mount_path_rmdir,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6515,12 +6512,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_rmdir_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_rmdir, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_rename_v2 => {
+                            .mount_path_rename => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6531,7 +6528,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_rename_v2,
+                                    .mount_path_rename,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6544,12 +6541,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_rename_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_rename, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_symlink_v2 => {
+                            .mount_path_symlink => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6560,7 +6557,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_symlink_v2,
+                                    .mount_path_symlink,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6573,12 +6570,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_symlink_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_symlink, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_setxattr_v2 => {
+                            .mount_path_setxattr => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6589,7 +6586,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_setxattr_v2,
+                                    .mount_path_setxattr,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6602,12 +6599,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_setxattr_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_setxattr, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_getxattr_v2 => {
+                            .mount_path_getxattr => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6618,7 +6615,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_getxattr_v2,
+                                    .mount_path_getxattr,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6631,12 +6628,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_getxattr_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_getxattr, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_listxattr_v2 => {
+                            .mount_path_listxattr => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6647,7 +6644,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_listxattr_v2,
+                                    .mount_path_listxattr,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6660,12 +6657,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_listxattr_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_listxattr, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_removexattr_v2 => {
+                            .mount_path_removexattr => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6676,7 +6673,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_removexattr_v2,
+                                    .mount_path_removexattr,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6689,12 +6686,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_removexattr_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_removexattr, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_lock_v2 => {
+                            .mount_path_lock => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6705,7 +6702,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_lock_v2,
+                                    .mount_path_lock,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6718,12 +6715,12 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_lock_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_lock, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
-                            .mount_path_setattr_v2 => {
+                            .mount_path_setattr => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const payload_json = handleMountPathControl(
                                     allocator,
@@ -6734,7 +6731,7 @@ fn handleWebSocketConnection(
                                     trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
                                     principal.role == .admin,
                                     parsed.payload_json,
-                                    .mount_path_setattr_v2,
+                                    .mount_path_setattr,
                                 ) catch |err| {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -6747,7 +6744,7 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(allocator, .mount_path_setattr_v2, parsed.id, payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_setattr, parsed.id, payload_json);
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
@@ -7853,7 +7850,7 @@ fn handleMountPathControl(
     );
 
     switch (control_type) {
-        .mount_path_readlink_v2 => {
+        .mount_path_readlink => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             const target = (try session.tryReadlinkLocalFsBackedMountPath(absolute_path)) orelse return error.OperationNotSupported;
             defer allocator.free(target);
@@ -7867,28 +7864,28 @@ fn handleMountPathControl(
                 .{ escaped_path, escaped_target },
             );
         },
-        .mount_path_mkdir_v2 => {
+        .mount_path_mkdir => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             if (!(try session.tryMkdirLocalFsBackedMountPath(absolute_path))) return error.OperationNotSupported;
             const escaped_path = try unified.jsonEscape(allocator, absolute_path);
             defer allocator.free(escaped_path);
             return std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         },
-        .mount_path_unlink_v2 => {
+        .mount_path_unlink => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             if (!(try session.tryUnlinkLocalFsBackedMountPath(absolute_path))) return error.OperationNotSupported;
             const escaped_path = try unified.jsonEscape(allocator, absolute_path);
             defer allocator.free(escaped_path);
             return std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         },
-        .mount_path_rmdir_v2 => {
+        .mount_path_rmdir => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             if (!(try session.tryRmdirLocalFsBackedMountPath(absolute_path))) return error.OperationNotSupported;
             const escaped_path = try unified.jsonEscape(allocator, absolute_path);
             defer allocator.free(escaped_path);
             return std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         },
-        .mount_path_rename_v2 => {
+        .mount_path_rename => {
             const old_path = try getRequiredStringField(payload.value.object, "old_path");
             const new_path = try getRequiredStringField(payload.value.object, "new_path");
             if (!(try session.tryRenameLocalFsBackedMountPath(old_path, new_path))) return error.OperationNotSupported;
@@ -7902,7 +7899,7 @@ fn handleMountPathControl(
                 .{ escaped_old_path, escaped_new_path },
             );
         },
-        .mount_path_symlink_v2 => {
+        .mount_path_symlink => {
             const target = try getRequiredStringField(payload.value.object, "target");
             const link_path = try getRequiredStringField(payload.value.object, "link_path");
             if (!(try session.trySymlinkLocalFsBackedMountPath(target, link_path))) return error.OperationNotSupported;
@@ -7916,7 +7913,7 @@ fn handleMountPathControl(
                 .{ escaped_target, escaped_link_path },
             );
         },
-        .mount_path_setxattr_v2 => {
+        .mount_path_setxattr => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             const name = try getRequiredStringField(payload.value.object, "name");
             const value_b64 = try getRequiredStringFieldAllowEmpty(payload.value.object, "value_b64");
@@ -7934,7 +7931,7 @@ fn handleMountPathControl(
                 .{ escaped_path, escaped_name },
             );
         },
-        .mount_path_getxattr_v2 => {
+        .mount_path_getxattr => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             const name = try getRequiredStringField(payload.value.object, "name");
             const value = (try session.tryGetxattrLocalFsBackedMountPath(absolute_path, name)) orelse return error.OperationNotSupported;
@@ -7951,7 +7948,7 @@ fn handleMountPathControl(
                 .{ escaped_path, escaped_name, encoded },
             );
         },
-        .mount_path_listxattr_v2 => {
+        .mount_path_listxattr => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             const names = (try session.tryListxattrLocalFsBackedMountPath(absolute_path)) orelse return error.OperationNotSupported;
             defer allocator.free(names);
@@ -7977,7 +7974,7 @@ fn handleMountPathControl(
             try out.appendSlice(allocator, "]}");
             return out.toOwnedSlice(allocator);
         },
-        .mount_path_removexattr_v2 => {
+        .mount_path_removexattr => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             const name = try getRequiredStringField(payload.value.object, "name");
             if (!(try session.tryRemovexattrLocalFsBackedMountPath(absolute_path, name))) return error.OperationNotSupported;
@@ -7991,7 +7988,7 @@ fn handleMountPathControl(
                 .{ escaped_path, escaped_name },
             );
         },
-        .mount_path_lock_v2 => {
+        .mount_path_lock => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             const mode = try getRequiredStringField(payload.value.object, "mode");
             const wait = getOptionalBoolField(payload.value.object, "wait") orelse true;
@@ -8006,7 +8003,7 @@ fn handleMountPathControl(
                 .{ escaped_path, escaped_mode, if (wait) "true" else "false" },
             );
         },
-        .mount_path_setattr_v2 => {
+        .mount_path_setattr => {
             const absolute_path = try getRequiredStringField(payload.value.object, "path");
             const mode = getOptionalU32Field(payload.value.object, "mode");
             const uid = getOptionalU32Field(payload.value.object, "uid");
@@ -9231,8 +9228,8 @@ fn seedUserRememberedTargetForTests(
 test "server: workspace template control ops expose dev catalog entries" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
 
@@ -9266,8 +9263,8 @@ test "server: workspace template control ops expose dev catalog entries" {
 test "server: workspace bind control ops rewrite workspace payload and response fields" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
 
@@ -9343,8 +9340,8 @@ test "server: workspace bind control ops rewrite workspace payload and response 
 test "server: admin initial binding prefers remembered workspace target" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -9532,7 +9529,7 @@ fn performClientHandshakeWithAuthorization(
 }
 
 fn fsrpcConnectAndAttach(allocator: std.mem.Allocator, client: *std.net.Stream, connect_id: []const u8) !void {
-    try writeClientTextFrameMasked(client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, client);
     defer version_ack.deinit(allocator);
     try std.testing.expectEqual(@as(u8, 0x1), version_ack.opcode);
@@ -9637,8 +9634,8 @@ fn expectWorkspaceScopeSnapshotsEqual(
 test "server: base websocket path handles unified control and rejects legacy runtime channels" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -9705,8 +9702,8 @@ test "server: base websocket path handles unified control and rejects legacy run
 test "server: workspace namespace stays project-scoped across user session agent switches" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -9751,7 +9748,7 @@ test "server: workspace namespace stays project-scoped across user session agent
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "user-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"scope-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"scope-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -9857,8 +9854,8 @@ test "server: control.agent_list and control.agent_get expose registry metadata"
     });
 
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
         .agents_dir = agents_dir,
         .assets_dir = root,
         .default_agent_id = system_agent_id,
@@ -9884,7 +9881,7 @@ test "server: control.agent_list and control.agent_get expose registry metadata"
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"agent-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"agent-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -9943,8 +9940,8 @@ test "server: control.agent_ensure creates missing agents and is idempotent" {
     });
 
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
         .agents_dir = agents_dir,
         .assets_dir = root,
         .default_agent_id = system_agent_id,
@@ -9969,7 +9966,7 @@ test "server: control.agent_ensure creates missing agents and is idempotent" {
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"ensure-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"ensure-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10008,8 +10005,8 @@ test "server: control.agent_ensure creates missing agents and is idempotent" {
 test "server: operator token gate protects control mutations" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10035,7 +10032,7 @@ test "server: operator token gate protects control mutations" {
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"v1\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"v1\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10075,8 +10072,8 @@ test "server: operator token gate protects control mutations" {
 test "server: base websocket rejects legacy acheron runtime session" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10107,13 +10104,13 @@ test "server: base websocket rejects legacy acheron runtime session" {
 test "server: base websocket supports namespace attach after session_attach" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
 
-    const join_payload = try runtime_registry.control_plane.ensureNode("node-a", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const join_payload = try runtime_registry.control_plane.ensureNode("node-a", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(join_payload);
     const node_registration = try parseNodeRegistrationFromJoinPayload(allocator, join_payload);
     defer {
@@ -10154,7 +10151,7 @@ test "server: base websocket supports namespace attach after session_attach" {
     defer client.close();
 
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10204,8 +10201,8 @@ test "server: base websocket supports namespace attach after session_attach" {
 test "server: auth matrix gates admin endpoints and handshake tokens" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10228,7 +10225,7 @@ test "server: auth matrix gates admin endpoints and handshake tokens" {
         defer admin_client.close();
         try performClientHandshakeWithBearerToken(allocator, &admin_client, "/", "admin-secret");
 
-        try writeClientTextFrameMasked(&admin_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"admin-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+        try writeClientTextFrameMasked(&admin_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"admin-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
         var version_ack = try readServerFrame(allocator, &admin_client);
         defer version_ack.deinit(allocator);
         try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10277,7 +10274,7 @@ test "server: auth matrix gates admin endpoints and handshake tokens" {
         defer user_client.close();
         try performClientHandshakeWithBearerToken(allocator, &user_client, "/", "user-secret");
 
-        try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"user-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+        try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"user-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
         var version_ack = try readServerFrame(allocator, &user_client);
         defer version_ack.deinit(allocator);
         try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10365,8 +10362,8 @@ test "server: auth matrix gates admin endpoints and handshake tokens" {
 test "server: user connect advertises provisioning gate when no remembered non-system target exists" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10388,7 +10385,7 @@ test "server: user connect advertises provisioning gate when no remembered non-s
     defer user_client.close();
     try performClientHandshakeWithBearerToken(allocator, &user_client, "/", "user-secret");
 
-    try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"user-avoid-primary-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"user-avoid-primary-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &user_client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10425,8 +10422,8 @@ test "server: user connect advertises provisioning gate when no remembered non-s
 test "server: provisioning gate still allows workspace bootstrap control operations" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10448,7 +10445,7 @@ test "server: provisioning gate still allows workspace bootstrap control operati
     defer admin_client.close();
     try performClientHandshakeWithBearerToken(allocator, &admin_client, "/", "admin-secret");
 
-    try writeClientTextFrameMasked(&admin_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"bootstrap-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&admin_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"bootstrap-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &admin_client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10476,8 +10473,8 @@ test "server: provisioning gate still allows workspace bootstrap control operati
 test "server: user connect requires session_attach even when another project is active" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10527,7 +10524,7 @@ test "server: user connect requires session_attach even when another project is 
     defer user_client.close();
     try performClientHandshakeWithBearerToken(allocator, &user_client, "/", "user-secret");
 
-    try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"user-requires-attach-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"user-requires-attach-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &user_client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10550,8 +10547,8 @@ test "server: user connect requires session_attach even when another project is 
 test "server: connect and session_status expose actor identity metadata" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10573,7 +10570,7 @@ test "server: connect and session_status expose actor identity metadata" {
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "user-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"actor-meta-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"actor-meta-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10607,8 +10604,8 @@ test "server: connect and session_status expose actor identity metadata" {
 test "server: user session_attach forbids actor identity override" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10633,7 +10630,7 @@ test "server: user session_attach forbids actor identity override" {
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "user-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"actor-guard-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"actor-guard-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10681,8 +10678,8 @@ test "server: user session_attach forbids actor identity override" {
 test "server: control.session_history and control.session_restore survive reconnect" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10708,7 +10705,7 @@ test "server: control.session_history and control.session_restore survive reconn
         defer user_client.close();
         try performClientHandshakeWithBearerToken(allocator, &user_client, "/", "user-secret");
 
-        try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"history-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+        try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"history-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
         var version_ack = try readServerFrame(allocator, &user_client);
         defer version_ack.deinit(allocator);
         try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10753,7 +10750,7 @@ test "server: control.session_history and control.session_restore survive reconn
         defer user_client.close();
         try performClientHandshakeWithBearerToken(allocator, &user_client, "/", "user-secret");
 
-        try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"restore-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+        try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"restore-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
         var version_ack = try readServerFrame(allocator, &user_client);
         defer version_ack.deinit(allocator);
         try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10788,8 +10785,8 @@ test "server: control.session_history and control.session_restore survive reconn
 test "server: control.auth_rotate reports storage_error when token persistence fails" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10816,7 +10813,7 @@ test "server: control.auth_rotate reports storage_error when token persistence f
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"rotate-fail-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"rotate-fail-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10850,8 +10847,8 @@ test "server: control.auth_rotate reports storage_error when token persistence f
 test "server: session_attach forbids reserved system agent on non-system workspace" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10884,7 +10881,7 @@ test "server: session_attach forbids reserved system agent on non-system workspa
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"system-agent-guard-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"system-agent-guard-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10919,8 +10916,8 @@ test "server: session_attach forbids reserved system agent on non-system workspa
 test "server: debug subscription control operations are unsupported in acheron-native mode" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -10941,7 +10938,7 @@ test "server: debug subscription control operations are unsupported in acheron-n
     var client = try std.net.tcpConnectToAddress(listener.listen_address);
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"ver\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"ver\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -10972,8 +10969,8 @@ test "server: debug subscription control operations are unsupported in acheron-n
 test "server: base path rejects legacy runtime connections cleanly across reconnects" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -11021,7 +11018,7 @@ test "server: runtime cap does not block repeated base-path reconnects" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.initWithLimits(
         allocator,
-        .{ .ltm_directory = "", .ltm_filename = "" },
+        .{ .state_directory = "", .state_db_filename = "" },
         null,
         1,
     );
@@ -11046,7 +11043,7 @@ test "server: runtime cap does not block repeated base-path reconnects" {
         defer client.close();
         try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
 
-        try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"alpha-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+        try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"alpha-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
         var version_ack = try readServerFrame(allocator, &client);
         defer version_ack.deinit(allocator);
         try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -11070,7 +11067,7 @@ test "server: runtime cap does not block repeated base-path reconnects" {
         defer client.close();
         try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
 
-        try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"beta-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+        try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"beta-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
         var version_ack = try readServerFrame(allocator, &client);
         defer version_ack.deinit(allocator);
         try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -11093,7 +11090,7 @@ test "server: project runtime switches persona when agent changes" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.initWithLimits(
         allocator,
-        .{ .ltm_directory = "", .ltm_filename = "" },
+        .{ .state_directory = "", .state_db_filename = "" },
         null,
         1,
     );
@@ -11128,7 +11125,7 @@ test "server: getOrCreate replaces unhealthy runtime for same agent" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.initWithLimits(
         allocator,
-        .{ .ltm_directory = "", .ltm_filename = "" },
+        .{ .state_directory = "", .state_db_filename = "" },
         null,
         1,
     );
@@ -11157,7 +11154,7 @@ test "server: ready runtime lookup rejects unhealthy binding" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.initWithLimits(
         allocator,
-        .{ .ltm_directory = "", .ltm_filename = "" },
+        .{ .state_directory = "", .state_db_filename = "" },
         null,
         1,
     );
@@ -11185,7 +11182,7 @@ test "server: unhealthy binding drop marks warmup error" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.initWithLimits(
         allocator,
-        .{ .ltm_directory = "", .ltm_filename = "" },
+        .{ .state_directory = "", .state_db_filename = "" },
         null,
         1,
     );
@@ -11224,8 +11221,8 @@ test "server: unhealthy binding drop marks warmup error" {
 test "server: websocket rejects unsupported route version" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
 
@@ -11292,8 +11289,8 @@ test "server: stripHttpRequestTargetQuery removes query string" {
 test "server: metrics include retained node service event telemetry" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
 
@@ -11341,12 +11338,12 @@ test "server: extract node id helper parses valid payload" {
 test "server: user node service visibility is project mounted-node scoped" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
 
-    const join_payload = try runtime_registry.control_plane.ensureNode("node-a", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const join_payload = try runtime_registry.control_plane.ensureNode("node-a", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(join_payload);
     const node_registration = try parseNodeRegistrationFromJoinPayload(allocator, join_payload);
     defer {
@@ -11398,19 +11395,19 @@ test "server: validateFsNodeHelloPayload enforces optional auth_token" {
     const allocator = std.testing.allocator;
     _ = try validateFsNodeHelloPayload(
         allocator,
-        "{\"protocol\":\"unified-v2-fs\",\"proto\":2}",
+        "{\"protocol\":\"spiderweb-fs\",\"proto\":2}",
         null,
     );
     _ = try validateFsNodeHelloPayload(
         allocator,
-        "{\"protocol\":\"unified-v2-fs\",\"proto\":2,\"auth_token\":\"secret\"}",
+        "{\"protocol\":\"spiderweb-fs\",\"proto\":2,\"auth_token\":\"secret\"}",
         "secret",
     );
     try std.testing.expectError(
         error.AuthMissing,
         validateFsNodeHelloPayload(
             allocator,
-            "{\"protocol\":\"unified-v2-fs\",\"proto\":2}",
+            "{\"protocol\":\"spiderweb-fs\",\"proto\":2}",
             "secret",
         ),
     );
@@ -11418,19 +11415,19 @@ test "server: validateFsNodeHelloPayload enforces optional auth_token" {
         error.AuthFailed,
         validateFsNodeHelloPayload(
             allocator,
-            "{\"protocol\":\"unified-v2-fs\",\"proto\":2,\"auth_token\":\"wrong\"}",
+            "{\"protocol\":\"spiderweb-fs\",\"proto\":2,\"auth_token\":\"wrong\"}",
             "secret",
         ),
     );
 }
 
 test "server: node fs route parser extracts node id" {
-    const route = parseNodeFsRoute("/v2/fs/node/node-17") orelse return error.TestExpectedResponse;
+    const route = parseNodeFsRoute("/fs/node/node-17") orelse return error.TestExpectedResponse;
     try std.testing.expectEqualStrings("node-17", route);
-    const route_q = parseNodeFsRoute("/v2/fs/node/node_17?session=a") orelse return error.TestExpectedResponse;
+    const route_q = parseNodeFsRoute("/fs/node/node_17?session=a") orelse return error.TestExpectedResponse;
     try std.testing.expectEqualStrings("node_17", route_q);
-    try std.testing.expect(parseNodeFsRoute("/v2/fs/node/") == null);
-    try std.testing.expect(parseNodeFsRoute("/v2/fs/node/node:bad") == null);
+    try std.testing.expect(parseNodeFsRoute("/fs/node/") == null);
+    try std.testing.expect(parseNodeFsRoute("/fs/node/node:bad") == null);
 }
 
 test "server: rewriteAcheronTag rewrites top-level tag" {
@@ -11557,8 +11554,8 @@ test "server: mountGraphReadIsEof preserves zero-length request semantics away f
 test "server: mount attach and mount file read control operations are supported after session attach" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
@@ -11589,7 +11586,7 @@ test "server: mount attach and mount file read control operations are supported 
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"mount-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"mount-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -11610,16 +11607,16 @@ test "server: mount attach and mount file read control operations are supported 
     defer attach_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"type\":\"control.session_attach\"") != null);
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_attach_v2\",\"id\":\"mount-attach\",\"payload\":{\"path\":\"/\",\"depth\":1}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_attach\",\"id\":\"mount-attach\",\"payload\":{\"path\":\"/\",\"depth\":1}}");
     var mount_attach_ack = try readServerFrame(allocator, &client);
     defer mount_attach_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"type\":\"control.mount_attach_v2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"type\":\"control.mount_attach\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"mount_session_id\":\"mount-v2:spiderweb:fskit\"") != null);
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_file_read_v2\",\"id\":\"mount-read\",\"payload\":{\"path\":\"/meta/protocol.json\",\"offset\":0,\"length\":128}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_file_read\",\"id\":\"mount-read\",\"payload\":{\"path\":\"/meta/protocol.json\",\"offset\":0,\"length\":128}}");
     var mount_read_ack = try readServerFrame(allocator, &client);
     defer mount_read_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"type\":\"control.mount_file_read_v2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"type\":\"control.mount_file_read\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"data_b64\":\"") != null);
 
     try websocket_transport.writeFrame(&client, "", .close);
@@ -11643,14 +11640,14 @@ test "server: mount file read can read projected workspace managed files after s
     defer allocator.free(spiderweb_runtime_root);
 
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .ltm_directory = "",
-        .ltm_filename = "",
+        .state_directory = "",
+        .state_db_filename = "",
         .spider_web_root = spiderweb_runtime_root,
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
 
-    const join_payload = try runtime_registry.control_plane.ensureNode("workspace-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    const join_payload = try runtime_registry.control_plane.ensureNode("workspace-node", "ws://127.0.0.1:18891/fs", 60_000);
     defer allocator.free(join_payload);
     const node_registration = try parseNodeRegistrationFromJoinPayload(allocator, join_payload);
     defer {
@@ -11662,7 +11659,7 @@ test "server: mount file read can read projected workspace managed files after s
         "mount-agent",
         try std.fmt.allocPrint(
             allocator,
-            "{{\"name\":\"ProjectedManagedRead\",\"vision\":\"Projected managed files must stay readable over control.mount_file_read_v2\",\"activate\":false,\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+            "{{\"name\":\"ProjectedManagedRead\",\"vision\":\"Projected managed files must stay readable over control.mount_file_read\",\"activate\":false,\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
             .{node_registration.node_id},
         ),
         true,
@@ -11688,7 +11685,7 @@ test "server: mount file read can read projected workspace managed files after s
     defer client.close();
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"projected-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"projected-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
     var version_ack = try readServerFrame(allocator, &client);
     defer version_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
@@ -11709,15 +11706,15 @@ test "server: mount file read can read projected workspace managed files after s
     defer attach_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"type\":\"control.session_attach\"") != null);
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_attach_v2\",\"id\":\"projected-mount-attach\",\"payload\":{\"path\":\"/nodes/local/fs/.spiderweb\",\"depth\":2}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_attach\",\"id\":\"projected-mount-attach\",\"payload\":{\"path\":\"/nodes/local/fs/.spiderweb\",\"depth\":2}}");
     var mount_attach_ack = try readServerFrame(allocator, &client);
     defer mount_attach_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"type\":\"control.mount_attach_v2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"type\":\"control.mount_attach\"") != null);
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_file_read_v2\",\"id\":\"projected-mount-read\",\"payload\":{\"path\":\"/nodes/local/fs/.spiderweb/protocol.json\",\"offset\":0,\"length\":256}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_file_read\",\"id\":\"projected-mount-read\",\"payload\":{\"path\":\"/nodes/local/fs/.spiderweb/protocol.json\",\"offset\":0,\"length\":256}}");
     var mount_read_ack = try readServerFrame(allocator, &client);
     defer mount_read_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"type\":\"control.mount_file_read_v2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"type\":\"control.mount_file_read\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"data_b64\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"n\":0") == null);
 

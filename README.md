@@ -86,9 +86,9 @@ On macOS:
 - advisory file locks currently work within the mounted Spiderweb view, but are not mirrored back to the underlying host path or other non-FSKit clients
 - if a file has already been seen through the mount and is then edited directly on the underlying host path, the mounted view may continue to serve stale data for that file until it is reopened or the mount is remounted; mount-local workflows are unaffected
 
-- `--workspace-url <ws-url>` keeps the existing routed `/v2/fs` mount mode.
+- `--workspace-url <ws-url>` keeps the existing routed `/fs` mount mode.
 - `--namespace-url <ws-url>` connects to the main Spiderweb websocket, attaches an Acheron session root, and mounts the full namespace (`/agents`, `/nodes`, `/global`, `/services`).
-- In namespace mode, node-backed filesystem subtrees discovered from workspace topology still route through `/v2/fs`, so regular file mutation keeps working under mounted workspace exports.
+- In namespace mode, node-backed filesystem subtrees discovered from workspace topology still route through `/fs`, so regular file mutation keeps working under mounted workspace exports.
 - Session-only synthetic paths support `stat`, `readdir`, `read`, and writes to existing writable files. `create`, `unlink`, `mkdir`, `rmdir`, `rename`, and `truncate` return unsupported errors on those paths.
 
 Build only the standalone client:

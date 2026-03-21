@@ -277,7 +277,7 @@ cd test-env && make test-embed-multi-service
 
 What it validates:
 - boots `embed-multi-service-node` with a temporary export
-- probes `/v2/fs` via `spiderweb-fs-mount` (`readdir` + `cat`)
+- probes `/fs` via `spiderweb-fs-mount` (`readdir` + `cat`)
 - probes `/v1/health` with a raw WebSocket handshake and validates `ok: true`
 
 Useful env vars:
@@ -290,7 +290,7 @@ Useful env vars:
 This test exercises the control-plane + mount integration flow end-to-end:
 - starts `spiderweb`
 - starts two `embed-multi-service-node` filesystem nodes
-- negotiates `control.version` (`unified-v2`) then runs `control.node_invite_create`, `control.node_join`, `control.project_create`, `control.project_mount_set`, and `control.project_activate` with project mutation auth (`project_token`)
+- negotiates `control.version` (`spiderweb-control`) then runs `control.node_invite_create`, `control.node_join`, `control.project_create`, `control.project_mount_set`, and `control.project_activate` with project mutation auth (`project_token`)
 - restarts `spiderweb` and verifies control-plane state is recovered from persisted LTM snapshot
 - updates mounts live (`/src` -> `/live`) and validates the mount client converges to the new path
 - mounts both nodes at the same project mount path (`/src`) as a failover group
@@ -314,7 +314,7 @@ cd test-env && make test-distributed-workspace-matrix
 cd test-env && make test-distributed-workspace-encrypted
 cd test-env && make test-distributed-workspace-operator-token
 cd test-env && make test-distributed-soak-chaos
-cd test-env && make test-unified-v2-protocol
+cd test-env && make test-spiderweb-control-protocol
 ```
 
 Useful env vars:
@@ -339,10 +339,10 @@ Validates protocol-level contract points used in release checks:
 
 ```bash
 # Run directly
-bash test-env/test-unified-v2-protocol.sh
+bash test-env/test-spiderweb-control-protocol.sh
 
 # Or through make
-cd test-env && make test-unified-v2-protocol
+cd test-env && make test-spiderweb-control-protocol
 ```
 
 Useful env vars:

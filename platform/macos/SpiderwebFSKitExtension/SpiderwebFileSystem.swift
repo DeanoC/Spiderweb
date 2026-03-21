@@ -393,9 +393,9 @@ final class SpiderwebMountRuntime {
     }
 }
 
-private let spiderwebControlProtocol = "unified-v2"
+private let spiderwebControlProtocol = "spiderweb-control"
 private let spiderwebAcheronRuntimeVersion = "acheron-1"
-private let spiderwebNodeFsProtocol = "unified-v2-fs"
+private let spiderwebNodeFsProtocol = "spiderweb-fs"
 private let spiderwebNodeFsProto: UInt32 = 2
 
 let syntheticStatFS = SpiderwebRemoteStatFS(
@@ -916,7 +916,7 @@ actor SpiderwebNamespaceSession {
         }
 
         let messageType = stringValue(envelope["type"]) ?? ""
-        if messageType == "control.mount_graph_delta_v2" {
+        if messageType == "control.mount_graph_delta" {
             mountGraphFetchedAt = nil
             return
         }
@@ -965,8 +965,8 @@ actor SpiderwebNamespaceSession {
         remoteOperationSnapshot.readdir &+= 1
         remoteOperationSnapshot.getattr &+= 1
         let response = try await sendControlRequest(
-            type: "control.mount_attach_v2",
-            expectedType: "control.mount_attach_v2",
+            type: "control.mount_attach",
+            expectedType: "control.mount_attach",
             payload: [
                 "path": normalizeAbsolutePath(path),
                 "depth": depth,
@@ -1265,8 +1265,8 @@ actor SpiderwebNamespaceSession {
         case .remote:
             remoteOperationSnapshot.lookup &+= 1
             let response = try await sendControlRequest(
-                type: "control.mount_file_read_v2",
-                expectedType: "control.mount_file_read_v2",
+                type: "control.mount_file_read",
+                expectedType: "control.mount_file_read",
                 payload: [
                     "path": state.path,
                     "offset": offset,
@@ -1300,8 +1300,8 @@ actor SpiderwebNamespaceSession {
         }
         remoteOperationSnapshot.lookup &+= 1
         let response = try await sendControlRequest(
-            type: "control.mount_file_write_v2",
-            expectedType: "control.mount_file_write_v2",
+            type: "control.mount_file_write",
+            expectedType: "control.mount_file_write",
             payload: [
                 "path": state.path,
                 "offset": offset,
@@ -1321,8 +1321,8 @@ actor SpiderwebNamespaceSession {
     private func localReadlink(path: String) async throws -> String {
         remoteOperationSnapshot.lookup &+= 1
         let response = try await sendControlRequest(
-            type: "control.mount_path_readlink_v2",
-            expectedType: "control.mount_path_readlink_v2",
+            type: "control.mount_path_readlink",
+            expectedType: "control.mount_path_readlink",
             payload: ["path": normalizeAbsolutePath(path)]
         )
         guard
@@ -1347,8 +1347,8 @@ actor SpiderwebNamespaceSession {
 
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_file_write_v2",
-            expectedType: "control.mount_file_write_v2",
+            type: "control.mount_file_write",
+            expectedType: "control.mount_file_write",
             payload: [
                 "path": normalizedPath,
                 "offset": UInt64(0),
@@ -1356,8 +1356,8 @@ actor SpiderwebNamespaceSession {
             ]
         )
         _ = try await sendControlRequest(
-            type: "control.mount_path_setattr_v2",
-            expectedType: "control.mount_path_setattr_v2",
+            type: "control.mount_path_setattr",
+            expectedType: "control.mount_path_setattr",
             payload: [
                 "path": normalizedPath,
                 "mode": mode & UInt32(modeAllBits),
@@ -1417,8 +1417,8 @@ actor SpiderwebNamespaceSession {
 
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_file_write_v2",
-            expectedType: "control.mount_file_write_v2",
+            type: "control.mount_file_write",
+            expectedType: "control.mount_file_write",
             payload: [
                 "path": path,
                 "offset": UInt64(0),
@@ -1445,8 +1445,8 @@ actor SpiderwebNamespaceSession {
         let normalizedPath = normalizeAbsolutePath(path)
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_path_setattr_v2",
-            expectedType: "control.mount_path_setattr_v2",
+            type: "control.mount_path_setattr",
+            expectedType: "control.mount_path_setattr",
             payload: makeMountPathSetattrPayload(path: normalizedPath, request: request)
         )
         mountGraphFetchedAt = nil
@@ -1457,8 +1457,8 @@ actor SpiderwebNamespaceSession {
         let normalizedPath = normalizeAbsolutePath(path)
         remoteOperationSnapshot.lookup &+= 1
         let response = try await sendControlRequest(
-            type: "control.mount_path_getxattr_v2",
-            expectedType: "control.mount_path_getxattr_v2",
+            type: "control.mount_path_getxattr",
+            expectedType: "control.mount_path_getxattr",
             payload: [
                 "path": normalizedPath,
                 "name": name,
@@ -1478,8 +1478,8 @@ actor SpiderwebNamespaceSession {
         let normalizedPath = normalizeAbsolutePath(path)
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_path_setxattr_v2",
-            expectedType: "control.mount_path_setxattr_v2",
+            type: "control.mount_path_setxattr",
+            expectedType: "control.mount_path_setxattr",
             payload: [
                 "path": normalizedPath,
                 "name": name,
@@ -1494,8 +1494,8 @@ actor SpiderwebNamespaceSession {
         let normalizedPath = normalizeAbsolutePath(path)
         remoteOperationSnapshot.lookup &+= 1
         let response = try await sendControlRequest(
-            type: "control.mount_path_listxattr_v2",
-            expectedType: "control.mount_path_listxattr_v2",
+            type: "control.mount_path_listxattr",
+            expectedType: "control.mount_path_listxattr",
             payload: ["path": normalizedPath]
         )
         guard
@@ -1511,8 +1511,8 @@ actor SpiderwebNamespaceSession {
         let normalizedPath = normalizeAbsolutePath(path)
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_path_removexattr_v2",
-            expectedType: "control.mount_path_removexattr_v2",
+            type: "control.mount_path_removexattr",
+            expectedType: "control.mount_path_removexattr",
             payload: [
                 "path": normalizedPath,
                 "name": name,
@@ -1525,8 +1525,8 @@ actor SpiderwebNamespaceSession {
         let normalizedPath = normalizeAbsolutePath(path)
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_path_unlink_v2",
-            expectedType: "control.mount_path_unlink_v2",
+            type: "control.mount_path_unlink",
+            expectedType: "control.mount_path_unlink",
             payload: ["path": normalizedPath]
         )
         try await refreshNamespaceMutationScopes([endpointParentPath(normalizedPath)])
@@ -1536,8 +1536,8 @@ actor SpiderwebNamespaceSession {
         let normalizedPath = normalizeAbsolutePath(path)
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_path_mkdir_v2",
-            expectedType: "control.mount_path_mkdir_v2",
+            type: "control.mount_path_mkdir",
+            expectedType: "control.mount_path_mkdir",
             payload: ["path": normalizedPath]
         )
         try await refreshNamespaceMutationScopes([endpointParentPath(normalizedPath)])
@@ -1547,8 +1547,8 @@ actor SpiderwebNamespaceSession {
         let normalizedPath = normalizeAbsolutePath(path)
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_path_rmdir_v2",
-            expectedType: "control.mount_path_rmdir_v2",
+            type: "control.mount_path_rmdir",
+            expectedType: "control.mount_path_rmdir",
             payload: ["path": normalizedPath]
         )
         try await refreshNamespaceMutationScopes([endpointParentPath(normalizedPath)])
@@ -1559,8 +1559,8 @@ actor SpiderwebNamespaceSession {
         let normalizedNewPath = normalizeAbsolutePath(newPath)
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_path_rename_v2",
-            expectedType: "control.mount_path_rename_v2",
+            type: "control.mount_path_rename",
+            expectedType: "control.mount_path_rename",
             payload: [
                 "old_path": normalizedOldPath,
                 "new_path": normalizedNewPath,
@@ -1576,8 +1576,8 @@ actor SpiderwebNamespaceSession {
         let normalizedLinkPath = normalizeAbsolutePath(linkPath)
         remoteOperationSnapshot.lookup &+= 1
         _ = try await sendControlRequest(
-            type: "control.mount_path_symlink_v2",
-            expectedType: "control.mount_path_symlink_v2",
+            type: "control.mount_path_symlink",
+            expectedType: "control.mount_path_symlink",
             payload: [
                 "target": target,
                 "link_path": normalizedLinkPath,

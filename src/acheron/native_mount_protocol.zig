@@ -561,7 +561,7 @@ test "native_mount_protocol: launch config roundtrips endpoint and namespace fie
         .endpoints = &.{
             .{
                 .name = "local",
-                .url = "ws://127.0.0.1:18891/v2/fs",
+                .url = "ws://127.0.0.1:18891/fs",
                 .mount_path = "/nodes/local/fs",
             },
         },
@@ -608,7 +608,7 @@ test "native_mount_protocol: parses reconcile endpoints requests" {
     const allocator = std.testing.allocator;
     var request = try parseRequestOwned(
         allocator,
-        "{\"op\":\"reconcile_endpoints\",\"endpoints\":[{\"name\":\"local\",\"url\":\"ws://127.0.0.1:18891/v2/fs\",\"mount_path\":\"/src\"}]}",
+        "{\"op\":\"reconcile_endpoints\",\"endpoints\":[{\"name\":\"local\",\"url\":\"ws://127.0.0.1:18891/fs\",\"mount_path\":\"/src\"}]}",
     );
     defer request.deinit(allocator);
 

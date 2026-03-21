@@ -148,7 +148,7 @@ PY
 
 wait_for_node_ready() {
     local port="$1"
-    local endpoint="tmp=ws://$BIND_ADDR:$port/v2/fs#work"
+    local endpoint="tmp=ws://$BIND_ADDR:$port/fs#work"
     for _ in $(seq 1 120); do
         if run_with_timeout "$FS_CHECK_TIMEOUT_SEC" "$FS_MOUNT_BIN" --endpoint "$endpoint" readdir /tmp >/dev/null 2>&1; then
             return 0
@@ -175,8 +175,8 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<EOF
   },
   "runtime": {
     "default_agent_id": "default",
-    "ltm_directory": "$LTM_DIR",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$LTM_DIR",
+    "state_db_filename": "runtime-state.db",
     "spider_web_root": "$SPIDER_WEB_ROOT"
   }
 }
@@ -214,7 +214,7 @@ log_pass "node endpoint is ready"
 
 INVITE="$(control_call node_invite_create)"
 INVITE_TOKEN="$(json_query "$INVITE" "payload.invite_token")"
-JOIN_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-drift","fs_url":"ws://%s:%s/v2/fs"}' "$INVITE_TOKEN" "$BIND_ADDR" "$NODE1_PORT")"
+JOIN_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-drift","fs_url":"ws://%s:%s/fs"}' "$INVITE_TOKEN" "$BIND_ADDR" "$NODE1_PORT")"
 JOIN_RESP="$(control_call node_join "$JOIN_PAYLOAD")"
 NODE_ID="$(json_query "$JOIN_RESP" "payload.node_id")"
 

@@ -1645,10 +1645,10 @@ final class SpiderwebAppController: ObservableObject {
 
     private static func derivedRemoteFsURL(from publicBaseURL: String) -> String {
         let trimmed = publicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasSuffix("/v2/fs") {
+        if trimmed.hasSuffix("/fs") {
             return trimmed
         }
-        return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/v2/fs"
+        return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/fs"
     }
 
     private static func storeSecret(service: String, account: String, value: String) throws {

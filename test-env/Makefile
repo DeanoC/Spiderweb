@@ -1,6 +1,6 @@
 # Spiderweb Test Environment Makefile
 
-.PHONY: help build up down shell test wipe logs status test-embed-multi-service test-external-codex-workspace test-external-codex-workspace-orb test-external-codex-workspace-macos test-external-codex-repeatability test-external-codex-cli-matrix package-external-codex-repro test-distributed-workspace test-distributed-workspace-bootstrap test-distributed-workspace-drift test-distributed-workspace-matrix test-distributed-workspace-encrypted test-distributed-workspace-operator-token test-distributed-soak-chaos test-unified-v2-protocol
+.PHONY: help build up down shell test wipe logs status test-embed-multi-service test-external-codex-workspace test-external-codex-workspace-orb test-external-codex-workspace-macos test-external-codex-repeatability test-external-codex-cli-matrix package-external-codex-repro test-distributed-workspace test-distributed-workspace-bootstrap test-distributed-workspace-drift test-distributed-workspace-matrix test-distributed-workspace-encrypted test-distributed-workspace-operator-token test-distributed-soak-chaos test-spiderweb-control-protocol
 
 help: ## Show this help message
 	@echo "Spiderweb Test Environment"
@@ -112,5 +112,5 @@ test-distributed-workspace-operator-token: ## Run distributed workspace test wit
 test-distributed-soak-chaos: ## Run long-running distributed workspace soak/chaos suite
 	@bash ./test-distributed-soak-chaos.sh
 
-test-unified-v2-protocol: ## Run unified v2 protocol negotiation/auth validation suite
-	@bash ./test-unified-v2-protocol.sh
+test-spiderweb-control-protocol: ## Run unified v2 protocol negotiation/auth validation suite
+	@bash ./test-spiderweb-control-protocol.sh

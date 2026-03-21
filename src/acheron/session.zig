@@ -14513,6 +14513,34 @@ test "session: parseReaddirNextCookie accepts next" {
     try std.testing.expectEqual(@as(u64, 18), Session.parseReaddirNextCookie(parsed.value.object));
 }
 
+test "acheron_session: protocol json advertises the expected namespace ops" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, acheron_protocol_json, .{});
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("acheron", parsed.value.object.get("channel").?.string);
+    try std.testing.expectEqualStrings("acheron-1", parsed.value.object.get("version").?.string);
+    try std.testing.expectEqualStrings("acheron-namespace-project-contract-v2", parsed.value.object.get("layout").?.string);
+
+    const ops = parsed.value.object.get("ops").?.array.items;
+    const expected_ops = [_][]const u8{
+        "t_version",
+        "t_attach",
+        "t_walk",
+        "t_open",
+        "t_read",
+        "t_write",
+        "t_stat",
+        "t_clunk",
+        "t_flush",
+    };
+
+    try std.testing.expectEqual(expected_ops.len, ops.len);
+    for (expected_ops, ops) |expected, actual| {
+        try std.testing.expect(actual == .string);
+        try std.testing.expectEqualStrings(expected, actual.string);
+    }
+}
+
 test "acheron_session: bootstrap required services match the external-agent core" {
     const expected = [_][]const u8{
         "home",

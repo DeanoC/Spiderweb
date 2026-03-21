@@ -21,6 +21,10 @@ pub fn main() !void {
     const export_root = argv[2];
     if (!std.fs.path.isAbsolute(export_root)) return error.InvalidArguments;
 
+    // The supervised local-node child uses a simple one-shot stdio contract:
+    // stdin is exactly one raw JSON request blob up to max_payload_bytes, and
+    // stdout is exactly one raw JSON response blob. There is no extra framing,
+    // length prefix, or record delimiter beyond EOF on stdin.
     const payload = try std.fs.File.stdin().readToEndAlloc(allocator, max_payload_bytes);
     defer allocator.free(payload);
 

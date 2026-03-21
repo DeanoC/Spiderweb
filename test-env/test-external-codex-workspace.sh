@@ -215,6 +215,8 @@ if is_linux_variant; then
 fi
 
 if [[ -z "$TRACE_BACKEND" ]]; then
+    # Linux runs default to strace for extra mount/client debugging. Native
+    # macOS runs fall back to "none" because strace is not available there.
     if is_linux_variant; then
         TRACE_BACKEND="strace"
     else
@@ -1657,6 +1659,11 @@ run_spiderweb_installer() {
     local install_source="$1"
     local release_url="$2"
     local release_version="$3"
+
+    if [[ "$install_source" == "release" && -z "$release_version" ]]; then
+        log_fail "SPIDERWEB_RELEASE_VERSION is required when SPIDERWEB_INSTALL_SOURCE=release"
+        return 1
+    fi
 
     HOME="$TEMP_HOME" \
     PATH="$PATH" \

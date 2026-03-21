@@ -290,16 +290,33 @@ pub const NamespaceClient = struct {
     }
 
     pub fn controlMountFileWrite(self: *NamespaceClient, path: []const u8, offset: u64, data: []const u8) !u32 {
+        return self.controlMountFileWriteWithOptions(path, offset, data, null);
+    }
+
+    pub fn controlMountFileWriteWithOptions(
+        self: *NamespaceClient,
+        path: []const u8,
+        offset: u64,
+        data: []const u8,
+        truncate_to_size: ?u64,
+    ) !u32 {
         const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
         defer self.allocator.free(escaped_path);
         const encoded = try encodeBase64(self.allocator, data);
         defer self.allocator.free(encoded);
 
-        const payload = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"path\":\"{s}\",\"offset\":{d},\"data_b64\":\"{s}\"}}",
-            .{ escaped_path, offset, encoded },
-        );
+        const payload = if (truncate_to_size) |requested_size|
+            try std.fmt.allocPrint(
+                self.allocator,
+                "{{\"path\":\"{s}\",\"offset\":{d},\"data_b64\":\"{s}\",\"truncate_to_size\":{d}}}",
+                .{ escaped_path, offset, encoded, requested_size },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.allocator,
+                "{{\"path\":\"{s}\",\"offset\":{d},\"data_b64\":\"{s}\"}}",
+                .{ escaped_path, offset, encoded },
+            );
         defer self.allocator.free(payload);
 
         const payload_json = try self.controlRequestPayloadWithReconnect(

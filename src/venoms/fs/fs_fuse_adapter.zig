@@ -707,7 +707,7 @@ fn cReaddirWin(
     if (filler == null) return -fs_protocol.Errno.EINVAL;
     const dot_entries = [_][]const u8{ ".", ".." };
     for (dot_entries) |name| {
-        const filler_rc = filler.?(buf, @ptrCast(name.ptr), null, 0, c.FUSE_FILL_DIR_DEFAULTS);
+        const filler_rc = filler.?(buf, @ptrCast(name.ptr), null, 0);
         fuseTrace("readdir special name={s} rc={d}", .{ name, filler_rc });
         if (filler_rc != 0) return 0;
     }

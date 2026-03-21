@@ -501,7 +501,12 @@ const NamespaceProviderContext = struct {
         if (state.backing != .buffered) return;
         var buffered = &state.backing.buffered;
         if (!buffered.dirty and !buffered.created) return;
-        _ = try self.client.controlMountFileWrite(state.path, 0, buffered.bytes.items);
+        _ = try self.client.controlMountFileWriteWithOptions(
+            state.path,
+            0,
+            buffered.bytes.items,
+            buffered.bytes.items.len,
+        );
         self.mount_graph.markStale();
         buffered.dirty = false;
         buffered.created = false;
@@ -726,10 +731,15 @@ fn namespaceProviderWrite(ctx: *anyopaque, file: mount_provider.OpenFile, off: u
 }
 
 fn namespaceProviderTruncate(ctx: *anyopaque, path: []const u8, size: u64) !void {
-    _ = ctx;
-    _ = path;
-    _ = size;
-    return error.OperationNotSupported;
+    const namespace_ctx = asCtx(ctx);
+    const normalized_path = normalizeAbsolutePath(path);
+    _ = try namespace_ctx.client.controlMountFileWriteWithOptions(
+        normalized_path,
+        0,
+        "",
+        size,
+    );
+    namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderUnlink(ctx: *anyopaque, path: []const u8) !void {

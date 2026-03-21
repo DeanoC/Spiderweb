@@ -253,6 +253,64 @@ pub const NamespaceClient = struct {
         return readControlPayloadFor(self, request_id, "control.workspace_status");
     }
 
+    pub fn controlMountAttach(self: *NamespaceClient, path: []const u8, depth: u32) ![]u8 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"path\":\"{s}\",\"depth\":{d}}}",
+            .{ escaped_path, depth },
+        );
+        defer self.allocator.free(payload);
+
+        return self.controlRequestPayloadWithReconnect(
+            "control.mount_attach_v2",
+            "control.mount_attach_v2",
+            payload,
+        );
+    }
+
+    pub fn controlMountFileRead(self: *NamespaceClient, path: []const u8, offset: u64, length: u32) ![]u8 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"path\":\"{s}\",\"offset\":{d},\"length\":{d}}}",
+            .{ escaped_path, offset, length },
+        );
+        defer self.allocator.free(payload);
+
+        return self.controlRequestPayloadWithReconnect(
+            "control.mount_file_read_v2",
+            "control.mount_file_read_v2",
+            payload,
+        );
+    }
+
+    pub fn controlMountFileWrite(self: *NamespaceClient, path: []const u8, offset: u64, data: []const u8) !u32 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const encoded = try encodeBase64(self.allocator, data);
+        defer self.allocator.free(encoded);
+
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"path\":\"{s}\",\"offset\":{d},\"data_b64\":\"{s}\"}}",
+            .{ escaped_path, offset, encoded },
+        );
+        defer self.allocator.free(payload);
+
+        const payload_json = try self.controlRequestPayloadWithReconnect(
+            "control.mount_file_write_v2",
+            "control.mount_file_write_v2",
+            payload,
+        );
+        defer self.allocator.free(payload_json);
+        return parseWriteCount(self.allocator, payload_json);
+    }
+
     pub fn attachNamespaceRoot(self: *NamespaceClient, session_key: []const u8) !void {
         try self.setActiveSessionKey(session_key);
         const version_payload = try self.callAcheron(
@@ -702,6 +760,34 @@ pub const NamespaceClient = struct {
         const request_id = try std.fmt.allocPrint(self.allocator, "ns-{d}", .{self.next_control_id});
         self.next_control_id += 1;
         return request_id;
+    }
+
+    fn controlRequestPayloadWithReconnect(
+        self: *NamespaceClient,
+        msg_type: []const u8,
+        expected_type: []const u8,
+        payload_json: []const u8,
+    ) ![]u8 {
+        return self.controlRequestPayloadOnce(msg_type, expected_type, payload_json) catch |err| {
+            if (!isTransportError(err)) return err;
+            const session_key = self.active_session_key orelse return err;
+            const owned_session_key = try self.copySessionKeyForReconnect(session_key);
+            defer self.allocator.free(owned_session_key);
+            try self.reconnectControlSession(owned_session_key);
+            return self.controlRequestPayloadOnce(msg_type, expected_type, payload_json);
+        };
+    }
+
+    fn controlRequestPayloadOnce(
+        self: *NamespaceClient,
+        msg_type: []const u8,
+        expected_type: []const u8,
+        payload_json: []const u8,
+    ) ![]u8 {
+        const request_id = try self.nextControlRequestId();
+        defer self.allocator.free(request_id);
+        try self.writeControlRequest(msg_type, request_id, payload_json);
+        return readControlPayloadFor(self, request_id, expected_type);
     }
 
     fn writeControlRequest(self: *NamespaceClient, msg_type: []const u8, request_id: []const u8, payload_json: []const u8) !void {
@@ -1386,12 +1472,16 @@ fn mapRemoteErrorCode(code: []const u8) anyerror {
     if (std.mem.eql(u8, code, "project_context_required")) return error.ProjectRequired;
     if (std.mem.eql(u8, code, "missing_field")) return error.MissingField;
     if (std.mem.eql(u8, code, "invalid_payload") or std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;
+    if (std.mem.eql(u8, code, "einval")) return error.InvalidPayload;
     if (std.mem.eql(u8, code, "enoent")) return error.FileNotFound;
+    if (std.mem.eql(u8, code, "eacces")) return error.PermissionDenied;
     if (std.mem.eql(u8, code, "eperm")) return error.PermissionDenied;
     if (std.mem.eql(u8, code, "enotdir")) return error.NotDirectory;
     if (std.mem.eql(u8, code, "eisdir")) return error.IsDirectory;
     if (std.mem.eql(u8, code, "eexist")) return error.AlreadyExists;
     if (std.mem.eql(u8, code, "erofs") or std.mem.eql(u8, code, "readonly")) return error.ReadOnlyFilesystem;
+    if (std.mem.eql(u8, code, "enosys")) return error.OperationNotSupported;
+    if (std.mem.eql(u8, code, "eio")) return error.UnexpectedControlResponse;
     if (std.mem.eql(u8, code, "unsupported")) return error.OperationNotSupported;
     if (std.mem.eql(u8, code, "runtime_warming")) return error.RuntimeWarming;
     if (std.mem.eql(u8, code, "runtime_unavailable")) return error.RuntimeUnavailable;
@@ -1425,6 +1515,9 @@ test "namespace_client: remote payload validation errors stay specific" {
     try std.testing.expect(mapRemoteErrorCode("missing_field") == error.MissingField);
     try std.testing.expect(mapRemoteErrorCode("invalid_payload") == error.InvalidPayload);
     try std.testing.expect(mapRemoteErrorCode("invalid") == error.InvalidPayload);
+    try std.testing.expect(mapRemoteErrorCode("einval") == error.InvalidPayload);
+    try std.testing.expect(mapRemoteErrorCode("eacces") == error.PermissionDenied);
+    try std.testing.expect(mapRemoteErrorCode("enosys") == error.OperationNotSupported);
 }
 
 test "namespace_client: stat attrs synthesize mode from kind when remote mode is zero" {

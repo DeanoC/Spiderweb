@@ -126,12 +126,22 @@ const wait_poll_interval_ms: u64 = events_venom.wait_poll_interval_ms;
 const debug_stream_log_max_bytes: usize = 2 * 1024 * 1024;
 const max_signal_events: usize = events_venom.max_signal_events;
 const local_fs_world_prefix = "/nodes/local/fs";
+const workspace_entrypoint_relative_namespace_root = "../../..";
+const workspace_managed_root_name = ".spiderweb";
+const workspace_managed_root_relative = "./.spiderweb";
+const workspace_managed_root_absolute = local_fs_world_prefix ++ "/" ++ workspace_managed_root_name;
+const workspace_managed_shared_data_dir_name = "shared_data";
+const workspace_managed_services_dir_name = "services";
+const workspace_managed_local_venoms_dir_name = "local_venoms";
+const workspace_managed_services_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_services_dir_name ++ "/";
 const workspace_agents_contract_path = "/nodes/local/fs/AGENTS.md";
 const namespace_agents_contract_path = "/AGENTS.md";
 const workspace_agents_heading = "# Spiderweb Workspace Agent Contract";
 const workspace_agents_managed_begin = "<!-- SPIDERWEB:BEGIN MANAGED -->";
 const workspace_agents_managed_end = "<!-- SPIDERWEB:END MANAGED -->";
 const worker_reap_grace_ms: i64 = 60_000;
+const acheron_protocol_json =
+    "{\"channel\":\"acheron\",\"version\":\"acheron-1\",\"layout\":\"acheron-namespace-project-contract-v2\",\"ops\":[\"t_version\",\"t_attach\",\"t_walk\",\"t_open\",\"t_read\",\"t_write\",\"t_stat\",\"t_clunk\",\"t_flush\"]}";
 
 const BootstrapRequiredService = struct {
     id: []const u8,
@@ -175,14 +185,25 @@ const BoundVenomProxyPath = struct {
     remote_path: []const u8,
     project_id: ?[]const u8 = null,
     agent_id: ?[]const u8 = null,
+    provider_node_id: ?[]const u8 = null,
+    provider_export_name: ?[]const u8 = null,
 };
 
 const BoundVenomProxyAttrSummary = struct {
     kind: NodeKind,
     writable: bool,
+    mode: ?u32 = null,
+    size: ?u64 = null,
+};
+
+const PathBindKind = enum {
+    workspace,
+    workspace_mount,
+    managed_entrypoint,
 };
 
 const PathBind = struct {
+    kind: PathBindKind = .workspace,
     bind_path: []u8,
     target_path: []u8,
 
@@ -225,6 +246,8 @@ const Node = struct {
     name: []u8,
     writable: bool,
     content: []u8,
+    reported_mode: ?u32 = null,
+    reported_size: ?u64 = null,
     last_dynamic_refresh_ms: i64 = 0,
     dynamic_refresh_in_progress: bool = false,
     children: std.StringHashMapUnmanaged(u32) = .{},
@@ -305,6 +328,7 @@ const MountGraphSourceRecord = struct {
     mount_path: []u8,
     fs_url: []u8,
     export_name: ?[]u8 = null,
+    writable: bool = false,
 
     fn deinit(self: *MountGraphSourceRecord, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -313,6 +337,22 @@ const MountGraphSourceRecord = struct {
         if (self.export_name) |value| allocator.free(value);
         self.* = undefined;
     }
+};
+
+const WorkspaceMountProxyRoot = struct {
+    node_id: []u8,
+    export_name: ?[]u8 = null,
+
+    fn deinit(self: *WorkspaceMountProxyRoot, allocator: std.mem.Allocator) void {
+        allocator.free(self.node_id);
+        if (self.export_name) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
+const BoundVenomRouteMode = enum {
+    client_visible,
+    server_internal,
 };
 
 const MountGraphNodeRecord = struct {
@@ -527,6 +567,9 @@ pub const Session = struct {
     project_binds: std.ArrayListUnmanaged(PathBind) = .{},
     scoped_venom_bindings: std.ArrayListUnmanaged(ScopedVenomBinding) = .{},
     node_aliases: std.AutoHashMapUnmanaged(u32, u32) = .{},
+    workspace_mount_fs_auth_tokens: std.StringHashMapUnmanaged([]u8) = .{},
+    workspace_mount_fs_urls: std.StringHashMapUnmanaged([]u8) = .{},
+    workspace_mount_proxy_roots: std.StringHashMapUnmanaged(WorkspaceMountProxyRoot) = .{},
     namespace_mount_dir: ?[]u8 = null,
     namespace_mount_point: ?[]u8 = null,
     namespace_mount_child: ?std.process.Child = null,
@@ -648,6 +691,9 @@ pub const Session = struct {
         self.clearScopedVenomBindings();
         self.clearWorkerPresence();
         self.node_aliases.deinit(self.allocator);
+        self.clearWorkspaceMountFsAuthTokens();
+        self.clearWorkspaceMountFsUrls();
+        self.clearWorkspaceMountProxyRoots();
         var it = self.nodes.iterator();
         while (it.next()) |entry| {
             var node = entry.value_ptr.*;
@@ -748,7 +794,7 @@ pub const Session = struct {
         self: *Session,
         runtime_handle: *runtime_handle_mod.RuntimeHandle,
         agent_id: []const u8,
-    ) !void {
+    ) anyerror!void {
         try self.setRuntimeBindingWithOptions(
             runtime_handle,
             agent_id,
@@ -780,7 +826,7 @@ pub const Session = struct {
         runtime_handle: *runtime_handle_mod.RuntimeHandle,
         agent_id: []const u8,
         options: NamespaceOptions,
-    ) !void {
+    ) anyerror!void {
         const rebound = try Session.initWithOptions(self.allocator, runtime_handle, agent_id, options);
 
         var previous = self.*;
@@ -875,7 +921,7 @@ pub const Session = struct {
         plane: *control_plane_mod.ControlPlane,
         agent_id: []const u8,
         log_text: []const u8,
-    ) !void {
+    ) anyerror!void {
         var cursor: usize = 0;
         while (cursor < log_text.len) {
             const line_end = std.mem.indexOfScalarPos(u8, log_text, cursor, '\n') orelse log_text.len;
@@ -1402,7 +1448,7 @@ pub const Session = struct {
         const payload = try std.fmt.allocPrint(
             self.allocator,
             "{{\"id\":{d},\"name\":\"{s}\",\"kind\":\"{s}\",\"size\":{d},\"mode\":{d},\"writable\":{s}}}",
-            .{ node.id, escaped_name, kindName(node.kind), node.content.len, nodeMode(node), if (node.writable) "true" else "false" },
+            .{ node.id, escaped_name, kindName(node.kind), effectiveNodeSizeU64(node), effectiveNodeMode(node), if (node.writable) "true" else "false" },
         );
         defer self.allocator.free(payload);
         return unified.buildFsrpcResponse(self.allocator, .r_stat, msg.tag, payload);
@@ -1659,9 +1705,7 @@ pub const Session = struct {
             "{\"read\":true,\"write\":false}",
             "Attached-session compatibility metadata.",
         );
-        const protocol_json =
-            "{\"channel\":\"acheron\",\"version\":\"acheron-1\",\"layout\":\"acheron-namespace-project-contract-v2\",\"ops\":[\"t_version\",\"t_attach\",\"t_walk\",\"t_open\",\"t_read\",\"t_write\",\"t_stat\",\"t_clunk\",\"t_flush\"]}";
-        _ = try self.addFile(meta_root, "protocol.json", protocol_json, false, .none);
+        _ = try self.addFile(meta_root, "protocol.json", acheron_protocol_json, false, .none);
         const escaped_agent = try unified.jsonEscape(self.allocator, self.agent_id);
         defer self.allocator.free(escaped_agent);
         const escaped_project = try unified.jsonEscape(self.allocator, policy.project_id);
@@ -1713,6 +1757,9 @@ pub const Session = struct {
         }
 
         try self.refreshProjectBindsFromControlPlane();
+        if (workspace_status_json) |status_json| {
+            try self.appendWorkspaceMountAliasesFromWorkspaceStatus(status_json);
+        }
         try self.materializeProjectBindPrefixDirectories();
         if (self.lookupChild(self.root_id, "services")) |services_root| {
             try self.addDirectoryDescriptors(
@@ -1752,7 +1799,7 @@ pub const Session = struct {
         workspace_status_json: ?[]const u8,
         loaded_live_mounts: bool,
         loaded_live_nodes: bool,
-    ) !void {
+    ) anyerror!void {
         const topology_json = try self.buildProjectTopologyJson(policy);
         defer self.allocator.free(topology_json);
         _ = try self.addFile(project_meta_dir, "topology.json", topology_json, false, .none);
@@ -1914,8 +1961,11 @@ pub const Session = struct {
         var out = std.ArrayListUnmanaged(u8){};
         errdefer out.deinit(self.allocator);
         try out.append(self.allocator, '[');
-        for (self.project_binds.items, 0..) |bind, idx| {
-            if (idx != 0) try out.append(self.allocator, ',');
+        var first = true;
+        for (self.project_binds.items) |bind| {
+            if (bind.kind != .workspace) continue;
+            if (!first) try out.append(self.allocator, ',');
+            first = false;
             const escaped_bind = try unified.jsonEscape(self.allocator, bind.bind_path);
             defer self.allocator.free(escaped_bind);
             const escaped_target = try unified.jsonEscape(self.allocator, bind.target_path);
@@ -1931,9 +1981,133 @@ pub const Session = struct {
 
     fn hasProjectBindPath(self: *Session, bind_path: []const u8) bool {
         for (self.project_binds.items) |bind| {
+            if (bind.kind != .workspace) continue;
             if (std.mem.eql(u8, bind.bind_path, bind_path)) return true;
         }
         return false;
+    }
+
+    fn appendWorkspaceMountAliasesFromWorkspaceStatus(self: *Session, workspace_status_json: []const u8) !void {
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return;
+        defer parsed.deinit();
+        if (parsed.value != .object) return;
+        const mounts_value = parsed.value.object.get("mounts") orelse return;
+        if (mounts_value != .array) return;
+
+        for (mounts_value.array.items) |mount_value| {
+            if (mount_value != .object) continue;
+
+            const mount_path_value = mount_value.object.get("mount_path") orelse continue;
+            const node_id_value = mount_value.object.get("node_id") orelse continue;
+            if (mount_path_value != .string or mount_path_value.string.len == 0) continue;
+            if (node_id_value != .string or node_id_value.string.len == 0) continue;
+
+            if (mount_value.object.get("fs_auth_token")) |auth_value| {
+                if (auth_value == .string and auth_value.string.len > 0) {
+                    try self.rememberWorkspaceMountFsAuthToken(node_id_value.string, auth_value.string);
+                }
+            }
+            if (mount_value.object.get("fs_url")) |fs_url_value| {
+                if (fs_url_value == .string and fs_url_value.string.len > 0) {
+                    try self.rememberWorkspaceMountFsUrl(node_id_value.string, fs_url_value.string);
+                }
+            }
+
+            const normalized_mount_path = try normalizeMountGraphPath(self.allocator, mount_path_value.string);
+            defer self.allocator.free(normalized_mount_path);
+            if (std.mem.eql(u8, normalized_mount_path, "/")) continue;
+
+            const export_name = if (mount_value.object.get("export_name")) |value|
+                if (value == .string and value.string.len > 0) value.string else null
+            else
+                null;
+
+            const target_path = (try self.resolveWorkspaceMountAliasTargetPath(
+                node_id_value.string,
+                export_name,
+            )) orelse continue;
+            defer self.allocator.free(target_path);
+
+            if (std.mem.eql(u8, normalized_mount_path, target_path)) continue;
+            try self.appendProjectBind(.workspace_mount, normalized_mount_path, target_path);
+        }
+    }
+
+    fn resolveWorkspaceMountAliasTargetPath(
+        self: *Session,
+        node_id: []const u8,
+        export_name: ?[]const u8,
+    ) !?[]u8 {
+        if (export_name) |value| {
+            if (try self.ensureWorkspaceMountProxyRoot(node_id, value)) {
+                const export_target = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/{s}", .{ node_id, value });
+                errdefer self.allocator.free(export_target);
+                try self.rememberWorkspaceMountProxyRoot(export_target, node_id, value);
+                return export_target;
+            }
+        }
+
+        if (try self.ensureWorkspaceMountProxyRoot(node_id, "fs")) {
+            return try std.fmt.allocPrint(self.allocator, "/nodes/{s}/fs", .{node_id});
+        }
+
+        return null;
+    }
+
+    fn rememberWorkspaceMountFsAuthToken(self: *Session, node_id: []const u8, auth_token: []const u8) !void {
+        const gop = try self.workspace_mount_fs_auth_tokens.getOrPut(self.allocator, node_id);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try self.allocator.dupe(u8, node_id);
+        } else {
+            self.allocator.free(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = try self.allocator.dupe(u8, auth_token);
+    }
+
+    fn rememberWorkspaceMountFsUrl(self: *Session, node_id: []const u8, fs_url: []const u8) !void {
+        const gop = try self.workspace_mount_fs_urls.getOrPut(self.allocator, node_id);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try self.allocator.dupe(u8, node_id);
+        } else {
+            self.allocator.free(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = try self.allocator.dupe(u8, fs_url);
+    }
+
+    fn rememberWorkspaceMountProxyRoot(
+        self: *Session,
+        proxy_root: []const u8,
+        node_id: []const u8,
+        export_name: ?[]const u8,
+    ) !void {
+        const gop = try self.workspace_mount_proxy_roots.getOrPut(self.allocator, proxy_root);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try self.allocator.dupe(u8, proxy_root);
+            gop.value_ptr.* = .{
+                .node_id = try self.allocator.dupe(u8, node_id),
+                .export_name = if (export_name) |value| try self.allocator.dupe(u8, value) else null,
+            };
+            return;
+        }
+
+        self.allocator.free(gop.value_ptr.node_id);
+        gop.value_ptr.node_id = try self.allocator.dupe(u8, node_id);
+        if (gop.value_ptr.export_name) |value| self.allocator.free(value);
+        gop.value_ptr.export_name = if (export_name) |value| try self.allocator.dupe(u8, value) else null;
+    }
+
+    fn ensureWorkspaceMountProxyRoot(self: *Session, node_id: []const u8, root_name: []const u8) !bool {
+        const nodes_root = if (self.nodes_root_id != 0) self.nodes_root_id else return false;
+        const node_dir = blk: {
+            if (self.lookupChild(nodes_root, node_id)) |existing| break :blk existing;
+            try self.addNodeDirectoriesFromControlPlane(nodes_root);
+            break :blk self.lookupChild(nodes_root, node_id) orelse return false;
+        };
+
+        if (self.lookupChild(node_dir, root_name) == null) {
+            _ = try self.addDir(node_dir, root_name, false);
+        }
+        return true;
     }
 
     fn buildMountedServicesJson(self: *Session) ![]u8 {
@@ -1943,6 +2117,7 @@ pub const Session = struct {
         var first = true;
 
         for (self.project_binds.items) |bind| {
+            if (bind.kind != .workspace) continue;
             if (!first) try out.append(self.allocator, ',');
             first = false;
             try self.appendMountedServiceBindJson(&out, bind);
@@ -2122,11 +2297,58 @@ pub const Session = struct {
             const target_path = bind_value.object.get("target_path") orelse continue;
             if (bind_path != .string or bind_path.string.len == 0) continue;
             if (target_path != .string or target_path.string.len == 0) continue;
-            try self.project_binds.append(self.allocator, .{
-                .bind_path = try self.allocator.dupe(u8, bind_path.string),
-                .target_path = try self.allocator.dupe(u8, target_path.string),
-            });
+            try self.appendProjectBind(.workspace, bind_path.string, target_path.string);
         }
+        try self.appendManagedWorkspaceEntrypointBinds();
+    }
+
+    fn appendProjectBind(self: *Session, kind: PathBindKind, bind_path: []const u8, target_path: []const u8) !void {
+        for (self.project_binds.items) |*existing| {
+            if (!std.mem.eql(u8, existing.bind_path, bind_path)) continue;
+            if (existing.kind == kind and std.mem.eql(u8, existing.target_path, target_path)) return;
+            self.allocator.free(existing.target_path);
+            existing.target_path = try self.allocator.dupe(u8, target_path);
+            existing.kind = kind;
+            return;
+        }
+
+        try self.project_binds.append(self.allocator, .{
+            .kind = kind,
+            .bind_path = try self.allocator.dupe(u8, bind_path),
+            .target_path = try self.allocator.dupe(u8, target_path),
+        });
+    }
+
+    fn appendManagedWorkspaceEntrypointBinds(self: *Session) !void {
+        const project_id = self.active_namespace_project_id orelse self.project_id orelse return;
+
+        const quickref_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{project_id});
+        defer self.allocator.free(quickref_target);
+        const bootstrap_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{project_id});
+        defer self.allocator.free(bootstrap_target);
+        const workspace_status_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/workspace_status.json", .{project_id});
+        defer self.allocator.free(workspace_status_target);
+        const mounted_services_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/mounted_services.json", .{project_id});
+        defer self.allocator.free(mounted_services_target);
+        const venom_packages_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/venom_packages.json", .{project_id});
+        defer self.allocator.free(venom_packages_target);
+
+        const managed_bind_specs = [_]struct { bind_path: []const u8, target_path: []const u8 }{
+            .{ .bind_path = workspace_managed_root_absolute ++ "/protocol.json", .target_path = "/meta/protocol.json" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/shared_data", .target_path = "/shared_data" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/services", .target_path = "/services" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/local_venoms", .target_path = "/nodes/local/venoms" },
+        };
+
+        for (managed_bind_specs) |spec| {
+            try self.appendProjectBind(.managed_entrypoint, spec.bind_path, spec.target_path);
+        }
+
+        try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/agent_bootstrap_quickref.json", quickref_target);
+        try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/agent_bootstrap.json", bootstrap_target);
+        try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/workspace_status.json", workspace_status_target);
+        try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/mounted_services.json", mounted_services_target);
+        try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/venom_packages.json", venom_packages_target);
     }
 
     fn materializeProjectBindPrefixDirectories(self: *Session) !void {
@@ -2493,7 +2715,7 @@ pub const Session = struct {
         self: *Session,
         project_fs_dir: u32,
         policy: workspace_policy.WorkspacePolicy,
-    ) !void {
+    ) anyerror!void {
         for (policy.project_links.items) |link| {
             const target = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/{s}\n", .{ link.node_id, link.resource });
             defer self.allocator.free(target);
@@ -2522,12 +2744,21 @@ pub const Session = struct {
             if (!try self.ensurePolicyNodeFsTarget(nodes_root, policy, node_id_value.string)) continue;
             const mount_path_value = mount_value.object.get("mount_path") orelse continue;
             if (mount_path_value != .string or mount_path_value.string.len == 0) continue;
+            const export_name = if (mount_value.object.get("export_name")) |value|
+                if (value == .string and value.string.len > 0) value.string else null
+            else
+                null;
 
             const link_name = try projectMountPathToLinkName(self.allocator, mount_path_value.string);
             defer self.allocator.free(link_name);
             if (self.lookupChild(project_fs_dir, link_name) != null) continue;
 
-            const target = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/fs\n", .{node_id_value.string});
+            const proxy_target = (try self.resolveWorkspaceMountAliasTargetPath(
+                node_id_value.string,
+                export_name,
+            )) orelse continue;
+            defer self.allocator.free(proxy_target);
+            const target = try std.fmt.allocPrint(self.allocator, "{s}\n", .{proxy_target});
             defer self.allocator.free(target);
             _ = try self.addFile(project_fs_dir, link_name, target, false, .none);
             added = true;
@@ -2562,7 +2793,7 @@ pub const Session = struct {
         self: *Session,
         project_nodes_dir: u32,
         policy: workspace_policy.WorkspacePolicy,
-    ) !void {
+    ) anyerror!void {
         for (policy.nodes.items) |node| {
             if (self.lookupChild(project_nodes_dir, node.id) != null) continue;
             const target = try std.fmt.allocPrint(self.allocator, "/nodes/{s}\n", .{node.id});
@@ -3433,142 +3664,616 @@ pub const Session = struct {
     }
 
     fn buildProjectContractsJson(self: *Session, project_id: []const u8) ![]u8 {
-        const escaped_project_id = try unified.jsonEscape(self.allocator, project_id);
-        defer self.allocator.free(escaped_project_id);
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"version\":\"acheron-namespace-project-contract-v2\",\"project_id\":\"{s}\",\"top_level_roots\":[\"/nodes\",\"/agents\",\"/global\",\"/services\"],\"project_metadata_files\":[\"topology.json\",\"nodes.json\",\"agents.json\",\"sources.json\",\"contracts.json\",\"paths.json\",\"summary.json\",\"agent_bootstrap.json\",\"agent_bootstrap_quickref.json\",\"alerts.json\",\"workspace_status.json\",\"mounts.json\",\"desired_mounts.json\",\"actual_mounts.json\",\"binds.json\",\"mounted_services.json\",\"venom_packages.json\",\"drift.json\",\"reconcile.json\",\"availability.json\",\"health.json\"],\"links\":{{\"nodes_root\":\"/nodes\",\"agents_root\":\"/agents\",\"global_root\":\"/global\",\"services_root\":\"/services\",\"workspace_control\":\"/global/workspaces\",\"workspace_status\":\"/global/workspaces/control/invoke.json\",\"workspace_binds\":\"/projects/{s}/meta/binds.json\",\"workspace_services\":\"/projects/{s}/meta/mounted_services.json\",\"venom_packages\":\"/projects/{s}/meta/venom_packages.json\",\"agent_bootstrap\":\"/projects/{s}/meta/agent_bootstrap.json\",\"agent_bootstrap_quickref\":\"/projects/{s}/meta/agent_bootstrap_quickref.json\",\"workspace_agents_contract\":\"/AGENTS.md\",\"workspace_agents_contract_persisted\":\"/nodes/local/fs/AGENTS.md\"}}}}",
-            .{ escaped_project_id, escaped_project_id, escaped_project_id, escaped_project_id, escaped_project_id, escaped_project_id },
-        );
+        const workspace_binds = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/binds.json", .{project_id});
+        defer self.allocator.free(workspace_binds);
+        const workspace_services = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/mounted_services.json", .{project_id});
+        defer self.allocator.free(workspace_services);
+        const venom_packages_path = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/venom_packages.json", .{project_id});
+        defer self.allocator.free(venom_packages_path);
+        const agent_bootstrap = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{project_id});
+        defer self.allocator.free(agent_bootstrap);
+        const agent_bootstrap_quickref = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{project_id});
+        defer self.allocator.free(agent_bootstrap_quickref);
+
+        const project_metadata_files = [_][]const u8{
+            "topology.json",
+            "nodes.json",
+            "agents.json",
+            "sources.json",
+            "contracts.json",
+            "paths.json",
+            "summary.json",
+            "agent_bootstrap.json",
+            "agent_bootstrap_quickref.json",
+            "alerts.json",
+            "workspace_status.json",
+            "mounts.json",
+            "desired_mounts.json",
+            "actual_mounts.json",
+            "binds.json",
+            "mounted_services.json",
+            "venom_packages.json",
+            "drift.json",
+            "reconcile.json",
+            "availability.json",
+            "health.json",
+        };
+
+        var out = std.io.Writer.Allocating.init(self.allocator);
+        errdefer out.deinit();
+
+        var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
+        try jw.beginObject();
+        try jw.objectField("version");
+        try jw.write("acheron-namespace-project-contract-v2");
+        try jw.objectField("project_id");
+        try jw.write(project_id);
+        try jw.objectField("top_level_roots");
+        try jw.write(.{ "/nodes", "/agents", "/global", "/services" });
+        try jw.objectField("project_metadata_files");
+        try jw.write(project_metadata_files);
+        try jw.objectField("links");
+        try jw.beginObject();
+        try jw.objectField("nodes_root");
+        try jw.write("/nodes");
+        try jw.objectField("agents_root");
+        try jw.write("/agents");
+        try jw.objectField("global_root");
+        try jw.write("/global");
+        try jw.objectField("services_root");
+        try jw.write("/services");
+        try jw.objectField("workspace_control");
+        try jw.write("/global/workspaces");
+        try jw.objectField("workspace_status");
+        try jw.write("/global/workspaces/control/invoke.json");
+        try jw.objectField("workspace_binds");
+        try jw.write(workspace_binds);
+        try jw.objectField("workspace_services");
+        try jw.write(workspace_services);
+        try jw.objectField("venom_packages");
+        try jw.write(venom_packages_path);
+        try jw.objectField("agent_bootstrap");
+        try jw.write(agent_bootstrap);
+        try jw.objectField("agent_bootstrap_quickref");
+        try jw.write(agent_bootstrap_quickref);
+        try jw.objectField("workspace_agents_contract");
+        try jw.write("/AGENTS.md");
+        try jw.objectField("workspace_agents_contract_persisted");
+        try jw.write(workspace_agents_contract_path);
+        try jw.endObject();
+        try jw.endObject();
+        return try out.toOwnedSlice();
     }
 
     fn buildProjectPathsJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-        const escaped_project_id = try unified.jsonEscape(self.allocator, policy.project_id);
-        defer self.allocator.free(escaped_project_id);
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"project_id\":\"{s}\",\"nodes_root\":\"/nodes\",\"agents_root\":\"/agents\",\"services\":{{\"root\":\"/services\",\"mounted_services_meta\":\"/projects/{s}/meta/mounted_services.json\"}},\"packages\":{{\"meta\":\"/projects/{s}/meta/venom_packages.json\"}},\"bootstrap\":{{\"meta\":\"/projects/{s}/meta/agent_bootstrap.json\",\"quickref\":\"/projects/{s}/meta/agent_bootstrap_quickref.json\",\"workspace_contract\":{{\"namespace_alias\":\"/AGENTS.md\",\"workspace_path\":\"/nodes/local/fs/AGENTS.md\"}}}},\"global\":{{\"root\":\"/global\",\"library\":\"/global/library\",\"workspaces\":\"/global/workspaces\",\"mounts\":\"/global/mounts\"}}}}",
-            .{
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-            },
-        );
+        const mounted_services_meta = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/mounted_services.json", .{policy.project_id});
+        defer self.allocator.free(mounted_services_meta);
+        const packages_meta = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/venom_packages.json", .{policy.project_id});
+        defer self.allocator.free(packages_meta);
+        const bootstrap_meta = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{policy.project_id});
+        defer self.allocator.free(bootstrap_meta);
+        const bootstrap_quickref = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{policy.project_id});
+        defer self.allocator.free(bootstrap_quickref);
+
+        var out = std.io.Writer.Allocating.init(self.allocator);
+        errdefer out.deinit();
+
+        var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
+        try jw.beginObject();
+        try jw.objectField("project_id");
+        try jw.write(policy.project_id);
+        try jw.objectField("nodes_root");
+        try jw.write("/nodes");
+        try jw.objectField("agents_root");
+        try jw.write("/agents");
+        try jw.objectField("services");
+        try jw.beginObject();
+        try jw.objectField("root");
+        try jw.write("/services");
+        try jw.objectField("mounted_services_meta");
+        try jw.write(mounted_services_meta);
+        try jw.endObject();
+        try jw.objectField("packages");
+        try jw.beginObject();
+        try jw.objectField("meta");
+        try jw.write(packages_meta);
+        try jw.endObject();
+        try jw.objectField("bootstrap");
+        try jw.beginObject();
+        try jw.objectField("meta");
+        try jw.write(bootstrap_meta);
+        try jw.objectField("quickref");
+        try jw.write(bootstrap_quickref);
+        try jw.objectField("workspace_contract");
+        try jw.beginObject();
+        try jw.objectField("namespace_alias");
+        try jw.write("/AGENTS.md");
+        try jw.objectField("workspace_path");
+        try jw.write(workspace_agents_contract_path);
+        try jw.endObject();
+        try jw.endObject();
+        try jw.objectField("global");
+        try jw.beginObject();
+        try jw.objectField("root");
+        try jw.write("/global");
+        try jw.objectField("library");
+        try jw.write("/global/library");
+        try jw.objectField("workspaces");
+        try jw.write("/global/workspaces");
+        try jw.objectField("mounts");
+        try jw.write("/global/mounts");
+        try jw.endObject();
+        try jw.endObject();
+        return try out.toOwnedSlice();
+    }
+
+    fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_path: []const u8) ![]u8 {
+        if (std.mem.eql(u8, namespace_path, "/")) {
+            return allocator.dupe(u8, workspace_entrypoint_relative_namespace_root);
+        }
+        if (std.mem.eql(u8, namespace_path, "/AGENTS.md")) {
+            return allocator.dupe(u8, "./AGENTS.md");
+        }
+        if (std.mem.eql(u8, namespace_path, "/meta/protocol.json")) {
+            return workspaceManagedPath(allocator, "protocol.json");
+        }
+        if (std.mem.eql(u8, namespace_path, "/shared_data")) {
+            return workspaceManagedChildPath(allocator, workspace_managed_shared_data_dir_name, null);
+        }
+        if (std.mem.startsWith(u8, namespace_path, "/shared_data/")) {
+            return workspaceManagedSharedDataPath(allocator, namespace_path["/shared_data/".len..]);
+        }
+        if (std.mem.eql(u8, namespace_path, "/services")) {
+            return workspaceManagedServicesPath(allocator, null);
+        }
+        if (std.mem.startsWith(u8, namespace_path, "/services/")) {
+            return workspaceManagedServicesPath(allocator, namespace_path["/services/".len..]);
+        }
+        if (std.mem.eql(u8, namespace_path, "/nodes/local/venoms")) {
+            return workspaceManagedChildPath(allocator, workspace_managed_local_venoms_dir_name, null);
+        }
+        if (std.mem.startsWith(u8, namespace_path, "/nodes/local/venoms/")) {
+            return workspaceManagedLocalVenomsPath(allocator, namespace_path["/nodes/local/venoms/".len..]);
+        }
+        if (std.mem.endsWith(u8, namespace_path, "/meta/agent_bootstrap_quickref.json")) {
+            return workspaceManagedPath(allocator, "agent_bootstrap_quickref.json");
+        }
+        if (std.mem.endsWith(u8, namespace_path, "/meta/agent_bootstrap.json")) {
+            return workspaceManagedPath(allocator, "agent_bootstrap.json");
+        }
+        if (std.mem.endsWith(u8, namespace_path, "/meta/workspace_status.json")) {
+            return workspaceManagedPath(allocator, "workspace_status.json");
+        }
+        if (std.mem.endsWith(u8, namespace_path, "/meta/mounted_services.json")) {
+            return workspaceManagedPath(allocator, "mounted_services.json");
+        }
+        if (std.mem.endsWith(u8, namespace_path, "/meta/venom_packages.json")) {
+            return workspaceManagedPath(allocator, "venom_packages.json");
+        }
+        if (std.mem.eql(u8, namespace_path, local_fs_world_prefix)) {
+            return allocator.dupe(u8, ".");
+        }
+        if (std.mem.startsWith(u8, namespace_path, local_fs_world_prefix ++ "/")) {
+            return allocator.dupe(u8, namespace_path[local_fs_world_prefix.len + 1 ..]);
+        }
+        if (namespace_path.len > 1 and namespace_path[0] == '/') {
+            return std.fmt.allocPrint(allocator, "{s}/{s}", .{
+                workspace_entrypoint_relative_namespace_root,
+                namespace_path[1..],
+            });
+        }
+        return allocator.dupe(u8, namespace_path);
+    }
+
+    fn relativeProjectMetaPath(allocator: std.mem.Allocator, project_id: []const u8, leaf: ?[]const u8) ![]u8 {
+        const namespace_path = if (leaf) |value|
+            try std.fmt.allocPrint(allocator, "/projects/{s}/meta/{s}", .{ project_id, value })
+        else
+            try std.fmt.allocPrint(allocator, "/projects/{s}/meta", .{project_id});
+        defer allocator.free(namespace_path);
+        return namespacePathToEntrypointRelative(allocator, namespace_path);
+    }
+
+    fn workspaceManagedPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
+        return if (leaf) |value|
+            std.fmt.allocPrint(allocator, "{s}/{s}", .{ workspace_managed_root_relative, value })
+        else
+            allocator.dupe(u8, workspace_managed_root_relative);
+    }
+
+    fn workspaceManagedChildPath(allocator: std.mem.Allocator, child_dir: []const u8, leaf: ?[]const u8) ![]u8 {
+        return if (leaf) |value|
+            std.fmt.allocPrint(allocator, "{s}/{s}/{s}", .{ workspace_managed_root_relative, child_dir, value })
+        else
+            std.fmt.allocPrint(allocator, "{s}/{s}", .{ workspace_managed_root_relative, child_dir });
+    }
+
+    fn workspaceManagedSharedDataPath(allocator: std.mem.Allocator, leaf: []const u8) ![]u8 {
+        return workspaceManagedChildPath(allocator, workspace_managed_shared_data_dir_name, leaf);
+    }
+
+    fn workspaceManagedServicesPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
+        return workspaceManagedChildPath(allocator, workspace_managed_services_dir_name, leaf);
+    }
+
+    fn workspaceManagedLocalVenomsPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
+        return workspaceManagedChildPath(allocator, workspace_managed_local_venoms_dir_name, leaf);
+    }
+
+    const BootstrapContractPaths = struct {
+        protocol_path: []const u8,
+        project_meta_dir: []const u8,
+        quickref_path: []const u8,
+        bootstrap_path: []const u8,
+        workspace_status_path: []const u8,
+        venom_packages_path: []const u8,
+        mounted_services_path: []const u8,
+        shared_data_root: []const u8,
+        world_seed_path: []const u8,
+        items_seed_path: []const u8,
+        puzzle_seed_path: []const u8,
+        service_root: []const u8,
+        ensure_home_path: []const u8,
+        repair_bind_path: []const u8,
+        register_worker_path: []const u8,
+        local_venoms_root: []const u8,
+        target_template: []const u8,
+        missions_service_root: []const u8,
+
+        fn init(allocator: std.mem.Allocator, project_id: []const u8) !BootstrapContractPaths {
+            _ = project_id;
+            return .{
+                .protocol_path = try workspaceManagedPath(allocator, "protocol.json"),
+                .project_meta_dir = try workspaceManagedPath(allocator, null),
+                .quickref_path = try workspaceManagedPath(allocator, "agent_bootstrap_quickref.json"),
+                .bootstrap_path = try workspaceManagedPath(allocator, "agent_bootstrap.json"),
+                .workspace_status_path = try workspaceManagedPath(allocator, "workspace_status.json"),
+                .venom_packages_path = try workspaceManagedPath(allocator, "venom_packages.json"),
+                .mounted_services_path = try workspaceManagedPath(allocator, "mounted_services.json"),
+                .shared_data_root = try workspaceManagedPath(allocator, "shared_data"),
+                .world_seed_path = try workspaceManagedSharedDataPath(allocator, "world_seed.json"),
+                .items_seed_path = try workspaceManagedSharedDataPath(allocator, "items_seed.json"),
+                .puzzle_seed_path = try workspaceManagedSharedDataPath(allocator, "puzzle_seed.json"),
+                .service_root = try workspaceManagedServicesPath(allocator, null),
+                .ensure_home_path = try workspaceManagedServicesPath(allocator, "home/control/ensure.json"),
+                .repair_bind_path = try workspaceManagedServicesPath(allocator, "mounts/control/bind.json"),
+                .register_worker_path = try workspaceManagedServicesPath(allocator, "workers/control/register.json"),
+                .local_venoms_root = try workspaceManagedChildPath(allocator, workspace_managed_local_venoms_dir_name, null),
+                .target_template = try workspaceManagedLocalVenomsPath(allocator, "{venom_id}"),
+                .missions_service_root = try workspaceManagedServicesPath(allocator, "missions"),
+            };
+        }
+
+        fn deinit(self: BootstrapContractPaths, allocator: std.mem.Allocator) void {
+            allocator.free(self.protocol_path);
+            allocator.free(self.project_meta_dir);
+            allocator.free(self.quickref_path);
+            allocator.free(self.bootstrap_path);
+            allocator.free(self.workspace_status_path);
+            allocator.free(self.venom_packages_path);
+            allocator.free(self.mounted_services_path);
+            allocator.free(self.shared_data_root);
+            allocator.free(self.world_seed_path);
+            allocator.free(self.items_seed_path);
+            allocator.free(self.puzzle_seed_path);
+            allocator.free(self.service_root);
+            allocator.free(self.ensure_home_path);
+            allocator.free(self.repair_bind_path);
+            allocator.free(self.register_worker_path);
+            allocator.free(self.local_venoms_root);
+            allocator.free(self.target_template);
+            allocator.free(self.missions_service_root);
+        }
+    };
+
+    fn writeBootstrapRequiredServices(self: *Session, jw: *std.json.Stringify) !usize {
+        var present_count: usize = 0;
+        try jw.beginArray();
+        for (bootstrap_required_services) |service| {
+            const bind_namespace_path = try std.fmt.allocPrint(self.allocator, "/services/{s}", .{service.id});
+            defer self.allocator.free(bind_namespace_path);
+            const bind_path = try namespacePathToEntrypointRelative(self.allocator, bind_namespace_path);
+            defer self.allocator.free(bind_path);
+
+            const present = self.hasProjectBindPath(bind_namespace_path);
+            if (present) present_count += 1;
+
+            const ensure_path = if (service.ensure_path) |value|
+                try namespacePathToEntrypointRelative(self.allocator, value)
+            else
+                null;
+            defer if (ensure_path) |value| self.allocator.free(value);
+
+            const invoke_path = if (service.invoke_path) |value|
+                try namespacePathToEntrypointRelative(self.allocator, value)
+            else
+                null;
+            defer if (invoke_path) |value| self.allocator.free(value);
+
+            try jw.beginObject();
+            try jw.objectField("service_id");
+            try jw.write(service.id);
+            try jw.objectField("path");
+            try jw.write(bind_path);
+            try jw.objectField("present");
+            try jw.write(present);
+            try jw.objectField("ensure_path");
+            try jw.write(ensure_path);
+            try jw.objectField("invoke_path");
+            try jw.write(invoke_path);
+            try jw.endObject();
+        }
+        try jw.endArray();
+        return present_count;
     }
 
     fn buildAgentBootstrapQuickrefJson(self: *Session, project_id: []const u8, agent_id: []const u8) ![]u8 {
-        const escaped_project_id = try unified.jsonEscape(self.allocator, project_id);
-        defer self.allocator.free(escaped_project_id);
-        const escaped_agent_id = try unified.jsonEscape(self.allocator, agent_id);
-        defer self.allocator.free(escaped_agent_id);
+        const paths = try BootstrapContractPaths.init(self.allocator, project_id);
+        defer paths.deinit(self.allocator);
 
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
+        const discovery_order = [_][]const u8{
+            "./AGENTS.md",
+            paths.protocol_path,
+            paths.quickref_path,
+            paths.bootstrap_path,
+            paths.world_seed_path,
+            paths.items_seed_path,
+            paths.puzzle_seed_path,
+        };
 
-        try out.writer(self.allocator).print(
-            "{{\"version\":\"spiderweb-agent-bootstrap-quickref-v1\",\"project_id\":\"{s}\",\"agent_id\":\"{s}\",\"namespace_root\":\"/\",\"project_write_root\":\"/nodes/local/fs\",\"shared_data_root\":\"/shared_data\",\"service_root\":\"/services\",\"workspace_contract\":{{\"namespace_path\":\"/AGENTS.md\",\"project_copy\":\"/nodes/local/fs/AGENTS.md\",\"managed_root\":\"/nodes/local/fs/.spiderweb\"}},\"paths\":{{\"protocol\":\"meta/protocol.json\",\"project_meta_dir\":\"projects/{s}/meta\",\"quickref\":\"projects/{s}/meta/agent_bootstrap_quickref.json\",\"bootstrap\":\"projects/{s}/meta/agent_bootstrap.json\",\"workspace_status\":\"projects/{s}/meta/workspace_status.json\",\"venom_packages\":\"projects/{s}/meta/venom_packages.json\",\"mounted_services\":\"projects/{s}/meta/mounted_services.json\",\"shared_data_root\":\"shared_data\",\"service_root\":\"services\",\"project_write_root\":\"nodes/local/fs\"}},\"discovery_order\":[\"AGENTS.md\",\"meta/protocol.json\",\"projects/{s}/meta/agent_bootstrap_quickref.json\",\"projects/{s}/meta/agent_bootstrap.json\",\"shared_data/world_seed.json\",\"shared_data/items_seed.json\",\"shared_data/puzzle_seed.json\"],\"fallback_meta\":{{\"mounted_services\":\"projects/{s}/meta/mounted_services.json\",\"venom_packages\":\"projects/{s}/meta/venom_packages.json\"}},\"required_services\":[",
-            .{
-                escaped_project_id,
-                escaped_agent_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-            },
-        );
+        var out = std.io.Writer.Allocating.init(self.allocator);
+        errdefer out.deinit();
 
-        var present_count: usize = 0;
-        for (bootstrap_required_services, 0..) |service, idx| {
-            if (idx != 0) try out.append(self.allocator, ',');
+        var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
+        try jw.beginObject();
+        try jw.objectField("version");
+        try jw.write("spiderweb-agent-bootstrap-quickref-v1");
+        try jw.objectField("project_id");
+        try jw.write(project_id);
+        try jw.objectField("agent_id");
+        try jw.write(agent_id);
+        try jw.objectField("project_write_root");
+        try jw.write(".");
+        try jw.objectField("shared_data_root");
+        try jw.write(paths.shared_data_root);
+        try jw.objectField("service_root");
+        try jw.write(paths.service_root);
 
-            const bind_path = try std.fmt.allocPrint(self.allocator, "/services/{s}", .{service.id});
-            defer self.allocator.free(bind_path);
-            const present = self.hasProjectBindPath(bind_path);
-            if (present) present_count += 1;
+        try jw.objectField("workspace_contract");
+        try jw.beginObject();
+        try jw.objectField("entrypoint_path");
+        try jw.write("./AGENTS.md");
+        try jw.objectField("managed_root");
+        try jw.write("./.spiderweb");
+        try jw.endObject();
 
-            const escaped_service_id = try unified.jsonEscape(self.allocator, service.id);
-            defer self.allocator.free(escaped_service_id);
-            const escaped_bind_path = try unified.jsonEscape(self.allocator, bind_path);
-            defer self.allocator.free(escaped_bind_path);
+        try jw.objectField("paths");
+        try jw.beginObject();
+        try jw.objectField("protocol");
+        try jw.write(paths.protocol_path);
+        try jw.objectField("project_meta_dir");
+        try jw.write(paths.project_meta_dir);
+        try jw.objectField("quickref");
+        try jw.write(paths.quickref_path);
+        try jw.objectField("bootstrap");
+        try jw.write(paths.bootstrap_path);
+        try jw.objectField("workspace_status");
+        try jw.write(paths.workspace_status_path);
+        try jw.objectField("venom_packages");
+        try jw.write(paths.venom_packages_path);
+        try jw.objectField("mounted_services");
+        try jw.write(paths.mounted_services_path);
+        try jw.objectField("shared_data_root");
+        try jw.write(paths.shared_data_root);
+        try jw.objectField("service_root");
+        try jw.write(paths.service_root);
+        try jw.objectField("project_write_root");
+        try jw.write(".");
+        try jw.endObject();
 
-            const ensure_json = if (service.ensure_path) |value| blk: {
-                const escaped = try unified.jsonEscape(self.allocator, value);
-                defer self.allocator.free(escaped);
-                break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-            } else try self.allocator.dupe(u8, "null");
-            defer self.allocator.free(ensure_json);
+        try jw.objectField("discovery_order");
+        try jw.write(discovery_order);
 
-            const invoke_json = if (service.invoke_path) |value| blk: {
-                const escaped = try unified.jsonEscape(self.allocator, value);
-                defer self.allocator.free(escaped);
-                break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-            } else try self.allocator.dupe(u8, "null");
-            defer self.allocator.free(invoke_json);
+        try jw.objectField("fallback_meta");
+        try jw.beginObject();
+        try jw.objectField("mounted_services");
+        try jw.write(paths.mounted_services_path);
+        try jw.objectField("venom_packages");
+        try jw.write(paths.venom_packages_path);
+        try jw.endObject();
 
-            try out.writer(self.allocator).print(
-                "{{\"service_id\":\"{s}\",\"path\":\"{s}\",\"present\":{s},\"ensure_path\":{s},\"invoke_path\":{s}}}",
-                .{
-                    escaped_service_id,
-                    escaped_bind_path,
-                    if (present) "true" else "false",
-                    ensure_json,
-                    invoke_json,
-                },
-            );
-        }
+        try jw.objectField("required_services");
+        const present_count = try self.writeBootstrapRequiredServices(&jw);
 
-        try out.writer(self.allocator).print(
-            "],\"all_required_services_present\":{s},\"required_service_count\":{d},\"required_services_present_count\":{d},\"control_writes\":{{\"ensure_home\":\"/services/home/control/ensure.json\",\"repair_bind\":\"/services/mounts/control/bind.json\"}},\"implementation_hint\":{{\"prefer_quickref_over_raw_service_enumeration\":true,\"proceed_directly_when_ready\":true}}}}",
-            .{
-                if (present_count == bootstrap_required_services.len) "true" else "false",
-                bootstrap_required_services.len,
-                present_count,
-            },
-        );
+        try jw.objectField("all_required_services_present");
+        try jw.write(present_count == bootstrap_required_services.len);
+        try jw.objectField("required_service_count");
+        try jw.write(bootstrap_required_services.len);
+        try jw.objectField("required_services_present_count");
+        try jw.write(present_count);
 
-        return out.toOwnedSlice(self.allocator);
+        try jw.objectField("control_writes");
+        try jw.beginObject();
+        try jw.objectField("ensure_home");
+        try jw.write(paths.ensure_home_path);
+        try jw.objectField("repair_bind");
+        try jw.write(paths.repair_bind_path);
+        try jw.endObject();
+
+        try jw.objectField("implementation_hint");
+        try jw.beginObject();
+        try jw.objectField("prefer_quickref_over_raw_service_enumeration");
+        try jw.write(true);
+        try jw.objectField("proceed_directly_when_ready");
+        try jw.write(true);
+        try jw.endObject();
+
+        try jw.endObject();
+        return try out.toOwnedSlice();
     }
 
     fn buildAgentBootstrapJson(self: *Session, project_id: []const u8, agent_id: []const u8) ![]u8 {
-        const escaped_project_id = try unified.jsonEscape(self.allocator, project_id);
-        defer self.allocator.free(escaped_project_id);
-        const escaped_agent_id = try unified.jsonEscape(self.allocator, agent_id);
-        defer self.allocator.free(escaped_agent_id);
-        const escaped_target_template = try unified.jsonEscape(self.allocator, "/nodes/local/venoms/{venom_id}");
-        defer self.allocator.free(escaped_target_template);
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"version\":\"spiderweb-agent-bootstrap-v1\",\"project_id\":\"{s}\",\"agent_id\":\"{s}\",\"namespace_root\":\"/\",\"project_write_root\":\"/nodes/local/fs\",\"shared_data_root\":\"/shared_data\",\"workspace_contract\":{{\"namespace_path\":\"/AGENTS.md\",\"project_copy\":\"/nodes/local/fs/AGENTS.md\",\"task_source\":\"user_prompt\",\"managed_root\":\"/nodes/local/fs/.spiderweb\"}},\"paths\":{{\"protocol\":\"meta/protocol.json\",\"project_meta_dir\":\"projects/{s}/meta\",\"quickref\":\"projects/{s}/meta/agent_bootstrap_quickref.json\",\"bootstrap\":\"projects/{s}/meta/agent_bootstrap.json\",\"workspace_status\":\"projects/{s}/meta/workspace_status.json\",\"venom_packages\":\"projects/{s}/meta/venom_packages.json\",\"mounted_services\":\"projects/{s}/meta/mounted_services.json\",\"shared_data_root\":\"shared_data\",\"service_root\":\"services\",\"project_write_root\":\"nodes/local/fs\"}},\"service_preference\":{{\"preferred_root\":\"/services\",\"fallback_roots\":[\"/global\",\"/nodes/local/venoms\"]}},\"required_reads\":[\"AGENTS.md\",\"meta/protocol.json\",\"projects/{s}/meta/agent_bootstrap_quickref.json\",\"projects/{s}/meta/agent_bootstrap.json\",\"shared_data/world_seed.json\",\"shared_data/items_seed.json\",\"shared_data/puzzle_seed.json\"],\"fallback_reads\":[\"projects/{s}/meta/mounted_services.json\",\"projects/{s}/meta/workspace_status.json\",\"projects/{s}/meta/venom_packages.json\"],\"bootstrap_sequence\":[{{\"step\":\"ensure_home\",\"service\":\"/services/home\",\"invoke_path\":\"/services/home/control/ensure.json\",\"payload\":{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\"}},\"required\":true}},{{\"step\":\"verify_generic_services\",\"service\":\"/services/mounts\",\"required_services\":[\"home\",\"mounts\",\"workers\",\"terminal\",\"git\",\"search_code\",\"library\",\"events\"],\"repair_invoke_path\":\"/services/mounts/control/bind.json\",\"target_template\":\"{s}\",\"required\":true}},{{\"step\":\"optional_worker_register\",\"service\":\"/services/workers\",\"invoke_path\":\"/services/workers/control/register.json\",\"default_venoms\":[\"memory\",\"sub_brains\"],\"required\":false}}],\"persistence\":{{\"shared_project_binds\":\"persistent\",\"shared_project_mounts\":\"persistent\",\"agent_home\":\"durable_per_agent\",\"worker_loopback\":\"ephemeral\"}},\"detach\":{{\"shared_changes\":\"keep\",\"worker_state\":\"detach_or_ttl_cleanup\"}}}}",
-            .{
-                escaped_project_id,
-                escaped_agent_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_project_id,
-                escaped_agent_id,
-                escaped_project_id,
-                escaped_target_template,
-            },
-        );
+        const paths = try BootstrapContractPaths.init(self.allocator, project_id);
+        defer paths.deinit(self.allocator);
+
+        const required_reads = [_][]const u8{
+            "./AGENTS.md",
+            paths.protocol_path,
+            paths.quickref_path,
+            paths.bootstrap_path,
+            paths.world_seed_path,
+            paths.items_seed_path,
+            paths.puzzle_seed_path,
+        };
+        const fallback_reads = [_][]const u8{
+            paths.mounted_services_path,
+            paths.workspace_status_path,
+            paths.venom_packages_path,
+        };
+        const required_service_ids = [_][]const u8{ "home", "mounts", "workers", "terminal", "git", "search_code", "library", "events" };
+        const default_worker_venoms = [_][]const u8{ "memory", "sub_brains" };
+        const fallback_roots = [_][]const u8{paths.local_venoms_root};
+
+        var out = std.io.Writer.Allocating.init(self.allocator);
+        errdefer out.deinit();
+
+        var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
+        try jw.beginObject();
+        try jw.objectField("version");
+        try jw.write("spiderweb-agent-bootstrap-v1");
+        try jw.objectField("project_id");
+        try jw.write(project_id);
+        try jw.objectField("agent_id");
+        try jw.write(agent_id);
+        try jw.objectField("project_write_root");
+        try jw.write(".");
+        try jw.objectField("shared_data_root");
+        try jw.write(paths.shared_data_root);
+
+        try jw.objectField("workspace_contract");
+        try jw.beginObject();
+        try jw.objectField("entrypoint_path");
+        try jw.write("./AGENTS.md");
+        try jw.objectField("task_source");
+        try jw.write("user_prompt");
+        try jw.objectField("managed_root");
+        try jw.write("./.spiderweb");
+        try jw.endObject();
+
+        try jw.objectField("paths");
+        try jw.beginObject();
+        try jw.objectField("protocol");
+        try jw.write(paths.protocol_path);
+        try jw.objectField("quickref");
+        try jw.write(paths.quickref_path);
+        try jw.objectField("bootstrap");
+        try jw.write(paths.bootstrap_path);
+        try jw.objectField("workspace_status");
+        try jw.write(paths.workspace_status_path);
+        try jw.objectField("venom_packages");
+        try jw.write(paths.venom_packages_path);
+        try jw.objectField("mounted_services");
+        try jw.write(paths.mounted_services_path);
+        try jw.objectField("shared_data_root");
+        try jw.write(paths.shared_data_root);
+        try jw.objectField("service_root");
+        try jw.write(paths.service_root);
+        try jw.objectField("project_write_root");
+        try jw.write(".");
+        try jw.endObject();
+
+        try jw.objectField("service_preference");
+        try jw.beginObject();
+        try jw.objectField("preferred_root");
+        try jw.write(paths.service_root);
+        try jw.objectField("fallback_roots");
+        try jw.write(fallback_roots);
+        try jw.endObject();
+
+        try jw.objectField("required_reads");
+        try jw.write(required_reads);
+        try jw.objectField("fallback_reads");
+        try jw.write(fallback_reads);
+
+        try jw.objectField("bootstrap_sequence");
+        try jw.beginArray();
+
+        try jw.beginObject();
+        try jw.objectField("step");
+        try jw.write("ensure_home");
+        try jw.objectField("service");
+        try jw.write("./.spiderweb/services/home");
+        try jw.objectField("invoke_path");
+        try jw.write(paths.ensure_home_path);
+        try jw.objectField("payload");
+        try jw.beginObject();
+        try jw.objectField("agent_id");
+        try jw.write(agent_id);
+        try jw.objectField("project_id");
+        try jw.write(project_id);
+        try jw.endObject();
+        try jw.objectField("required");
+        try jw.write(true);
+        try jw.endObject();
+
+        try jw.beginObject();
+        try jw.objectField("step");
+        try jw.write("verify_generic_services");
+        try jw.objectField("service");
+        try jw.write("./.spiderweb/services/mounts");
+        try jw.objectField("required_services");
+        try jw.write(required_service_ids);
+        try jw.objectField("repair_invoke_path");
+        try jw.write(paths.repair_bind_path);
+        try jw.objectField("target_template");
+        try jw.write(paths.target_template);
+        try jw.objectField("required");
+        try jw.write(true);
+        try jw.endObject();
+
+        try jw.beginObject();
+        try jw.objectField("step");
+        try jw.write("optional_worker_register");
+        try jw.objectField("service");
+        try jw.write("./.spiderweb/services/workers");
+        try jw.objectField("invoke_path");
+        try jw.write(paths.register_worker_path);
+        try jw.objectField("default_venoms");
+        try jw.write(default_worker_venoms);
+        try jw.objectField("required");
+        try jw.write(false);
+        try jw.endObject();
+
+        try jw.endArray();
+
+        try jw.objectField("persistence");
+        try jw.beginObject();
+        try jw.objectField("shared_project_binds");
+        try jw.write("persistent");
+        try jw.objectField("shared_project_mounts");
+        try jw.write("persistent");
+        try jw.objectField("agent_home");
+        try jw.write("durable_per_agent");
+        try jw.objectField("worker_loopback");
+        try jw.write("ephemeral");
+        try jw.endObject();
+
+        try jw.objectField("detach");
+        try jw.beginObject();
+        try jw.objectField("shared_changes");
+        try jw.write("keep");
+        try jw.objectField("worker_state");
+        try jw.write("detach_or_ttl_cleanup");
+        try jw.endObject();
+
+        try jw.endObject();
+        return try out.toOwnedSlice();
     }
 
     fn buildWorkspaceAgentsManagedBlock(self: *Session, project_id: []const u8) ![]u8 {
+        const paths = try BootstrapContractPaths.init(self.allocator, project_id);
+        defer paths.deinit(self.allocator);
+
         var available_services = std.ArrayListUnmanaged(u8){};
         defer available_services.deinit(self.allocator);
         var missing_services = std.ArrayListUnmanaged(u8){};
@@ -3601,32 +4306,34 @@ pub const Session = struct {
             \\
             \\## What This Folder Is
             \\You are in a mounted Spiderweb workspace. The workspace itself is the durable collaboration surface; agents may come and go.
+            \\In the normal interactive flow, the agent starts in this directory, so `.` is the project write root. Spiderweb projects the required bootstrap and service surfaces into `./.spiderweb/` as part of this same mounted workspace contract, so you do not need to climb out of this directory with `..`.
             \\
             \\## Project Vision
             \\{s}
             \\
             \\## Required Bootstrap Flow
             \\1. Read `AGENTS.md` first.
-            \\2. Treat the mounted namespace root as `/` for this session. Then read only these required files, in order:
-            \\   - `meta/protocol.json`
-            \\   - `projects/{s}/meta/agent_bootstrap_quickref.json`
-            \\   - `projects/{s}/meta/agent_bootstrap.json`
-            \\   - `shared_data/world_seed.json`
-            \\   - `shared_data/items_seed.json`
-            \\   - `shared_data/puzzle_seed.json`
-            \\3. Use `/services/*` as the preferred service surface. Only use fallback roots from `agent_bootstrap.json` if a required service is missing.
-            \\4. If `/services/home/control/ensure.json` succeeds and `agent_bootstrap_quickref.json` says `all_required_services_present=true`, treat bootstrap as complete immediately and start implementation. Do not keep exploring or re-probing services after that point.
-            \\5. Keep project writes inside `nodes/local/fs/` unless the user prompt explicitly says otherwise.
+            \\2. Read only these required files, in order, using paths relative to this directory:
+            \\   - `{s}`
+            \\   - `{s}`
+            \\   - `{s}`
+            \\   - `{s}`
+            \\   - `{s}`
+            \\   - `{s}`
+            \\3. Use `{s}/*` as the preferred service surface. Only use fallback roots from `agent_bootstrap.json` if a required service is missing.
+            \\4. If `{s}` succeeds and `agent_bootstrap_quickref.json` says `all_required_services_present=true`, treat bootstrap as complete immediately and start implementation. Do not keep exploring or re-probing services after that point.
+            \\5. Keep project writes inside the current directory `.` unless the user prompt explicitly says otherwise.
             \\6. When creating or fixing project files, rewrite the whole target file in one pass. Do not append partial repair fragments to an existing file.
             \\7. If `game.py` fails `py_compile` or the walkthrough run, delete and recreate `game.py` from scratch before retrying.
             \\8. Do not run broad scans such as `find`, `rg --files`, or recursive `ls` across `services/`, `projects/`, or `meta/`. Read only the exact listed files directly.
             \\
             \\## Namespace Paths
-            \\- Namespace root: `.` and `/`
-            \\- Namespace alias for this file: `AGENTS.md` and `/AGENTS.md`
-            \\- Project write root: `nodes/local/fs` and `/nodes/local/fs`
-            \\- Shared data root: `shared_data` and `/shared_data`
-            \\- Service root: `services` and `/services`
+            \\- Current working directory: `.`
+            \\- This file: `./AGENTS.md`
+            \\- Spiderweb-managed entrypoint root: `./.spiderweb`
+            \\- Shared data root from here: `{s}`
+            \\- Service root from here: `{s}`
+            \\- Fallback local venom root from here: `{s}`
             \\
             \\## Current Service Surface
             \\- Present required services: {s}
@@ -3636,25 +4343,36 @@ pub const Session = struct {
             \\For this milestone, the concrete task comes from the user prompt after bootstrap. Do not assume there is a `TASK.md`.
             \\After the required reads above, move directly into implementation and validation unless a required service is genuinely missing.
             \\If the user asks for the standard text-adventure task, completion means:
-            \\- Write `nodes/local/fs/game.py`, `nodes/local/fs/game_manifest.json`, `nodes/local/fs/walkthrough.txt`, and `nodes/local/fs/README.md`.
-            \\- Run `python3 -m py_compile nodes/local/fs/game.py`.
-            \\- Run `python3 nodes/local/fs/game.py < nodes/local/fs/walkthrough.txt`.
-            \\- Run `python3 nodes/local/fs/validate_game.py --workspace nodes/local/fs --shared-data shared_data --output nodes/local/fs/game_validation.json`.
+            \\- Write `game.py`, `game_manifest.json`, `walkthrough.txt`, and `README.md` in the current directory.
+            \\- Run `python3 -m py_compile game.py`.
+            \\- Run `python3 game.py < walkthrough.txt`.
+            \\- Run `python3 validate_game.py --workspace . --shared-data {s} --output game_validation.json`.
             \\- If a validation step fails, fix the project files and rerun only the failed step.
             \\- Do not stop after creating partial outputs. Finish when all required files exist and validation succeeds.
             \\
             \\## Future Missions
-            \\If the workspace later materializes mission files under `.spiderweb/` or exposes `/services/missions`, treat them as workspace-owned guidance in addition to the user prompt.
+            \\If the workspace later materializes mission files under `.spiderweb/` or exposes `{s}`, treat them as workspace-owned guidance in addition to the user prompt.
             \\
             \\{s}
         ,
             .{
                 workspace_agents_managed_begin,
                 vision_text,
-                project_id,
-                project_id,
+                paths.protocol_path,
+                paths.quickref_path,
+                paths.bootstrap_path,
+                paths.world_seed_path,
+                paths.items_seed_path,
+                paths.puzzle_seed_path,
+                paths.service_root,
+                paths.ensure_home_path,
+                paths.shared_data_root,
+                paths.service_root,
+                paths.local_venoms_root,
                 available_text,
                 missing_text,
+                paths.shared_data_root,
+                paths.missions_service_root,
                 workspace_agents_managed_end,
             },
         );
@@ -4017,14 +4735,14 @@ pub const Session = struct {
         );
         defer self.allocator.free(request_json);
 
-        if (plane.workspaceStatus(self.agent_id, request_json) catch null) |status_json| {
+        if (plane.workspaceStatusWithRole(self.agent_id, request_json, self.is_admin) catch null) |status_json| {
             if (try self.workspaceStatusMatchesProject(status_json, project_id)) {
                 return status_json;
             }
             self.allocator.free(status_json);
         }
 
-        if (plane.workspaceStatus(self.agent_id, null) catch null) |status_json| {
+        if (plane.workspaceStatusWithRole(self.agent_id, null, self.is_admin) catch null) |status_json| {
             if (try self.workspaceStatusMatchesProject(status_json, project_id)) {
                 return status_json;
             }
@@ -5753,9 +6471,6 @@ pub const Session = struct {
     }
 
     fn resolveWalkChild(self: *Session, parent_id: u32, name: []const u8) !?u32 {
-        if (self.lookupChild(parent_id, name)) |child| return child;
-        if (self.project_binds.items.len == 0) return null;
-
         const parent_path = try self.nodeAbsolutePath(parent_id);
         defer self.allocator.free(parent_path);
         const child_path = if (std.mem.eql(u8, parent_path, "/"))
@@ -5764,6 +6479,41 @@ pub const Session = struct {
             try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ parent_path, name });
         defer self.allocator.free(child_path);
 
+        if (self.project_binds.items.len > 0) {
+            const resolved_path = try self.resolveBoundPath(child_path);
+            defer if (resolved_path) |value| self.allocator.free(value);
+            if (resolved_path) |value| {
+                if (!std.mem.eql(u8, value, child_path)) {
+                    if (self.resolveAbsolutePathNoBinds(value)) |resolved_id| return resolved_id;
+                }
+            }
+        }
+
+        if (self.lookupChild(parent_id, name)) |child| return child;
+        if (self.project_binds.items.len == 0) return null;
+
+        const projected_parent_path = try self.resolveProjectedPathForBoundTarget(parent_path);
+        defer if (projected_parent_path) |value| self.allocator.free(value);
+        if (projected_parent_path) |value| {
+            if (!std.mem.eql(u8, value, parent_path)) {
+                const projected_child_path = if (std.mem.eql(u8, value, "/"))
+                    try std.fmt.allocPrint(self.allocator, "/{s}", .{name})
+                else
+                    try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ value, name });
+                defer self.allocator.free(projected_child_path);
+
+                const rebound = try self.resolveBoundPath(projected_child_path);
+                defer if (rebound) |resolved| self.allocator.free(resolved);
+                if (rebound) |resolved| {
+                    if (!std.mem.eql(u8, resolved, projected_child_path)) {
+                        if (self.resolveAbsolutePathNoBinds(resolved)) |resolved_id| return resolved_id;
+                    }
+                }
+
+                if (self.resolveAbsolutePathNoBinds(projected_child_path)) |resolved_id| return resolved_id;
+            }
+        }
+
         const resolved_path = try self.resolveBoundPath(child_path);
         defer if (resolved_path) |value| self.allocator.free(value);
         if (resolved_path == null) return null;
@@ -5771,6 +6521,51 @@ pub const Session = struct {
     }
 
     fn resolveBoundPath(self: *Session, path: []const u8) !?[]u8 {
+        if (self.project_binds.items.len == 0) return null;
+
+        var current_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(current_path);
+        var changed = false;
+        var depth: usize = 0;
+        while (depth < 16) : (depth += 1) {
+            const rebound = try self.resolveBoundPathOnce(current_path) orelse {
+                if (!changed) {
+                    self.allocator.free(current_path);
+                    return null;
+                }
+                return current_path;
+            };
+            if (std.mem.eql(u8, rebound, current_path)) {
+                self.allocator.free(current_path);
+                return rebound;
+            }
+            changed = true;
+            self.allocator.free(current_path);
+            current_path = rebound;
+        }
+        self.allocator.free(current_path);
+        return error.InvalidPath;
+    }
+
+    fn resolveProjectedPathForBoundTarget(self: *Session, path: []const u8) !?[]u8 {
+        if (self.project_binds.items.len == 0) return null;
+
+        var selected: ?PathBind = null;
+        for (self.project_binds.items) |bind| {
+            if (!pathMatchesPrefixBoundary(path, bind.target_path)) continue;
+            if (selected == null or bind.target_path.len > selected.?.target_path.len) selected = bind;
+        }
+
+        if (selected) |bind| {
+            const suffix = path[bind.target_path.len..];
+            if (suffix.len == 0) return try self.allocator.dupe(u8, bind.bind_path);
+            if (std.mem.eql(u8, bind.bind_path, "/")) return try std.fmt.allocPrint(self.allocator, "{s}", .{suffix});
+            return try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ bind.bind_path, suffix });
+        }
+        return null;
+    }
+
+    fn resolveBoundPathOnce(self: *Session, path: []const u8) !?[]u8 {
         if (self.project_binds.items.len == 0) return null;
         var selected: ?PathBind = null;
         for (self.project_binds.items) |bind| {
@@ -5815,6 +6610,20 @@ pub const Session = struct {
             if (segment.len == 0) continue;
             const next = self.lookupChild(node_id, segment) orelse return null;
             node_id = next;
+        }
+        return node_id;
+    }
+
+    fn resolveAbsolutePathForMountGraphNoBinds(self: *Session, path: []const u8) !?u32 {
+        if (!std.mem.startsWith(u8, path, "/")) return null;
+        if (std.mem.eql(u8, path, "/")) return self.root_id;
+
+        var node_id = self.root_id;
+        var iter = std.mem.splitScalar(u8, path, '/');
+        while (iter.next()) |segment| {
+            if (segment.len == 0) continue;
+            self.refreshDynamicDirectory(node_id) catch {};
+            node_id = self.lookupChild(node_id, segment) orelse return null;
         }
         return node_id;
     }
@@ -5885,6 +6694,21 @@ pub const Session = struct {
                 try out.appendSlice(self.allocator, child_name);
                 try seen.put(self.allocator, child_name, {});
             }
+
+            const projected_dir_path = try self.resolveProjectedPathForBoundTarget(dir_path);
+            defer if (projected_dir_path) |value| self.allocator.free(value);
+            if (projected_dir_path) |value| {
+                if (!std.mem.eql(u8, value, dir_path)) {
+                    for (self.project_binds.items) |bind| {
+                        const child_name = immediateBoundChildName(value, bind.bind_path) orelse continue;
+                        if (seen.contains(child_name)) continue;
+                        if (!first) try out.append(self.allocator, '\n');
+                        first = false;
+                        try out.appendSlice(self.allocator, child_name);
+                        try seen.put(self.allocator, child_name, {});
+                    }
+                }
+            }
         }
 
         return out.toOwnedSlice(self.allocator);
@@ -5953,7 +6777,7 @@ pub const Session = struct {
         const proxy = (try self.boundVenomProxyPathForAbsolutePath(absolute_path)) orelse return null;
         if (std.mem.eql(u8, proxy.remote_path, "/")) return null;
 
-        var router = (try self.boundVenomRouter(proxy.venom_id, proxy.project_id, proxy.agent_id)) orelse return null;
+        var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return null;
         defer router.deinit();
         defer self.allocator.free(proxy.remote_path);
         const file = router.open(proxy.remote_path, 0) catch return null;
@@ -5968,23 +6792,20 @@ pub const Session = struct {
         if (try self.boundVenomProxyPathForAbsolutePath(absolute_path)) |proxy| {
             defer self.allocator.free(proxy.remote_path);
             if (std.mem.eql(u8, proxy.remote_path, "/")) return null;
-            return self.writeBoundGenericProxy(proxy.venom_id, proxy.project_id, proxy.agent_id, proxy.remote_path, offset, data);
+            return self.writeBoundGenericProxy(proxy, offset, data);
         }
         return null;
     }
 
     fn writeBoundGenericProxy(
         self: *Session,
-        venom_id: []const u8,
-        project_id: ?[]const u8,
-        agent_id: ?[]const u8,
-        remote_path: []const u8,
+        proxy: BoundVenomProxyPath,
         offset: u64,
         data: []const u8,
     ) !?WriteOutcome {
-        var router = (try self.boundVenomRouter(venom_id, project_id, agent_id)) orelse return null;
+        var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return null;
         defer router.deinit();
-        const file = router.open(remote_path, 1) catch return null;
+        const file = router.open(proxy.remote_path, 1) catch return null;
         defer router.close(file) catch {};
         const result_json = router.writeResult(file, offset, data) catch return null;
         defer self.allocator.free(result_json);
@@ -6005,7 +6826,7 @@ pub const Session = struct {
         const proxy = (try self.boundVenomProxyPathForAbsolutePath(absolute_path)) orelse return null;
         defer self.allocator.free(proxy.remote_path);
 
-        var router = (try self.boundVenomRouter(proxy.venom_id, proxy.project_id, proxy.agent_id)) orelse return null;
+        var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return null;
         defer router.deinit();
         const attr_json = router.getattr(proxy.remote_path) catch return null;
         defer self.allocator.free(attr_json);
@@ -6020,31 +6841,48 @@ pub const Session = struct {
 
         const mode: u32 = if (parsed.value.object.get("m")) |value|
             switch (value) {
-                .integer => if (value.integer >= 0) @intCast(value.integer) else nodeMode(node),
-                else => nodeMode(node),
+                .integer => if (value.integer >= 0) @intCast(value.integer) else effectiveNodeMode(node),
+                else => effectiveNodeMode(node),
             }
         else
-            nodeMode(node);
+            effectiveNodeMode(node);
         const summary = parseBoundVenomProxyAttr(parsed.value) orelse BoundVenomProxyAttrSummary{
             .kind = node.kind,
             .writable = node.writable,
+            .mode = node.reported_mode,
+            .size = node.reported_size,
         };
         const size: u64 = if (parsed.value.object.get("sz")) |value|
             switch (value) {
-                .integer => if (value.integer >= 0) @intCast(value.integer) else node.content.len,
-                else => node.content.len,
+                .integer => if (value.integer >= 0) @intCast(value.integer) else effectiveNodeSizeU64(node),
+                else => effectiveNodeSizeU64(node),
             }
         else
-            node.content.len;
+            effectiveNodeSizeU64(node);
+        const projected_writable = if (isManagedSharedDataProjectedPath(absolute_path)) false else summary.writable;
+        const projected_mode = if (isManagedSharedDataProjectedPath(absolute_path))
+            readonlyMode(mode, summary.kind)
+        else
+            mode;
 
         return try std.fmt.allocPrint(
             self.allocator,
             "{{\"id\":{d},\"name\":\"{s}\",\"kind\":\"{s}\",\"size\":{d},\"mode\":{d},\"writable\":{s}}}",
-            .{ node.id, escaped_name, kindName(summary.kind), size, mode, if (summary.writable) "true" else "false" },
+            .{ node.id, escaped_name, kindName(summary.kind), size, projected_mode, if (projected_writable) "true" else "false" },
         );
     }
 
     fn boundVenomProxyPathForAbsolutePath(self: *Session, absolute_path: []const u8) !?BoundVenomProxyPath {
+        if (try self.workspaceMountProxyPathForAbsolutePath(absolute_path)) |proxy| return proxy;
+        if (parseNodeFsProxyPath(absolute_path)) |value| {
+            return .{
+                .venom_id = "fs",
+                .remote_path = try self.allocator.dupe(u8, value.remote_path),
+                .project_id = self.active_namespace_project_id orelse self.project_id,
+                .provider_node_id = value.node_id,
+                .provider_export_name = null,
+            };
+        }
         const service_match = parseServiceScopedVenomAliasPrefix(self, absolute_path);
         if (service_match) |value| {
             return .{
@@ -6079,6 +6917,35 @@ pub const Session = struct {
         return null;
     }
 
+    fn workspaceMountProxyPathForAbsolutePath(self: *Session, absolute_path: []const u8) !?BoundVenomProxyPath {
+        var best_root: ?[]const u8 = null;
+        var best_match: ?WorkspaceMountProxyRoot = null;
+        var it = self.workspace_mount_proxy_roots.iterator();
+        while (it.next()) |entry| {
+            const proxy_root = entry.key_ptr.*;
+            if (!pathMatchesPrefixBoundary(absolute_path, proxy_root)) continue;
+            if (best_root) |existing| {
+                if (existing.len >= proxy_root.len) continue;
+            }
+            best_root = proxy_root;
+            best_match = entry.value_ptr.*;
+        }
+
+        const proxy_root = best_root orelse return null;
+        const proxy_match = best_match orelse return null;
+        const remote_path = if (std.mem.eql(u8, absolute_path, proxy_root))
+            try self.allocator.dupe(u8, "/")
+        else
+            try self.allocator.dupe(u8, absolute_path[proxy_root.len..]);
+        return .{
+            .venom_id = "fs",
+            .remote_path = remote_path,
+            .project_id = self.active_namespace_project_id orelse self.project_id,
+            .provider_node_id = proxy_match.node_id,
+            .provider_export_name = proxy_match.export_name,
+        };
+    }
+
     fn refreshBoundVenomProxyDirectory(self: *Session, dir_id: u32) !void {
         const absolute_path = try self.nodeAbsolutePath(dir_id);
         defer self.allocator.free(absolute_path);
@@ -6086,8 +6953,17 @@ pub const Session = struct {
         const proxy = (try self.boundVenomProxyPathForAbsolutePath(absolute_path)) orelse return;
         defer self.allocator.free(proxy.remote_path);
 
-        var router = (try self.boundVenomRouter(proxy.venom_id, proxy.project_id, proxy.agent_id)) orelse return;
+        var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return;
         defer router.deinit();
+        std.log.warn(
+            "mounted export refresh start: path={s} remote={s} node={s} export={s}",
+            .{
+                absolute_path,
+                proxy.remote_path,
+                proxy.provider_node_id orelse "(none)",
+                proxy.provider_export_name orelse "(none)",
+            },
+        );
 
         var seen_names = std.ArrayListUnmanaged([]u8){};
         defer {
@@ -6096,12 +6972,37 @@ pub const Session = struct {
         }
         var cookie: u64 = 0;
         while (true) {
-            const listing_json = router.readdir(proxy.remote_path, cookie, 4096) catch return;
+            const listing_json = router.readdir(proxy.remote_path, cookie, 4096) catch |err| {
+                std.log.warn(
+                    "bound venom proxy refresh failed: path={s} remote={s} err={s}",
+                    .{ absolute_path, proxy.remote_path, @errorName(err) },
+                );
+                return;
+            };
             defer self.allocator.free(listing_json);
-            cookie = try self.applyBoundVenomProxyListing(dir_id, listing_json, &seen_names);
-            if (cookie == 0) break;
+            std.log.warn(
+                "mounted export refresh page: path={s} remote={s} cookie={d} bytes={d}",
+                .{ absolute_path, proxy.remote_path, cookie, listing_json.len },
+            );
+            const next_cookie = try self.applyBoundVenomProxyListing(dir_id, listing_json, &seen_names);
+            if (next_cookie == 0 or next_cookie <= cookie) break;
+            cookie = next_cookie;
         }
         try self.pruneBoundVenomProxyChildren(dir_id, seen_names.items);
+    }
+
+    fn boundVenomRouterForProxy(self: *Session, proxy: BoundVenomProxyPath, route_mode: BoundVenomRouteMode) !?acheron_router.Router {
+        if (proxy.provider_node_id) |node_id| {
+            if (proxy.provider_export_name == null) {
+                const scoped_project_id = proxy.project_id orelse self.active_namespace_project_id orelse self.project_id;
+                if (scoped_project_id != null and !self.isBoundVenomNodeAllowed(scoped_project_id, proxy.agent_id, node_id)) {
+                    return null;
+                }
+            }
+            const plane = self.control_plane orelse return null;
+            return self.boundVenomRouterForNode(plane, proxy.venom_id, node_id, proxy.provider_export_name, route_mode);
+        }
+        return self.boundVenomRouter(proxy.venom_id, proxy.project_id, proxy.agent_id);
     }
 
     fn applyBoundVenomProxyListing(
@@ -6109,7 +7010,7 @@ pub const Session = struct {
         parent_id: u32,
         listing_json: []const u8,
         seen_names: *std.ArrayListUnmanaged([]u8),
-    ) !u64 {
+    ) anyerror!u64 {
         var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, listing_json, .{});
         defer parsed.deinit();
         if (parsed.value != .object) return 0;
@@ -6122,6 +7023,7 @@ pub const Session = struct {
             const name_val = entry.object.get("name") orelse continue;
             const attr_val = entry.object.get("attr") orelse continue;
             if (name_val != .string or name_val.string.len == 0) continue;
+            if (std.mem.eql(u8, name_val.string, ".") or std.mem.eql(u8, name_val.string, "..")) continue;
             try self.noteBoundVenomProxyChildSeen(seen_names, name_val.string);
             try self.upsertBoundVenomProxyChild(parent_id, name_val.string, attr_val);
         }
@@ -6129,6 +7031,9 @@ pub const Session = struct {
     }
 
     fn parseReaddirNextCookie(obj: std.json.ObjectMap) u64 {
+        if (obj.get("eof")) |value| {
+            if (value == .bool and value.bool) return 0;
+        }
         if (obj.get("next_cookie")) |value| {
             if (value == .integer and value.integer >= 0) return @intCast(value.integer);
         }
@@ -6144,11 +7049,23 @@ pub const Session = struct {
             const child = self.nodes.getPtr(child_id) orelse return;
             child.kind = summary.kind;
             child.writable = summary.writable;
+            child.reported_mode = summary.mode;
+            child.reported_size = summary.size;
             return;
         }
         switch (summary.kind) {
-            .dir => _ = try self.addDir(parent_id, name, false),
-            .file => _ = try self.addFile(parent_id, name, "", summary.writable, .none),
+            .dir => {
+                const child_id = try self.addDir(parent_id, name, false);
+                const child = self.nodes.getPtr(child_id) orelse return error.MissingNode;
+                child.reported_mode = summary.mode;
+                child.reported_size = summary.size;
+            },
+            .file => {
+                const child_id = try self.addFile(parent_id, name, "", summary.writable, .none);
+                const child = self.nodes.getPtr(child_id) orelse return error.MissingNode;
+                child.reported_mode = summary.mode;
+                child.reported_size = summary.size;
+            },
         }
     }
 
@@ -6202,7 +7119,7 @@ pub const Session = struct {
         defer if (provider) |*value| value.deinit(self.allocator);
         if (provider) |value| {
             if (self.isBoundVenomNodeAllowed(project_id, agent_id, value.node_id)) {
-                if (try self.boundVenomRouterForNode(plane, venom_id, value.node_id)) |router| return router;
+                if (try self.boundVenomRouterForNode(plane, venom_id, value.node_id, null, .client_visible)) |router| return router;
             }
         }
 
@@ -6215,7 +7132,7 @@ pub const Session = struct {
             const venoms_root_id = self.lookupChild(node_dir_id, "venoms") orelse continue;
             _ = self.lookupChild(venoms_root_id, venom_id) orelse continue;
             if (!self.isBoundVenomNodeAllowed(project_id, agent_id, node_name)) continue;
-            if (try self.boundVenomRouterForNode(plane, venom_id, node_name)) |router| return router;
+            if (try self.boundVenomRouterForNode(plane, venom_id, node_name, null, .client_visible)) |router| return router;
         }
 
         return null;
@@ -6226,23 +7143,62 @@ pub const Session = struct {
         plane: *control_plane_mod.ControlPlane,
         venom_id: []const u8,
         node_id: []const u8,
+        export_name: ?[]const u8,
+        route_mode: BoundVenomRouteMode,
     ) !?acheron_router.Router {
-        const node_payload_req = try std.fmt.allocPrint(self.allocator, "{{\"node_id\":\"{s}\"}}", .{node_id});
-        defer self.allocator.free(node_payload_req);
-        const node_payload = plane.getNode(node_payload_req) catch return null;
-        defer self.allocator.free(node_payload);
+        const workspace_mount_auth_token = self.workspace_mount_fs_auth_tokens.get(node_id);
+        const workspace_mount_fs_url = self.workspace_mount_fs_urls.get(node_id);
+        const routed_fs_url = if (workspace_mount_auth_token != null)
+            try self.buildNamespaceRoutedNodeFsUrl(node_id)
+        else
+            null;
+        defer if (routed_fs_url) |value| self.allocator.free(value);
+        const fs_url = blk: {
+            // Clients should always stay on Spiderweb's routed authority.
+            // Server-internal namespace refreshes can talk to mounted export
+            // endpoints directly so Spiderweb does not deadlock routing back
+            // through itself while composing the namespace view.
+            if (route_mode == .server_internal and export_name != null) {
+                if (workspace_mount_fs_url) |value| break :blk value;
+                if (routed_fs_url) |value| break :blk value;
+            } else {
+                if (routed_fs_url) |value| break :blk value;
+                if (export_name != null) {
+                    if (workspace_mount_fs_url) |value| break :blk value;
+                }
+            }
+            const node_payload_req = try std.fmt.allocPrint(self.allocator, "{{\"node_id\":\"{s}\"}}", .{node_id});
+            defer self.allocator.free(node_payload_req);
+            const node_payload = plane.getNode(node_payload_req) catch return null;
+            defer self.allocator.free(node_payload);
 
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, node_payload, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-        const fs_url_val = parsed.value.object.get("fs_url") orelse return null;
-        if (fs_url_val != .string or fs_url_val.string.len == 0) return null;
+            var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, node_payload, .{}) catch return null;
+            defer parsed.deinit();
+            if (parsed.value != .object) return null;
+            const fs_url_val = parsed.value.object.get("fs_url") orelse return null;
+            if (fs_url_val != .string or fs_url_val.string.len == 0) return null;
+            break :blk fs_url_val.string;
+        };
+        if (std.mem.eql(u8, venom_id, "fs") and export_name != null) {
+            std.log.warn(
+                "mounted export router selected: mode={s} node={s} export={s} url={s} auth={s}",
+                .{
+                    @tagName(route_mode),
+                    node_id,
+                    export_name.?,
+                    fs_url,
+                    if (workspace_mount_auth_token != null) "present" else "missing",
+                },
+            );
+        }
+        const selected_export_name = if (std.mem.eql(u8, venom_id, "fs")) export_name else venom_id;
 
         return try acheron_router.Router.init(self.allocator, &[_]acheron_router.EndpointConfig{.{
             .name = node_id,
-            .url = fs_url_val.string,
-            .export_name = venom_id,
+            .url = fs_url,
+            .export_name = selected_export_name,
             .mount_path = "/",
+            .auth_token = workspace_mount_auth_token,
         }});
     }
 
@@ -7841,6 +8797,51 @@ pub const Session = struct {
         }
     }
 
+    pub fn tryWriteLocalFsBackedMountFile(self: *Session, absolute_path: []const u8, data: []const u8) !bool {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        if (!pathMatchesPrefixBoundary(normalized_path, local_fs_world_prefix)) return false;
+        if (std.mem.eql(u8, normalized_path, local_fs_world_prefix)) return false;
+
+        if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/shared_data")) return false;
+        if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/services")) return false;
+
+        const host_path = self.resolveMissionContractHostPath(normalized_path) catch return false;
+        defer self.allocator.free(host_path);
+
+        const host_parent = std.fs.path.dirname(host_path) orelse return false;
+        var parent_dir = if (std.fs.path.isAbsolute(host_parent))
+            std.fs.openDirAbsolute(host_parent, .{}) catch |err| switch (err) {
+                error.FileNotFound,
+                error.NotDir,
+                => return false,
+                else => return err,
+            }
+        else
+            std.fs.cwd().openDir(host_parent, .{}) catch |err| switch (err) {
+                error.FileNotFound,
+                error.NotDir,
+                => return false,
+                else => return err,
+            };
+        parent_dir.close();
+
+        const file = if (std.fs.path.isAbsolute(host_path))
+            std.fs.createFileAbsolute(host_path, .{ .truncate = true }) catch |err| switch (err) {
+                error.FileNotFound => return false,
+                else => return err,
+            }
+        else
+            std.fs.cwd().createFile(host_path, .{ .truncate = true }) catch |err| switch (err) {
+                error.FileNotFound => return false,
+                else => return err,
+            };
+        defer file.close();
+        try file.writeAll(data);
+
+        try self.refreshLocalFsBackedAbsolutePath(normalized_path);
+        return true;
+    }
+
     pub fn buildMountGraphSnapshotPayload(
         self: *Session,
         workspace_json: []const u8,
@@ -7859,23 +8860,17 @@ pub const Session = struct {
         const normalized_requested_path = try normalizeMountGraphPath(self.allocator, requested_path);
         defer self.allocator.free(normalized_requested_path);
 
-        if (!std.mem.eql(u8, normalized_requested_path, "/")) {
-            if (self.resolveAbsolutePathNoBinds(normalized_requested_path)) |requested_node_id| {
-                self.refreshDynamicDirectory(requested_node_id) catch {};
-            }
-        }
-
         var sources = try self.parseMountGraphSources(workspace_json);
         defer {
             for (sources.items) |*source| source.deinit(self.allocator);
             sources.deinit(self.allocator);
         }
 
-        var export_root_paths = std.StringHashMapUnmanaged(void){};
-        defer export_root_paths.deinit(self.allocator);
+        var export_root_writable = std.StringHashMapUnmanaged(bool){};
+        defer export_root_writable.deinit(self.allocator);
         for (sources.items) |source| {
             if (!mountGraphSourceRelevantToScope(normalized_requested_path, source.mount_path)) continue;
-            try export_root_paths.put(self.allocator, source.mount_path, {});
+            try export_root_writable.put(self.allocator, source.mount_path, source.writable);
         }
 
         var nodes = std.ArrayListUnmanaged(MountGraphNodeRecord){};
@@ -7885,8 +8880,6 @@ pub const Session = struct {
         }
         var path_to_index = std.StringHashMapUnmanaged(usize){};
         defer path_to_index.deinit(self.allocator);
-
-        const requested_node_id = self.resolveAbsolutePathNoBinds(normalized_requested_path) orelse return error.FileNotFound;
         var next_overlay_id: u64 = self.next_node_id;
         if (std.mem.eql(u8, normalized_requested_path, "/")) {
             try self.appendMountGraphSubtree(
@@ -7894,26 +8887,43 @@ pub const Session = struct {
                 &path_to_index,
                 self.root_id,
                 "/",
-                &export_root_paths,
+                &export_root_writable,
                 &next_overlay_id,
                 max_depth,
             );
         } else {
-            try self.appendMountGraphAncestorChain(
-                &nodes,
-                &path_to_index,
-                requested_node_id,
-                &export_root_paths,
-            );
-            try self.appendMountGraphSubtree(
-                &nodes,
-                &path_to_index,
-                requested_node_id,
-                normalized_requested_path,
-                &export_root_paths,
-                &next_overlay_id,
-                max_depth,
-            );
+            var requested_target = try self.resolveMountGraphRequestedTarget(normalized_requested_path);
+            defer requested_target.deinit(self.allocator);
+            self.refreshDynamicDirectory(requested_target.node_id) catch {};
+
+            if (requested_target.projected) {
+                try self.appendProjectedMountGraphRequestedPath(
+                    &nodes,
+                    &path_to_index,
+                        normalized_requested_path,
+                        requested_target.actual_path,
+                        requested_target.node_id,
+                        &export_root_writable,
+                        &next_overlay_id,
+                        max_depth,
+                    );
+            } else {
+                try self.appendMountGraphAncestorChain(
+                        &nodes,
+                        &path_to_index,
+                        requested_target.node_id,
+                        &export_root_writable,
+                    );
+                    try self.appendMountGraphSubtree(
+                        &nodes,
+                        &path_to_index,
+                        requested_target.node_id,
+                        normalized_requested_path,
+                        &export_root_writable,
+                        &next_overlay_id,
+                        max_depth,
+                    );
+            }
         }
         for (sources.items) |*source| {
             if (!mountGraphSourceRelevantToScope(normalized_requested_path, source.mount_path)) continue;
@@ -7963,6 +8973,54 @@ pub const Session = struct {
             "{{\"mount_session_id\":\"{s}\",\"graph_generation\":{d},\"root_node_id\":{d},\"nodes\":{s},\"sources\":{s}}}",
             .{ escaped_mount_session_id, graph_generation, self.root_id, nodes_json, sources_json },
         );
+    }
+
+    const MountGraphRequestedTarget = struct {
+        node_id: u32,
+        actual_path: []u8,
+        projected: bool,
+
+        fn deinit(self: *MountGraphRequestedTarget, allocator: std.mem.Allocator) void {
+            allocator.free(self.actual_path);
+            self.* = undefined;
+        }
+    };
+
+    fn resolveMountGraphRequestedTarget(
+        self: *Session,
+        normalized_requested_path: []const u8,
+    ) !MountGraphRequestedTarget {
+        if (try self.resolveBoundPath(normalized_requested_path)) |rebound| {
+            if (!std.mem.eql(u8, rebound, normalized_requested_path)) {
+                if (try self.resolveAbsolutePathForMountGraphNoBinds(rebound)) |rebound_node_id| {
+                    return .{
+                        .node_id = rebound_node_id,
+                        .actual_path = rebound,
+                        .projected = true,
+                    };
+                }
+                self.allocator.free(rebound);
+            } else {
+                self.allocator.free(rebound);
+            }
+        }
+
+        if (try self.resolveAbsolutePathForMountGraphNoBinds(normalized_requested_path)) |node_id| {
+            return .{
+                .node_id = node_id,
+                .actual_path = try self.allocator.dupe(u8, normalized_requested_path),
+                .projected = false,
+            };
+        }
+
+        const rebound = try self.resolveBoundPath(normalized_requested_path) orelse return error.FileNotFound;
+        errdefer self.allocator.free(rebound);
+        const node_id = try self.resolveAbsolutePathForMountGraphNoBinds(rebound) orelse return error.FileNotFound;
+        return .{
+            .node_id = node_id,
+            .actual_path = rebound,
+            .projected = !std.mem.eql(u8, rebound, normalized_requested_path),
+        };
     }
 
     fn decodeAcheronReadPayload(self: *Session, frame: []const u8) anyerror![]u8 {
@@ -8017,20 +9075,65 @@ pub const Session = struct {
             else
                 null;
             errdefer if (export_name) |value| self.allocator.free(value);
+            const node_id = if (mount_value.object.get("node_id")) |value|
+                if (value == .string and value.string.len > 0) value.string else null
+            else
+                null;
 
             try out.append(self.allocator, .{
                 .id = source_id,
                 .mount_path = normalized_path,
                 .fs_url = fs_url,
                 .export_name = export_name,
+                .writable = self.inferMountGraphSourceWritable(normalized_path, node_id, export_name),
             });
         }
         return out;
     }
 
+    fn inferMountGraphSourceWritable(
+        self: *Session,
+        mount_path: []const u8,
+        node_id: ?[]const u8,
+        export_name: ?[]const u8,
+    ) bool {
+        if (std.mem.eql(u8, mount_path, local_fs_world_prefix)) return true;
+        if (std.mem.eql(u8, mount_path, "/shared_data")) return false;
+
+        const resolved_node_id = node_id orelse return false;
+        const plane = self.control_plane orelse return false;
+        var router = (self.boundVenomRouterForNode(
+            plane,
+            "fs",
+            resolved_node_id,
+            export_name,
+            .server_internal,
+        ) catch null) orelse return false;
+        defer router.deinit();
+
+        const attr_json = router.getattr("/") catch return false;
+        defer self.allocator.free(attr_json);
+
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, attr_json, .{}) catch return false;
+        defer parsed.deinit();
+        const summary = parseBoundVenomProxyAttr(parsed.value) orelse return false;
+        return summary.writable;
+    }
+
     fn rewriteMountGraphSourceFsUrl(self: *Session, raw_fs_url: []const u8) ![]u8 {
         const namespace_mount_url = self.namespace_mount_url orelse return self.allocator.dupe(u8, raw_fs_url);
         return rewriteLocalOnlyWsUrlToNamespaceAuthority(self.allocator, raw_fs_url, namespace_mount_url);
+    }
+
+    fn buildNamespaceRoutedNodeFsUrl(self: *Session, node_id: []const u8) !?[]u8 {
+        const namespace_mount_url = self.namespace_mount_url orelse return null;
+        const namespace_url = parseWsUrlParts(namespace_mount_url) orelse return null;
+        const routed = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}://{s}/v2/fs/node/{s}",
+            .{ namespace_url.scheme, namespace_url.authority, node_id },
+        );
+        return routed;
     }
 
     const ParsedWsUrl = struct {
@@ -8165,12 +9268,39 @@ pub const Session = struct {
         try std.testing.expectEqualStrings("ws://edge-box.local:18790/v2/fs", preserved);
     }
 
+    test "acheron_session: buildNamespaceRoutedNodeFsUrl uses namespace authority for node routes" {
+        const allocator = std.testing.allocator;
+        const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+            allocator,
+            "execution_failed",
+            "runtime unavailable",
+        );
+        defer runtime_handle.destroy();
+
+        var session = try Session.initWithOptions(
+            allocator,
+            runtime_handle,
+            "codex",
+            .{
+                .project_id = "proj-1",
+                .namespace_mount_url = "wss://namespace.example.test:4443/",
+                .agents_dir = ".does-not-exist",
+                .projects_dir = ".does-not-exist",
+            },
+        );
+        defer session.deinit();
+
+        const routed = (try session.buildNamespaceRoutedNodeFsUrl("node-3")) orelse return error.TestExpectedResponse;
+        defer allocator.free(routed);
+        try std.testing.expectEqualStrings("wss://namespace.example.test:4443/v2/fs/node/node-3", routed);
+    }
+
     fn appendMountGraphAncestorChain(
         self: *Session,
         nodes: *std.ArrayListUnmanaged(MountGraphNodeRecord),
         path_to_index: *std.StringHashMapUnmanaged(usize),
         node_id: u32,
-        export_root_paths: *const std.StringHashMapUnmanaged(void),
+        export_root_writable: *const std.StringHashMapUnmanaged(bool),
     ) !void {
         var chain = std.ArrayListUnmanaged(u32){};
         defer chain.deinit(self.allocator);
@@ -8192,9 +9322,87 @@ pub const Session = struct {
                 path_to_index,
                 current_id,
                 absolute_path,
-                export_root_paths,
+                export_root_writable,
             );
         }
+    }
+
+    fn appendProjectedMountGraphRequestedPath(
+        self: *Session,
+        nodes: *std.ArrayListUnmanaged(MountGraphNodeRecord),
+        path_to_index: *std.StringHashMapUnmanaged(usize),
+        requested_path: []const u8,
+        actual_path: []const u8,
+        actual_node_id: u32,
+        export_root_writable: *const std.StringHashMapUnmanaged(bool),
+        next_overlay_id: *u64,
+        max_depth: u32,
+    ) !void {
+        const segments = try self.allocAbsolutePathSegments(requested_path);
+        defer freePathSegments(self.allocator, segments);
+
+        var projected_prefix = std.ArrayListUnmanaged(u8){};
+        defer projected_prefix.deinit(self.allocator);
+
+        var current_parent_id: u64 = self.root_id;
+        var projected_node_id: u64 = self.root_id;
+
+        for (segments, 0..) |segment, index| {
+            try projected_prefix.append(self.allocator, '/');
+            try projected_prefix.appendSlice(self.allocator, segment);
+
+            const projected_path = try self.allocator.dupe(u8, projected_prefix.items);
+            defer self.allocator.free(projected_path);
+
+            var source_path = if (index + 1 == segments.len)
+                try self.allocator.dupe(u8, actual_path)
+            else blk: {
+                const rebound = try self.resolveBoundPath(projected_path);
+                if (rebound) |value| break :blk value;
+                break :blk try self.allocator.dupe(u8, projected_path);
+            };
+            defer self.allocator.free(source_path);
+
+            const source_node_id = if (index + 1 == segments.len)
+                actual_node_id
+            else blk: {
+                if (try self.resolveAbsolutePathForMountGraphNoBinds(source_path)) |resolved_id| {
+                    break :blk resolved_id;
+                }
+                if (!std.mem.eql(u8, source_path, projected_path)) {
+                    self.allocator.free(source_path);
+                    source_path = try self.allocator.dupe(u8, projected_path);
+                    break :blk (try self.resolveAbsolutePathForMountGraphNoBinds(source_path) orelse return error.FileNotFound);
+                }
+                return error.FileNotFound;
+            };
+
+            projected_node_id = try self.appendProjectedMountGraphNode(
+                nodes,
+                path_to_index,
+                source_node_id,
+                projected_path,
+                current_parent_id,
+                export_root_writable,
+                next_overlay_id,
+            );
+            current_parent_id = projected_node_id;
+        }
+
+        const requested_node = self.nodes.get(actual_node_id) orelse return error.MissingNode;
+        if (max_depth == 0 or requested_node.kind != .dir) return;
+
+        try self.appendMountGraphProjectedChildren(
+            nodes,
+            path_to_index,
+            actual_node_id,
+            actual_path,
+            requested_path,
+            projected_node_id,
+            export_root_writable,
+            next_overlay_id,
+            max_depth,
+        );
     }
 
     fn appendMountGraphNode(
@@ -8203,7 +9411,7 @@ pub const Session = struct {
         path_to_index: *std.StringHashMapUnmanaged(usize),
         node_id: u32,
         absolute_path: []const u8,
-        export_root_paths: *const std.StringHashMapUnmanaged(void),
+        export_root_writable: *const std.StringHashMapUnmanaged(bool),
     ) !void {
         if (path_to_index.contains(absolute_path)) return;
 
@@ -8211,7 +9419,8 @@ pub const Session = struct {
 
         const alias_target = self.node_aliases.get(node_id);
         const canonical_node_id: ?u64 = if (alias_target) |target| @min(node_id, target) else null;
-        const is_export_root = export_root_paths.contains(absolute_path);
+        const export_root_writable_flag = export_root_writable.get(absolute_path);
+        const is_export_root = export_root_writable_flag != null;
         const kind_name: []const u8 = if (is_export_root)
             "export_root"
         else switch (node.kind) {
@@ -8240,9 +9449,12 @@ pub const Session = struct {
             .name = name,
             .path = path,
             .kind = kind_name,
-            .mode = if (is_export_root) 0o040755 else nodeMode(node),
-            .writable = if (is_export_root) false else node.writable,
-            .size = if (node.kind == .file and !is_export_root) node.content.len else 0,
+            .mode = if (is_export_root)
+                (if (export_root_writable_flag.?) 0o040755 else 0o040555)
+            else
+                effectiveNodeMode(node),
+            .writable = if (export_root_writable_flag) |value| value else node.writable,
+            .size = if (node.kind == .file and !is_export_root) effectiveNodeSize(node) else 0,
             .canonical_node_id = canonical_node_id,
             .content_mode = content_mode,
             .inline_content_b64 = inline_content_b64,
@@ -8256,26 +9468,78 @@ pub const Session = struct {
         path_to_index: *std.StringHashMapUnmanaged(usize),
         node_id: u32,
         absolute_path: []const u8,
-        export_root_paths: *const std.StringHashMapUnmanaged(void),
+        export_root_writable: *const std.StringHashMapUnmanaged(bool),
         next_overlay_id: *u64,
         remaining_depth: u32,
-    ) !void {
+    ) anyerror!void {
         try self.appendMountGraphNode(
             nodes,
             path_to_index,
             node_id,
             absolute_path,
-            export_root_paths,
+            export_root_writable,
         );
 
         const node = self.nodes.get(node_id) orelse return error.MissingNode;
-        if (remaining_depth == 0 or export_root_paths.contains(absolute_path) or node.kind != .dir) return;
+        if (remaining_depth == 0 or export_root_writable.contains(absolute_path) or node.kind != .dir) return;
+        const current_index = path_to_index.get(absolute_path) orelse return error.MissingNode;
+        const current_parent_id = nodes.items[current_index].id;
+
+        try self.appendMountGraphProjectedChildren(
+            nodes,
+            path_to_index,
+            node_id,
+            absolute_path,
+            absolute_path,
+            current_parent_id,
+            export_root_writable,
+            next_overlay_id,
+            remaining_depth,
+        );
+    }
+
+    fn appendMountGraphProjectedChildren(
+        self: *Session,
+        nodes: *std.ArrayListUnmanaged(MountGraphNodeRecord),
+        path_to_index: *std.StringHashMapUnmanaged(usize),
+        source_node_id: u32,
+        source_absolute_path: []const u8,
+        projected_parent_path: []const u8,
+        projected_parent_id: u64,
+        export_root_writable: *const std.StringHashMapUnmanaged(bool),
+        next_overlay_id: *u64,
+        remaining_depth: u32,
+    ) anyerror!void {
+        const source_node = self.nodes.get(source_node_id) orelse return error.MissingNode;
 
         var child_names = std.ArrayListUnmanaged([]const u8){};
         defer child_names.deinit(self.allocator);
-        var it = node.children.iterator();
+        var seen_names = std.StringHashMapUnmanaged(void){};
+        defer seen_names.deinit(self.allocator);
+
+        var it = source_node.children.iterator();
         while (it.next()) |entry| {
+            if (seen_names.contains(entry.key_ptr.*)) continue;
             try child_names.append(self.allocator, entry.key_ptr.*);
+            try seen_names.put(self.allocator, entry.key_ptr.*, {});
+        }
+
+        if (self.project_binds.items.len > 0) {
+            for (self.project_binds.items) |bind| {
+                const child_name = immediateBoundChildName(projected_parent_path, bind.bind_path) orelse continue;
+                if (seen_names.contains(child_name)) continue;
+                try child_names.append(self.allocator, child_name);
+                try seen_names.put(self.allocator, child_name, {});
+            }
+
+            if (!std.mem.eql(u8, source_absolute_path, projected_parent_path)) {
+                for (self.project_binds.items) |bind| {
+                    const child_name = immediateBoundChildName(source_absolute_path, bind.bind_path) orelse continue;
+                    if (seen_names.contains(child_name)) continue;
+                    try child_names.append(self.allocator, child_name);
+                    try seen_names.put(self.allocator, child_name, {});
+                }
+            }
         }
         std.mem.sort([]const u8, child_names.items, {}, struct {
             fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
@@ -8284,22 +9548,191 @@ pub const Session = struct {
         }.lessThan);
 
         for (child_names.items) |child_name| {
-            const child_id = node.children.get(child_name) orelse continue;
-            const child_path = if (std.mem.eql(u8, absolute_path, "/"))
+            const source_child_path = if (std.mem.eql(u8, source_absolute_path, "/"))
                 try std.fmt.allocPrint(self.allocator, "/{s}", .{child_name})
             else
-                try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ absolute_path, child_name });
-            defer self.allocator.free(child_path);
-            try self.appendMountGraphSubtree(
+                try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ source_absolute_path, child_name });
+            defer self.allocator.free(source_child_path);
+
+            const projected_child_path = if (std.mem.eql(u8, projected_parent_path, "/"))
+                try std.fmt.allocPrint(self.allocator, "/{s}", .{child_name})
+            else
+                try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ projected_parent_path, child_name });
+            defer self.allocator.free(projected_child_path);
+
+            if (source_node.children.get(child_name)) |child_id| {
+                if (std.mem.eql(u8, source_child_path, projected_child_path)) {
+                    try self.appendMountGraphSubtree(
+                        nodes,
+                        path_to_index,
+                        child_id,
+                        projected_child_path,
+                        export_root_writable,
+                        next_overlay_id,
+                        remaining_depth - 1,
+                    );
+                } else {
+                    try self.appendProjectedMountGraphSubtree(
+                        nodes,
+                        path_to_index,
+                        child_id,
+                        source_child_path,
+                        projected_child_path,
+                        projected_parent_id,
+                        export_root_writable,
+                        next_overlay_id,
+                        remaining_depth - 1,
+                    );
+                }
+                continue;
+            }
+
+            if (try self.resolveAbsolutePathForMountGraphNoBinds(projected_child_path)) |projected_child_id| {
+                try self.appendProjectedMountGraphSubtree(
+                    nodes,
+                    path_to_index,
+                    projected_child_id,
+                    projected_child_path,
+                    projected_child_path,
+                    projected_parent_id,
+                    export_root_writable,
+                    next_overlay_id,
+                    remaining_depth - 1,
+                );
+                continue;
+            }
+
+            const rebound_lookup_path = projected_child_path;
+            const rebound_path = try self.resolveBoundPath(rebound_lookup_path) orelse continue;
+            defer self.allocator.free(rebound_path);
+            const child_id = try self.resolveAbsolutePathForMountGraphNoBinds(rebound_path) orelse continue;
+            try self.appendProjectedMountGraphSubtree(
                 nodes,
                 path_to_index,
                 child_id,
-                child_path,
-                export_root_paths,
+                rebound_lookup_path,
+                projected_child_path,
+                projected_parent_id,
+                export_root_writable,
                 next_overlay_id,
                 remaining_depth - 1,
             );
         }
+    }
+
+    fn appendProjectedMountGraphSubtree(
+        self: *Session,
+        nodes: *std.ArrayListUnmanaged(MountGraphNodeRecord),
+        path_to_index: *std.StringHashMapUnmanaged(usize),
+        source_node_id: u32,
+        source_absolute_path: []const u8,
+        projected_path: []const u8,
+        projected_parent_id: u64,
+        export_root_writable: *const std.StringHashMapUnmanaged(bool),
+        next_overlay_id: *u64,
+        remaining_depth: u32,
+    ) anyerror!void {
+        const projected_id = try self.appendProjectedMountGraphNode(
+            nodes,
+            path_to_index,
+            source_node_id,
+            projected_path,
+            projected_parent_id,
+            export_root_writable,
+            next_overlay_id,
+        );
+
+        const source_node = self.nodes.get(source_node_id) orelse return error.MissingNode;
+        if (remaining_depth == 0 or export_root_writable.contains(projected_path) or source_node.kind != .dir) return;
+
+        try self.appendMountGraphProjectedChildren(
+            nodes,
+            path_to_index,
+            source_node_id,
+            source_absolute_path,
+            projected_path,
+            projected_id,
+            export_root_writable,
+            next_overlay_id,
+            remaining_depth,
+        );
+    }
+
+    fn appendProjectedMountGraphNode(
+        self: *Session,
+        nodes: *std.ArrayListUnmanaged(MountGraphNodeRecord),
+        path_to_index: *std.StringHashMapUnmanaged(usize),
+        source_node_id: u32,
+        projected_path: []const u8,
+        projected_parent_id: u64,
+        export_root_writable: *const std.StringHashMapUnmanaged(bool),
+        next_overlay_id: *u64,
+    ) anyerror!u64 {
+        if (path_to_index.get(projected_path)) |existing_index| {
+            return nodes.items[existing_index].id;
+        }
+
+        const source_node = self.nodes.get(source_node_id) orelse return error.MissingNode;
+        const alias_target = self.node_aliases.get(source_node_id);
+        const canonical_node_id: ?u64 = if (alias_target) |target|
+            @as(u64, @min(source_node_id, target))
+        else
+            @as(u64, source_node_id);
+        const export_root_writable_flag = export_root_writable.get(projected_path);
+        const is_export_root = export_root_writable_flag != null;
+        const forced_readonly = isManagedSharedDataProjectedPath(projected_path);
+        const content_mode = if (forced_readonly and !is_export_root and source_node.kind == .file)
+            "remote_read"
+        else
+            mountGraphContentMode(source_node, is_export_root);
+        const inline_content_b64 = if (content_mode != null and std.mem.eql(u8, content_mode.?, "inline_snapshot"))
+            try unified.encodeDataB64(self.allocator, source_node.content)
+        else
+            null;
+        errdefer if (inline_content_b64) |value| self.allocator.free(value);
+
+        const name = if (std.mem.eql(u8, projected_path, "/"))
+            try self.allocator.dupe(u8, "/")
+        else blk: {
+            const slash_idx = std.mem.lastIndexOfScalar(u8, projected_path, '/') orelse return error.InvalidPath;
+            break :blk try self.allocator.dupe(u8, projected_path[slash_idx + 1 ..]);
+        };
+        errdefer self.allocator.free(name);
+        const path = try self.allocator.dupe(u8, projected_path);
+        errdefer self.allocator.free(path);
+
+        const new_id = next_overlay_id.*;
+        next_overlay_id.* += 1;
+        try nodes.append(self.allocator, .{
+            .id = new_id,
+            .parent_id = projected_parent_id,
+            .name = name,
+            .path = path,
+            .kind = if (is_export_root)
+                "export_root"
+            else switch (source_node.kind) {
+                .dir => "synthetic_directory",
+                .file => "synthetic_file",
+            },
+            .mode = if (is_export_root)
+                (if (export_root_writable_flag.?) 0o040755 else 0o040555)
+            else if (forced_readonly)
+                readonlyMode(effectiveNodeMode(source_node), source_node.kind)
+            else
+                effectiveNodeMode(source_node),
+            .writable = if (forced_readonly)
+                false
+            else if (export_root_writable_flag) |value|
+                value
+            else
+                source_node.writable,
+            .size = if (source_node.kind == .file and !is_export_root) effectiveNodeSize(source_node) else 0,
+            .canonical_node_id = canonical_node_id,
+            .content_mode = content_mode,
+            .inline_content_b64 = inline_content_b64,
+        });
+        try path_to_index.put(self.allocator, path, nodes.items.len - 1);
+        return new_id;
     }
 
     fn mountGraphSourceRelevantToScope(scope_path: []const u8, source_path: []const u8) bool {
@@ -8335,8 +9768,8 @@ pub const Session = struct {
                 if (is_last) {
                     var existing = &nodes.items[existing_index];
                     existing.kind = "export_root";
-                    existing.mode = 0o040755;
-                    existing.writable = false;
+                    existing.mode = if (source.writable) 0o040755 else 0o040555;
+                    existing.writable = source.writable;
                     existing.size = 0;
                     existing.content_mode = null;
                     if (existing.inline_content_b64) |value| {
@@ -8360,8 +9793,8 @@ pub const Session = struct {
                 .name = owned_name,
                 .path = owned_path,
                 .kind = if (is_last) "export_root" else "synthetic_directory",
-                .mode = 0o040755,
-                .writable = false,
+                .mode = if (is_last and !source.writable) 0o040555 else 0o040755,
+                .writable = if (is_last) source.writable else false,
                 .size = 0,
                 .canonical_node_id = null,
                 .content_mode = null,
@@ -8456,8 +9889,8 @@ pub const Session = struct {
             defer self.allocator.free(export_name_json);
 
             try out.writer(self.allocator).print(
-                "{{\"id\":\"{s}\",\"mount_path\":\"{s}\",\"fs_url\":\"{s}\",\"export_name\":{s}}}",
-                .{ escaped_id, escaped_mount_path, escaped_fs_url, export_name_json },
+                "{{\"id\":\"{s}\",\"mount_path\":\"{s}\",\"fs_url\":\"{s}\",\"export_name\":{s},\"writable\":{s}}}",
+                .{ escaped_id, escaped_mount_path, escaped_fs_url, export_name_json, if (source.writable) "true" else "false" },
             );
         }
         try out.appendSlice(self.allocator, "]");
@@ -8494,6 +9927,34 @@ pub const Session = struct {
         if (std.mem.eql(u8, code, "enotdir")) return error.NotDir;
         if (std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;
         return error.OperationNotSupported;
+    }
+
+    fn refreshLocalFsBackedAbsolutePath(self: *Session, absolute_path: []const u8) !void {
+        const parent_path = namespaceAbsolutePathParent(absolute_path) orelse return;
+        const child_name = namespaceAbsolutePathBaseName(absolute_path) orelse return;
+        const parent_id = (try self.resolveAbsolutePathForMountGraphNoBinds(parent_path)) orelse return;
+
+        try self.refreshDynamicDirectory(parent_id);
+        if (self.lookupChild(parent_id, child_name)) |child_id| {
+            _ = try self.syncLocalFsFileNode(child_id);
+        }
+    }
+
+    fn namespaceAbsolutePathParent(path: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trimRight(u8, path, "/");
+        if (trimmed.len == 0 or trimmed[0] != '/') return null;
+        if (std.mem.eql(u8, trimmed, "/")) return null;
+        const slash_idx = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse return null;
+        if (slash_idx == 0) return "/";
+        return trimmed[0..slash_idx];
+    }
+
+    fn namespaceAbsolutePathBaseName(path: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trimRight(u8, path, "/");
+        if (trimmed.len == 0 or trimmed[0] != '/') return null;
+        if (std.mem.eql(u8, trimmed, "/")) return null;
+        const slash_idx = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse return null;
+        return trimmed[slash_idx + 1 ..];
     }
 
     fn mapInternalMountReadError(code: []const u8) anyerror {
@@ -8937,6 +10398,36 @@ pub const Session = struct {
         for (self.project_binds.items) |*bind| bind.deinit(self.allocator);
         self.project_binds.deinit(self.allocator);
         self.project_binds = .{};
+    }
+
+    fn clearWorkspaceMountFsAuthTokens(self: *Session) void {
+        var it = self.workspace_mount_fs_auth_tokens.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.workspace_mount_fs_auth_tokens.deinit(self.allocator);
+        self.workspace_mount_fs_auth_tokens = .{};
+    }
+
+    fn clearWorkspaceMountFsUrls(self: *Session) void {
+        var it = self.workspace_mount_fs_urls.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.workspace_mount_fs_urls.deinit(self.allocator);
+        self.workspace_mount_fs_urls = .{};
+    }
+
+    fn clearWorkspaceMountProxyRoots(self: *Session) void {
+        var it = self.workspace_mount_proxy_roots.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.workspace_mount_proxy_roots.deinit(self.allocator);
+        self.workspace_mount_proxy_roots = .{};
     }
 
     fn clearScopedVenomBindings(self: *Session) void {
@@ -9505,6 +10996,11 @@ const ParsedNodeVenomServicePath = struct {
     venom_id: []const u8,
 };
 
+const ParsedNodeFsProxyPath = struct {
+    node_id: []const u8,
+    remote_path: []const u8,
+};
+
 fn parseScopedVenomAliasPrefix(path: []const u8, prefix: []const u8) ?ParsedScopedVenomAlias {
     if (!std.mem.startsWith(u8, path, prefix)) return null;
     const tail = path[prefix.len..];
@@ -9546,7 +11042,9 @@ fn parseEntityScopedVenomAliasPrefix(
 
 fn parseServiceScopedVenomAliasPrefix(self: *Session, path: []const u8) ?ParsedServiceScopedVenomAlias {
     const project_id = self.active_namespace_project_id orelse self.project_id orelse return null;
-    const parsed = parseScopedVenomAliasPrefix(path, "/services/") orelse return null;
+    const parsed = parseScopedVenomAliasPrefix(path, "/services/") orelse
+        parseScopedVenomAliasPrefix(path, workspace_managed_services_absolute_prefix) orelse
+        return null;
     return .{
         .project_id = project_id,
         .venom_id = parsed.venom_id,
@@ -9573,6 +11071,27 @@ fn parseNodeVenomServicePath(path: []const u8) ?ParsedNodeVenomServicePath {
     };
 }
 
+fn parseNodeFsProxyPath(path: []const u8) ?ParsedNodeFsProxyPath {
+    if (!std.mem.startsWith(u8, path, "/nodes/")) return null;
+    const after_prefix = path["/nodes/".len..];
+    const node_end = std.mem.indexOfScalar(u8, after_prefix, '/') orelse return null;
+    const node_id = after_prefix[0..node_end];
+    if (node_id.len == 0 or std.mem.eql(u8, node_id, "local")) return null;
+    const after_node = after_prefix[node_end..];
+    if (!std.mem.startsWith(u8, after_node, "/fs")) return null;
+    if (after_node.len == "/fs".len) {
+        return .{
+            .node_id = node_id,
+            .remote_path = "/",
+        };
+    }
+    if (after_node["/fs".len] != '/') return null;
+    return .{
+        .node_id = node_id,
+        .remote_path = after_node["/fs".len..],
+    };
+}
+
 fn boundVenomRemoteSuffix(allocator: std.mem.Allocator, absolute_path: []const u8, prefix: []const u8) ![]u8 {
     if (!pathMatchesPrefixBoundary(absolute_path, prefix)) return error.InvalidPath;
     if (std.mem.eql(u8, absolute_path, prefix)) return allocator.dupe(u8, "/");
@@ -9582,31 +11101,42 @@ fn boundVenomRemoteSuffix(allocator: std.mem.Allocator, absolute_path: []const u
 fn parseBoundVenomProxyAttr(attr_val: std.json.Value) ?BoundVenomProxyAttrSummary {
     if (attr_val != .object) return null;
 
-    const mode: u32 = if (attr_val.object.get("m")) |value|
+    const mode: ?u32 = if (attr_val.object.get("m")) |value|
         switch (value) {
             .integer => if (value.integer >= 0) @intCast(value.integer) else return null,
             else => return null,
         }
     else
-        0;
+        null;
+    const effective_mode = mode orelse 0;
 
     const kind: NodeKind = if (attr_val.object.get("k")) |value|
         switch (value) {
             .integer => switch (value.integer) {
                 2 => .dir,
                 1 => .file,
-                else => if ((mode & 0o170000) == 0o040000) .dir else .file,
+                else => if ((effective_mode & 0o170000) == 0o040000) .dir else .file,
             },
-            else => if ((mode & 0o170000) == 0o040000) .dir else .file,
+            else => if ((effective_mode & 0o170000) == 0o040000) .dir else .file,
         }
-    else if ((mode & 0o170000) == 0o040000)
+    else if ((effective_mode & 0o170000) == 0o040000)
         .dir
     else
         .file;
 
+    const size: ?u64 = if (attr_val.object.get("sz")) |value|
+        switch (value) {
+            .integer => if (value.integer >= 0) @intCast(value.integer) else return null,
+            else => return null,
+        }
+    else
+        null;
+
     return .{
         .kind = kind,
-        .writable = kind == .file and (mode & 0o222) != 0,
+        .writable = (effective_mode & 0o222) != 0,
+        .mode = mode,
+        .size = size,
     };
 }
 
@@ -9694,6 +11224,36 @@ fn nodeMode(node: Node) u32 {
         .dir => 0o040755,
         .file => if (node.writable) 0o100644 else 0o100444,
     };
+}
+
+fn effectiveNodeMode(node: Node) u32 {
+    return node.reported_mode orelse nodeMode(node);
+}
+
+fn effectiveNodeSize(node: Node) usize {
+    if (node.kind != .file) return 0;
+    if (node.reported_size) |size| {
+        return std.math.cast(usize, size) orelse std.math.maxInt(usize);
+    }
+    return node.content.len;
+}
+
+fn effectiveNodeSizeU64(node: Node) u64 {
+    if (node.kind != .file) return 0;
+    return node.reported_size orelse node.content.len;
+}
+
+fn isManagedSharedDataProjectedPath(path: []const u8) bool {
+    const managed_root = workspace_managed_root_absolute ++ "/" ++ workspace_managed_shared_data_dir_name;
+    return std.mem.eql(u8, path, managed_root) or pathMatchesPrefixBoundary(path, managed_root);
+}
+
+fn readonlyMode(mode: u32, kind: NodeKind) u32 {
+    const base: u32 = if (mode == 0) switch (kind) {
+        .dir => @as(u32, 0o040755),
+        .file => @as(u32, 0o100644),
+    } else mode;
+    return base & ~@as(u32, 0o222);
 }
 
 fn projectMountPathToLinkName(allocator: std.mem.Allocator, mount_path: []const u8) ![]u8 {
@@ -10282,12 +11842,61 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, workspace_agents_managed_begin) != null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "Project vision is tracked by Spiderweb project metadata") != null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "Keep custom lint rules in mind.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/protocol.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/services/home/control/ensure.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/local_venoms") != null);
+    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "../../..") == null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "TASK.md") == null);
 
     const workspace_agents = try session.tryReadInternalPath("/nodes/local/fs/AGENTS.md");
     defer if (workspace_agents) |value| allocator.free(value);
     try std.testing.expect(workspace_agents != null);
     try std.testing.expectEqualStrings(namespace_agents.?, workspace_agents.?);
+
+    const quickref_path = try std.fmt.allocPrint(allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{project_id});
+    defer allocator.free(quickref_path);
+    const quickref_json = try session.tryReadInternalPath(quickref_path);
+    defer if (quickref_json) |value| allocator.free(value);
+    try std.testing.expect(quickref_json != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"project_write_root\":\".\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"service_root\":\"./.spiderweb/services\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"./AGENTS.md\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"protocol\":\"./.spiderweb/protocol.json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"namespace_root\"") == null);
+
+    const bootstrap_path = try std.fmt.allocPrint(allocator, "/projects/{s}/meta/agent_bootstrap.json", .{project_id});
+    defer allocator.free(bootstrap_path);
+    const bootstrap_json = try session.tryReadInternalPath(bootstrap_path);
+    defer if (bootstrap_json) |value| allocator.free(value);
+    try std.testing.expect(bootstrap_json != null);
+    try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"required_reads\":[\"./AGENTS.md\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"./.spiderweb/agent_bootstrap_quickref.json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"preferred_root\":\"./.spiderweb/services\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"service\":\"./.spiderweb/services/home\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"fallback_roots\":[\"./.spiderweb/local_venoms\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"namespace_root\"") == null);
+
+    const workspace_bootstrap_paths = [_][]const u8{
+        "/nodes/local/fs/.spiderweb/protocol.json",
+        "/nodes/local/fs/.spiderweb/agent_bootstrap_quickref.json",
+        "/nodes/local/fs/.spiderweb/agent_bootstrap.json",
+        "/nodes/local/fs/.spiderweb/workspace_status.json",
+        "/nodes/local/fs/.spiderweb/mounted_services.json",
+        "/nodes/local/fs/.spiderweb/venom_packages.json",
+        "/nodes/local/fs/.spiderweb/services/home/control/ensure.json",
+        "/nodes/local/fs/.spiderweb/services/mounts/control/bind.json",
+        "/nodes/local/fs/.spiderweb/local_venoms/home/control/ensure.json",
+    };
+    for (workspace_bootstrap_paths) |path| {
+        const content = try session.tryReadInternalPath(path);
+        defer if (content) |value| allocator.free(value);
+        try std.testing.expect(content != null);
+    }
+
+    tmp_dir.dir.access("exports/.spiderweb", .{}) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
 
     const workspace_agents_id = session.resolveAbsolutePathNoBinds("/nodes/local/fs/AGENTS.md") orelse return error.MissingNode;
     try session.setFileContent(workspace_agents_id, "# User Override\n");
@@ -10296,6 +11905,1165 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     defer if (namespace_agents_updated) |value| allocator.free(value);
     try std.testing.expect(namespace_agents_updated != null);
     try std.testing.expectEqualStrings("# User Override\n", namespace_agents_updated.?);
+}
+
+test "acheron_session: workspace mount aliases project live mounts into the namespace" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/AGENTS.md",
+        .data = "## Workspace Owner Notes\n\nKeep shared inputs mounted.\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountAliasProject\",\"vision\":\"Project mounts must be visible from the namespace itself\",\"desired_mounts\":[{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const remote_export_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared", .{remote_node_id});
+    defer allocator.free(remote_export_path);
+    const remote_export_dir = session.resolveAbsolutePathNoBinds(remote_export_path) orelse return error.MissingNode;
+    _ = try session.addFile(remote_export_dir, "world_seed.json", "{\"world\":\"ok\"}\n", false, .none);
+
+    const root_listing = try session.renderDirListing(session.root_id);
+    defer allocator.free(root_listing);
+    try std.testing.expect(std.mem.indexOf(u8, root_listing, "shared_data") != null);
+
+    const shared_data_file = try session.tryReadInternalPath("/shared_data/world_seed.json");
+    defer if (shared_data_file) |value| allocator.free(value);
+    try std.testing.expect(shared_data_file != null);
+    try std.testing.expectEqualStrings("{\"world\":\"ok\"}\n", shared_data_file.?);
+
+    const project_local_shared = try session.tryReadInternalPath("/nodes/local/fs/.spiderweb/shared_data/world_seed.json");
+    defer if (project_local_shared) |value| allocator.free(value);
+    try std.testing.expect(project_local_shared != null);
+    try std.testing.expectEqualStrings("{\"world\":\"ok\"}\n", project_local_shared.?);
+
+    const binds_json = try session.buildProjectBindsArrayJson();
+    defer allocator.free(binds_json);
+    try std.testing.expect(std.mem.indexOf(u8, binds_json, "\"bind_path\":\"/shared_data\"") == null);
+    var found_workspace_mount = false;
+    for (session.project_binds.items) |bind| {
+        if (bind.kind != .workspace_mount) continue;
+        if (!std.mem.eql(u8, bind.bind_path, "/shared_data")) continue;
+        found_workspace_mount = true;
+        const expected_target = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared", .{remote_node_id});
+        defer allocator.free(expected_target);
+        try std.testing.expectEqualStrings(expected_target, bind.target_path);
+    }
+    try std.testing.expect(found_workspace_mount);
+}
+
+test "acheron_session: workspace bind overrides the host local fs path" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/local-only.txt",
+        .data = "local\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28892/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"WorkspaceBindOverride\",\"vision\":\"Project binds must override host local fs paths\",\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const remote_export_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/workspace", .{remote_node_id});
+    defer allocator.free(remote_export_path);
+    const remote_export_dir = session.resolveAbsolutePathNoBinds(remote_export_path) orelse return error.MissingNode;
+    _ = try session.addFile(remote_export_dir, "remote.txt", "remote\n", false, .none);
+
+    const rebound_remote = try session.tryReadInternalPath("/nodes/local/fs/remote.txt");
+    defer if (rebound_remote) |value| allocator.free(value);
+    try std.testing.expect(rebound_remote != null);
+    try std.testing.expectEqualStrings("remote\n", rebound_remote.?);
+
+    const shadowed_local = try session.tryReadInternalPath("/nodes/local/fs/local-only.txt");
+    defer if (shadowed_local) |value| allocator.free(value);
+    try std.testing.expect(shadowed_local == null);
+}
+
+test "acheron_session: admin namespace sessions retain workspace mount auth tokens" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"AdminMountTokens\",\"vision\":\"Admin namespace sessions must retain workspace mount auth tokens\",\"desired_mounts\":[{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+            .is_admin = true,
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expect(session.workspace_mount_fs_auth_tokens.get(remote_node_id) != null);
+    try std.testing.expect(session.workspace_mount_fs_urls.get(remote_node_id) != null);
+
+    var router = (try session.boundVenomRouterForNode(&control_plane, "fs", remote_node_id, "shared", .client_visible)) orelse return error.TestExpectedResponse;
+    defer router.deinit();
+    const status_json = try router.statusJson(false);
+    defer allocator.free(status_json);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:28893/v2/fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"export\":\"shared\"") != null);
+}
+
+test "acheron_session: mounted workspace proxy routers prefer routed Spiderweb node urls" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"RoutedWorkspaceProxy\",\"vision\":\"Mounted workspace proxy routers should stay on Spiderweb's routed authority\",\"desired_mounts\":[{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .namespace_mount_url = "ws://127.0.0.1:18790/",
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+            .is_admin = true,
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expect(session.workspace_mount_fs_auth_tokens.get(remote_node_id) != null);
+    try std.testing.expect(session.workspace_mount_fs_urls.get(remote_node_id) != null);
+
+    var router = (try session.boundVenomRouterForNode(&control_plane, "fs", remote_node_id, "shared", .client_visible)) orelse return error.TestExpectedResponse;
+    defer router.deinit();
+    const status_json = try router.statusJson(false);
+    defer allocator.free(status_json);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:18790/v2/fs/node/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"export\":\"shared\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"has_auth\":true") != null);
+}
+
+test "acheron_session: server-internal mounted export routers prefer direct node fs urls" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"InternalWorkspaceProxy\",\"vision\":\"Server-internal mounted export refreshes should talk directly to mounted node endpoints\",\"desired_mounts\":[{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .namespace_mount_url = "ws://127.0.0.1:18790/",
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+            .is_admin = true,
+        },
+    );
+    defer session.deinit();
+
+    var router = (try session.boundVenomRouterForNode(&control_plane, "fs", remote_node_id, "shared", .server_internal)) orelse return error.TestExpectedResponse;
+    defer router.deinit();
+    const status_json = try router.statusJson(false);
+    defer allocator.free(status_json);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:28893/v2/fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"export\":\"shared\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"has_auth\":true") != null);
+}
+
+test "acheron_session: workspace mount aliases still apply when the namespace path already exists" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28894/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_json = try control_plane.createProject(
+        "{\"name\":\"WorkspaceAliasCollision\",\"vision\":\"Workspace aliases should override existing namespace paths\"}",
+    );
+    defer allocator.free(project_json);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const nodes_root = session.lookupChild(session.root_id, "nodes") orelse return error.MissingNode;
+    const local_dir = if (session.lookupChild(nodes_root, "local")) |existing|
+        existing
+    else
+        try session.addDir(nodes_root, "local", false);
+    if (session.lookupChild(local_dir, "fs") == null) {
+        _ = try session.addDir(local_dir, "fs", false);
+    }
+
+    const workspace_status_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+        .{remote_node_id},
+    );
+    defer allocator.free(workspace_status_json);
+
+    try session.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
+
+    var found_workspace_mount = false;
+    for (session.project_binds.items) |bind| {
+        if (bind.kind != .workspace_mount) continue;
+        if (!std.mem.eql(u8, bind.bind_path, "/nodes/local/fs")) continue;
+        found_workspace_mount = true;
+        const expected_target = try std.fmt.allocPrint(allocator, "/nodes/{s}/workspace", .{remote_node_id});
+        defer allocator.free(expected_target);
+        try std.testing.expectEqualStrings(expected_target, bind.target_path);
+    }
+    try std.testing.expect(found_workspace_mount);
+}
+
+test "acheron_session: bound venom proxy refresh ignores dot entries" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const project_json = try control_plane.createProject(
+        "{\"name\":\"BoundProxyDotEntries\",\"vision\":\"Ignore protocol dot entries when materializing routed listings\"}",
+    );
+    defer allocator.free(project_json);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const parent_id = try session.addDir(session.root_id, "proxy-test", false);
+    _ = try session.addFile(parent_id, "stale.txt", "", false, .none);
+
+    var seen_names = std.ArrayListUnmanaged([]u8){};
+    defer {
+        for (seen_names.items) |name| allocator.free(name);
+        seen_names.deinit(allocator);
+    }
+
+    const listing_json =
+        "{\"ents\":[{\"name\":\".\",\"attr\":{\"k\":2,\"m\":16877}},{\"name\":\"..\",\"attr\":{\"k\":2,\"m\":16877}},{\"name\":\"world_seed.json\",\"attr\":{\"k\":1,\"m\":33188}}],\"next_cookie\":0}";
+
+    const next_cookie = try session.applyBoundVenomProxyListing(parent_id, listing_json, &seen_names);
+    try std.testing.expectEqual(@as(u64, 0), next_cookie);
+    try session.pruneBoundVenomProxyChildren(parent_id, seen_names.items);
+
+    try std.testing.expect(session.lookupChild(parent_id, ".") == null);
+    try std.testing.expect(session.lookupChild(parent_id, "..") == null);
+    try std.testing.expect(session.lookupChild(parent_id, "stale.txt") == null);
+    try std.testing.expect(session.lookupChild(parent_id, "world_seed.json") != null);
+
+    const parent = session.nodes.get(parent_id) orelse return error.MissingNode;
+    try std.testing.expectEqual(@as(usize, 1), parent.children.count());
+}
+
+test "acheron_session: bound venom proxy readdir eof suppresses repeated next_cookie" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"ents\":[],\"next_cookie\":5,\"eof\":true}",
+        .{},
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u64, 0), Session.parseReaddirNextCookie(parsed.value.object));
+}
+
+test "acheron_session: mount graph snapshots resolve projected workspace mount roots directly" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountGraphProjectedRoot\",\"vision\":\"Projected workspace mounts stay directly addressable\",\"desired_mounts\":[{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const remote_export_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared", .{remote_node_id});
+    defer allocator.free(remote_export_path);
+    const remote_export_dir = session.resolveAbsolutePathNoBinds(remote_export_path) orelse return error.MissingNode;
+    _ = try session.addFile(remote_export_dir, "world_seed.json", "{\"world\":\"ok\"}\n", false, .none);
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    defer allocator.free(workspace_req);
+    const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(workspace_json);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        workspace_json,
+        "mount-test",
+        "/shared_data",
+        2,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_shared_root = false;
+    var found_world_seed = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/shared_data")) {
+            found_shared_root = true;
+            try std.testing.expectEqualStrings("export_root", node_value.object.get("kind").?.string);
+        } else if (std.mem.eql(u8, path_value.string, "/shared_data/world_seed.json")) {
+            found_world_seed = true;
+        }
+    }
+
+    try std.testing.expect(found_shared_root);
+    try std.testing.expect(found_world_seed);
+}
+
+test "acheron_session: mount graph export roots preserve source writability" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"node-2\",\"export_name\":\"workspace\",\"fs_url\":\"ws://127.0.0.1:1/v2/fs/node/node-2\"},{\"mount_path\":\"/shared_data\",\"node_id\":\"node-3\",\"export_name\":\"shared\",\"fs_url\":\"ws://127.0.0.1:1/v2/fs/node/node-3\"}]}",
+        "mount-test",
+        "/",
+        2,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_local_root = false;
+    var found_shared_root = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs")) {
+            found_local_root = true;
+            try std.testing.expectEqualStrings("export_root", node_value.object.get("kind").?.string);
+            try std.testing.expect(node_value.object.get("writable").?.bool);
+            try std.testing.expectEqual(@as(i64, 0o040755), node_value.object.get("mode").?.integer);
+        } else if (std.mem.eql(u8, path_value.string, "/shared_data")) {
+            found_shared_root = true;
+            try std.testing.expectEqualStrings("export_root", node_value.object.get("kind").?.string);
+            try std.testing.expect(!node_value.object.get("writable").?.bool);
+            try std.testing.expectEqual(@as(i64, 0o040555), node_value.object.get("mode").?.integer);
+        }
+    }
+
+    try std.testing.expect(found_local_root);
+    try std.testing.expect(found_shared_root);
+}
+
+test "acheron_session: mount graph snapshots honor workspace bind overrides for local fs" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/local-only.txt",
+        .data = "local\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountGraphLocalFsOverride\",\"vision\":\"Mount graph should snapshot the workspace bind instead of the host local fs\",\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const remote_export_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/workspace", .{remote_node_id});
+    defer allocator.free(remote_export_path);
+    const remote_export_dir = session.resolveAbsolutePathNoBinds(remote_export_path) orelse return error.MissingNode;
+    _ = try session.addFile(remote_export_dir, "remote.txt", "remote\n", false, .none);
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    defer allocator.free(workspace_req);
+    const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(workspace_json);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        workspace_json,
+        "mount-test",
+        "/nodes/local/fs",
+        2,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_remote_file = false;
+    var found_shadowed_local = false;
+    var found_managed_root = false;
+    var found_managed_protocol = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/remote.txt")) {
+            found_remote_file = true;
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/local-only.txt")) {
+            found_shadowed_local = true;
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb")) {
+            found_managed_root = true;
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/protocol.json")) {
+            found_managed_protocol = true;
+        }
+    }
+
+    try std.testing.expect(found_remote_file);
+    try std.testing.expect(!found_shadowed_local);
+    try std.testing.expect(found_managed_root);
+    try std.testing.expect(found_managed_protocol);
+}
+
+test "acheron_session: projected workspace .spiderweb snapshot keeps protocol file under workspace mount override" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountGraphProjectedManagedRoot\",\"vision\":\"Projected Spiderweb bootstrap stays visible under workspace mounts\",\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    defer allocator.free(workspace_req);
+    const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(workspace_json);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        workspace_json,
+        "mount-test",
+        "/nodes/local/fs/.spiderweb",
+        1,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_protocol = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/protocol.json")) {
+            found_protocol = true;
+            break;
+        }
+    }
+
+    try std.testing.expect(found_protocol);
+}
+
+test "acheron_session: projected managed .spiderweb survives broader workspace mount rebound" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountGraphProjectedManagedFallback\",\"vision\":\"Managed Spiderweb subtree should win when the rebound export lacks it\",\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "user",
+            .actor_id = "access",
+            .is_admin = true,
+        },
+    );
+    defer session.deinit();
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    defer allocator.free(workspace_req);
+    const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(workspace_json);
+
+    const rebound_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/workspace/.spiderweb", .{remote_node_id});
+    defer allocator.free(rebound_path);
+    try std.testing.expectError(
+        error.FileNotFound,
+        session.buildMountGraphSnapshotPayloadForPath(
+            workspace_json,
+            "mount-test",
+            rebound_path,
+            1,
+        ),
+    );
+
+    const projected_snapshot = try session.buildMountGraphSnapshotPayloadForPath(
+        workspace_json,
+        "mount-test",
+        "/nodes/local/fs/.spiderweb",
+        1,
+    );
+    defer allocator.free(projected_snapshot);
+
+    try std.testing.expect(std.mem.indexOf(u8, projected_snapshot, "\"/nodes/local/fs/.spiderweb/protocol.json\"") != null);
+
+    const projected_file_snapshot = try session.buildMountGraphSnapshotPayloadForPath(
+        workspace_json,
+        "mount-test",
+        "/nodes/local/fs/.spiderweb/protocol.json",
+        1,
+    );
+    defer allocator.free(projected_file_snapshot);
+    try std.testing.expect(std.mem.indexOf(u8, projected_file_snapshot, "\"/nodes/local/fs/.spiderweb/protocol.json\"") != null);
+}
+
+test "acheron_session: projected managed services keep bind-only children under workspace mounts" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountGraphProjectedManagedServices\",\"vision\":\"Projected managed service mirrors keep bind-only children\",\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    defer allocator.free(workspace_req);
+    const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(workspace_json);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        workspace_json,
+        "mount-test",
+        "/nodes/local/fs/.spiderweb/services",
+        2,
+    );
+    defer allocator.free(snapshot_json);
+
+    try std.testing.expect(std.mem.indexOf(u8, snapshot_json, "\"/nodes/local/fs/.spiderweb/services/home\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot_json, "\"/nodes/local/fs/.spiderweb/services/mounts\"") != null);
+}
+
+test "acheron_session: workspace mount proxy roots preserve mounted export names" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountProxyProject\",\"vision\":\"Mounted exports keep their export names\",\"desired_mounts\":[{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const shared_proxy_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared/world_seed.json", .{remote_node_id});
+    defer allocator.free(shared_proxy_path);
+    const shared_proxy = (try session.boundVenomProxyPathForAbsolutePath(shared_proxy_path)) orelse return error.MissingNode;
+    defer allocator.free(shared_proxy.remote_path);
+    try std.testing.expectEqualStrings("fs", shared_proxy.venom_id);
+    try std.testing.expectEqualStrings(remote_node_id, shared_proxy.provider_node_id.?);
+    try std.testing.expectEqualStrings("shared", shared_proxy.provider_export_name.?);
+    try std.testing.expectEqualStrings("/world_seed.json", shared_proxy.remote_path);
+
+    const generic_fs_proxy_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/fs/world_seed.json", .{remote_node_id});
+    defer allocator.free(generic_fs_proxy_path);
+    const generic_fs_proxy = (try session.boundVenomProxyPathForAbsolutePath(generic_fs_proxy_path)) orelse return error.MissingNode;
+    defer allocator.free(generic_fs_proxy.remote_path);
+    try std.testing.expectEqualStrings(remote_node_id, generic_fs_proxy.provider_node_id.?);
+    try std.testing.expect(generic_fs_proxy.provider_export_name == null);
+    try std.testing.expectEqualStrings("/world_seed.json", generic_fs_proxy.remote_path);
 }
 
 test "acheron_session: workspace AGENTS contract strips repeated heading noise" {
@@ -10544,6 +13312,403 @@ test "acheron_session: mount graph snapshot preserves alias directory and file k
 
     try std.testing.expect(found_agents_alias);
     try std.testing.expect(found_mounts_alias);
+}
+
+test "acheron_session: mount graph snapshot projects managed .spiderweb children alongside local entries" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb/agents/codex/home");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/AGENTS.md",
+        .data = "## Workspace Owner Notes\n\nKeep project-local bootstrap stable.\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const project_json = try control_plane.createProject(
+        "{\"name\":\"MountGraphManagedEntrypoint\",\"vision\":\"Keep project-local managed bootstrap visible\"}",
+    );
+    defer allocator.free(project_json);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[]}",
+        "mount-test",
+        "/nodes/local/fs/.spiderweb",
+        2,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_agents_dir = false;
+    var found_protocol_file = false;
+    var found_services_dir = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/agents")) {
+            found_agents_dir = true;
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/protocol.json")) {
+            found_protocol_file = true;
+            try std.testing.expectEqualStrings("synthetic_file", node_value.object.get("kind").?.string);
+            try std.testing.expect(node_value.object.get("canonical_node_id").? != .null);
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/services")) {
+            found_services_dir = true;
+            try std.testing.expectEqualStrings("synthetic_directory", node_value.object.get("kind").?.string);
+            try std.testing.expect(node_value.object.get("canonical_node_id").? != .null);
+        }
+    }
+
+    try std.testing.expect(found_agents_dir);
+    try std.testing.expect(found_protocol_file);
+    try std.testing.expect(found_services_dir);
+}
+
+test "acheron_session: projected workspace managed files remain readable through mount graph reads" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb/agents/codex/home");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/AGENTS.md",
+        .data = "## Workspace Owner Notes\n\nKeep projected reads stable.\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountGraphReadableManagedFiles\",\"vision\":\"Projected managed files must stay readable under workspace mounts\",\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}},{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{ remote_node_id, remote_node_id },
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const shared_export_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared", .{remote_node_id});
+    defer allocator.free(shared_export_path);
+    const shared_export_dir = session.resolveAbsolutePathNoBinds(shared_export_path) orelse return error.MissingNode;
+    _ = try session.addFile(shared_export_dir, "world_seed.json", "{\"world\":\"ok\"}\n", false, .none);
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    defer allocator.free(workspace_req);
+    const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(workspace_json);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        workspace_json,
+        "mount-test",
+        "/nodes/local/fs/.spiderweb",
+        2,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_protocol = false;
+    var found_world_seed = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/protocol.json")) {
+            found_protocol = true;
+            try std.testing.expect(node_value.object.get("size").?.integer > 0);
+            try std.testing.expectEqualStrings("remote_read", node_value.object.get("content_mode").?.string);
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/shared_data/world_seed.json")) {
+            found_world_seed = true;
+            try std.testing.expect(node_value.object.get("size").?.integer > 0);
+            try std.testing.expectEqualStrings("remote_read", node_value.object.get("content_mode").?.string);
+        }
+    }
+
+    try std.testing.expect(found_protocol);
+    try std.testing.expect(found_world_seed);
+
+    const expected_protocol = try session.tryReadInternalPath("/nodes/local/fs/.spiderweb/protocol.json");
+    defer if (expected_protocol) |value| allocator.free(value);
+    try std.testing.expect(expected_protocol != null);
+
+    const expected_world_seed = try session.tryReadInternalPath("/nodes/local/fs/.spiderweb/shared_data/world_seed.json");
+    defer if (expected_world_seed) |value| allocator.free(value);
+    try std.testing.expect(expected_world_seed != null);
+
+    const protocol_via_mount_read = try session.readMountGraphFile("/nodes/local/fs/.spiderweb/protocol.json", 0, 4096);
+    defer allocator.free(protocol_via_mount_read);
+    try std.testing.expectEqualStrings(expected_protocol.?, protocol_via_mount_read);
+
+    const world_seed_via_mount_read = try session.readMountGraphFile("/nodes/local/fs/.spiderweb/shared_data/world_seed.json", 0, 4096);
+    defer allocator.free(world_seed_via_mount_read);
+    try std.testing.expectEqualStrings(expected_world_seed.?, world_seed_via_mount_read);
+}
+
+test "acheron_session: projected managed shared_data snapshot preserves proxy attrs" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb/agents/codex/home");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountGraphManagedSharedDataProxyAttrs\",\"vision\":\"Projected managed shared_data should keep proxy attrs in the mount graph\",\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}},{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{ remote_node_id, remote_node_id },
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const shared_export_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared", .{remote_node_id});
+    defer allocator.free(shared_export_path);
+    const shared_export_dir = session.resolveAbsolutePathNoBinds(shared_export_path) orelse return error.MissingNode;
+    const world_seed_id = try session.addFile(shared_export_dir, "world_seed.json", "", true, .none);
+    const world_seed_node = session.nodes.getPtr(world_seed_id) orelse return error.MissingNode;
+    world_seed_node.reported_mode = 0o100644;
+    world_seed_node.reported_size = 15;
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    defer allocator.free(workspace_req);
+    const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(workspace_json);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        workspace_json,
+        "mount-test",
+        "/nodes/local/fs/.spiderweb/shared_data",
+        1,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var found_world_seed = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+        if (!std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/shared_data/world_seed.json")) continue;
+
+        found_world_seed = true;
+        try std.testing.expectEqual(@as(i64, 15), node_value.object.get("size").?.integer);
+        try std.testing.expectEqualStrings("remote_read", node_value.object.get("content_mode").?.string);
+        try std.testing.expect(node_value.object.get("writable").?.bool == false);
+        try std.testing.expectEqual(@as(i64, 0o100444), node_value.object.get("mode").?.integer);
+    }
+
+    try std.testing.expect(found_world_seed);
+}
+
+test "acheron_session: rebound workspace parents can walk projected managed shared_data binds" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb/agents/codex/home");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28893/v2/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.projectUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"MountGraphReboundManagedSharedData\",\"vision\":\"Projected managed shared_data stays walkable from rebound workspace parents\",\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}},{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{ remote_node_id, remote_node_id },
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const shared_export_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared", .{remote_node_id});
+    defer allocator.free(shared_export_path);
+    const shared_export_dir = session.resolveAbsolutePathNoBinds(shared_export_path) orelse return error.MissingNode;
+    _ = try session.addFile(shared_export_dir, "world_seed.json", "{\"world\":\"ok\"}\n", false, .none);
+
+    const rebound_managed_dir_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/workspace/.spiderweb", .{remote_node_id});
+    defer allocator.free(rebound_managed_dir_path);
+    const rebound_managed_dir = session.resolveAbsolutePathNoBinds(rebound_managed_dir_path) orelse return error.MissingNode;
+
+    const shared_data_dir = try session.resolveWalkChild(rebound_managed_dir, "shared_data") orelse return error.MissingNode;
+    const world_seed_id = try session.resolveWalkChild(shared_data_dir, "world_seed.json") orelse return error.MissingNode;
+
+    const world_seed_path = try session.nodeAbsolutePath(world_seed_id);
+    defer allocator.free(world_seed_path);
+    try std.testing.expectEqualStrings("/shared_data/world_seed.json", world_seed_path);
 }
 
 test "acheron_session: readMountGraphFile preserves internal file-type errors" {
@@ -11109,6 +14274,86 @@ test "acheron_session: local fs refresh sees new files immediately" {
 
     try session.refreshDynamicDirectory(local_fs_dir);
     try std.testing.expect(session.lookupChild(local_fs_dir, "second.txt") != null);
+}
+
+test "acheron_session: local fs backed mount writes can create missing project files" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expect(try session.tryWriteLocalFsBackedMountFile("/nodes/local/fs/game.py", "print('ok')\n"));
+
+    const created = try session.tryReadInternalPath("/nodes/local/fs/game.py");
+    defer if (created) |value| allocator.free(value);
+    try std.testing.expect(created != null);
+    try std.testing.expectEqualStrings("print('ok')\n", created.?);
+}
+
+test "acheron_session: local fs backed mount writes do not materialize projected shared_data" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expect(!(try session.tryWriteLocalFsBackedMountFile(
+        "/nodes/local/fs/.spiderweb/shared_data/world_seed.json",
+        "{\"bad\":true}",
+    )));
+
+    const host_path = try std.fs.path.join(allocator, &.{ exports_dir, ".spiderweb", "shared_data", "world_seed.json" });
+    defer allocator.free(host_path);
+    try std.testing.expect(!pathExistsAbsolute(host_path));
 }
 
 test "acheron_session: dynamic refresh skips re-entrant invocation" {

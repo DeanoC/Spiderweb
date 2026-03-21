@@ -128,7 +128,7 @@ log_info "Running install.sh in isolated HOME: $TEST_HOME"
 
 cat "$INSTALL_LOG"
 
-for bin in spiderweb spiderweb-config spiderweb-control spiderweb-fs-mount spiderweb-fs-node; do
+for bin in spiderweb spiderweb-config spiderweb-control spiderweb-fs-mount spiderweb-fs-node spiderweb-local-node spiderweb-local-service; do
     if [[ -x "$INSTALL_DIR/$bin" ]]; then
         log_success "Installed binary present: $bin"
     else

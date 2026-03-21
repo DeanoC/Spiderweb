@@ -981,8 +981,14 @@ const NodeTunnelRegistry = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const tunnel = self.tunnels.get(node_id) orelse return error.NodeTunnelUnavailable;
-        if (tunnel.stream == null or tunnel.write_mutex == null) return error.NodeTunnelUnavailable;
+        const tunnel = self.tunnels.get(node_id) orelse {
+            std.log.warn("node tunnel register client failed: node={s} reason=missing_tunnel", .{node_id});
+            return error.NodeTunnelUnavailable;
+        };
+        if (tunnel.stream == null or tunnel.write_mutex == null) {
+            std.log.warn("node tunnel register client failed: node={s} reason=inactive_stream generation={d}", .{ node_id, tunnel.generation });
+            return error.NodeTunnelUnavailable;
+        }
 
         const client_id = tunnel.next_client_id;
         tunnel.next_client_id +%= 1;
@@ -7186,6 +7192,12 @@ fn getRequiredStringField(obj: std.json.ObjectMap, field: []const u8) ![]const u
     return value.string;
 }
 
+fn getRequiredStringFieldAllowEmpty(obj: std.json.ObjectMap, field: []const u8) ![]const u8 {
+    const value = obj.get(field) orelse return error.MissingField;
+    if (value != .string) return error.InvalidPayload;
+    return value.string;
+}
+
 fn getOptionalStringField(obj: std.json.ObjectMap, field: []const u8) ?[]const u8 {
     const value = obj.get(field) orelse return null;
     if (value != .string or value.string.len == 0) return null;
@@ -7222,24 +7234,47 @@ fn decodeStandardBase64Owned(allocator: std.mem.Allocator, encoded: []const u8) 
     return decoded;
 }
 
-fn mergeMountGraphWriteData(
+fn materializeMountGraphWriteData(
     allocator: std.mem.Allocator,
-    existing: []const u8,
+    existing: ?[]const u8,
     offset: u64,
     data: []const u8,
+    truncate_to_size: ?u64,
 ) ![]u8 {
+    const base = if (truncate_to_size) |requested_size| blk: {
+        const target_size = std.math.cast(usize, requested_size) orelse return error.InvalidOffset;
+        if (target_size > max_mount_graph_materialized_file_bytes) return error.WriteTooLarge;
+
+        const current = existing orelse return error.FileNotFound;
+        var truncated = try allocator.alloc(u8, target_size);
+        errdefer allocator.free(truncated);
+        if (target_size > 0) {
+            @memset(truncated, 0);
+            const copy_len = @min(current.len, target_size);
+            if (copy_len > 0) @memcpy(truncated[0..copy_len], current[0..copy_len]);
+        }
+        break :blk truncated;
+    } else try allocator.dupe(u8, existing orelse "");
+    errdefer allocator.free(base);
+
+    if (base.len > max_mount_graph_materialized_file_bytes) return error.WriteTooLarge;
+    if (data.len == 0) return base;
+
     const range = try validateMountGraphWriteRange(offset, data.len);
-    if (existing.len > max_mount_graph_materialized_file_bytes) return error.WriteTooLarge;
-    const merged_len = @max(existing.len, range.write_end);
+    if (range.write_end <= base.len) {
+        @memcpy(base[range.base_offset..range.write_end], data);
+        return base;
+    }
+
+    const merged_len = range.write_end;
     var merged = try allocator.alloc(u8, merged_len);
     errdefer allocator.free(merged);
     @memset(merged, 0);
-    if (existing.len > 0) {
-        @memcpy(merged[0..existing.len], existing);
+    if (base.len > 0) {
+        @memcpy(merged[0..base.len], base);
     }
-    if (data.len > 0) {
-        @memcpy(merged[range.base_offset..range.write_end], data);
-    }
+    @memcpy(merged[range.base_offset..range.write_end], data);
+    allocator.free(base);
     return merged;
 }
 
@@ -7393,8 +7428,9 @@ fn handleMountFileWriteControl(
     if (payload.value != .object) return error.InvalidPayload;
 
     const absolute_path = try getRequiredStringField(payload.value.object, "path");
-    const data_b64 = try getRequiredStringField(payload.value.object, "data_b64");
+    const data_b64 = try getRequiredStringFieldAllowEmpty(payload.value.object, "data_b64");
     const offset = getOptionalU64Field(payload.value.object, "offset") orelse 0;
+    const truncate_to_size = getOptionalU64Field(payload.value.object, "truncate_to_size");
     const decoded = try decodeStandardBase64Owned(allocator, data_b64);
     defer allocator.free(decoded);
 
@@ -7409,8 +7445,19 @@ fn handleMountFileWriteControl(
     );
     const existing = try session.tryReadInternalPath(absolute_path);
     defer if (existing) |value| allocator.free(value);
-    const merged = try mergeMountGraphWriteData(allocator, existing orelse "", offset, decoded);
+    const merged = try materializeMountGraphWriteData(allocator, existing, offset, decoded, truncate_to_size);
     defer allocator.free(merged);
+
+    if (existing == null and try session.tryWriteLocalFsBackedMountFile(absolute_path, merged)) {
+        const escaped_path = try unified.jsonEscape(allocator, absolute_path);
+        defer allocator.free(escaped_path);
+        const count = try mountGraphWriteResponseCount(decoded.len);
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d}}}",
+            .{ escaped_path, offset, count },
+        );
+    }
 
     try session.writeMountGraphFile(absolute_path, merged);
 
@@ -10859,30 +10906,57 @@ test "server: invalid configured default agent falls back to built-in default" {
     try std.testing.expectEqualStrings(system_agent_id, registry.default_agent_id);
 }
 
-test "server: mergeMountGraphWriteData preserves suffix on offset zero partial writes" {
+test "server: materializeMountGraphWriteData preserves suffix on offset zero partial writes" {
     const allocator = std.testing.allocator;
-    const merged = try mergeMountGraphWriteData(allocator, "abcdef", 0, "xy");
+    const merged = try materializeMountGraphWriteData(allocator, "abcdef", 0, "xy", null);
     defer allocator.free(merged);
     try std.testing.expectEqualStrings("xycdef", merged);
 }
 
-test "server: mergeMountGraphWriteData preserves suffix on middle writes" {
+test "server: materializeMountGraphWriteData preserves suffix on middle writes" {
     const allocator = std.testing.allocator;
-    const merged = try mergeMountGraphWriteData(allocator, "abcdef", 2, "XY");
+    const merged = try materializeMountGraphWriteData(allocator, "abcdef", 2, "XY", null);
     defer allocator.free(merged);
     try std.testing.expectEqualStrings("abXYef", merged);
 }
 
-test "server: mergeMountGraphWriteData rejects oversized materialized writes" {
+test "server: materializeMountGraphWriteData truncates existing content before rewrite" {
+    const allocator = std.testing.allocator;
+    const merged = try materializeMountGraphWriteData(allocator, "abcdef", 0, "", 3);
+    defer allocator.free(merged);
+    try std.testing.expectEqualStrings("abc", merged);
+}
+
+test "server: materializeMountGraphWriteData rejects truncate on missing files" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(
+        error.FileNotFound,
+        materializeMountGraphWriteData(allocator, null, 0, "", 0),
+    );
+}
+
+test "server: materializeMountGraphWriteData rejects oversized materialized writes" {
     const allocator = std.testing.allocator;
     try std.testing.expectError(
         error.WriteTooLarge,
-        mergeMountGraphWriteData(allocator, "", max_mount_graph_materialized_file_bytes, "x"),
+        materializeMountGraphWriteData(allocator, "", max_mount_graph_materialized_file_bytes, "x", null),
     );
 }
 
 test "server: mountGraphWriteResponseCount reports request byte length" {
     try std.testing.expectEqual(@as(u32, 2), try mountGraphWriteResponseCount(2));
+}
+
+test "server: getRequiredStringFieldAllowEmpty accepts empty payload strings" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"data_b64\":\"\"}",
+        .{},
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("", try getRequiredStringFieldAllowEmpty(parsed.value.object, "data_b64"));
 }
 
 test "server: mountGraphErrorCode emits errno-compatible tokens" {
@@ -10982,6 +11056,105 @@ test "server: mount attach and mount file read control operations are supported 
     defer mount_read_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"type\":\"control.mount_file_read_v2\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"data_b64\":\"") != null);
+
+    try websocket_transport.writeFrame(&client, "", .close);
+    var close_reply = try readServerFrame(allocator, &client);
+    defer close_reply.deinit(allocator);
+    try std.testing.expectEqual(@as(u8, 0x8), close_reply.opcode);
+
+    try std.testing.expect(server_ctx.err_name == null);
+}
+
+test "server: mount file read can read projected workspace managed files after session attach" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("spiderweb-runtime");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const spiderweb_runtime_root = try std.fs.path.join(allocator, &.{ root, "spiderweb-runtime" });
+    defer allocator.free(spiderweb_runtime_root);
+
+    var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
+        .ltm_directory = "",
+        .ltm_filename = "",
+        .spider_web_root = spiderweb_runtime_root,
+    }, null);
+    defer runtime_registry.deinit();
+    try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
+
+    const join_payload = try runtime_registry.control_plane.ensureNode("workspace-node", "ws://127.0.0.1:18891/v2/fs", 60_000);
+    defer allocator.free(join_payload);
+    const node_registration = try parseNodeRegistrationFromJoinPayload(allocator, join_payload);
+    defer {
+        allocator.free(node_registration.node_id);
+        allocator.free(node_registration.node_secret);
+    }
+
+    const project_up = try runtime_registry.control_plane.projectUpWithRole(
+        "mount-agent",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"ProjectedManagedRead\",\"vision\":\"Projected managed files must stay readable over control.mount_file_read_v2\",\"activate\":false,\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+            .{node_registration.node_id},
+        ),
+        true,
+    );
+    defer allocator.free(project_up);
+    const project_id = (try extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    defer allocator.free(project_id);
+
+    var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
+    defer listener.deinit();
+
+    var server_ctx = WsTestServerCtx{
+        .allocator = allocator,
+        .runtime_registry = &runtime_registry,
+        .listener = &listener,
+    };
+    defer server_ctx.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, runSingleWsConnection, .{&server_ctx});
+    defer server_thread.join();
+
+    var client = try std.net.tcpConnectToAddress(listener.listen_address);
+    defer client.close();
+    try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"projected-version\",\"payload\":{\"protocol\":\"unified-v2\"}}");
+    var version_ack = try readServerFrame(allocator, &client);
+    defer version_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.connect\",\"id\":\"projected-connect\"}");
+    var connect_ack = try readServerFrame(allocator, &client);
+    defer connect_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
+
+    const attach_payload = try std.fmt.allocPrint(
+        allocator,
+        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"projected-attach-session\",\"payload\":{{\"session_key\":\"fskit\",\"agent_id\":\"mount-agent\",\"project_id\":\"{s}\"}}}}",
+        .{project_id},
+    );
+    defer allocator.free(attach_payload);
+    try writeClientTextFrameMasked(&client, attach_payload);
+    var attach_ack = try readServerFrame(allocator, &client);
+    defer attach_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"type\":\"control.session_attach\"") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_attach_v2\",\"id\":\"projected-mount-attach\",\"payload\":{\"path\":\"/nodes/local/fs/.spiderweb\",\"depth\":2}}");
+    var mount_attach_ack = try readServerFrame(allocator, &client);
+    defer mount_attach_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"type\":\"control.mount_attach_v2\"") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_file_read_v2\",\"id\":\"projected-mount-read\",\"payload\":{\"path\":\"/nodes/local/fs/.spiderweb/protocol.json\",\"offset\":0,\"length\":256}}");
+    var mount_read_ack = try readServerFrame(allocator, &client);
+    defer mount_read_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"type\":\"control.mount_file_read_v2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"data_b64\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"n\":0") == null);
 
     try websocket_transport.writeFrame(&client, "", .close);
     var close_reply = try readServerFrame(allocator, &client);

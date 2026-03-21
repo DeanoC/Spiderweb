@@ -1,10 +1,11 @@
 const std = @import("std");
 const fs_router = @import("acheron_fs_router");
-const hybrid_mount_provider = @import("hybrid_mount_provider.zig");
 const mount_provider = @import("spiderweb_mount_provider");
 const mount_session = @import("mount_session.zig");
 const namespace_client = @import("namespace_client.zig");
+const namespace_contract = @import("namespace_contract.zig");
 const native_protocol = @import("spiderweb_native_mount_protocol");
+const namespace_mount_provider = @import("namespace_mount_provider.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -37,6 +38,9 @@ pub fn main() !void {
             .auth_token = endpoint.auth_token,
         };
     }
+    if (config.namespace == null) {
+        try validateStandaloneEndpointMountPaths(config.endpoints);
+    }
 
     var router = try fs_router.Router.init(allocator, endpoint_configs);
     defer router.deinit();
@@ -55,9 +59,8 @@ pub fn main() !void {
             .project_token = namespace_binding.project_token,
         });
         defer attach_info.deinit(allocator);
-        try client.attachNamespaceRoot(attach_info.session_key);
         namespace_client_instance = client;
-        break :blk try hybrid_mount_provider.init(allocator, &router, &namespace_client_instance.?);
+        break :blk try namespace_mount_provider.init(allocator, &namespace_client_instance.?);
     } else try mount_provider.initRouterProvider(allocator, &router);
 
     var session = mount_session.MountSession.init(allocator, provider);
@@ -102,6 +105,13 @@ pub fn main() !void {
         defer allocator.free(response);
         try stdout_file.writeAll(response);
         try stdout_file.writeAll("\n");
+    }
+}
+
+fn validateStandaloneEndpointMountPaths(endpoints: []const native_protocol.OwnedEndpointSpec) !void {
+    for (endpoints) |endpoint| {
+        if (!namespace_contract.isReservedStandaloneEndpointMountPath(endpoint.mount_path)) continue;
+        return error.ReservedNamespacePath;
     }
 }
 

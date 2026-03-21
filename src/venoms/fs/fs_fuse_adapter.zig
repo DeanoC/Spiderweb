@@ -90,11 +90,7 @@ pub const FuseAdapter = struct {
         if (self.path_cache.getAttr(path, now)) |cached| return cached;
         if (self.path_cache.isNegative(path, now)) return error.FileNotFound;
 
-        // Snapshot generation before the network call. If a concurrent mutator
-        // fires invalidatePath while we await the response, the gen will change
-        // and we must not store the now-stale negative into the cache.
         const gen = self.path_cache.mutationGen();
-
         const result = self.session.getattr(path) catch |err| {
             if (err == error.FileNotFound and self.path_cache.mutationGen() == gen) {
                 self.path_cache.putNegative(path, now) catch {};
@@ -290,6 +286,7 @@ pub const FuseAdapter = struct {
             ops.create = cCreateWin;
             ops.mkdir = cMkdirWin;
         } else {
+            ops.mknod = cMknod;
             ops.create = cCreate;
             ops.mkdir = cMkdir;
         }
@@ -355,12 +352,12 @@ pub const FuseAdapter = struct {
             else
                 return error.MissingFuseSymbol
         else if (lib.lookup(FuseMainRealVersionedFn, "fuse_main_real_versioned")) |fuse_main_real_versioned|
-            fuse_main_real_versioned(
+            c.spiderweb_call_fuse_main_real_versioned(
+                @ptrCast(@constCast(fuse_main_real_versioned)),
                 argc,
                 argv_ptr,
                 &ops,
                 @sizeOf(c.struct_fuse_operations),
-                null,
                 null,
             )
         else if (lib.lookup(FuseMainRealFn, "fuse_main_real")) |fuse_main_real|
@@ -708,6 +705,13 @@ fn cReaddirWin(
     fuseTrace("readdir entries={d}", .{ents.array.items.len});
 
     if (filler == null) return -fs_protocol.Errno.EINVAL;
+    const dot_entries = [_][]const u8{ ".", ".." };
+    for (dot_entries) |name| {
+        const filler_rc = filler.?(buf, @ptrCast(name.ptr), null, 0, c.FUSE_FILL_DIR_DEFAULTS);
+        fuseTrace("readdir special name={s} rc={d}", .{ name, filler_rc });
+        if (filler_rc != 0) return 0;
+    }
+
     var idx: u64 = 0;
     for (ents.array.items) |entry| {
         if (entry != .object) continue;
@@ -750,7 +754,11 @@ fn cReaddir(
     const path = std.mem.span(path_c);
     fuseTrace("readdir path={s} off={d}", .{ path, off });
 
-    const cookie: u64 = if (builtin.os.tag == .macos)
+    // Spiderweb namespace cookies are server-managed continuation tokens, not
+    // stable POSIX dirent offsets. Follow the same non-seekable listing model
+    // as macOS so libfuse does not try to resume a listing from synthetic
+    // offsets that do not round-trip through the namespace protocol.
+    const cookie: u64 = if (builtin.os.tag == .macos or builtin.os.tag == .linux)
         0
     else if (off <= 0)
         0
@@ -782,6 +790,13 @@ fn cReaddir(
     fuseTrace("readdir entries={d}", .{ents.array.items.len});
 
     if (filler == null) return -fs_protocol.Errno.EINVAL;
+    const dot_entries = [_][]const u8{ ".", ".." };
+    for (dot_entries) |name| {
+        const filler_rc = filler.?(buf, @ptrCast(name.ptr), null, 0, c.FUSE_FILL_DIR_DEFAULTS);
+        fuseTrace("readdir special name={s} rc={d}", .{ name, filler_rc });
+        if (filler_rc != 0) return 0;
+    }
+
     var idx: u64 = 0;
     for (ents.array.items) |entry| {
         if (entry != .object) continue;
@@ -790,8 +805,10 @@ fn cReaddir(
         const name_z = adapter.allocator.dupeZ(u8, name_val.string) catch return -fs_protocol.Errno.EIO;
         defer adapter.allocator.free(name_z);
 
-        const next_cookie = std.math.add(u64, cookie, idx + 1) catch std.math.maxInt(u64);
-        const next_off: c.off_t = std.math.cast(c.off_t, next_cookie) orelse 0;
+        const next_off: c.off_t = if (builtin.os.tag == .windows) blk: {
+            const next_cookie = std.math.add(u64, cookie, idx + 1) catch std.math.maxInt(u64);
+            break :blk std.math.cast(c.off_t, next_cookie) orelse 0;
+        } else 0;
         var stat_buf: c.struct_stat = std.mem.zeroes(c.struct_stat);
         var stat_ptr: [*c]const c.struct_stat = null;
         if (entry.object.get("attr")) |attr_val| {
@@ -909,7 +926,10 @@ fn cOpendir(path_c: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_
 
     const attr = parseAttr(adapter.allocator, attr_json) catch |err| return toFuseError(err);
     if (!attrIsDirectory(attr)) return -fs_protocol.Errno.ENOTDIR;
-    if (builtin.os.tag == .macos and fi != null) {
+    if (builtin.os.tag != .windows and fi != null) {
+        // Namespace listings are dynamic Spiderweb snapshots, so treat them as
+        // non-seekable across POSIX backends rather than pretending their
+        // opaque server cookies are kernel-stable directory offsets.
         c.spiderweb_fi_set_nonseekable(fi.?, 1);
         c.spiderweb_fi_set_cache_readdir(fi.?, 0);
     }
@@ -1196,6 +1216,22 @@ fn cCreateWin(path_c: [*c]const u8, mode: c.fuse_mode_t, fi: ?*c.struct_fuse_fil
         const opened = adapter.create(path, @intCast(mode), flags) catch |err| return toFuseError(err);
         adapter.release(opened) catch {};
     }
+    return 0;
+}
+
+fn cMknod(path_c: [*c]const u8, mode: c.mode_t, dev: c.dev_t) callconv(.c) c_int {
+    _ = dev;
+    const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
+    if (path_c == null) return -fs_protocol.Errno.EINVAL;
+
+    const kind_bits = mode & c.S_IFMT;
+    if (kind_bits != 0 and kind_bits != c.S_IFREG) {
+        return -fs_protocol.Errno.ENOSYS;
+    }
+
+    const path = std.mem.span(path_c);
+    const opened = adapter.create(path, @intCast(mode), 2) catch |err| return toFuseError(err);
+    adapter.release(opened) catch {};
     return 0;
 }
 

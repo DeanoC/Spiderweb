@@ -200,6 +200,12 @@ pub fn installedFilesystemBundlePath(allocator: std.mem.Allocator) ![]u8 {
     return std.fs.path.join(allocator, &.{ "/Library", "Filesystems", filesystem_bundle_name });
 }
 
+pub fn installedMountHelperPath(allocator: std.mem.Allocator) ![]u8 {
+    const filesystem_bundle_path = try installedFilesystemBundlePath(allocator);
+    defer allocator.free(filesystem_bundle_path);
+    return std.fs.path.join(allocator, &.{ filesystem_bundle_path, "Contents", "Resources", mount_helper_name });
+}
+
 fn defaultSupportDirectory(allocator: std.mem.Allocator) ![]u8 {
     const home = try std.process.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
@@ -470,11 +476,44 @@ fn isMountedPath(allocator: std.mem.Allocator, mountpoint: []const u8) !bool {
     defer if (result) |*value| value.deinit(allocator);
     if (result) |value| {
         if (!commandExitedSuccessfully(value)) return false;
-        const marker = try std.fmt.allocPrint(allocator, " on {s} (", .{mountpoint});
-        defer allocator.free(marker);
-        return std.mem.indexOf(u8, value.stdout, marker) != null;
+        const canonical_mountpoint = canonicalExistingPathAlloc(allocator, mountpoint);
+        defer if (canonical_mountpoint) |path| allocator.free(path);
+        return mountOutputContainsPath(allocator, value.stdout, mountpoint, canonical_mountpoint);
     }
     return false;
+}
+
+fn mountOutputContainsPath(
+    allocator: std.mem.Allocator,
+    mount_output: []const u8,
+    mountpoint: []const u8,
+    canonical_mountpoint: ?[]const u8,
+) !bool {
+    if (try mountOutputContainsExactPath(allocator, mount_output, mountpoint)) return true;
+    if (canonical_mountpoint) |path| {
+        if (!std.mem.eql(u8, path, mountpoint) and try mountOutputContainsExactPath(allocator, mount_output, path)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn mountOutputContainsExactPath(
+    allocator: std.mem.Allocator,
+    mount_output: []const u8,
+    mountpoint: []const u8,
+) !bool {
+    const marker = try std.fmt.allocPrint(allocator, " on {s} (", .{mountpoint});
+    defer allocator.free(marker);
+    return std.mem.indexOf(u8, mount_output, marker) != null;
+}
+
+fn canonicalExistingPathAlloc(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
+    if (!pathExists(path)) return null;
+    if (std.fs.path.isAbsolute(path)) {
+        return std.fs.realpathAlloc(allocator, path) catch null;
+    }
+    return std.fs.cwd().realpathAlloc(allocator, path) catch null;
 }
 
 fn queryExtensionRegistrationState(allocator: std.mem.Allocator) ExtensionRegistrationState {
@@ -501,7 +540,31 @@ fn queryExtensionRegistrationState(allocator: std.mem.Allocator) ExtensionRegist
 }
 
 fn issueMountRequest(allocator: std.mem.Allocator, request_path: []const u8, mountpoint: []const u8) !void {
-    try runCommandSuccess(allocator, &.{ "mount", "-o", "owners", "-t", module_short_name, request_path, mountpoint });
+    const mount_helper_path = try installedMountHelperPath(allocator);
+    defer allocator.free(mount_helper_path);
+
+    // Use the installed filesystem bundle helper directly. This still enters the
+    // same FSKit runtime path, but avoids the outer `mount -t spiderweb` hop,
+    // which expects a helper-app handshake our sample-derived bundle does not
+    // implement reliably.
+    const argv = [_][]const u8{ mount_helper_path, "--direct", request_path, mountpoint };
+    var attempt: u8 = 0;
+    while (attempt < 3) : (attempt += 1) {
+        var result = try runCommandCapture(allocator, &argv);
+        defer result.deinit(allocator);
+        if (commandExitedSuccessfully(result)) return;
+
+        const output = if (result.stderr.len > 0) result.stderr else result.stdout;
+        if (attempt + 1 < 3 and mountRequestLooksTransient(output)) {
+            std.Thread.sleep(@as(u64, attempt + 1) * std.time.ns_per_s);
+            continue;
+        }
+        if (output.len > 0) {
+            std.log.err("{s}", .{std.mem.trim(u8, output, " \n\r\t")});
+        }
+        return error.CommandFailed;
+    }
+    return error.CommandFailed;
 }
 
 fn hasCodeSigningIdentity(allocator: std.mem.Allocator) bool {
@@ -550,7 +613,10 @@ fn fskitModuleEnabled(allocator: std.mem.Allocator) bool {
     makePathAny(mountpoint) catch return false;
     defer std.fs.deleteDirAbsolute(mountpoint) catch {};
 
-    var result = runCommandBestEffort(allocator, &.{ "mount", "-t", module_short_name, request_path, mountpoint }) catch return false;
+    const mount_helper_path = installedMountHelperPath(allocator) catch return false;
+    defer allocator.free(mount_helper_path);
+
+    var result = runCommandBestEffort(allocator, &.{ mount_helper_path, "--direct", request_path, mountpoint }) catch return false;
     defer if (result) |*value| value.deinit(allocator);
     if (result) |value| {
         const output = if (value.stderr.len > 0) value.stderr else value.stdout;
@@ -619,6 +685,12 @@ fn nativeMountProbeShowsEnabled(output: []const u8, term: std.process.Child.Term
         };
     }
     return false;
+}
+
+fn mountRequestLooksTransient(output: []const u8) bool {
+    return std.mem.indexOf(u8, output, "Couldn’t communicate with a helper application") != null or
+        std.mem.indexOf(u8, output, "Couldn't communicate with a helper application") != null or
+        std.mem.indexOf(u8, output, "Unable to invoke task") != null;
 }
 
 fn makeRequestId(allocator: std.mem.Allocator) ![]u8 {
@@ -758,12 +830,40 @@ test "native_mount_support: resolves install path under applications" {
     defer allocator.free(app_path);
     const filesystem_bundle_path = try installedFilesystemBundlePath(allocator);
     defer allocator.free(filesystem_bundle_path);
+    const mount_helper_path = try installedMountHelperPath(allocator);
+    defer allocator.free(mount_helper_path);
     const request_dir = try defaultRequestDirectory(allocator);
     defer allocator.free(request_dir);
 
     try std.testing.expect(std.mem.endsWith(u8, app_path, "Spiderweb.app"));
     try std.testing.expect(std.mem.eql(u8, filesystem_bundle_path, "/Library/Filesystems/spiderweb.fs"));
+    try std.testing.expect(std.mem.eql(u8, mount_helper_path, "/Library/Filesystems/spiderweb.fs/Contents/Resources/mount_spiderweb"));
     try std.testing.expect(std.mem.indexOf(u8, request_dir, "Application Support/Spiderweb/Requests") != null);
+}
+
+test "native_mount_support: mounted path matching accepts canonical macos paths" {
+    const allocator = std.testing.allocator;
+    const mount_output =
+        "spiderweb on /private/var/folders/test/mount (spiderwebfs, nodev, nosuid)\n";
+
+    try std.testing.expect(try mountOutputContainsPath(
+        allocator,
+        mount_output,
+        "/var/folders/test/mount",
+        "/private/var/folders/test/mount",
+    ));
+    try std.testing.expect(try mountOutputContainsPath(
+        allocator,
+        mount_output,
+        "/private/var/folders/test/mount",
+        null,
+    ));
+    try std.testing.expect(!(try mountOutputContainsPath(
+        allocator,
+        mount_output,
+        "/tmp/other-mount",
+        null,
+    )));
 }
 
 test "native_mount_support: runtime gating requires macos 15.4 or newer" {
@@ -800,6 +900,16 @@ test "native_mount_support: parses native mount probe disabled output" {
     try std.testing.expect(!nativeMountProbeShowsEnabled("mount: /tmp/probe: invalid file system.\n", .{ .Exited = 1 }));
     try std.testing.expect(!nativeMountProbeShowsEnabled("Module com.deanoc.spiderweb.fskit.app.extension is disabled!\n", .{ .Exited = 22 }));
     try std.testing.expect(!nativeMountProbeShowsEnabled("mount: File system extension requires approval\n", .{ .Exited = 69 }));
+}
+
+test "native_mount_support: retries transient helper communication failures" {
+    try std.testing.expect(mountRequestLooksTransient(
+        "mount: Probing resource: Couldn’t communicate with a helper application.\nmount: Unable to invoke task\n",
+    ));
+    try std.testing.expect(mountRequestLooksTransient(
+        "mount: Probing resource: Couldn't communicate with a helper application.\nmount: Unable to invoke task\n",
+    ));
+    try std.testing.expect(!mountRequestLooksTransient("mount: invalid file system.\n"));
 }
 
 test "native_mount_support: trusts fresh enabled status snapshots" {

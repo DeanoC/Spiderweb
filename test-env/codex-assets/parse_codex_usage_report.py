@@ -6,6 +6,7 @@ import json
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Optional
 
 
 SYSTEM_PREFIXES = (
@@ -68,7 +69,7 @@ def parse_jsonl_events(path: Path):
     return events
 
 
-def service_name_from_entry(item: dict) -> str | None:
+def service_name_from_entry(item: dict) -> Optional[str]:
     venom_id = item.get("venom_id")
     if venom_id:
         return str(venom_id)
@@ -144,7 +145,7 @@ def is_write(syscall: str, line: str) -> bool:
     return False
 
 
-def relevant_raw_path(syscall: str, line: str) -> str | None:
+def relevant_raw_path(syscall: str, line: str) -> Optional[str]:
     matches = PATH_RE.findall(line)
     if not matches:
         return None
@@ -168,12 +169,29 @@ def append_unique(items: list[str], value: str):
         items.append(value)
 
 
-def namespace_path_to_mount_path(namespace_path: str, mount_root: Path, project_id: str) -> str | None:
+def namespace_path_to_mount_path(namespace_path: str, mount_root: Path, project_id: str) -> Optional[str]:
+    workspace_root = mount_root / "nodes" / "local" / "fs"
+    managed_root = workspace_root / ".spiderweb"
+    local_bootstrap_mapping = {
+        "/meta/protocol.json": managed_root / "protocol.json",
+        f"/projects/{project_id}/meta/agent_bootstrap_quickref.json": managed_root / "agent_bootstrap_quickref.json",
+        f"/projects/{project_id}/meta/agent_bootstrap.json": managed_root / "agent_bootstrap.json",
+        f"/projects/{project_id}/meta/workspace_status.json": managed_root / "workspace_status.json",
+        f"/projects/{project_id}/meta/mounted_services.json": managed_root / "mounted_services.json",
+        f"/projects/{project_id}/meta/venom_packages.json": managed_root / "venom_packages.json",
+        "/shared_data/world_seed.json": managed_root / "shared_data" / "world_seed.json",
+        "/shared_data/items_seed.json": managed_root / "shared_data" / "items_seed.json",
+        "/shared_data/puzzle_seed.json": managed_root / "shared_data" / "puzzle_seed.json",
+    }
+    if namespace_path in local_bootstrap_mapping:
+        return str(local_bootstrap_mapping[namespace_path].resolve())
+
     mapping = {
         "/meta/": mount_root / "meta",
         "/shared_data/": mount_root / "shared_data",
         f"/projects/{project_id}/": mount_root / "projects" / project_id,
-        "/services/": mount_root / "services",
+        "/services/": managed_root / "services",
+        "/nodes/local/venoms/": managed_root / "local_venoms",
         "/nodes/local/fs/": mount_root / "nodes" / "local" / "fs",
     }
     for prefix, root in mapping.items():
@@ -187,10 +205,61 @@ def namespace_path_to_mount_path(namespace_path: str, mount_root: Path, project_
     if namespace_path == f"/projects/{project_id}":
         return str((mount_root / "projects" / project_id).resolve())
     if namespace_path == "/services":
-        return str((mount_root / "services").resolve())
+        return str((managed_root / "services").resolve())
+    if namespace_path == "/nodes/local/venoms":
+        return str((managed_root / "local_venoms").resolve())
     if namespace_path == "/nodes/local/fs":
         return str((mount_root / "nodes" / "local" / "fs").resolve())
     return None
+
+
+def namespace_path_to_entrypoint_relative(namespace_path: str) -> str:
+    if namespace_path == "/":
+        return "../../.."
+    if namespace_path == "/AGENTS.md":
+        return "./AGENTS.md"
+    local_bootstrap_mapping = {
+        "/meta/protocol.json": "./.spiderweb/protocol.json",
+        "/shared_data/world_seed.json": "./.spiderweb/shared_data/world_seed.json",
+        "/shared_data/items_seed.json": "./.spiderweb/shared_data/items_seed.json",
+        "/shared_data/puzzle_seed.json": "./.spiderweb/shared_data/puzzle_seed.json",
+    }
+    if namespace_path in local_bootstrap_mapping:
+        return local_bootstrap_mapping[namespace_path]
+    if namespace_path.endswith("/meta/agent_bootstrap_quickref.json"):
+        return "./.spiderweb/agent_bootstrap_quickref.json"
+    if namespace_path.endswith("/meta/agent_bootstrap.json"):
+        return "./.spiderweb/agent_bootstrap.json"
+    if namespace_path.endswith("/meta/workspace_status.json"):
+        return "./.spiderweb/workspace_status.json"
+    if namespace_path.endswith("/meta/mounted_services.json"):
+        return "./.spiderweb/mounted_services.json"
+    if namespace_path.endswith("/meta/venom_packages.json"):
+        return "./.spiderweb/venom_packages.json"
+    if namespace_path == "/services":
+        return "./.spiderweb/services"
+    if namespace_path.startswith("/services/"):
+        return f"./.spiderweb/services/{namespace_path.removeprefix('/services/')}"
+    if namespace_path == "/nodes/local/venoms":
+        return "./.spiderweb/local_venoms"
+    if namespace_path.startswith("/nodes/local/venoms/"):
+        return f"./.spiderweb/local_venoms/{namespace_path.removeprefix('/nodes/local/venoms/')}"
+    if namespace_path == "/nodes/local/fs":
+        return "."
+    if namespace_path.startswith("/nodes/local/fs/"):
+        return namespace_path.removeprefix("/nodes/local/fs/")
+    if namespace_path.startswith("/"):
+        return f"../../../{namespace_path.removeprefix('/')}"
+    return namespace_path
+
+
+def command_path_variants(path: str) -> set[str]:
+    variants = {path}
+    if path.startswith("./"):
+        variants.add(path[2:])
+    elif path and not path.startswith(("/", "../")):
+        variants.add(f"./{path}")
+    return variants
 
 
 def service_reason(
@@ -214,7 +283,7 @@ def add_gap(
     venom_id: str,
     reason: str,
     observed_paths: list[str],
-    service_state: str | None,
+    service_state: Optional[str],
     resolution_hint: str,
 ):
     if venom_id in seen_gap_ids:
@@ -351,14 +420,17 @@ def main() -> int:
     persistent_changes = []
     ephemeral_changes = []
     required_bootstrap_paths = [
-        str((mount_root / "meta" / "protocol.json").resolve()),
-        str((mount_root / "projects" / args.project_id / "meta" / "agent_bootstrap_quickref.json").resolve()),
-        str((mount_root / "projects" / args.project_id / "meta" / "agent_bootstrap.json").resolve()),
-        str((mount_root / "projects" / args.project_id / "meta" / "workspace_status.json").resolve()),
+        str((workspace_root / ".spiderweb" / "protocol.json").resolve()),
+        str((workspace_root / ".spiderweb" / "agent_bootstrap_quickref.json").resolve()),
+        str((workspace_root / ".spiderweb" / "agent_bootstrap.json").resolve()),
+        str((workspace_root / ".spiderweb" / "shared_data" / "world_seed.json").resolve()),
+        str((workspace_root / ".spiderweb" / "shared_data" / "items_seed.json").resolve()),
+        str((workspace_root / ".spiderweb" / "shared_data" / "puzzle_seed.json").resolve()),
     ]
     fallback_bootstrap_paths = [
-        str((mount_root / "projects" / args.project_id / "meta" / "mounted_services.json").resolve()),
-        str((mount_root / "projects" / args.project_id / "meta" / "venom_packages.json").resolve()),
+        str((workspace_root / ".spiderweb" / "workspace_status.json").resolve()),
+        str((workspace_root / ".spiderweb" / "mounted_services.json").resolve()),
+        str((workspace_root / ".spiderweb" / "venom_packages.json").resolve()),
     ]
 
     for trace_path in sorted(glob.glob(args.strace_prefix + "*")):
@@ -467,12 +539,16 @@ def main() -> int:
             "/meta/protocol.json",
             f"/projects/{args.project_id}/meta/agent_bootstrap_quickref.json",
             f"/projects/{args.project_id}/meta/agent_bootstrap.json",
-            f"/projects/{args.project_id}/meta/workspace_status.json",
+            "/shared_data/world_seed.json",
+            "/shared_data/items_seed.json",
+            "/shared_data/puzzle_seed.json",
         }
         fallback_namespace_reads = {
+            f"/projects/{args.project_id}/meta/workspace_status.json",
             f"/projects/{args.project_id}/meta/mounted_services.json",
             f"/projects/{args.project_id}/meta/venom_packages.json",
         }
+        ensure_home_namespace_path = "/services/home/control/ensure.json"
         for event in parse_jsonl_events(Path(args.codex_event_log)):
             item = event.get("item")
             if not isinstance(item, dict):
@@ -483,18 +559,24 @@ def main() -> int:
             if not isinstance(command, str):
                 continue
             for namespace_path in required_namespace_reads:
-                if namespace_path in command:
+                relative_path = namespace_path_to_entrypoint_relative(namespace_path)
+                if namespace_path in command or any(variant in command for variant in command_path_variants(relative_path)):
                     mount_path = namespace_path_to_mount_path(namespace_path, mount_root, args.project_id)
                     if mount_path:
                         append_unique(bootstrap_reads, mount_path)
             for namespace_path in fallback_namespace_reads:
-                if namespace_path in command:
+                relative_path = namespace_path_to_entrypoint_relative(namespace_path)
+                if namespace_path in command or any(variant in command for variant in command_path_variants(relative_path)):
                     mount_path = namespace_path_to_mount_path(namespace_path, mount_root, args.project_id)
                     if mount_path:
                         append_unique(fallback_bootstrap_reads, mount_path)
 
+            ensure_home_relative = namespace_path_to_entrypoint_relative(ensure_home_namespace_path)
             if (
-                "/services/home/control/ensure.json" in command
+                (
+                    ensure_home_namespace_path in command
+                    or any(variant in command for variant in command_path_variants(ensure_home_relative))
+                )
                 and item.get("status") == "completed"
                 and item.get("exit_code") == 0
             ):

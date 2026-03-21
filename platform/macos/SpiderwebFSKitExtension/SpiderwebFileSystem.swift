@@ -363,10 +363,8 @@ final class SpiderwebMountRuntime {
     }
 
     func ensureBridge() throws -> SpiderwebMountedBridge {
-        // The mounted bridge now routes namespace and direct-export operations
-        // independently. Returning the bridge must not force namespace startup,
-        // otherwise direct export paths like /nodes/local/fs can still block on
-        // unrelated namespace launch work.
+        // Mounted workspace paths always resolve through Spiderweb's namespace
+        // session. The mount backends do not implement their own path routing.
         return bridge
     }
 
@@ -549,7 +547,6 @@ actor SpiderwebNamespaceSession {
     private var mountGraphSourcesByID: [String: SpiderwebMountGraphSource] = [:]
     private var mountGraphLoadedDirectoryDepths: [String: UInt32] = [:]
     private var mountGraphFetchedAt: Date?
-    private var mountGraphRefreshTask: Task<Void, Never>?
     private var remoteOperationSnapshot = SpiderwebRemoteOperationSnapshot.zero
 
     init(request: SpiderwebMountRequest) {
@@ -588,7 +585,6 @@ actor SpiderwebNamespaceSession {
 
     func ping() async throws {
         try await ensureMountGraphLoaded()
-        scheduleMountGraphRefreshIfStale()
     }
 
     func getattr(path: String) async throws -> SpiderwebRemoteAttr {
@@ -633,6 +629,98 @@ actor SpiderwebNamespaceSession {
     func write(handleID: UInt64, offset: UInt64, data: Data) async throws -> UInt32 {
         try await withReconnect { session in
             try await session.localWrite(handleID: handleID, offset: offset, data: data)
+        }
+    }
+
+    func readlink(path: String) async throws -> String {
+        let normalizedPath = normalizeAbsolutePath(path)
+        return try await withReconnect { session in
+            try await session.localReadlink(path: normalizedPath)
+        }
+    }
+
+    func create(path: String, mode: UInt32, flags: UInt32) async throws -> SpiderwebCreateHandleResponse {
+        let normalizedPath = normalizeAbsolutePath(path)
+        return try await withReconnect { session in
+            try await session.localCreate(path: normalizedPath, mode: mode, flags: flags)
+        }
+    }
+
+    func truncate(path: String, size: UInt64) async throws {
+        let normalizedPath = normalizeAbsolutePath(path)
+        try await withReconnect { session in
+            try await session.localTruncate(path: normalizedPath, size: size)
+        }
+    }
+
+    func setattr(path: String, request: SpiderwebSetAttrRequest) async throws -> SpiderwebRemoteAttr {
+        let normalizedPath = normalizeAbsolutePath(path)
+        return try await withReconnect { session in
+            try await session.localSetattr(path: normalizedPath, request: request)
+        }
+    }
+
+    func getxattr(path: String, name: String) async throws -> Data {
+        let normalizedPath = normalizeAbsolutePath(path)
+        return try await withReconnect { session in
+            try await session.localGetxattr(path: normalizedPath, name: name)
+        }
+    }
+
+    func setxattr(path: String, name: String, value: Data, flags: UInt32) async throws {
+        let normalizedPath = normalizeAbsolutePath(path)
+        try await withReconnect { session in
+            try await session.localSetxattr(path: normalizedPath, name: name, value: value, flags: flags)
+        }
+    }
+
+    func listxattrs(path: String) async throws -> [String] {
+        let normalizedPath = normalizeAbsolutePath(path)
+        return try await withReconnect { session in
+            try await session.localListxattrs(path: normalizedPath)
+        }
+    }
+
+    func removexattr(path: String, name: String) async throws {
+        let normalizedPath = normalizeAbsolutePath(path)
+        try await withReconnect { session in
+            try await session.localRemovexattr(path: normalizedPath, name: name)
+        }
+    }
+
+    func unlink(path: String) async throws {
+        let normalizedPath = normalizeAbsolutePath(path)
+        try await withReconnect { session in
+            try await session.localUnlink(path: normalizedPath)
+        }
+    }
+
+    func mkdir(path: String) async throws {
+        let normalizedPath = normalizeAbsolutePath(path)
+        try await withReconnect { session in
+            try await session.localMkdir(path: normalizedPath)
+        }
+    }
+
+    func rmdir(path: String) async throws {
+        let normalizedPath = normalizeAbsolutePath(path)
+        try await withReconnect { session in
+            try await session.localRmdir(path: normalizedPath)
+        }
+    }
+
+    func rename(oldPath: String, newPath: String) async throws {
+        let normalizedOldPath = normalizeAbsolutePath(oldPath)
+        let normalizedNewPath = normalizeAbsolutePath(newPath)
+        try await withReconnect { session in
+            try await session.localRename(oldPath: normalizedOldPath, newPath: normalizedNewPath)
+        }
+    }
+
+    func symlink(target: String, linkPath: String) async throws {
+        let normalizedPath = normalizeAbsolutePath(linkPath)
+        try await withReconnect { session in
+            try await session.localSymlink(target: target, linkPath: normalizedPath)
         }
     }
 
@@ -703,8 +791,6 @@ actor SpiderwebNamespaceSession {
         urlSession?.invalidateAndCancel()
         urlSession = nil
         openHandles.removeAll()
-        mountGraphRefreshTask?.cancel()
-        mountGraphRefreshTask = nil
         mountGraphFetchedAt = nil
         if !preserveMountGraph {
             clearMountGraph()
@@ -832,7 +918,6 @@ actor SpiderwebNamespaceSession {
         let messageType = stringValue(envelope["type"]) ?? ""
         if messageType == "control.mount_graph_delta_v2" {
             mountGraphFetchedAt = nil
-            scheduleMountGraphRefreshIfStale(force: true)
             return
         }
 
@@ -852,20 +937,28 @@ actor SpiderwebNamespaceSession {
     }
 
     private func ensureMountGraphLoaded() async throws {
-        if mountGraph == nil {
+        if mountGraphNeedsRefresh() {
             try await refreshMountGraph(force: true)
-            return
         }
-        scheduleMountGraphRefreshIfStale()
     }
 
     private func refreshMountGraph(force: Bool) async throws {
-        if !force, let fetchedAt = mountGraphFetchedAt, Date().timeIntervalSince(fetchedAt) < spiderwebNamespaceCacheTTL {
+        if !mountGraphNeedsRefresh(force: force) {
             return
         }
         let snapshot = try await requestMountGraph(path: "/", depth: spiderwebNamespaceInitialSnapshotDepth)
         replaceMountGraph(with: snapshot, scopePath: "/", depth: spiderwebNamespaceInitialSnapshotDepth, replaceAll: true)
         mountGraphFetchedAt = Date()
+    }
+
+    private func mountGraphNeedsRefresh(force: Bool = false) -> Bool {
+        if force || mountGraph == nil {
+            return true
+        }
+        guard let fetchedAt = mountGraphFetchedAt else {
+            return true
+        }
+        return Date().timeIntervalSince(fetchedAt) >= spiderwebNamespaceCacheTTL
     }
 
     private func requestMountGraph(path: String, depth: UInt32) async throws -> SpiderwebMountGraphSnapshot {
@@ -883,27 +976,6 @@ actor SpiderwebNamespaceSession {
             throw SpiderwebProtocolFailure.invalidEnvelope
         }
         return try decodeMountGraphSnapshot(payload)
-    }
-
-    private func scheduleMountGraphRefreshIfStale(force: Bool = false) {
-        guard force || mountGraphRefreshTask == nil else {
-            return
-        }
-        if !force, let fetchedAt = mountGraphFetchedAt, Date().timeIntervalSince(fetchedAt) < spiderwebNamespaceCacheTTL {
-            return
-        }
-        mountGraphRefreshTask = Task { [weak self] in
-            defer {
-                Task { [weak self] in
-                    await self?.clearMountGraphRefreshTask()
-                }
-            }
-            try? await self?.refreshMountGraph(force: true)
-        }
-    }
-
-    private func clearMountGraphRefreshTask() {
-        mountGraphRefreshTask = nil
     }
 
     private func replaceMountGraph(
@@ -925,19 +997,71 @@ actor SpiderwebNamespaceSession {
             mountGraphNodesByPath.removeAll(keepingCapacity: false)
             mountGraphNodesByID.removeAll(keepingCapacity: false)
             mountGraphLoadedDirectoryDepths.removeAll(keepingCapacity: false)
+            for node in snapshot.nodes {
+                let normalizedPath = normalizeAbsolutePath(node.path)
+                let normalizedNode = SpiderwebMountGraphNode(
+                    id: node.id,
+                    parentID: node.parentID,
+                    name: node.name,
+                    path: normalizedPath,
+                    kind: node.kind,
+                    mode: node.mode,
+                    writable: node.writable,
+                    size: node.size,
+                    canonicalNodeID: node.canonicalNodeID,
+                    contentMode: node.contentMode,
+                    inlineContentB64: node.inlineContentB64,
+                    sourceID: node.sourceID
+                )
+                mountGraphNodesByPath[normalizedPath] = normalizedNode
+                mountGraphNodesByID[normalizedNode.id] = normalizedNode
+            }
         } else {
             clearMountGraphSubtree(at: normalizedScopePath)
-        }
 
-        for node in snapshot.nodes {
-            let normalizedPath = normalizeAbsolutePath(node.path)
-            mountGraphNodesByPath[normalizedPath] = node
-            mountGraphNodesByID[node.id] = node
+            var mergedIDRemap: [UInt64: UInt64] = [:]
+            var nextMergedID = nextMergedMountGraphNodeID()
+
+            for node in snapshot.nodes {
+                let normalizedPath = normalizeAbsolutePath(node.path)
+                let inScope = pathMatchesPrefixBoundary(normalizedPath, normalizedScopePath)
+                if !inScope, let existing = mountGraphNodesByPath[normalizedPath] {
+                    mergedIDRemap[node.id] = existing.id
+                    continue
+                }
+
+                let mergedParentID = node.parentID.flatMap { mergedIDRemap[$0] ?? $0 }
+                let mergedNode = SpiderwebMountGraphNode(
+                    id: nextMergedID,
+                    parentID: mergedParentID,
+                    name: node.name,
+                    path: normalizedPath,
+                    kind: node.kind,
+                    mode: node.mode,
+                    writable: node.writable,
+                    size: node.size,
+                    canonicalNodeID: node.canonicalNodeID,
+                    contentMode: node.contentMode,
+                    inlineContentB64: node.inlineContentB64,
+                    sourceID: node.sourceID
+                )
+                nextMergedID &+= 1
+                mergedIDRemap[node.id] = mergedNode.id
+                mountGraphNodesByPath[normalizedPath] = mergedNode
+                mountGraphNodesByID[mergedNode.id] = mergedNode
+            }
         }
         for source in snapshot.sources {
             mountGraphSourcesByID[normalizeAbsolutePath(source.id)] = source
         }
         markLoadedDirectoryDepths(scopePath: normalizedScopePath, depth: depth, nodes: snapshot.nodes)
+    }
+
+    private func nextMergedMountGraphNodeID() -> UInt64 {
+        guard let currentMax = mountGraphNodesByID.keys.max() else {
+            return 1
+        }
+        return currentMax &+ 1
     }
 
     private func clearMountGraphSubtree(at path: String) {
@@ -1038,7 +1162,7 @@ actor SpiderwebNamespaceSession {
         }
 
         for segment in normalizedPath.split(separator: "/").map(String.init) {
-            if currentNode.kind == .syntheticDirectory {
+            if currentNode.kind == .syntheticDirectory || currentNode.kind == .exportRoot {
                 try await ensureDirectoryChildrenLoaded(at: currentPath)
             }
             let nextPath = join(directoryPath: currentPath, childName: segment)
@@ -1052,20 +1176,19 @@ actor SpiderwebNamespaceSession {
     }
 
     private func localGetattr(path: String) async throws -> SpiderwebRemoteAttr {
-        scheduleMountGraphRefreshIfStale()
         let node = try await resolveMountGraphNode(path: path)
         return remoteAttr(from: node)
     }
 
     private func localReaddir(path: String, cookie: UInt64, maxEntries: UInt32) async throws -> SpiderwebRemoteDirectoryListing {
-        scheduleMountGraphRefreshIfStale()
-        let directory = try await resolveMountGraphNode(path: path)
+        var directory = try await resolveMountGraphNode(path: path)
         guard directory.kind == .syntheticDirectory || directory.kind == .exportRoot else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTDIR), userInfo: [NSLocalizedDescriptionKey: "Not a directory"])
         }
 
         let normalizedPath = normalizeAbsolutePath(path)
         try await ensureDirectoryChildrenLoaded(at: normalizedPath)
+        directory = try await resolveMountGraphNode(path: normalizedPath)
         let childNodes = mountGraphNodesByPath.values
             .filter { $0.parentID == directory.id }
             .sorted { lhs, rhs in lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending }
@@ -1093,18 +1216,22 @@ actor SpiderwebNamespaceSession {
     }
 
     private func localOpen(path: String, flags: UInt32) async throws -> SpiderwebOpenHandleResponse {
-        scheduleMountGraphRefreshIfStale()
-        let node = try await resolveMountGraphNode(path: path)
+        let normalizedPath = normalizeAbsolutePath(path)
+        let node = try await resolveMountGraphNode(path: normalizedPath)
         if node.kind == .syntheticDirectory || node.kind == .exportRoot {
             let handleID = reserveNamespaceHandleID()
             openHandles[handleID] = SpiderwebNamespaceHandleState(
-                path: normalizeAbsolutePath(path),
+                path: normalizedPath,
                 nodeID: node.id,
                 flags: flags,
                 writable: false,
                 backing: .inline(Data())
             )
             return SpiderwebOpenHandleResponse(handleID: handleID, writable: false)
+        }
+
+        if flagsRequireWrite(flags), (flags & UInt32(O_TRUNC)) != 0 {
+            try await performLocalTruncate(path: normalizedPath, size: 0, node: node)
         }
 
         let backing: SpiderwebNamespaceHandleBacking
@@ -1117,7 +1244,7 @@ actor SpiderwebNamespaceSession {
 
         let handleID = reserveNamespaceHandleID()
         openHandles[handleID] = SpiderwebNamespaceHandleState(
-            path: normalizeAbsolutePath(path),
+            path: normalizedPath,
             nodeID: node.id,
             flags: flags,
             writable: node.writable,
@@ -1188,8 +1315,157 @@ actor SpiderwebNamespaceSession {
             throw SpiderwebProtocolFailure.invalidEnvelope
         }
         mountGraphFetchedAt = nil
-        scheduleMountGraphRefreshIfStale(force: true)
         return count
+    }
+
+    private func localReadlink(path: String) async throws -> String {
+        throw unsupportedNamespaceMutation(path: path, operation: "readlink")
+    }
+
+    private func localCreate(path: String, mode: UInt32, flags: UInt32) async throws -> SpiderwebCreateHandleResponse {
+        let normalizedPath = normalizeAbsolutePath(path)
+        let split = try splitEndpointParentChild(normalizedPath)
+        let parent = try await resolveMountGraphNode(path: split.parentPath)
+        guard parent.kind == .syntheticDirectory || parent.kind == .exportRoot else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTDIR), userInfo: [NSLocalizedDescriptionKey: "Parent is not a directory"])
+        }
+        if !parent.writable {
+            throw readOnlyError(message: "Spiderweb path \(split.parentPath) is read-only")
+        }
+
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_file_write_v2",
+            expectedType: "control.mount_file_write_v2",
+            payload: [
+                "path": normalizedPath,
+                "offset": UInt64(0),
+                "data_b64": "",
+            ]
+        )
+
+        let parentSnapshot = try await requestMountGraph(path: split.parentPath, depth: 1)
+        replaceMountGraph(
+            with: parentSnapshot,
+            scopePath: split.parentPath,
+            depth: 1,
+            replaceAll: split.parentPath == "/"
+        )
+        mountGraphFetchedAt = Date()
+
+        let attr: SpiderwebRemoteAttr
+        let nodeID: UInt64
+        let writable: Bool
+        if let node = mountGraphNodesByPath[normalizedPath] {
+            attr = remoteAttr(from: node)
+            nodeID = node.id
+            writable = node.writable
+        } else {
+            attr = syntheticCreatedAttr(path: normalizedPath, mode: mode)
+            nodeID = attr.id
+            writable = true
+        }
+
+        let handleID = reserveNamespaceHandleID()
+        openHandles[handleID] = SpiderwebNamespaceHandleState(
+            path: normalizedPath,
+            nodeID: nodeID,
+            flags: flags,
+            writable: writable,
+            backing: .remote
+        )
+        return SpiderwebCreateHandleResponse(handleID: handleID, attr: attr, writable: writable)
+    }
+
+    private func localTruncate(path: String, size: UInt64) async throws {
+        let normalizedPath = normalizeAbsolutePath(path)
+        let node = try await resolveMountGraphNode(path: normalizedPath)
+        try await performLocalTruncate(path: normalizedPath, size: size, node: node)
+    }
+
+    private func performLocalTruncate(path: String, size: UInt64, node: SpiderwebMountGraphNode) async throws {
+        if node.kind == .syntheticDirectory || node.kind == .exportRoot {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(EISDIR),
+                userInfo: [NSLocalizedDescriptionKey: "Spiderweb path \(path) is a directory"]
+            )
+        }
+        if !node.writable {
+            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
+        }
+
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_file_write_v2",
+            expectedType: "control.mount_file_write_v2",
+            payload: [
+                "path": path,
+                "offset": UInt64(0),
+                "data_b64": "",
+                "truncate_to_size": size,
+            ]
+        )
+
+        let parentPath = endpointParentPath(path)
+        let parentSnapshot = try await requestMountGraph(path: parentPath, depth: 1)
+        replaceMountGraph(
+            with: parentSnapshot,
+            scopePath: parentPath,
+            depth: 1,
+            replaceAll: parentPath == "/"
+        )
+        mountGraphFetchedAt = Date()
+    }
+
+    private func localSetattr(path: String, request: SpiderwebSetAttrRequest) async throws -> SpiderwebRemoteAttr {
+        if request.isEmpty {
+            return try await localGetattr(path: path)
+        }
+        throw unsupportedNamespaceMutation(path: path, operation: "setattr")
+    }
+
+    private func localGetxattr(path: String, name: String) async throws -> Data {
+        _ = name
+        throw unsupportedNamespaceMutation(path: path, operation: "getxattr")
+    }
+
+    private func localSetxattr(path: String, name: String, value: Data, flags: UInt32) async throws {
+        _ = name
+        _ = value
+        _ = flags
+        throw unsupportedNamespaceMutation(path: path, operation: "setxattr")
+    }
+
+    private func localListxattrs(path: String) async throws -> [String] {
+        throw unsupportedNamespaceMutation(path: path, operation: "listxattr")
+    }
+
+    private func localRemovexattr(path: String, name: String) async throws {
+        _ = name
+        throw unsupportedNamespaceMutation(path: path, operation: "removexattr")
+    }
+
+    private func localUnlink(path: String) async throws {
+        throw unsupportedNamespaceMutation(path: path, operation: "unlink")
+    }
+
+    private func localMkdir(path: String) async throws {
+        throw unsupportedNamespaceMutation(path: path, operation: "mkdir")
+    }
+
+    private func localRmdir(path: String) async throws {
+        throw unsupportedNamespaceMutation(path: path, operation: "rmdir")
+    }
+
+    private func localRename(oldPath: String, newPath: String) async throws {
+        _ = newPath
+        throw unsupportedNamespaceMutation(path: oldPath, operation: "rename")
+    }
+
+    private func localSymlink(target: String, linkPath: String) async throws {
+        _ = target
+        throw unsupportedNamespaceMutation(path: linkPath, operation: "symlink")
     }
 
     private func reserveNamespaceHandleID() -> UInt64 {
@@ -1223,6 +1499,32 @@ actor SpiderwebNamespaceSession {
     private func nextControlRequestID() -> String {
         defer { nextControlID &+= 1 }
         return "swift-control-\(nextControlID)"
+    }
+
+    private func syntheticCreatedAttr(path: String, mode: UInt32) -> SpiderwebRemoteAttr {
+        let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
+        let effectiveMode = mode == 0 ? UInt32(0o100644) : UInt32(0o100000) | (mode & 0o777)
+        return SpiderwebRemoteAttr(
+            id: stableSyntheticPathID(path),
+            kindCode: 1,
+            mode: effectiveMode,
+            linkCount: 1,
+            uid: UInt32(getuid()),
+            gid: UInt32(getgid()),
+            flags: 0,
+            size: 0,
+            accessTimeNS: now,
+            modifyTimeNS: now,
+            changeTimeNS: now
+        )
+    }
+
+    private func unsupportedNamespaceMutation(path: String, operation: String) -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(ENOTSUP),
+            userInfo: [NSLocalizedDescriptionKey: "Spiderweb namespace \(operation) is not supported for \(path)"]
+        )
     }
 
     func remoteOperationsSnapshot() -> SpiderwebRemoteOperationSnapshot {
@@ -2440,25 +2742,8 @@ actor SpiderwebFsEndpointSession {
     }
 }
 
-private struct SpiderwebMountedEndpoint {
-    let mountPath: String
-    let preferredDirectRouting: Bool
-    let bridge: SpiderwebFsEndpointBridge
-}
-
-private enum SpiderwebMountedHandleBackend {
-    case namespace
-    case endpoint(Int)
-}
-
 private struct SpiderwebMountedHandleState {
-    let backend: SpiderwebMountedHandleBackend
     let rawHandleID: UInt64
-}
-
-private struct SpiderwebMountedPathRoute {
-    let endpointIndex: Int
-    let relativePath: String
 }
 
 final class SpiderwebFsEndpointBridge {
@@ -2632,7 +2917,6 @@ final class SpiderwebFsEndpointBridge {
 
 final class SpiderwebMountedBridge {
     private let namespaceBridge: SpiderwebNamespaceBridge
-    private let endpointMounts: [SpiderwebMountedEndpoint]
 
     private let stateLock = NSLock()
     private var nextHandleID: UInt64 = 1
@@ -2641,17 +2925,6 @@ final class SpiderwebMountedBridge {
 
     init(request: SpiderwebMountRequest) {
         namespaceBridge = SpiderwebNamespaceBridge(request: request)
-        endpointMounts = request.launchConfig.endpoints
-            .map {
-                SpiderwebMountedEndpoint(
-                    mountPath: normalizeAbsolutePath($0.mountPath),
-                    preferredDirectRouting: shouldPreferDirectEndpointRouting(mountPath: $0.mountPath),
-                    bridge: SpiderwebFsEndpointBridge(config: $0)
-                )
-            }
-            .sorted { lhs, rhs in
-                lhs.mountPath.count > rhs.mountPath.count
-            }
     }
 
     func launchIfNeeded() throws {
@@ -2660,23 +2933,12 @@ final class SpiderwebMountedBridge {
 
     func stop() {
         namespaceBridge.stop()
-        for endpoint in endpointMounts {
-            endpoint.bridge.setInvalidationHandler(nil)
-            endpoint.bridge.stop()
-        }
     }
 
     func setInvalidationHandler(_ handler: (@Sendable (SpiderwebMountedInvalidation) -> Void)?) {
         stateLock.lock()
         invalidationHandler = handler
         stateLock.unlock()
-
-        for endpoint in endpointMounts {
-            let mountPath = endpoint.mountPath
-            endpoint.bridge.setInvalidationHandler { [weak self] invalidation in
-                self?.publishInvalidation(fromMountPath: mountPath, invalidation: invalidation)
-            }
-        }
     }
 
     func requireMountedRPCBridge() throws {
@@ -2684,216 +2946,106 @@ final class SpiderwebMountedBridge {
     }
 
     func getattr(path: String) throws -> SpiderwebRemoteAttr {
-        if let route = routeForPath(path) {
-            return try endpointMounts[route.endpointIndex].bridge.getattr(path: route.relativePath)
-        }
         return try namespaceBridge.getattr(path: path)
     }
 
     func readdir(path: String, cookie: UInt64, maxEntries: UInt32) throws -> SpiderwebRemoteDirectoryListing {
-        if let route = routeForPath(path) {
-            return try endpointMounts[route.endpointIndex].bridge.readdir(path: route.relativePath, cookie: cookie, maxEntries: maxEntries)
-        }
         return try namespaceBridge.readdir(path: path, cookie: cookie, maxEntries: maxEntries)
     }
 
     func statfs(path: String) throws -> SpiderwebRemoteStatFS {
-        if let route = routeForPath(path) {
-            return try endpointMounts[route.endpointIndex].bridge.statfs(path: route.relativePath)
-        }
         return try namespaceBridge.statfs(path: path)
     }
 
     func readlink(path: String) throws -> String {
-        guard let route = routeForPath(path) else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTSUP), userInfo: [NSLocalizedDescriptionKey: "Symbolic link targets are only supported on mounted exports"])
-        }
-        return try endpointMounts[route.endpointIndex].bridge.readlink(path: route.relativePath)
+        return try namespaceBridge.readlink(path: path)
     }
 
     func open(path: String, flags: UInt32) throws -> SpiderwebOpenHandleResponse {
-        if let route = routeForPath(path) {
-            let response = try endpointMounts[route.endpointIndex].bridge.open(path: route.relativePath, flags: flags)
-            let handleID = registerHandle(.endpoint(route.endpointIndex), rawHandleID: response.handleID)
-            return SpiderwebOpenHandleResponse(handleID: handleID, writable: response.writable)
-        }
-
         let response = try namespaceBridge.open(path: path, flags: flags)
-        let handleID = registerHandle(.namespace, rawHandleID: response.handleID)
+        let handleID = registerHandle(rawHandleID: response.handleID)
         return SpiderwebOpenHandleResponse(handleID: handleID, writable: response.writable)
     }
 
     func read(handleID: UInt64, offset: UInt64, length: UInt32) throws -> Data {
         let state = try resolveHandle(handleID)
-        switch state.backend {
-        case .namespace:
-            return try namespaceBridge.read(handleID: state.rawHandleID, offset: offset, length: length)
-        case .endpoint(let endpointIndex):
-            return try endpointMounts[endpointIndex].bridge.read(handleID: state.rawHandleID, offset: offset, length: length)
-        }
+        return try namespaceBridge.read(handleID: state.rawHandleID, offset: offset, length: length)
     }
 
     func release(handleID: UInt64) throws {
         let state = try takeHandle(handleID)
-        switch state.backend {
-        case .namespace:
-            try namespaceBridge.release(handleID: state.rawHandleID)
-        case .endpoint(let endpointIndex):
-            try endpointMounts[endpointIndex].bridge.release(handleID: state.rawHandleID)
-        }
+        try namespaceBridge.release(handleID: state.rawHandleID)
     }
 
     func write(handleID: UInt64, offset: UInt64, data: Data) throws -> UInt32 {
         let state = try resolveHandle(handleID)
-        switch state.backend {
-        case .namespace:
-            return try namespaceBridge.write(handleID: state.rawHandleID, offset: offset, data: data)
-        case .endpoint(let endpointIndex):
-            return try endpointMounts[endpointIndex].bridge.write(handleID: state.rawHandleID, offset: offset, data: data)
-        }
+        return try namespaceBridge.write(handleID: state.rawHandleID, offset: offset, data: data)
     }
 
     func create(path: String, mode: UInt32, flags: UInt32) throws -> SpiderwebRemoteAttr {
-        guard let route = routeForPath(path) else {
-            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
-        }
-        let created = try endpointMounts[route.endpointIndex].bridge.create(path: route.relativePath, mode: mode, flags: flags)
-        try? endpointMounts[route.endpointIndex].bridge.release(handleID: created.handleID)
+        let created = try namespaceBridge.create(path: path, mode: mode, flags: flags)
+        try? namespaceBridge.release(handleID: created.handleID)
         return created.attr
     }
 
     func truncate(path: String, size: UInt64) throws {
-        guard let route = routeForPath(path) else {
-            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
-        }
-        try endpointMounts[route.endpointIndex].bridge.truncate(path: route.relativePath, size: size)
+        try namespaceBridge.truncate(path: path, size: size)
     }
 
     func setattr(path: String, request: SpiderwebSetAttrRequest) throws -> SpiderwebRemoteAttr {
-        guard let route = routeForPath(path) else {
-            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
-        }
-        return try endpointMounts[route.endpointIndex].bridge.setattr(path: route.relativePath, request: request)
+        return try namespaceBridge.setattr(path: path, request: request)
     }
 
     func getxattr(path: String, name: String) throws -> Data {
-        guard let route = routeForPath(path) else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTSUP), userInfo: [NSLocalizedDescriptionKey: "Extended attributes are only supported on mounted exports"])
-        }
-        return try endpointMounts[route.endpointIndex].bridge.getxattr(path: route.relativePath, name: name)
+        return try namespaceBridge.getxattr(path: path, name: name)
     }
 
     func setxattr(path: String, name: String, value: Data, flags: UInt32) throws {
-        guard let route = routeForPath(path) else {
-            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
-        }
-        try endpointMounts[route.endpointIndex].bridge.setxattr(path: route.relativePath, name: name, value: value, flags: flags)
+        try namespaceBridge.setxattr(path: path, name: name, value: value, flags: flags)
     }
 
     func listxattrs(path: String) throws -> [String] {
-        guard let route = routeForPath(path) else {
-            return []
-        }
-        return try endpointMounts[route.endpointIndex].bridge.listxattrs(path: route.relativePath)
+        return try namespaceBridge.listxattrs(path: path)
     }
 
     func removexattr(path: String, name: String) throws {
-        guard let route = routeForPath(path) else {
-            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
-        }
-        try endpointMounts[route.endpointIndex].bridge.removexattr(path: route.relativePath, name: name)
+        try namespaceBridge.removexattr(path: path, name: name)
     }
 
     func unlink(path: String) throws {
-        guard let route = routeForPath(path) else {
-            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
-        }
-        try endpointMounts[route.endpointIndex].bridge.unlink(path: route.relativePath)
+        try namespaceBridge.unlink(path: path)
     }
 
     func mkdir(path: String) throws {
-        guard let route = routeForPath(path) else {
-            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
-        }
-        try endpointMounts[route.endpointIndex].bridge.mkdir(path: route.relativePath)
+        try namespaceBridge.mkdir(path: path)
     }
 
     func rmdir(path: String) throws {
-        guard let route = routeForPath(path) else {
-            throw readOnlyError(message: "Spiderweb path \(path) is read-only")
-        }
-        try endpointMounts[route.endpointIndex].bridge.rmdir(path: route.relativePath)
+        try namespaceBridge.rmdir(path: path)
     }
 
     func rename(oldPath: String, newPath: String) throws {
-        guard
-            let oldRoute = routeForPath(oldPath),
-            let newRoute = routeForPath(newPath)
-        else {
-            throw readOnlyError(message: "Spiderweb rename is only supported inside writable mounted exports")
-        }
-        guard oldRoute.endpointIndex == newRoute.endpointIndex else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EXDEV), userInfo: [NSLocalizedDescriptionKey: "Cross-export rename is not supported"])
-        }
-        try endpointMounts[oldRoute.endpointIndex].bridge.rename(oldPath: oldRoute.relativePath, newPath: newRoute.relativePath)
+        try namespaceBridge.rename(oldPath: oldPath, newPath: newPath)
     }
 
     func symlink(target: String, linkPath: String) throws {
-        guard let route = routeForPath(linkPath) else {
-            throw readOnlyError(message: "Spiderweb path \(linkPath) is read-only")
-        }
-        try endpointMounts[route.endpointIndex].bridge.symlink(target: target, linkPath: route.relativePath)
+        try namespaceBridge.symlink(target: target, linkPath: linkPath)
     }
 
     func isWritablePath(_ path: String) -> Bool {
-        routeForPath(path) != nil
+        !normalizeAbsolutePath(path).isEmpty
     }
 
     func syntheticAttrHint(path: String) -> SpiderwebRemoteAttr? {
-        let normalizedPath = normalizeAbsolutePath(path)
-        guard endpointMounts.contains(where: {
-            $0.preferredDirectRouting && $0.mountPath == normalizedPath
-        }) else {
-            return nil
-        }
-
-        let now = Int64(Date().timeIntervalSince1970 * 1_000_000_000)
-        return SpiderwebRemoteAttr(
-            id: stableSyntheticPathID(normalizedPath),
-            kindCode: 2,
-            mode: 0o040755,
-            linkCount: 2,
-            uid: UInt32(getuid()),
-            gid: UInt32(getgid()),
-            flags: 0,
-            size: 0,
-            accessTimeNS: now,
-            modifyTimeNS: now,
-            changeTimeNS: now
-        )
-    }
-
-    func performanceSnapshot() -> SpiderwebRemoteOperationSnapshot {
-        endpointMounts.reduce(namespaceBridge.remoteOperationSnapshot()) { snapshot, endpoint in
-            snapshot.adding(endpoint.bridge.remoteOperationSnapshot())
-        }
-    }
-
-    private func routeForPath(_ path: String) -> SpiderwebMountedPathRoute? {
-        let normalizedPath = normalizeAbsolutePath(path)
-        for (index, endpoint) in endpointMounts.enumerated() {
-            guard endpoint.preferredDirectRouting else {
-                continue
-            }
-            guard let relativePath = matchMountedPath(normalizedPath, mountPath: endpoint.mountPath) else {
-                continue
-            }
-            return SpiderwebMountedPathRoute(endpointIndex: index, relativePath: relativePath)
-        }
+        _ = path
         return nil
     }
 
-    private func registerHandle(_ backend: SpiderwebMountedHandleBackend, rawHandleID: UInt64) -> UInt64 {
+    func performanceSnapshot() -> SpiderwebRemoteOperationSnapshot {
+        namespaceBridge.remoteOperationSnapshot()
+    }
+
+    private func registerHandle(rawHandleID: UInt64) -> UInt64 {
         stateLock.lock()
         defer { stateLock.unlock() }
         let handleID = nextHandleID
@@ -2901,7 +3053,7 @@ final class SpiderwebMountedBridge {
         if nextHandleID == 0 {
             nextHandleID = 1
         }
-        openHandles[handleID] = SpiderwebMountedHandleState(backend: backend, rawHandleID: rawHandleID)
+        openHandles[handleID] = SpiderwebMountedHandleState(rawHandleID: rawHandleID)
         return handleID
     }
 
@@ -2922,43 +3074,6 @@ final class SpiderwebMountedBridge {
         }
         return state
     }
-
-    private func publishInvalidation(fromMountPath mountPath: String, invalidation: SpiderwebMountedInvalidation) {
-        let normalizedMountPath = normalizeAbsolutePath(mountPath)
-        let normalizedRelativePath = normalizeRelativeEndpointPath(invalidation.path)
-        let absolutePath = if normalizedRelativePath == "/" {
-            normalizedMountPath
-        } else {
-            join(directoryPath: normalizedMountPath, childName: String(normalizedRelativePath.dropFirst()))
-        }
-
-        stateLock.lock()
-        let handler = invalidationHandler
-        stateLock.unlock()
-
-        handler?(SpiderwebMountedInvalidation(path: absolutePath, kind: invalidation.kind))
-    }
-}
-
-private func shouldPreferDirectEndpointRouting(mountPath: String) -> Bool {
-    let normalized = normalizeAbsolutePath(mountPath)
-    if normalized == "/agents" ||
-        normalized == "/meta" ||
-        normalized == "/global/chat" ||
-        normalized == "/global/jobs"
-    {
-        return false
-    }
-
-    if normalized.hasSuffix("/agents") ||
-        normalized.hasSuffix("/meta") ||
-        normalized.hasSuffix("/global/chat") ||
-        normalized.hasSuffix("/global/jobs")
-    {
-        return false
-    }
-
-    return true
 }
 
 final class SpiderwebNamespaceBridge {
@@ -3004,6 +3119,12 @@ final class SpiderwebNamespaceBridge {
         }
     }
 
+    func readlink(path: String) throws -> String {
+        try perform(operationName: "readlink(\(path))") { [session] in
+            try await session.readlink(path: path)
+        }
+    }
+
     func open(path: String, flags: UInt32) throws -> SpiderwebOpenHandleResponse {
         try perform(operationName: "open(\(path))") { [session] in
             try await session.open(path: path, flags: flags)
@@ -3025,6 +3146,78 @@ final class SpiderwebNamespaceBridge {
     func write(handleID: UInt64, offset: UInt64, data: Data) throws -> UInt32 {
         try perform(operationName: "write(handle:\(handleID))") { [session] in
             try await session.write(handleID: handleID, offset: offset, data: data)
+        }
+    }
+
+    func create(path: String, mode: UInt32, flags: UInt32) throws -> SpiderwebCreateHandleResponse {
+        try perform(operationName: "create(\(path))") { [session] in
+            try await session.create(path: path, mode: mode, flags: flags)
+        }
+    }
+
+    func truncate(path: String, size: UInt64) throws {
+        try perform(operationName: "truncate(\(path))") { [session] in
+            try await session.truncate(path: path, size: size)
+        }
+    }
+
+    func setattr(path: String, request: SpiderwebSetAttrRequest) throws -> SpiderwebRemoteAttr {
+        try perform(operationName: "setattr(\(path))") { [session] in
+            try await session.setattr(path: path, request: request)
+        }
+    }
+
+    func getxattr(path: String, name: String) throws -> Data {
+        try perform(operationName: "getxattr(\(path),\(name))") { [session] in
+            try await session.getxattr(path: path, name: name)
+        }
+    }
+
+    func setxattr(path: String, name: String, value: Data, flags: UInt32) throws {
+        try perform(operationName: "setxattr(\(path),\(name))") { [session] in
+            try await session.setxattr(path: path, name: name, value: value, flags: flags)
+        }
+    }
+
+    func listxattrs(path: String) throws -> [String] {
+        try perform(operationName: "listxattr(\(path))") { [session] in
+            try await session.listxattrs(path: path)
+        }
+    }
+
+    func removexattr(path: String, name: String) throws {
+        try perform(operationName: "removexattr(\(path),\(name))") { [session] in
+            try await session.removexattr(path: path, name: name)
+        }
+    }
+
+    func unlink(path: String) throws {
+        try perform(operationName: "unlink(\(path))") { [session] in
+            try await session.unlink(path: path)
+        }
+    }
+
+    func mkdir(path: String) throws {
+        try perform(operationName: "mkdir(\(path))") { [session] in
+            try await session.mkdir(path: path)
+        }
+    }
+
+    func rmdir(path: String) throws {
+        try perform(operationName: "rmdir(\(path))") { [session] in
+            try await session.rmdir(path: path)
+        }
+    }
+
+    func rename(oldPath: String, newPath: String) throws {
+        try perform(operationName: "rename(\(oldPath)->\(newPath))") { [session] in
+            try await session.rename(oldPath: oldPath, newPath: newPath)
+        }
+    }
+
+    func symlink(target: String, linkPath: String) throws {
+        try perform(operationName: "symlink(\(linkPath))") { [session] in
+            try await session.symlink(target: target, linkPath: linkPath)
         }
     }
 
@@ -3204,26 +3397,6 @@ private func int32Value(_ value: Any?) -> Int32? {
 
 private func boolValue(_ value: Any?) -> Bool? {
     value as? Bool
-}
-
-func matchMountedPath(_ path: String, mountPath: String) -> String? {
-    let normalizedPath = normalizeAbsolutePath(path)
-    let normalizedMount = normalizeAbsolutePath(mountPath)
-
-    if normalizedMount == "/" {
-        return normalizedPath
-    }
-    guard normalizedPath.hasPrefix(normalizedMount) else {
-        return nil
-    }
-    if normalizedPath == normalizedMount {
-        return "/"
-    }
-    guard normalizedPath.dropFirst(normalizedMount.count).first == "/" else {
-        return nil
-    }
-    let suffix = String(normalizedPath.dropFirst(normalizedMount.count))
-    return suffix.isEmpty ? "/" : suffix
 }
 
 func normalizeRelativeEndpointPath(_ path: String) -> String {

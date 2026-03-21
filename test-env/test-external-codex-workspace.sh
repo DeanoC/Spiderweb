@@ -650,7 +650,7 @@ wait_for_control_ready() {
                 if run_with_timeout 3 "$INSTALL_DIR/spiderweb-control" \
                     --url "$CONTROL_URL" \
                     --auth-token "$SPIDERWEB_AUTH_TOKEN" \
-                    workspace_status '{"project_id":"system"}' >/dev/null 2>&1; then
+                    node_list >/dev/null 2>&1; then
                     return 0
                 fi
             fi

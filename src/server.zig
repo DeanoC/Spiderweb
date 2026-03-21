@@ -6677,6 +6677,21 @@ fn buildWorkspaceStatusPayloadForBinding(
     connection_workspace_url: ?[]const u8,
     is_admin: bool,
 ) ![]u8 {
+    if (std.mem.eql(u8, binding.agent_id, host_actor_id) and
+        binding.project_id != null and
+        std.mem.eql(u8, binding.project_id.?, host_project_id))
+    {
+        const workspace_json = runtime_registry.control_plane.hostWorkspaceStatusWithRole(is_admin) catch |err| {
+            std.log.warn(
+                "host workspace status unavailable: {s}",
+                .{@errorName(err)},
+            );
+            return try allocator.dupe(u8, "{}");
+        };
+        defer allocator.free(workspace_json);
+        return rewriteWorkspaceStatusFsUrls(allocator, workspace_json, connection_workspace_url);
+    }
+
     const status_req = if (binding.project_id) |project_id|
         try buildProjectActivatePayload(allocator, project_id, binding.project_token)
     else
@@ -7403,7 +7418,7 @@ fn handleControlPlaneCommand(
     defer if (request_json) |value| runtime_registry.allocator.free(value);
 
     const effective_payload = if (request_json) |value| @as(?[]const u8, value) else payload_json;
-    const raw_response_json = try switch (control_type_canonical) {
+    const raw_response_json = switch (control_type_canonical) {
         .node_invite_create => try runtime_registry.control_plane.createNodeInvite(effective_payload),
         .node_join_request => try runtime_registry.control_plane.nodeJoinRequest(effective_payload),
         .node_join_pending_list => try runtime_registry.control_plane.listPendingNodeJoins(effective_payload),

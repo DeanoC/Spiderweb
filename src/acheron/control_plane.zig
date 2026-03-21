@@ -2527,6 +2527,50 @@ pub const ControlPlane = struct {
         return self.activateProjectWithRole(agent_id, payload_json, false);
     }
 
+    pub fn activateHostWorkspace(self: *ControlPlane) ![]u8 {
+        return self.activateHostWorkspaceWithRole(false);
+    }
+
+    pub fn activateHostWorkspaceWithRole(self: *ControlPlane, is_admin: bool) ![]u8 {
+        _ = is_admin;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const now_ms = std.time.milliTimestamp();
+        _ = self.reapExpiredLeasesLocked(now_ms);
+        try self.ensureBuiltinHostProjectLocked(now_ms);
+        const project = self.projects.getPtr(host_project_id) orelse return ControlPlaneError.ProjectNotFound;
+
+        if (self.active_project_by_agent.getPtr(self.host_actor_id)) |existing| {
+            self.allocator.free(existing.*);
+            existing.* = try self.allocator.dupe(u8, host_project_id);
+        } else {
+            try self.active_project_by_agent.put(
+                self.allocator,
+                try self.allocator.dupe(u8, self.host_actor_id),
+                try self.allocator.dupe(u8, host_project_id),
+            );
+        }
+        self.project_activations_total +%= 1;
+        if (project.mounts.items.len == 0 and self.spider_web_root.len > 0) {
+            std.log.info("host project active without mount; waiting for local node registration (root={s})", .{self.spider_web_root});
+        }
+        self.persistSnapshotBestEffortLocked();
+
+        const workspace_root = "/";
+        const escaped_agent = try jsonEscape(self.allocator, self.host_actor_id);
+        defer self.allocator.free(escaped_agent);
+        const escaped_project = try jsonEscape(self.allocator, host_project_id);
+        defer self.allocator.free(escaped_project);
+        const escaped_root = try jsonEscape(self.allocator, workspace_root);
+        defer self.allocator.free(escaped_root);
+
+        return std.fmt.allocPrint(
+            self.allocator,
+            "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
+            .{ escaped_agent, escaped_project, escaped_root },
+        );
+    }
+
     pub fn activateProjectWithRole(
         self: *ControlPlane,
         agent_id: []const u8,
@@ -2978,6 +3022,26 @@ pub const ControlPlane = struct {
 
     pub fn workspaceStatus(self: *ControlPlane, agent_id: []const u8, payload_json: ?[]const u8) ![]u8 {
         return self.workspaceStatusWithRole(agent_id, payload_json, false);
+    }
+
+    pub fn hostWorkspaceStatus(self: *ControlPlane) ![]u8 {
+        return self.hostWorkspaceStatusWithRole(false);
+    }
+
+    pub fn hostWorkspaceStatusWithRole(self: *ControlPlane, is_admin: bool) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const now_ms = std.time.milliTimestamp();
+        _ = self.reapExpiredLeasesLocked(now_ms);
+        _ = try self.runReconcileCycleLocked(now_ms, false);
+        try self.ensureBuiltinHostProjectLocked(now_ms);
+        return try self.renderWorkspaceStatusForProjectLocked(
+            self.host_actor_id,
+            host_project_id,
+            null,
+            is_admin,
+            now_ms,
+        );
     }
 
     pub fn workspaceStatusWithRole(
@@ -6471,17 +6535,11 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
         plane.activateProject(default_host_actor_id, activate_missing_token),
     );
 
-    const activated_req = try std.fmt.allocPrint(
-        allocator,
-        "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
-        .{ host_project_id, spider_token.? },
-    );
-    defer allocator.free(activated_req);
-    const activated = try plane.activateProject(default_host_actor_id, activated_req);
+    const activated = try plane.activateHostWorkspace();
     defer allocator.free(activated);
     try std.testing.expect(std.mem.indexOf(u8, activated, "\"project_id\":\"system\"") != null);
 
-    const status = try plane.workspaceStatus(default_host_actor_id, activated_req);
+    const status = try plane.hostWorkspaceStatus();
     defer allocator.free(status);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"project_id\":\"system\"") != null);
 
@@ -6521,7 +6579,7 @@ test "acheron_control_plane: builtin host mount can be bound from local node" {
 
     try plane.ensureSpiderWebMount(node_id, "system-root");
 
-    const status = try plane.workspaceStatus(default_host_actor_id, "{\"project_id\":\"system\"}");
+    const status = try plane.hostWorkspaceStatus();
     defer allocator.free(status);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"project_id\":\"system\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/fs\"") != null);
@@ -6552,7 +6610,7 @@ test "acheron_control_plane: builtin host mounts support namespace topology" {
     };
     try plane.ensureSpiderWebMounts(node_id, &mounts);
 
-    const status = try plane.workspaceStatus(default_host_actor_id, "{\"project_id\":\"system\"}");
+    const status = try plane.hostWorkspaceStatus();
     defer allocator.free(status);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/agents\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/meta\"") != null);
@@ -6635,7 +6693,7 @@ test "acheron_control_plane: ensureSpiderWebMounts preserves extra builtin mount
     // Re-ensuring local mount specs should not wipe additional admin-managed mounts.
     try plane.ensureSpiderWebMount(local_node_id, "system-root");
 
-    const status = try plane.workspaceStatus(default_host_actor_id, "{\"project_id\":\"system\"}");
+    const status = try plane.hostWorkspaceStatus();
     defer allocator.free(status);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/fs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/clawz/fs\"") != null);

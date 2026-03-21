@@ -25,7 +25,6 @@ const default_spider_web_root = "";
 const default_platform_os = "unknown";
 const default_platform_arch = "unknown";
 const default_platform_runtime_kind = "unknown";
-const debug_stream_max_bytes: usize = 2 * 1024 * 1024;
 const node_venom_event_history_max_default: usize = 1024;
 
 const ProjectKind = enum {
@@ -430,7 +429,6 @@ pub const ControlPlane = struct {
     installed_venom_packages: std.ArrayListUnmanaged(venom_package_model.VenomPackage) = .{},
     active_project_by_agent: std.StringHashMapUnmanaged([]u8) = .{},
     preferred_venom_provider_by_scope_venom: std.StringHashMapUnmanaged([]u8) = .{},
-    debug_stream_by_agent: std.StringHashMapUnmanaged([]u8) = .{},
     node_venom_event_history: std.ArrayListUnmanaged(NodeVenomEventRecord) = .{},
 
     next_invite_id: u64 = 1,
@@ -804,56 +802,6 @@ pub const ControlPlane = struct {
         return false;
     }
 
-    pub fn appendDebugStreamEvent(self: *ControlPlane, agent_id: []const u8, line: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        var content_ptr = self.debug_stream_by_agent.getPtr(agent_id);
-        if (content_ptr == null) {
-            const key = self.allocator.dupe(u8, agent_id) catch return;
-            errdefer self.allocator.free(key);
-            const initial = self.allocator.dupe(u8, "") catch return;
-            errdefer self.allocator.free(initial);
-            self.debug_stream_by_agent.putNoClobber(self.allocator, key, initial) catch return;
-            content_ptr = self.debug_stream_by_agent.getPtr(agent_id);
-            if (content_ptr == null) return;
-        }
-
-        var merged = std.ArrayListUnmanaged(u8){};
-        defer merged.deinit(self.allocator);
-        if (content_ptr.?.*.len > 0) {
-            merged.appendSlice(self.allocator, content_ptr.?.*) catch return;
-            merged.append(self.allocator, '\n') catch return;
-        }
-        merged.appendSlice(self.allocator, line) catch return;
-
-        const tail = if (merged.items.len <= debug_stream_max_bytes) blk: {
-            break :blk merged.items;
-        } else blk: {
-            var start = merged.items.len - debug_stream_max_bytes;
-            if (start > 0) {
-                if (std.mem.indexOfScalarPos(u8, merged.items, start, '\n')) |nl| {
-                    start = nl + 1;
-                }
-            }
-            break :blk merged.items[start..];
-        };
-
-        const next = self.allocator.dupe(u8, tail) catch return;
-        self.allocator.free(content_ptr.?.*);
-        content_ptr.?.* = next;
-    }
-
-    pub fn snapshotDebugStream(self: *ControlPlane, allocator: std.mem.Allocator, agent_id: []const u8) ![]u8 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (self.debug_stream_by_agent.get(agent_id)) |value| {
-            return allocator.dupe(u8, value);
-        }
-        return allocator.dupe(u8, "");
-    }
-
     fn appendNodeVenomEventLocked(self: *ControlPlane, node_id: []const u8, payload_json: []const u8) void {
         while (self.node_venom_event_history.items.len >= self.node_venom_event_history_max and
             self.node_venom_event_history.items.len > 0)
@@ -996,14 +944,6 @@ pub const ControlPlane = struct {
         }
         self.preferred_venom_provider_by_scope_venom.deinit(self.allocator);
         self.preferred_venom_provider_by_scope_venom = .{};
-
-        var debug_it = self.debug_stream_by_agent.iterator();
-        while (debug_it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.debug_stream_by_agent.deinit(self.allocator);
-        self.debug_stream_by_agent = .{};
 
         for (self.node_venom_event_history.items) |*record| record.deinit(self.allocator);
         self.node_venom_event_history.deinit(self.allocator);

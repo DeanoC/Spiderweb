@@ -16,14 +16,6 @@ const max_agent_id_len: usize = 64;
 const max_project_id_len: usize = 128;
 const max_actor_type_len: usize = 64;
 const max_actor_id_len: usize = 128;
-const debug_stream_log_filename = "debug-stream.ndjson";
-const debug_stream_archive_prefix = "debug-stream-";
-const debug_stream_archive_suffix = ".ndjson";
-const debug_stream_archive_suffix_gz = ".ndjson.gz";
-const debug_stream_rotate_max_bytes: u64 = 8 * 1024 * 1024;
-const debug_stream_archive_keep: usize = 8;
-const node_venom_event_log_filename = "node-venom-events.ndjson";
-const node_venom_event_archive_prefix = "node-venom-events-";
 const node_venom_event_history_max_default: usize = 1024;
 const local_node_export_path_env = "SPIDERWEB_LOCAL_NODE_EXPORT_PATH";
 const local_node_export_name_env = "SPIDERWEB_LOCAL_NODE_EXPORT_NAME";
@@ -48,8 +40,6 @@ const control_operator_token_env = "SPIDERWEB_CONTROL_OPERATOR_TOKEN";
 const control_project_scope_token_env = "SPIDERWEB_CONTROL_PROJECT_SCOPE_TOKEN";
 const control_node_scope_token_env = "SPIDERWEB_CONTROL_NODE_SCOPE_TOKEN";
 const node_venom_event_history_max_env = "SPIDERWEB_NODE_VENOM_EVENT_HISTORY_MAX";
-const node_venom_event_log_rotate_max_bytes_env = "SPIDERWEB_NODE_VENOM_EVENT_LOG_ROTATE_MAX_BYTES";
-const node_venom_event_log_archive_keep_env = "SPIDERWEB_NODE_VENOM_EVENT_LOG_ARCHIVE_KEEP";
 const metrics_port_env = "SPIDERWEB_METRICS_PORT";
 const control_protocol_version = "spiderweb-control";
 const acheron_runtime_protocol_version = "acheron-1";
@@ -67,233 +57,6 @@ const runtime_warmup_error_retry_backoff_ms: i64 = 10_000;
 const runtime_residency_worker_interval_ms_default: u64 = 1_000;
 const session_heartbeat_ttl_ms: i64 = 5 * 60 * 1000;
 const agent_heartbeat_ttl_ms: i64 = 5 * 60 * 1000;
-
-const DebugStreamFileSink = struct {
-    allocator: std.mem.Allocator,
-    path: ?[]u8 = null,
-    gzip_available: bool = false,
-    mutex: std.Thread.Mutex = .{},
-
-    fn init(allocator: std.mem.Allocator, runtime_config: Config.RuntimeConfig) DebugStreamFileSink {
-        var sink = DebugStreamFileSink{ .allocator = allocator };
-        if (runtime_config.state_directory.len == 0) return sink;
-
-        const path = sink.initPath(runtime_config.state_directory) catch |err| {
-            std.log.warn("Debug stream file logging disabled: {s}", .{@errorName(err)});
-            return sink;
-        };
-        sink.path = path;
-        sink.gzip_available = commandExists(allocator, "gzip");
-        if (!sink.gzip_available) {
-            std.log.warn("gzip not found; debug stream archives will be uncompressed", .{});
-        }
-
-        sink.touch() catch |err| {
-            std.log.warn("Debug stream file logging disabled for {s}: {s}", .{ path, @errorName(err) });
-            allocator.free(path);
-            sink.path = null;
-        };
-        return sink;
-    }
-
-    fn deinit(self: *DebugStreamFileSink) void {
-        if (self.path) |path| self.allocator.free(path);
-    }
-
-    fn append(self: *DebugStreamFileSink, agent_id: []const u8, frame_payload: []const u8) void {
-        const path = self.path orelse return;
-        if (std.mem.indexOf(u8, frame_payload, "\"type\":\"debug.event\"") == null) return;
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        self.appendLocked(path, agent_id, frame_payload) catch |err| {
-            std.log.warn("Failed to append debug event to {s}: {s}", .{ path, @errorName(err) });
-        };
-    }
-
-    fn initPath(self: *DebugStreamFileSink, state_directory: []const u8) ![]u8 {
-        try ensureDirectoryExists(state_directory);
-        return std.fs.path.join(self.allocator, &.{ state_directory, debug_stream_log_filename });
-    }
-
-    fn touch(self: *DebugStreamFileSink) !void {
-        const path = self.path orelse return;
-        var file = try openOrCreateAppendFile(path);
-        defer file.close();
-        try file.seekFromEnd(0);
-    }
-
-    fn appendLocked(self: *DebugStreamFileSink, path: []const u8, agent_id: []const u8, frame_payload: []const u8) !void {
-        var file = try openOrCreateAppendFile(path);
-        defer file.close();
-        try file.seekFromEnd(0);
-        const line = try std.fmt.allocPrint(
-            self.allocator,
-            "{d}\t{s}\t{s}\n",
-            .{ std.time.milliTimestamp(), agent_id, frame_payload },
-        );
-        defer self.allocator.free(line);
-        try file.writeAll(line);
-        try self.maybeRotateLocked(path);
-    }
-
-    fn maybeRotateLocked(self: *DebugStreamFileSink, path: []const u8) !void {
-        const size = fileSize(path) catch |err| switch (err) {
-            error.FileNotFound => return,
-            else => return err,
-        };
-        if (size <= debug_stream_rotate_max_bytes) return;
-
-        const archive_path = try self.allocateArchivePath(path);
-        defer self.allocator.free(archive_path);
-
-        renamePath(path, archive_path) catch |err| switch (err) {
-            error.FileNotFound => return,
-            else => return err,
-        };
-
-        if (self.gzip_available) {
-            self.compressArchive(archive_path) catch |err| {
-                std.log.warn("Failed to gzip debug archive {s}: {s}", .{ archive_path, @errorName(err) });
-            };
-        }
-
-        self.pruneArchives(path) catch |err| {
-            std.log.warn("Failed pruning debug archives for {s}: {s}", .{ path, @errorName(err) });
-        };
-        self.touch() catch |err| {
-            std.log.warn("Failed to recreate debug stream log {s}: {s}", .{ path, @errorName(err) });
-        };
-    }
-
-    fn allocateArchivePath(self: *DebugStreamFileSink, path: []const u8) ![]u8 {
-        const now_ms_signed = std.time.milliTimestamp();
-        const now_ms: u64 = if (now_ms_signed < 0) 0 else @intCast(now_ms_signed);
-        const parent = std.fs.path.dirname(path) orelse ".";
-
-        var attempt: usize = 0;
-        while (attempt < 256) : (attempt += 1) {
-            const name = if (attempt == 0)
-                try std.fmt.allocPrint(self.allocator, "{s}{d}{s}", .{
-                    debug_stream_archive_prefix,
-                    now_ms,
-                    debug_stream_archive_suffix,
-                })
-            else
-                try std.fmt.allocPrint(self.allocator, "{s}{d}-{d}{s}", .{
-                    debug_stream_archive_prefix,
-                    now_ms,
-                    attempt,
-                    debug_stream_archive_suffix,
-                });
-            defer self.allocator.free(name);
-
-            const candidate = try std.fs.path.join(self.allocator, &.{ parent, name });
-            if (!pathExists(candidate)) return candidate;
-            self.allocator.free(candidate);
-        }
-        return error.PathAlreadyExists;
-    }
-
-    fn compressArchive(self: *DebugStreamFileSink, archive_path: []const u8) !void {
-        const result = try std.process.Child.run(.{
-            .allocator = self.allocator,
-            .argv = &.{ "gzip", "-f", archive_path },
-            .max_output_bytes = 16 * 1024,
-        });
-        defer self.allocator.free(result.stdout);
-        defer self.allocator.free(result.stderr);
-
-        switch (result.term) {
-            .Exited => |code| if (code != 0) return error.ProcessFailed,
-            else => return error.ProcessFailed,
-        }
-    }
-
-    fn pruneArchives(self: *DebugStreamFileSink, path: []const u8) !void {
-        if (debug_stream_archive_keep == 0) return;
-        const parent = std.fs.path.dirname(path) orelse ".";
-        var dir = if (std.fs.path.isAbsolute(parent))
-            try std.fs.openDirAbsolute(parent, .{ .iterate = true })
-        else
-            try std.fs.cwd().openDir(parent, .{ .iterate = true });
-        defer dir.close();
-
-        var candidates = std.ArrayListUnmanaged(ArchiveCandidate){};
-        defer {
-            for (candidates.items) |entry| self.allocator.free(entry.name);
-            candidates.deinit(self.allocator);
-        }
-
-        var it = dir.iterate();
-        while (try it.next()) |entry| {
-            if (entry.kind != .file) continue;
-            const ts = parseArchiveTimestamp(entry.name) orelse continue;
-            try candidates.append(self.allocator, .{
-                .name = try self.allocator.dupe(u8, entry.name),
-                .timestamp_ms = ts,
-            });
-        }
-
-        while (candidates.items.len > debug_stream_archive_keep) {
-            var oldest_idx: usize = 0;
-            var oldest_ts = candidates.items[0].timestamp_ms;
-            var i: usize = 1;
-            while (i < candidates.items.len) : (i += 1) {
-                if (candidates.items[i].timestamp_ms < oldest_ts) {
-                    oldest_ts = candidates.items[i].timestamp_ms;
-                    oldest_idx = i;
-                }
-            }
-
-            const oldest = candidates.orderedRemove(oldest_idx);
-            dir.deleteFile(oldest.name) catch |err| {
-                std.log.warn("Failed deleting old debug archive {s}: {s}", .{ oldest.name, @errorName(err) });
-            };
-            self.allocator.free(oldest.name);
-        }
-    }
-};
-
-const ArchiveCandidate = struct {
-    name: []u8,
-    timestamp_ms: u64,
-};
-
-fn parseArchiveTimestampWithPrefix(name: []const u8, prefix: []const u8) ?u64 {
-    if (!std.mem.startsWith(u8, name, prefix)) return null;
-    var tail = name[prefix.len..];
-
-    if (std.mem.endsWith(u8, tail, debug_stream_archive_suffix_gz)) {
-        tail = tail[0 .. tail.len - debug_stream_archive_suffix_gz.len];
-    } else if (std.mem.endsWith(u8, tail, debug_stream_archive_suffix)) {
-        tail = tail[0 .. tail.len - debug_stream_archive_suffix.len];
-    } else {
-        return null;
-    }
-    if (tail.len == 0) return null;
-
-    const dash_idx = std.mem.indexOfScalar(u8, tail, '-');
-    const numeric = if (dash_idx) |idx| tail[0..idx] else tail;
-    if (numeric.len == 0) return null;
-    return std.fmt.parseUnsigned(u64, numeric, 10) catch null;
-}
-
-fn parseArchiveTimestamp(name: []const u8) ?u64 {
-    return parseArchiveTimestampWithPrefix(name, debug_stream_archive_prefix);
-}
-
-fn commandExists(allocator: std.mem.Allocator, command: []const u8) bool {
-    var child = std.process.Child.init(&[_][]const u8{ command, "--help" }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-
-    child.spawn() catch return false;
-    _ = child.wait() catch return false;
-    return true;
-}
 
 fn ensureDirectoryExists(dir_path: []const u8) !void {
     if (dir_path.len == 0) return error.InvalidPath;
@@ -360,103 +123,6 @@ fn pathExists(path: []const u8) bool {
     }
     std.fs.cwd().access(path, .{}) catch return false;
     return true;
-}
-
-fn allocateArchivePathWithPrefix(
-    allocator: std.mem.Allocator,
-    path: []const u8,
-    prefix: []const u8,
-) ![]u8 {
-    const now_ms_signed = std.time.milliTimestamp();
-    const now_ms: u64 = if (now_ms_signed < 0) 0 else @intCast(now_ms_signed);
-    const parent = std.fs.path.dirname(path) orelse ".";
-
-    var attempt: usize = 0;
-    while (attempt < 256) : (attempt += 1) {
-        const name = if (attempt == 0)
-            try std.fmt.allocPrint(allocator, "{s}{d}{s}", .{
-                prefix,
-                now_ms,
-                debug_stream_archive_suffix,
-            })
-        else
-            try std.fmt.allocPrint(allocator, "{s}{d}-{d}{s}", .{
-                prefix,
-                now_ms,
-                attempt,
-                debug_stream_archive_suffix,
-            });
-        defer allocator.free(name);
-
-        const candidate = try std.fs.path.join(allocator, &.{ parent, name });
-        if (!pathExists(candidate)) return candidate;
-        allocator.free(candidate);
-    }
-    return error.PathAlreadyExists;
-}
-
-fn compressArchiveGzip(allocator: std.mem.Allocator, archive_path: []const u8) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ "gzip", "-f", archive_path },
-        .max_output_bytes = 16 * 1024,
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    switch (result.term) {
-        .Exited => |code| if (code != 0) return error.ProcessFailed,
-        else => return error.ProcessFailed,
-    }
-}
-
-fn pruneArchivesWithPrefix(
-    allocator: std.mem.Allocator,
-    path: []const u8,
-    prefix: []const u8,
-    keep: usize,
-) !void {
-    if (keep == 0) return;
-    const parent = std.fs.path.dirname(path) orelse ".";
-    var dir = if (std.fs.path.isAbsolute(parent))
-        try std.fs.openDirAbsolute(parent, .{ .iterate = true })
-    else
-        try std.fs.cwd().openDir(parent, .{ .iterate = true });
-    defer dir.close();
-
-    var candidates = std.ArrayListUnmanaged(ArchiveCandidate){};
-    defer {
-        for (candidates.items) |entry| allocator.free(entry.name);
-        candidates.deinit(allocator);
-    }
-
-    var it = dir.iterate();
-    while (try it.next()) |entry| {
-        if (entry.kind != .file) continue;
-        const ts = parseArchiveTimestampWithPrefix(entry.name, prefix) orelse continue;
-        try candidates.append(allocator, .{
-            .name = try allocator.dupe(u8, entry.name),
-            .timestamp_ms = ts,
-        });
-    }
-
-    while (candidates.items.len > keep) {
-        var oldest_idx: usize = 0;
-        var oldest_ts = candidates.items[0].timestamp_ms;
-        var i: usize = 1;
-        while (i < candidates.items.len) : (i += 1) {
-            if (candidates.items[i].timestamp_ms < oldest_ts) {
-                oldest_ts = candidates.items[i].timestamp_ms;
-                oldest_idx = i;
-            }
-        }
-
-        const oldest = candidates.orderedRemove(oldest_idx);
-        dir.deleteFile(oldest.name) catch |err| {
-            std.log.warn("Failed deleting old archive {s}: {s}", .{ oldest.name, @errorName(err) });
-        };
-        allocator.free(oldest.name);
-    }
 }
 
 fn parseBoolEnv(allocator: std.mem.Allocator, name: []const u8, default_value: bool) bool {
@@ -846,21 +512,6 @@ fn parseOptionalEnvOwned(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
     return allocator.dupe(u8, trimmed) catch null;
 }
 
-fn initNodeVenomEventLogPath(
-    allocator: std.mem.Allocator,
-    state_directory: []const u8,
-) !?[]u8 {
-    const base = std.mem.trim(u8, state_directory, " \t\r\n");
-    if (base.len == 0) return null;
-    try ensureDirectoryExists(base);
-    const path = try std.fs.path.join(allocator, &.{ base, node_venom_event_log_filename });
-    errdefer allocator.free(path);
-    var file = try openOrCreateAppendFile(path);
-    defer file.close();
-    try file.seekFromEnd(0);
-    return path;
-}
-
 const NodeTunnelPendingRequest = struct {
     mutex: std.Thread.Mutex = .{},
     cond: std.Thread.Condition = .{},
@@ -1248,26 +899,6 @@ const NodeTunnelRegistry = struct {
         }
         return 1;
     }
-};
-
-const NodeVenomEventRecord = struct {
-    timestamp_ms: i64,
-    node_id: ?[]u8 = null,
-    payload_json: []u8,
-
-    fn deinit(self: *NodeVenomEventRecord, allocator: std.mem.Allocator) void {
-        if (self.node_id) |value| allocator.free(value);
-        allocator.free(self.payload_json);
-        self.* = undefined;
-    }
-};
-
-const NodeVenomEventMetricsSnapshot = struct {
-    retained_events: usize = 0,
-    retained_capacity: usize = 0,
-    retained_oldest_ms: ?i64 = null,
-    retained_newest_ms: ?i64 = null,
-    retained_window_ms: u64 = 0,
 };
 
 const ControlMutationScope = enum {
@@ -2690,13 +2321,6 @@ const AgentRuntimeRegistry = struct {
     runtime_warmup_lifecycle_cond: std.Thread.Condition = .{},
     runtime_warmup_inflight: usize = 0,
     runtime_warmup_stopping: bool = false,
-    node_venom_event_history_mutex: std.Thread.Mutex = .{},
-    node_venom_event_history: std.ArrayListUnmanaged(NodeVenomEventRecord) = .{},
-    node_venom_event_history_max: usize = node_venom_event_history_max_default,
-    node_venom_event_log_path: ?[]u8 = null,
-    node_venom_event_log_rotate_max_bytes: u64 = 4 * 1024 * 1024,
-    node_venom_event_log_archive_keep: usize = 8,
-    node_venom_event_log_gzip_available: bool = false,
     venom_presence_worker_thread: ?std.Thread = null,
     venom_presence_worker_stop: bool = false,
     venom_presence_worker_mutex: std.Thread.Mutex = .{},
@@ -2755,27 +2379,8 @@ const AgentRuntimeRegistry = struct {
             @as(u64, node_venom_event_history_max_default),
         );
         const history_max: usize = @intCast(@max(@as(u64, 64), @min(history_max_raw, 20_000)));
-        const event_rotate_max_bytes = parseUnsignedEnv(
-            allocator,
-            node_venom_event_log_rotate_max_bytes_env,
-            8 * 1024 * 1024,
-        );
-        const event_archive_keep_raw = parseUnsignedEnv(
-            allocator,
-            node_venom_event_log_archive_keep_env,
-            8,
-        );
-        const event_archive_keep: usize = @intCast(@min(event_archive_keep_raw, 64));
-        const event_log_path = initNodeVenomEventLogPath(allocator, runtime_config.state_directory) catch |err| blk: {
-            std.log.warn("node service event persistence disabled: {s}", .{@errorName(err)});
-            break :blk null;
-        };
-        const event_log_gzip_available = if (event_log_path != null)
-            commandExists(allocator, "gzip")
-        else
-            false;
 
-        var registry: AgentRuntimeRegistry = .{
+        const registry: AgentRuntimeRegistry = .{
             .allocator = allocator,
             .runtime_config = runtime_config,
             .default_agent_id = effective_default,
@@ -2795,15 +2400,7 @@ const AgentRuntimeRegistry = struct {
             .control_operator_token = operator_token,
             .control_project_scope_token = project_scope_token,
             .control_node_scope_token = node_scope_token,
-            .node_venom_event_history_max = history_max,
-            .node_venom_event_log_path = event_log_path,
-            .node_venom_event_log_rotate_max_bytes = event_rotate_max_bytes,
-            .node_venom_event_log_archive_keep = event_archive_keep,
-            .node_venom_event_log_gzip_available = event_log_gzip_available,
             .node_tunnels = .{ .allocator = allocator },
-        };
-        registry.loadNodeVenomEventHistory() catch |err| {
-            std.log.warn("failed to load node service event history: {s}", .{@errorName(err)});
         };
         return registry;
     }
@@ -2892,11 +2489,6 @@ const AgentRuntimeRegistry = struct {
         if (self.workspace_url) |value| {
             self.allocator.free(value);
             self.workspace_url = null;
-        }
-        self.clearNodeVenomEventHistory();
-        if (self.node_venom_event_log_path) |path| {
-            self.allocator.free(path);
-            self.node_venom_event_log_path = null;
         }
         self.node_tunnels.deinit();
         self.audit_records_mutex.lock();
@@ -4334,299 +3926,12 @@ const AgentRuntimeRegistry = struct {
         return out.toOwnedSlice(self.allocator);
     }
 
-    fn clearNodeVenomEventHistory(self: *AgentRuntimeRegistry) void {
-        self.node_venom_event_history_mutex.lock();
-        defer self.node_venom_event_history_mutex.unlock();
-        for (self.node_venom_event_history.items) |*record| {
-            record.deinit(self.allocator);
-        }
-        self.node_venom_event_history.deinit(self.allocator);
-        self.node_venom_event_history = .{};
-    }
-
-    fn appendNodeVenomEventHistoryRecord(
-        self: *AgentRuntimeRegistry,
-        record: NodeVenomEventRecord,
-    ) void {
-        self.node_venom_event_history_mutex.lock();
-        defer self.node_venom_event_history_mutex.unlock();
-        while (self.node_venom_event_history.items.len >= self.node_venom_event_history_max and
-            self.node_venom_event_history.items.len > 0)
-        {
-            var dropped = self.node_venom_event_history.orderedRemove(0);
-            dropped.deinit(self.allocator);
-        }
-        self.node_venom_event_history.append(self.allocator, record) catch {
-            var cleanup = record;
-            cleanup.deinit(self.allocator);
-        };
-    }
-
-    fn persistNodeVenomEventRecord(
-        self: *AgentRuntimeRegistry,
-        timestamp_ms: i64,
-        node_id: ?[]const u8,
-        payload_json: []const u8,
-    ) void {
-        const path = self.node_venom_event_log_path orelse return;
-        const escaped_payload = unified.jsonEscape(self.allocator, payload_json) catch return;
-        defer self.allocator.free(escaped_payload);
-        const line = if (node_id) |value| blk: {
-            const escaped_node = unified.jsonEscape(self.allocator, value) catch return;
-            defer self.allocator.free(escaped_node);
-            break :blk std.fmt.allocPrint(
-                self.allocator,
-                "{{\"timestamp_ms\":{d},\"node_id\":\"{s}\",\"payload_json\":\"{s}\"}}\n",
-                .{ timestamp_ms, escaped_node, escaped_payload },
-            ) catch return;
-        } else std.fmt.allocPrint(
-            self.allocator,
-            "{{\"timestamp_ms\":{d},\"node_id\":null,\"payload_json\":\"{s}\"}}\n",
-            .{ timestamp_ms, escaped_payload },
-        ) catch return;
-        defer self.allocator.free(line);
-
-        var file = openOrCreateAppendFile(path) catch |err| {
-            std.log.warn("failed opening node service event log {s}: {s}", .{ path, @errorName(err) });
-            return;
-        };
-        defer file.close();
-        file.seekFromEnd(0) catch |err| {
-            std.log.warn("failed seeking node service event log {s}: {s}", .{ path, @errorName(err) });
-            return;
-        };
-        file.writeAll(line) catch |err| {
-            std.log.warn("failed appending node service event log {s}: {s}", .{ path, @errorName(err) });
-        };
-        self.maybeRotateNodeVenomEventLog();
-    }
-
-    fn maybeRotateNodeVenomEventLog(self: *AgentRuntimeRegistry) void {
-        const path = self.node_venom_event_log_path orelse return;
-        if (self.node_venom_event_log_rotate_max_bytes == 0) return;
-
-        const size = fileSize(path) catch |err| switch (err) {
-            error.FileNotFound => return,
-            else => {
-                std.log.warn("failed reading node service event log size for {s}: {s}", .{ path, @errorName(err) });
-                return;
-            },
-        };
-        if (size <= self.node_venom_event_log_rotate_max_bytes) return;
-
-        const archive_path = allocateArchivePathWithPrefix(
-            self.allocator,
-            path,
-            node_venom_event_archive_prefix,
-        ) catch |err| {
-            std.log.warn("failed creating node service archive path for {s}: {s}", .{ path, @errorName(err) });
-            return;
-        };
-        defer self.allocator.free(archive_path);
-
-        renamePath(path, archive_path) catch |err| {
-            std.log.warn("failed rotating node service event log {s} -> {s}: {s}", .{
-                path,
-                archive_path,
-                @errorName(err),
-            });
-            return;
-        };
-
-        if (self.node_venom_event_log_gzip_available) {
-            compressArchiveGzip(self.allocator, archive_path) catch |err| {
-                std.log.warn("failed to gzip node service archive {s}: {s}", .{
-                    archive_path,
-                    @errorName(err),
-                });
-            };
-        }
-
-        pruneArchivesWithPrefix(
-            self.allocator,
-            path,
-            node_venom_event_archive_prefix,
-            self.node_venom_event_log_archive_keep,
-        ) catch |err| {
-            std.log.warn("failed pruning node service archives for {s}: {s}", .{
-                path,
-                @errorName(err),
-            });
-        };
-
-        var file = openOrCreateAppendFile(path) catch |err| {
-            std.log.warn("failed recreating node service event log {s}: {s}", .{ path, @errorName(err) });
-            return;
-        };
-        defer file.close();
-        file.seekFromEnd(0) catch |err| {
-            std.log.warn("failed finalizing node service event log {s}: {s}", .{ path, @errorName(err) });
-        };
-    }
-
-    fn recordNodeVenomEvent(
-        self: *AgentRuntimeRegistry,
-        node_id: ?[]const u8,
-        payload_json: []const u8,
-    ) void {
-        const timestamp_ms = std.time.milliTimestamp();
-        const payload_copy = self.allocator.dupe(u8, payload_json) catch return;
-        const node_copy = if (node_id) |value|
-            self.allocator.dupe(u8, value) catch {
-                self.allocator.free(payload_copy);
-                return;
-            }
-        else
-            null;
-        self.appendNodeVenomEventHistoryRecord(.{
-            .timestamp_ms = timestamp_ms,
-            .node_id = node_copy,
-            .payload_json = payload_copy,
-        });
-        self.persistNodeVenomEventRecord(timestamp_ms, node_id, payload_json);
-    }
-
-    fn loadNodeVenomEventHistory(self: *AgentRuntimeRegistry) !void {
-        const path = self.node_venom_event_log_path orelse return;
-        const raw = std.fs.cwd().readFileAlloc(self.allocator, path, 16 * 1024 * 1024) catch |err| switch (err) {
-            error.FileNotFound => return,
-            else => return err,
-        };
-        defer self.allocator.free(raw);
-
-        var lines = std.mem.splitScalar(u8, raw, '\n');
-        while (lines.next()) |line_raw| {
-            const line = std.mem.trim(u8, line_raw, " \t\r");
-            if (line.len == 0) continue;
-
-            var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch continue;
-            defer parsed.deinit();
-            if (parsed.value != .object) continue;
-            const obj = parsed.value.object;
-            const payload_value = obj.get("payload_json") orelse continue;
-            if (payload_value != .string or payload_value.string.len == 0) continue;
-            const timestamp_ms = if (obj.get("timestamp_ms")) |value| switch (value) {
-                .integer => value.integer,
-                else => std.time.milliTimestamp(),
-            } else std.time.milliTimestamp();
-
-            var node_copy: ?[]u8 = null;
-            if (obj.get("node_id")) |value| {
-                if (value == .string and isValidNodeIdentifier(value.string)) {
-                    node_copy = self.allocator.dupe(u8, value.string) catch null;
-                }
-            }
-
-            const payload_copy = self.allocator.dupe(u8, payload_value.string) catch {
-                if (node_copy) |value| self.allocator.free(value);
-                continue;
-            };
-            self.appendNodeVenomEventHistoryRecord(.{
-                .timestamp_ms = timestamp_ms,
-                .node_id = node_copy,
-                .payload_json = payload_copy,
-            });
-        }
-    }
-
-    fn snapshotNodeVenomEventMetrics(self: *AgentRuntimeRegistry) NodeVenomEventMetricsSnapshot {
-        var snapshot = NodeVenomEventMetricsSnapshot{};
-        self.node_venom_event_history_mutex.lock();
-        snapshot.retained_events = self.node_venom_event_history.items.len;
-        snapshot.retained_capacity = self.node_venom_event_history_max;
-        if (self.node_venom_event_history.items.len > 0) {
-            snapshot.retained_oldest_ms = self.node_venom_event_history.items[0].timestamp_ms;
-            snapshot.retained_newest_ms = self.node_venom_event_history.items[self.node_venom_event_history.items.len - 1].timestamp_ms;
-            const oldest = snapshot.retained_oldest_ms.?;
-            const newest = snapshot.retained_newest_ms.?;
-            if (newest >= oldest) {
-                snapshot.retained_window_ms = @intCast(newest - oldest);
-            }
-        }
-        self.node_venom_event_history_mutex.unlock();
-        return snapshot;
-    }
-
-    fn appendNodeVenomEventMetricsJson(
-        self: *AgentRuntimeRegistry,
-        out: *std.ArrayListUnmanaged(u8),
-        snapshot: NodeVenomEventMetricsSnapshot,
-    ) !void {
-        try out.writer(self.allocator).print(
-            "{{\"retained\":{{\"events\":{d},\"capacity\":{d},\"oldest_ms\":",
-            .{
-                snapshot.retained_events,
-                snapshot.retained_capacity,
-            },
-        );
-        if (snapshot.retained_oldest_ms) |value| {
-            try out.writer(self.allocator).print("{d}", .{value});
-        } else {
-            try out.appendSlice(self.allocator, "null");
-        }
-        try out.appendSlice(self.allocator, ",\"newest_ms\":");
-        if (snapshot.retained_newest_ms) |value| {
-            try out.writer(self.allocator).print("{d}", .{value});
-        } else {
-            try out.appendSlice(self.allocator, "null");
-        }
-        try out.writer(self.allocator).print(",\"window_ms\":{d}}}", .{snapshot.retained_window_ms});
-    }
-
     fn metricsJson(self: *AgentRuntimeRegistry) ![]u8 {
-        const base = try self.control_plane.metricsJson();
-        defer self.allocator.free(base);
-
-        const snapshot = self.snapshotNodeVenomEventMetrics();
-        const trimmed = std.mem.trimRight(u8, base, " \t\r\n");
-        if (trimmed.len == 0 or trimmed[trimmed.len - 1] != '}') {
-            return self.allocator.dupe(u8, base);
-        }
-
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.appendSlice(self.allocator, trimmed[0 .. trimmed.len - 1]);
-        try out.appendSlice(self.allocator, ",\"node_service_events\":");
-        try self.appendNodeVenomEventMetricsJson(&out, snapshot);
-        try out.append(self.allocator, '}');
-        return out.toOwnedSlice(self.allocator);
+        return self.control_plane.metricsJson();
     }
 
     fn metricsPrometheus(self: *AgentRuntimeRegistry) ![]u8 {
-        const base = try self.control_plane.metricsPrometheus();
-        defer self.allocator.free(base);
-
-        const snapshot = self.snapshotNodeVenomEventMetrics();
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.appendSlice(self.allocator, base);
-        if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') {
-            try out.append(self.allocator, '\n');
-        }
-        try out.writer(self.allocator).print(
-            \\# TYPE spiderweb_node_service_events_retained_events gauge
-            \\spiderweb_node_service_events_retained_events {d}
-            \\# TYPE spiderweb_node_service_events_retained_capacity gauge
-            \\spiderweb_node_service_events_retained_capacity {d}
-            \\# TYPE spiderweb_node_service_events_retained_window_ms gauge
-            \\spiderweb_node_service_events_retained_window_ms {d}
-            \\
-        ,
-            .{
-                snapshot.retained_events,
-                snapshot.retained_capacity,
-                snapshot.retained_window_ms,
-            },
-        );
-        return out.toOwnedSlice(self.allocator);
-    }
-
-    fn emitNodeVenomEvent(
-        self: *AgentRuntimeRegistry,
-        node_id: ?[]const u8,
-        payload_json: []const u8,
-    ) void {
-        self.recordNodeVenomEvent(node_id, payload_json);
+        return self.control_plane.metricsPrometheus();
     }
 
     fn pruneLegacySystemCapabilityMounts(self: *AgentRuntimeRegistry) void {
@@ -6955,14 +6260,6 @@ fn handleWebSocketConnection(
                                 );
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                if (control_type == .venom_upsert) {
-                                    const event_node_id = extractNodeIdFromControlPayload(allocator, payload_json) catch null;
-                                    defer if (event_node_id) |value| allocator.free(value);
-                                    runtime_registry.emitNodeVenomEvent(
-                                        if (event_node_id) |value| value else null,
-                                        payload_json,
-                                    );
-                                }
                                 const availability_after = runtime_registry.control_plane.availabilitySnapshot();
                                 const topology_mutation = isWorkspaceTopologyMutation(control_type);
                                 const availability_changed = !control_plane_mod.ControlPlane.AvailabilitySnapshot.eql(
@@ -9323,8 +8620,6 @@ test "server: base websocket path handles unified control and rejects legacy run
     try std.testing.expect(std.mem.indexOf(u8, metrics.payload, "\"type\":\"control.metrics\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, metrics.payload, "\"nodes\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, metrics.payload, "\"projects\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, metrics.payload, "\"node_service_events\"") != null);
-
     try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.debug_subscribe\",\"id\":\"req-debug-sub\"}");
     var debug_sub = try readServerFrame(allocator, &client);
     defer debug_sub.deinit(allocator);
@@ -10709,25 +10004,6 @@ test "server: stripHttpRequestTargetQuery removes query string" {
     try std.testing.expectEqualStrings("/readyz", stripHttpRequestTargetQuery("/readyz"));
 }
 
-test "server: metrics include retained node service event telemetry" {
-    const allocator = std.testing.allocator;
-    var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .state_directory = "",
-        .state_db_filename = "",
-    }, null);
-    defer runtime_registry.deinit();
-
-    const metrics_json = try runtime_registry.metricsJson();
-    defer allocator.free(metrics_json);
-    try std.testing.expect(std.mem.indexOf(u8, metrics_json, "\"node_service_events\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, metrics_json, "\"retained\"") != null);
-
-    const metrics_prom = try runtime_registry.metricsPrometheus();
-    defer allocator.free(metrics_prom);
-    try std.testing.expect(std.mem.indexOf(u8, metrics_prom, "spiderweb_node_service_events_retained_events") != null);
-    try std.testing.expect(std.mem.indexOf(u8, metrics_prom, "spiderweb_node_service_events_retained_window_ms") != null);
-}
-
 test "server: extract project payload helpers parse id and token" {
     const allocator = std.testing.allocator;
     const payload = "{\"project_id\":\"proj-7\",\"project_token\":\"proj-token-7\"}";
@@ -11154,12 +10430,4 @@ test "server: mount file read can read projected workspace managed files after s
     try std.testing.expectEqual(@as(u8, 0x8), close_reply.opcode);
 
     try std.testing.expect(server_ctx.err_name == null);
-}
-
-test "server: parseArchiveTimestamp accepts rotated debug archive names" {
-    try std.testing.expectEqual(@as(?u64, 1771674073992), parseArchiveTimestamp("debug-stream-1771674073992.ndjson"));
-    try std.testing.expectEqual(@as(?u64, 1771674073992), parseArchiveTimestamp("debug-stream-1771674073992.ndjson.gz"));
-    try std.testing.expectEqual(@as(?u64, 1771674073992), parseArchiveTimestamp("debug-stream-1771674073992-1.ndjson"));
-    try std.testing.expectEqual(@as(?u64, null), parseArchiveTimestamp("debug-stream.ndjson"));
-    try std.testing.expectEqual(@as(?u64, null), parseArchiveTimestamp("debug-stream-abc.ndjson"));
 }

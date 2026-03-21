@@ -240,8 +240,9 @@ RUN_STARTED_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 TEST_TMP_DIR="$(mktemp -d)"
 TEMP_HOME="$TEST_TMP_DIR/home"
 REPO_BUILD_INSTALL_DIR="$ROOT_DIR/zig-out/bin"
+SIGNED_APP_RESOURCE_DIR="/Applications/Spiderweb.app/Contents/Resources"
 if is_macos_native_variant; then
-    INSTALL_DIR="/Applications/Spiderweb.app/Contents/Resources"
+    INSTALL_DIR="$REPO_BUILD_INSTALL_DIR"
 else
     INSTALL_DIR="$TEMP_HOME/.local/bin"
     PATH="$INSTALL_DIR:$PATH"
@@ -643,7 +644,7 @@ EOF
 wait_for_control_ready() {
     for _ in $(seq 1 180); do
         if [[ -f "$AUTH_TOKENS_FILE" ]]; then
-            SPIDERWEB_AUTH_TOKEN="$(jq -r '.admin_token // empty' "$AUTH_TOKENS_FILE" 2>/dev/null || true)"
+            SPIDERWEB_AUTH_TOKEN="$(jq -r '.access_token // empty' "$AUTH_TOKENS_FILE" 2>/dev/null || true)"
             if [[ -n "${SPIDERWEB_AUTH_TOKEN:-}" ]]; then
                 export SPIDERWEB_AUTH_TOKEN
                 if run_with_timeout 3 "$INSTALL_DIR/spiderweb-control" \
@@ -1726,13 +1727,13 @@ install_spiderweb_harness_binaries() {
             return 1
         fi
 
-        if missing_bin="$(first_missing_spiderweb_bin_in "$INSTALL_DIR")"; then
-            log_fail "installed Spiderweb app is missing required runtime binary: $missing_bin"
+        if [[ ! -x "$SIGNED_APP_RESOURCE_DIR/spiderweb-config" ]]; then
+            log_fail "installed Spiderweb app is missing signed FSKit resources"
             tail -n 200 "$INSTALL_LOG" || true
             return 1
         fi
 
-        log_pass "repo build completed and native runtime will use signed app resources"
+        log_pass "repo build completed and native runtime will use current checkout binaries with signed app FSKit resources"
         return 0
     fi
 

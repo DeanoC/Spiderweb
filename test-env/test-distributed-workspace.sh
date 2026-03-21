@@ -164,7 +164,7 @@ import sys
 
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-token = str(data.get("admin_token") or "").strip()
+token = str(data.get("access_token") or "").strip()
 if token:
     print(token)
 PY

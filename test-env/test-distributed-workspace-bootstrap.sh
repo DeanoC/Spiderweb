@@ -134,7 +134,7 @@ import sys
 
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-print(str(data.get("admin_token") or "").strip())
+print(str(data.get("access_token") or "").strip())
 PY
             )"
             if [[ -n "${SPIDERWEB_AUTH_TOKEN:-}" ]]; then

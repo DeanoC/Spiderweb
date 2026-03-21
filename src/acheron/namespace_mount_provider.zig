@@ -731,29 +731,7 @@ fn namespaceProviderWrite(ctx: *anyopaque, file: mount_provider.OpenFile, off: u
     defer namespace_ctx.mutex.unlock();
     const state = try namespace_ctx.getHandle(file);
     if (!state.writable) return error.ReadOnlyFilesystem;
-
-    return switch (state.backing) {
-        .remote => blk: {
-            const written = try namespace_ctx.client.controlMountFileWrite(state.path, off, data);
-            namespace_ctx.mount_graph.markStale();
-            break :blk written;
-        },
-        .@"inline" => {
-            if (!state.writable) return error.ReadOnlyFilesystem;
-            var buffered = BufferedHandleState{
-                .dirty = false,
-                .created = false,
-            };
-            try buffered.bytes.appendSlice(namespace_ctx.client.allocator, state.backing.@"inline");
-            state.backing.deinit(namespace_ctx.client.allocator);
-            state.backing = .{ .buffered = buffered };
-            return namespaceProviderWrite(ctx, file, off, data);
-        },
-        .buffered => |*buffered| {
-            try writeIntoBuffer(namespace_ctx.client.allocator, buffered, off, data);
-            return std.math.cast(u32, data.len) orelse error.InvalidPayload;
-        },
-    };
+    return writeHandleStateLocked(namespace_ctx, state, off, data);
 }
 
 fn namespaceProviderTruncate(ctx: *anyopaque, path: []const u8, size: u64) !void {
@@ -969,6 +947,35 @@ fn decodeBase64Owned(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
     errdefer allocator.free(decoded);
     try std.base64.standard.Decoder.decode(decoded, encoded);
     return decoded;
+}
+
+fn writeHandleStateLocked(
+    namespace_ctx: *NamespaceProviderContext,
+    state: *HandleState,
+    off: u64,
+    data: []const u8,
+) !u32 {
+    return switch (state.backing) {
+        .remote => blk: {
+            const written = try namespace_ctx.client.controlMountFileWrite(state.path, off, data);
+            namespace_ctx.mount_graph.markStale();
+            break :blk written;
+        },
+        .@"inline" => {
+            var buffered = BufferedHandleState{
+                .dirty = false,
+                .created = false,
+            };
+            try buffered.bytes.appendSlice(namespace_ctx.client.allocator, state.backing.@"inline");
+            state.backing.deinit(namespace_ctx.client.allocator);
+            state.backing = .{ .buffered = buffered };
+            return writeHandleStateLocked(namespace_ctx, state, off, data);
+        },
+        .buffered => |*buffered| {
+            try writeIntoBuffer(namespace_ctx.client.allocator, buffered, off, data);
+            return std.math.cast(u32, data.len) orelse error.InvalidPayload;
+        },
+    };
 }
 
 fn writeIntoBuffer(

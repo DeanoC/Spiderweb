@@ -250,7 +250,8 @@ const Node = struct {
     }
 };
 
-const dynamic_directory_refresh_min_interval_ms: i64 = 1_000;
+const volatile_dynamic_directory_refresh_min_interval_ms: i64 = 1_000;
+const default_dynamic_directory_refresh_min_interval_ms: i64 = 10_000;
 const slow_dynamic_directory_refresh_warn_ms: u64 = 100;
 
 const FidState = struct {
@@ -1082,7 +1083,8 @@ pub const Session = struct {
             if (node.dynamic_refresh_in_progress) return;
             const previous_refresh_ms = node.last_dynamic_refresh_ms;
             const previous_stale = node.dynamic_refresh_stale;
-            if (!previous_stale and previous_refresh_ms != 0 and (now_ms - previous_refresh_ms) < dynamic_directory_refresh_min_interval_ms) {
+            const refresh_min_interval_ms = self.dynamicDirectoryRefreshMinIntervalMs(dir_id);
+            if (!previous_stale and previous_refresh_ms != 0 and (now_ms - previous_refresh_ms) < refresh_min_interval_ms) {
                 return;
             }
             node.dynamic_refresh_in_progress = true;
@@ -1123,6 +1125,19 @@ pub const Session = struct {
             defer self.allocator.free(absolute_path);
             std.log.warn("slow dynamic directory refresh: {d}ms path={s}", .{ elapsed_ms, absolute_path });
         }
+    }
+
+    fn dynamicDirectoryRefreshMinIntervalMs(self: *Session, dir_id: u32) i64 {
+        if (dir_id == self.nodes_root_id) return volatile_dynamic_directory_refresh_min_interval_ms;
+
+        const absolute_path = self.nodeAbsolutePath(dir_id) catch return default_dynamic_directory_refresh_min_interval_ms;
+        defer self.allocator.free(absolute_path);
+
+        if (std.mem.eql(u8, absolute_path, "/nodes")) return volatile_dynamic_directory_refresh_min_interval_ms;
+        if (std.mem.eql(u8, absolute_path, "/services/workers")) return volatile_dynamic_directory_refresh_min_interval_ms;
+        if (std.mem.eql(u8, absolute_path, workspace_managed_root_absolute ++ "/services/workers")) return volatile_dynamic_directory_refresh_min_interval_ms;
+
+        return default_dynamic_directory_refresh_min_interval_ms;
     }
 
     fn refreshLocalFsDirectory(self: *Session, dir_id: u32) !void {
@@ -6855,6 +6870,8 @@ pub const Session = struct {
     }
 
     fn workspaceMountProxyPathForAbsolutePath(self: *Session, absolute_path: []const u8) !?BoundVenomProxyPath {
+        if (isWorkspaceManagedProjectedPath(absolute_path)) return null;
+
         var best_root: ?[]const u8 = null;
         var best_match: ?WorkspaceMountProxyRoot = null;
         var it = self.workspace_mount_proxy_roots.iterator();
@@ -11423,6 +11440,10 @@ fn isManagedSharedDataProjectedPath(path: []const u8) bool {
     return std.mem.eql(u8, path, managed_root) or pathMatchesPrefixBoundary(path, managed_root);
 }
 
+fn isWorkspaceManagedProjectedPath(path: []const u8) bool {
+    return std.mem.eql(u8, path, workspace_managed_root_absolute) or pathMatchesPrefixBoundary(path, workspace_managed_root_absolute);
+}
+
 fn readonlyMode(mode: u32, kind: NodeKind) u32 {
     const base: u32 = if (mode == 0) switch (kind) {
         .dir => @as(u32, 0o040755),
@@ -13084,6 +13105,10 @@ test "acheron_session: projected managed .spiderweb survives broader workspace m
     );
     defer allocator.free(projected_file_snapshot);
     try std.testing.expect(std.mem.indexOf(u8, projected_file_snapshot, "\"/nodes/local/fs/.spiderweb/protocol.json\"") != null);
+
+    const managed_proxy = try session.boundVenomProxyPathForAbsolutePath("/nodes/local/fs/.spiderweb/protocol.json");
+    defer if (managed_proxy) |proxy| allocator.free(proxy.remote_path);
+    try std.testing.expect(managed_proxy == null);
 }
 
 test "acheron_session: projected managed services keep bind-only children under workspace mounts" {

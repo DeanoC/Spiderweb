@@ -81,12 +81,14 @@ pub fn seedNamespaceAt(self: anytype, home_dir: u32, base_path: []const u8) !voi
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Write {\"agent_id\":\"...\"} to ensure.json to provision /home/<agent_id> as a durable bind into the mounted workspace.\n",
+        "Write the JSON payload in ensure.json to provision /home/<agent_id> as a durable bind into the mounted workspace.\n",
         false,
         .none,
     );
     _ = try self.addFile(control_dir, "invoke.json", "", true, .home_invoke);
-    _ = try self.addFile(control_dir, "ensure.json", "", true, .home_ensure);
+    const ensure_template = try buildEnsureTemplateJson(self);
+    defer self.allocator.free(ensure_template);
+    _ = try self.addFile(control_dir, "ensure.json", ensure_template, true, .home_ensure);
 }
 
 pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_input: []const u8) !usize {
@@ -204,6 +206,19 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
 
     try self.refreshProjectBindsFromControlPlane();
     return buildEnsureResultJson(self, agent_id, project_id, bind_path, target_path);
+}
+
+fn buildEnsureTemplateJson(self: anytype) ![]u8 {
+    const escaped_agent_id = try unified.jsonEscape(self.allocator, self.agent_id);
+    defer self.allocator.free(escaped_agent_id);
+    const project_id = self.project_id orelse "";
+    const escaped_project_id = try unified.jsonEscape(self.allocator, project_id);
+    defer self.allocator.free(escaped_project_id);
+    return std.fmt.allocPrint(
+        self.allocator,
+        "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\"}}",
+        .{ escaped_agent_id, escaped_project_id },
+    );
 }
 
 fn buildScopedBindPayload(

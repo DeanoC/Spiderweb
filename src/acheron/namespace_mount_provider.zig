@@ -364,7 +364,9 @@ const NamespaceProviderContext = struct {
     }
 
     fn lookupNode(self: *NamespaceProviderContext, allocator: std.mem.Allocator, path: []const u8) !*const OwnedMountGraphNode {
-        return self.resolveMountGraphNode(allocator, path);
+        const stable_path = try stabilizeLookupPath(allocator, path);
+        defer allocator.free(stable_path);
+        return self.resolveMountGraphNode(allocator, stable_path);
     }
 
     fn ensureDirectoryNode(self: *NamespaceProviderContext, allocator: std.mem.Allocator, path: []const u8) !*const OwnedMountGraphNode {
@@ -950,6 +952,11 @@ fn normalizeAbsolutePath(path: []const u8) []const u8 {
     if (path.len == 0) return "/";
     if (path.len > 1 and path[path.len - 1] == '/') return std.mem.trimRight(u8, path, "/");
     return path;
+}
+
+fn stabilizeLookupPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (builtin.os.tag != .linux) return allocator.dupe(u8, path);
+    return allocator.dupe(u8, path);
 }
 
 fn parentPath(path: []const u8) []const u8 {

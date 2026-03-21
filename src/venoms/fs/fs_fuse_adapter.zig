@@ -668,11 +668,38 @@ fn freeArgZ(allocator: std.mem.Allocator, arg: [*:0]u8) void {
     allocator.free(arg[0 .. len + 1]);
 }
 
+fn hasCreateOnOpenFlag(flags: u32) bool {
+    if (@hasDecl(c, "O_CREAT")) {
+        const create_flag: u32 = @intCast(c.O_CREAT);
+        if (create_flag != 0 and (flags & create_flag) != 0) return true;
+    }
+    return (flags & 0x40) != 0;
+}
+
+fn hasWriteIntentOnOpen(flags: u32) bool {
+    const access_mode = flags & 0x3;
+    if (access_mode != 0) return true;
+    if ((flags & 0x200) != 0) return true;
+    return hasCreateOnOpenFlag(flags);
+}
+
+fn openForFuse(adapter: *FuseAdapter, path: []const u8, flags: u32) !mount_provider.OpenFile {
+    return adapter.open(path, flags) catch |err| switch (err) {
+        error.FileNotFound => if (hasWriteIntentOnOpen(flags))
+            adapter.create(path, 0o100644, flags)
+        else
+            return err,
+        else => return err,
+    };
+}
+
 fn cGetattrWin(path_c: [*c]const u8, st_c: [*c]c.struct_fuse_stat) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null or st_c == null) return -fs_protocol.Errno.EINVAL;
 
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("getattr path={s}", .{path});
     const attr_json = adapter.getattr(path) catch |err| {
         fuseTrace("getattr error path={s} err={s}", .{ path, @errorName(err) });
@@ -692,7 +719,9 @@ fn cGetattr(path_c: [*c]const u8, st_c: [*c]c.struct_stat, fi: ?*c.struct_fuse_f
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null or st_c == null) return -fs_protocol.Errno.EINVAL;
 
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("getattr path={s}", .{path});
     const attr_json = adapter.getattr(path) catch |err| {
         fuseTrace("getattr error path={s} err={s}", .{ path, @errorName(err) });
@@ -712,7 +741,9 @@ fn cGetattrDarwin(path_c: [*c]const u8, st_c: [*c]c.struct_fuse_darwin_attr, fi:
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null or st_c == null) return -fs_protocol.Errno.EINVAL;
 
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("getattr(darwin) path={s}", .{path});
     const attr_json = adapter.getattr(path) catch |err| {
         fuseTrace("getattr(darwin) error path={s} err={s}", .{ path, @errorName(err) });
@@ -738,7 +769,9 @@ fn cReaddirWin(
 
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("readdir path={s} off={d}", .{ path, off });
 
     const cookie: u64 = if (off <= 0)
@@ -827,7 +860,9 @@ fn cReaddir(
 
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("readdir path={s} off={d}", .{ path, off });
 
     // Spiderweb namespace cookies are server-managed continuation tokens, not
@@ -927,7 +962,9 @@ fn cReaddirDarwin(
 
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("readdir(darwin) path={s} off={d}", .{ path, off });
 
     // macFUSE/FSKit may start readdir with non-zero offsets for synthetic "."
@@ -1006,7 +1043,9 @@ fn cOpendir(path_c: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
 
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("opendir path={s}", .{path});
     const attr_json = adapter.getattr(path) catch |err| return toFuseError(err);
     defer adapter.allocator.free(attr_json);
@@ -1033,7 +1072,9 @@ fn cAccess(path_c: [*c]const u8, mask: c_int) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
 
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("access path={s} mask={d}", .{ path, mask });
     const attr_json = adapter.getattr(path) catch |err| return toFuseError(err);
     defer adapter.allocator.free(attr_json);
@@ -1043,7 +1084,9 @@ fn cAccess(path_c: [*c]const u8, mask: c_int) callconv(.c) c_int {
 fn cStatfsWin(path_c: [*c]const u8, stbuf: [*c]c.struct_fuse_statvfs) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null or stbuf == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     const statfs_json = adapter.statfs(path) catch |err| return toFuseError(err);
     defer adapter.allocator.free(statfs_json);
     parseAndFillStatvfs(adapter.allocator, stbuf, statfs_json) catch |err| return toFuseError(err);
@@ -1053,7 +1096,9 @@ fn cStatfsWin(path_c: [*c]const u8, stbuf: [*c]c.struct_fuse_statvfs) callconv(.
 fn cStatfs(path_c: [*c]const u8, stbuf: [*c]c.struct_statvfs) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null or stbuf == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("statfs path={s}", .{path});
     const statfs_json = adapter.statfs(path) catch |err| {
         fuseTrace("statfs error path={s} err={s}", .{ path, @errorName(err) });
@@ -1070,7 +1115,9 @@ fn cStatfs(path_c: [*c]const u8, stbuf: [*c]c.struct_statvfs) callconv(.c) c_int
 fn cStatfsDarwin(path_c: [*c]const u8, stbuf: [*c]c.struct_statfs) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null or stbuf == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("statfs(darwin) path={s}", .{path});
     const statfs_json = adapter.statfs(path) catch |err| {
         fuseTrace("statfs(darwin) error path={s} err={s}", .{ path, @errorName(err) });
@@ -1087,14 +1134,20 @@ fn cStatfsDarwin(path_c: [*c]const u8, stbuf: [*c]c.struct_statfs) callconv(.c) 
 fn cOpen(path_c: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     const flags = if (fi) |info| @as(u32, @intCast(c.spiderweb_fi_get_flags(info))) else @as(u32, 0);
     fuseTrace("open path={s} flags={d}", .{ path, flags });
     if (fi) |info| {
-        const local_id = adapter.openAndStoreHandle(path, flags) catch |err| return toFuseError(err);
+        const opened = openForFuse(adapter, path, flags) catch |err| return toFuseError(err);
+        const local_id = adapter.storeOpenHandle(opened) catch |err| {
+            adapter.release(opened) catch {};
+            return toFuseError(err);
+        };
         c.spiderweb_fi_set_fh(info, local_id);
     } else {
-        const opened = adapter.open(path, flags) catch |err| return toFuseError(err);
+        const opened = openForFuse(adapter, path, flags) catch |err| return toFuseError(err);
         adapter.release(opened) catch {};
     }
     // O_TRUNC (0x200) implicitly truncates the file on open. Invalidate the
@@ -1110,7 +1163,9 @@ fn cRead(path_c: [*c]const u8, buf: [*c]u8, size: usize, off: c.off_t, fi: ?*c.s
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
     if (off < 0) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     fuseTrace("read path={s} size={d} off={d}", .{ path, size, off });
 
     var open_file: mount_provider.OpenFile = undefined;
@@ -1149,7 +1204,9 @@ fn cReadWin(path_c: [*c]const u8, buf: [*c]u8, size: usize, off: c.fuse_off_t, f
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
     if (off < 0) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
 
     var open_file: mount_provider.OpenFile = undefined;
     var owns_close = false;
@@ -1188,7 +1245,9 @@ fn cWrite(path_c: [*c]const u8, buf: [*c]const u8, size: usize, off: c.off_t, fi
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
     if (off < 0) return -fs_protocol.Errno.EINVAL;
     if (size > 0 and buf == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
 
     var open_file: mount_provider.OpenFile = undefined;
     var owns_close = false;
@@ -1231,7 +1290,9 @@ fn cWriteWin(path_c: [*c]const u8, buf: [*c]const u8, size: usize, off: c.fuse_o
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
     if (off < 0) return -fs_protocol.Errno.EINVAL;
     if (size > 0 and buf == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
 
     var open_file: mount_provider.OpenFile = undefined;
     var owns_close = false;
@@ -1263,8 +1324,13 @@ fn cWriteWin(path_c: [*c]const u8, buf: [*c]const u8, size: usize, off: c.fuse_o
 }
 
 fn cRelease(path_c: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
-    const path = if (path_c) |value| std.mem.span(value) else "";
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
+    var stable_path: ?StableFusePath = null;
+    defer if (stable_path) |*value| value.deinit(adapter.allocator);
+    const path = if (path_c) |value| blk: {
+        stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(value)) catch return -fs_protocol.Errno.EIO;
+        break :blk stable_path.?.slice;
+    } else "";
     fuseTrace("release path={s}", .{path});
     if (fi) |info| {
         const local_id = c.spiderweb_fi_get_fh(info);
@@ -1279,7 +1345,9 @@ fn cRelease(path_c: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_
 fn cCreate(path_c: [*c]const u8, mode: c.mode_t, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     const flags = if (fi) |info| @as(u32, @intCast(c.spiderweb_fi_get_flags(info))) else @as(u32, 2);
     if (fi) |info| {
         const local_id = adapter.createAndStoreHandle(path, @intCast(mode), flags) catch |err| return toFuseError(err);
@@ -1294,7 +1362,9 @@ fn cCreate(path_c: [*c]const u8, mode: c.mode_t, fi: ?*c.struct_fuse_file_info) 
 fn cCreateWin(path_c: [*c]const u8, mode: c.fuse_mode_t, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     const flags = if (fi) |info| @as(u32, @intCast(c.spiderweb_fi_get_flags(info))) else @as(u32, 2);
     if (fi) |info| {
         const local_id = adapter.createAndStoreHandle(path, @intCast(mode), flags) catch |err| return toFuseError(err);
@@ -1316,7 +1386,9 @@ fn cMknod(path_c: [*c]const u8, mode: c.mode_t, dev: c.dev_t) callconv(.c) c_int
         return -fs_protocol.Errno.ENOSYS;
     }
 
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     const opened = adapter.create(path, @intCast(mode), 2) catch |err| return toFuseError(err);
     adapter.release(opened) catch {};
     return 0;
@@ -1326,7 +1398,9 @@ fn cChmod(path_c: [*c]const u8, mode: c.mode_t, fi: ?*c.struct_fuse_file_info) c
     _ = fi;
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     adapter.setattrMode(path, @intCast(mode)) catch |err| return toFuseError(err);
     return 0;
 }
@@ -1336,7 +1410,9 @@ fn cTruncate(path_c: [*c]const u8, size: c.off_t, fi: ?*c.struct_fuse_file_info)
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
     if (size < 0) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     adapter.truncate(path, @intCast(size)) catch |err| return toFuseError(err);
     return 0;
 }
@@ -1345,7 +1421,9 @@ fn cTruncateWin(path_c: [*c]const u8, size: c.fuse_off_t) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
     if (size < 0) return -fs_protocol.Errno.EINVAL;
-    const path = std.mem.span(path_c);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    const path = stable_path.slice;
     adapter.truncate(path, @intCast(size)) catch |err| return toFuseError(err);
     return 0;
 }
@@ -1353,7 +1431,9 @@ fn cTruncateWin(path_c: [*c]const u8, size: c.fuse_off_t) callconv(.c) c_int {
 fn cUnlink(path_c: [*c]const u8) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    adapter.unlink(std.mem.span(path_c)) catch |err| return toFuseError(err);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    adapter.unlink(stable_path.slice) catch |err| return toFuseError(err);
     return 0;
 }
 
@@ -1361,7 +1441,9 @@ fn cMkdir(path_c: [*c]const u8, mode: c.mode_t) callconv(.c) c_int {
     _ = mode;
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    adapter.mkdir(std.mem.span(path_c)) catch |err| return toFuseError(err);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    adapter.mkdir(stable_path.slice) catch |err| return toFuseError(err);
     return 0;
 }
 
@@ -1369,14 +1451,18 @@ fn cMkdirWin(path_c: [*c]const u8, mode: c.fuse_mode_t) callconv(.c) c_int {
     _ = mode;
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    adapter.mkdir(std.mem.span(path_c)) catch |err| return toFuseError(err);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    adapter.mkdir(stable_path.slice) catch |err| return toFuseError(err);
     return 0;
 }
 
 fn cRmdir(path_c: [*c]const u8) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
-    adapter.rmdir(std.mem.span(path_c)) catch |err| return toFuseError(err);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    adapter.rmdir(stable_path.slice) catch |err| return toFuseError(err);
     return 0;
 }
 
@@ -1384,21 +1470,33 @@ fn cRename(from_c: [*c]const u8, to_c: [*c]const u8, flags: c_uint) callconv(.c)
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (from_c == null or to_c == null) return -fs_protocol.Errno.EINVAL;
     if (flags != 0) return -fs_protocol.Errno.EINVAL;
-    adapter.rename(std.mem.span(from_c), std.mem.span(to_c)) catch |err| return toFuseError(err);
+    var stable_from = stabilizeFusePath(adapter.allocator, std.mem.span(from_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_from.deinit(adapter.allocator);
+    var stable_to = stabilizeFusePath(adapter.allocator, std.mem.span(to_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_to.deinit(adapter.allocator);
+    adapter.rename(stable_from.slice, stable_to.slice) catch |err| return toFuseError(err);
     return 0;
 }
 
 fn cRenameWin(from_c: [*c]const u8, to_c: [*c]const u8) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (from_c == null or to_c == null) return -fs_protocol.Errno.EINVAL;
-    adapter.rename(std.mem.span(from_c), std.mem.span(to_c)) catch |err| return toFuseError(err);
+    var stable_from = stabilizeFusePath(adapter.allocator, std.mem.span(from_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_from.deinit(adapter.allocator);
+    var stable_to = stabilizeFusePath(adapter.allocator, std.mem.span(to_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_to.deinit(adapter.allocator);
+    adapter.rename(stable_from.slice, stable_to.slice) catch |err| return toFuseError(err);
     return 0;
 }
 
 fn cSymlink(target_c: [*c]const u8, linkpath_c: [*c]const u8) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (target_c == null or linkpath_c == null) return -fs_protocol.Errno.EINVAL;
-    adapter.symlink(std.mem.span(target_c), std.mem.span(linkpath_c)) catch |err| return toFuseError(err);
+    var stable_target = stabilizeFusePath(adapter.allocator, std.mem.span(target_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_target.deinit(adapter.allocator);
+    var stable_link = stabilizeFusePath(adapter.allocator, std.mem.span(linkpath_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_link.deinit(adapter.allocator);
+    adapter.symlink(stable_target.slice, stable_link.slice) catch |err| return toFuseError(err);
     return 0;
 }
 
@@ -1408,9 +1506,11 @@ fn cSetxattr(path_c: [*c]const u8, name_c: [*c]const u8, value_c: [*c]const u8, 
     if (size > 0 and value_c == null) return -fs_protocol.Errno.EINVAL;
     if (flags < 0) return -fs_protocol.Errno.EINVAL;
 
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
     const input = if (size == 0) "" else value_c[0..size];
     adapter.setxattr(
-        std.mem.span(path_c),
+        stable_path.slice,
         std.mem.span(name_c),
         input,
         @intCast(flags),
@@ -1421,8 +1521,10 @@ fn cSetxattr(path_c: [*c]const u8, name_c: [*c]const u8, value_c: [*c]const u8, 
 fn cGetxattr(path_c: [*c]const u8, name_c: [*c]const u8, value_c: [*c]u8, size: usize) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null or name_c == null) return -fs_protocol.Errno.EINVAL;
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
 
-    const value = adapter.getxattr(std.mem.span(path_c), std.mem.span(name_c)) catch |err| return toFuseError(err);
+    const value = adapter.getxattr(stable_path.slice, std.mem.span(name_c)) catch |err| return toFuseError(err);
     defer adapter.allocator.free(value);
 
     if (size == 0) {
@@ -1439,8 +1541,10 @@ fn cGetxattr(path_c: [*c]const u8, name_c: [*c]const u8, value_c: [*c]u8, size: 
 fn cListxattr(path_c: [*c]const u8, list_c: [*c]u8, size: usize) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null) return -fs_protocol.Errno.EINVAL;
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
 
-    const value = adapter.listxattr(std.mem.span(path_c)) catch |err| return toFuseError(err);
+    const value = adapter.listxattr(stable_path.slice) catch |err| return toFuseError(err);
     defer adapter.allocator.free(value);
 
     if (size == 0) {
@@ -1457,7 +1561,9 @@ fn cListxattr(path_c: [*c]const u8, list_c: [*c]u8, size: usize) callconv(.c) c_
 fn cRemovexattr(path_c: [*c]const u8, name_c: [*c]const u8) callconv(.c) c_int {
     const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
     if (path_c == null or name_c == null) return -fs_protocol.Errno.EINVAL;
-    adapter.removexattr(std.mem.span(path_c), std.mem.span(name_c)) catch |err| return toFuseError(err);
+    var stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
+    defer stable_path.deinit(adapter.allocator);
+    adapter.removexattr(stable_path.slice, std.mem.span(name_c)) catch |err| return toFuseError(err);
     return 0;
 }
 
@@ -1468,20 +1574,25 @@ fn cFlock(path_c: [*c]const u8, fi: ?*c.struct_fuse_file_info, op: c_int) callco
     var open_file: mount_provider.OpenFile = undefined;
     var owns_close = false;
 
+    var stable_path: ?StableFusePath = null;
+    defer if (stable_path) |*value| value.deinit(adapter.allocator);
+
     const local_id = c.spiderweb_fi_get_fh(info);
     if (local_id != 0) {
         if (adapter.lookupOpenHandle(local_id)) |existing| {
             open_file = existing;
         } else {
             if (path_c == null) return -fs_protocol.Errno.EBADF;
+            stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
             const flags = @as(u32, @intCast(c.spiderweb_fi_get_flags(info)));
-            open_file = adapter.open(std.mem.span(path_c), flags) catch |err| return toFuseError(err);
+            open_file = adapter.open(stable_path.?.slice, flags) catch |err| return toFuseError(err);
             owns_close = true;
         }
     } else {
         if (path_c == null) return -fs_protocol.Errno.EBADF;
+        stable_path = stabilizeFusePath(adapter.allocator, std.mem.span(path_c)) catch return -fs_protocol.Errno.EIO;
         const flags = @as(u32, @intCast(c.spiderweb_fi_get_flags(info)));
-        open_file = adapter.open(std.mem.span(path_c), flags) catch |err| return toFuseError(err);
+        open_file = adapter.open(stable_path.?.slice, flags) catch |err| return toFuseError(err);
         owns_close = true;
     }
     defer if (owns_close) adapter.release(open_file) catch {};

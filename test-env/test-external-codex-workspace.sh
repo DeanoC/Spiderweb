@@ -508,14 +508,15 @@ write_codex_progress_timeline() {
 observe_codex_progress() {
     local changed=0
     local first_write_info
+    local home_result_path="$MOUNT_WORKSPACE_PATH/.spiderweb/services/home/result.json"
 
-    if [[ -z "$CODEX_BOOTSTRAP_COMPLETE_AT_UTC" && -s "$MOUNT_WORKSPACE_PATH/.spiderweb/services/home/control/ensure.json" ]]; then
-        CODEX_BOOTSTRAP_COMPLETE_AT_UTC="$(file_mtime_utc "$MOUNT_WORKSPACE_PATH/.spiderweb/services/home/control/ensure.json" || true)"
+    if [[ -z "$CODEX_BOOTSTRAP_COMPLETE_AT_UTC" && -f "$home_result_path" ]] && jq -e '.ok == true' "$home_result_path" >/dev/null 2>&1; then
+        CODEX_BOOTSTRAP_COMPLETE_AT_UTC="$(file_mtime_utc "$home_result_path" || true)"
         if [[ -n "$CODEX_BOOTSTRAP_COMPLETE_AT_UTC" ]]; then
-            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/control/ensure.json"
+            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/result.json"
         else
             CODEX_BOOTSTRAP_COMPLETE_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/control/ensure.json (observed)"
+            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/result.json (observed)"
         fi
         changed=1
     fi

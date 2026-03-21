@@ -18,7 +18,6 @@ const host_project_mount_prefix = "/nodes/local/projects/" ++ host_project_id ++
 const default_host_project_export_name = "host-workspace";
 const host_internal_project_kind_name = "host_internal";
 const normal_project_kind_name = "normal";
-const host_internal_template_id = "__spiderweb_host__";
 const default_project_template_id = "minimum";
 const default_host_actor_id = "spiderweb";
 const default_spider_web_root = "";
@@ -323,7 +322,7 @@ const minimum_template_bind_specs = [_]ProjectTemplateBindSpec{
     .{ .bind_path = "/services/events", .venom_id = "events" },
 };
 
-const system_template_bind_specs = [_]ProjectTemplateBindSpec{
+const host_project_bind_specs = [_]ProjectTemplateBindSpec{
     .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/services/home", .venom_id = "home" },
     .{ .bind_path = "/services/workers", .venom_id = "workers" },
@@ -565,9 +564,9 @@ pub const ControlPlane = struct {
                 project.kind = .host_internal;
                 changed = true;
             }
-            if (!std.mem.eql(u8, project.template_id, host_internal_template_id)) {
+            if (project.template_id.len != 0) {
                 self.allocator.free(project.template_id);
-                project.template_id = try self.allocator.dupe(u8, host_internal_template_id);
+                project.template_id = try self.allocator.dupe(u8, "");
                 changed = true;
             }
             if (!project.token_locked) {
@@ -596,7 +595,7 @@ pub const ControlPlane = struct {
                 .name = try self.allocator.dupe(u8, host_project_name),
                 .vision = try self.allocator.dupe(u8, host_project_vision),
                 .status = try self.allocator.dupe(u8, host_project_status),
-                .template_id = try self.allocator.dupe(u8, host_internal_template_id),
+                .template_id = try self.allocator.dupe(u8, ""),
                 .kind = .host_internal,
                 .is_delete_protected = true,
                 .token_locked = true,
@@ -652,7 +651,7 @@ pub const ControlPlane = struct {
         }
 
         const host_project = self.projects.getPtr(host_project_id) orelse return;
-        if (try ensureProjectTemplateBindsLocked(self, host_project)) {
+        if (try ensureHostProjectBindsLocked(self, host_project)) {
             host_project.updated_at_ms = now_ms;
             changed = true;
         }
@@ -1831,7 +1830,7 @@ pub const ControlPlane = struct {
         try validateDisplayString(name_raw, 128);
         try validateIdentifier(status_raw, 64);
         try validateDisplayString(vision_raw, 1024);
-        _ = resolveProjectTemplateSpec(template_id_raw, .normal) orelse return ControlPlaneError.InvalidPayload;
+        _ = resolveProjectTemplateSpec(template_id_raw) orelse return ControlPlaneError.InvalidPayload;
 
         var access_policy: ProjectAccessPolicy = .{};
         errdefer access_policy.deinit(self.allocator);
@@ -2024,7 +2023,7 @@ pub const ControlPlane = struct {
         defer payload.deinit();
         const obj = payload.value.object;
         const template_id = getRequiredString(obj, "template_id") catch return ControlPlaneError.MissingField;
-        const template = resolveProjectTemplateSpec(template_id, .normal) orelse return ControlPlaneError.TemplateNotFound;
+        const template = resolveProjectTemplateSpec(template_id) orelse return ControlPlaneError.TemplateNotFound;
 
         var out = std.ArrayListUnmanaged(u8){};
         defer out.deinit(self.allocator);
@@ -2684,7 +2683,7 @@ pub const ControlPlane = struct {
             try validateDisplayString(name_raw, 128);
             try validateDisplayString(vision_raw, 1024);
             try validateIdentifier(status_raw, 64);
-            _ = resolveProjectTemplateSpec(template_id_raw, .normal) orelse return ControlPlaneError.InvalidPayload;
+            _ = resolveProjectTemplateSpec(template_id_raw) orelse return ControlPlaneError.InvalidPayload;
 
             const project_id = try makeSequentialId(self.allocator, "proj", &self.next_project_id);
             errdefer self.allocator.free(project_id);
@@ -2792,7 +2791,7 @@ pub const ControlPlane = struct {
                 project.status = try self.allocator.dupe(u8, next_status);
             }
             if (requested_template_id) |template_id| {
-                _ = resolveProjectTemplateSpec(template_id, project.kind) orelse return ControlPlaneError.InvalidPayload;
+                _ = resolveProjectTemplateSpec(template_id) orelse return ControlPlaneError.InvalidPayload;
                 if (!std.mem.eql(u8, project.template_id, template_id)) {
                     self.allocator.free(project.template_id);
                     project.template_id = try self.allocator.dupe(u8, template_id);
@@ -4953,7 +4952,9 @@ pub const ControlPlane = struct {
                     .vision = try dupeRequiredString(self.allocator, item.object, "vision"),
                     .status = try dupeRequiredString(self.allocator, item.object, "status"),
                     .template_id = if (item.object.get("template_id")) |template_val| blk: {
-                        if (template_val != .string or template_val.string.len == 0) return error.InvalidSnapshot;
+                        if (template_val != .string) return error.InvalidSnapshot;
+                        if (kind == .host_internal) break :blk try self.allocator.dupe(u8, "");
+                        if (template_val.string.len == 0) return error.InvalidSnapshot;
                         break :blk try self.allocator.dupe(u8, template_val.string);
                     } else try self.allocator.dupe(u8, defaultTemplateIdForProjectKind(kind)),
                     .kind = kind,
@@ -5651,22 +5652,11 @@ fn parseProjectKind(value: []const u8) ProjectKind {
 fn defaultTemplateIdForProjectKind(kind: ProjectKind) []const u8 {
     return switch (kind) {
         .normal => default_project_template_id,
-        .host_internal => host_internal_template_id,
+        .host_internal => "",
     };
 }
 
-fn resolveProjectTemplateSpec(template_id: []const u8, kind: ProjectKind) ?ProjectTemplateSpec {
-    if (kind == .host_internal) {
-        if (std.mem.eql(u8, template_id, host_internal_template_id)) {
-            return .{
-                .id = host_internal_template_id,
-                .description = "Built-in Spiderweb host project template.",
-                .bind_specs = system_template_bind_specs[0..],
-            };
-        }
-        return null;
-    }
-
+fn resolveProjectTemplateSpec(template_id: []const u8) ?ProjectTemplateSpec {
     for (builtin_project_templates) |template| {
         if (std.mem.eql(u8, template.id, template_id)) return template;
     }
@@ -6050,9 +6040,21 @@ fn ensureDefaultProjectMountsLocked(self: *ControlPlane, project: *Project) !boo
 }
 
 fn ensureProjectTemplateBindsLocked(self: *ControlPlane, project: *Project) !bool {
-    const template = resolveProjectTemplateSpec(project.template_id, project.kind) orelse return false;
+    const template = resolveProjectTemplateSpec(project.template_id) orelse return false;
+    return ensureBindSpecsLocked(self, project, template.bind_specs);
+}
+
+fn ensureHostProjectBindsLocked(self: *ControlPlane, project: *Project) !bool {
+    return ensureBindSpecsLocked(self, project, host_project_bind_specs[0..]);
+}
+
+fn ensureBindSpecsLocked(
+    self: *ControlPlane,
+    project: *Project,
+    bind_specs: []const ProjectTemplateBindSpec,
+) !bool {
     var changed = false;
-    for (template.bind_specs) |spec| {
+    for (bind_specs) |spec| {
         const target_path = resolveTemplateBindTargetPath(spec) orelse continue;
         const normalized_bind = try normalizeMountPath(self.allocator, spec.bind_path);
         defer self.allocator.free(normalized_bind);
@@ -8450,7 +8452,7 @@ test "acheron_control_plane: builtin host project seeds mounts service bind" {
 
     try plane.ensureBuiltinHostProjectLocked(std.time.milliTimestamp());
     const project = plane.projects.get(host_project_id) orelse return error.TestExpectedResponse;
-    try std.testing.expectEqualStrings(host_internal_template_id, project.template_id);
+    try std.testing.expectEqual(@as(usize, 0), project.template_id.len);
 
     const payload = try renderProjectPayload(allocator, project, false);
     defer allocator.free(payload);

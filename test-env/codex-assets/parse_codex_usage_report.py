@@ -399,6 +399,7 @@ def main() -> int:
             pass
     allowed_host_write_prefixes = [Path(value).resolve() for value in args.allowed_host_write_prefix]
     mounted_service_entries = parse_json_file(Path(args.mounted_services))
+    bootstrap_quickref = parse_json_file(workspace_root / ".spiderweb" / "agent_bootstrap_quickref.json")
     project_bound_services, namespace_visible_services = extract_service_views(mounted_service_entries)
     venom_packages = extract_package_names(parse_json_file(Path(args.venom_packages)))
 
@@ -640,7 +641,14 @@ def main() -> int:
     reliability_ok = len(disallowed_writes) == 0 and not args.skipped_reason
     required_reads_complete = all(path in bootstrap_reads for path in required_bootstrap_paths)
     home_bootstrap_done = any(item["action"] == "home_ensure" for item in bootstrap_actions)
-    workspace_bootstrap_ok = not args.skipped_reason and required_reads_complete and home_bootstrap_done
+    all_required_services_present = bool(
+        isinstance(bootstrap_quickref, dict) and bootstrap_quickref.get("all_required_services_present")
+    )
+    workspace_bootstrap_ok = (
+        not args.skipped_reason
+        and required_reads_complete
+        and (all_required_services_present or home_bootstrap_done)
+    )
     machine_independence_ok = not args.skipped_reason and len(candidate_gaps) == 0
 
     payload = {
@@ -672,6 +680,7 @@ def main() -> int:
             "required_reads": required_bootstrap_paths,
             "required_reads_seen": bootstrap_reads,
             "required_reads_complete": required_reads_complete,
+            "all_required_services_present": all_required_services_present,
             "fallback_reads": fallback_bootstrap_paths,
             "fallback_reads_seen": fallback_bootstrap_reads,
             "agent_bootstrap_actions_after_mount": bootstrap_actions,

@@ -1355,6 +1355,14 @@ actor SpiderwebNamespaceSession {
                 "data_b64": "",
             ]
         )
+        _ = try await sendControlRequest(
+            type: "control.mount_path_setattr_v2",
+            expectedType: "control.mount_path_setattr_v2",
+            payload: [
+                "path": normalizedPath,
+                "mode": mode & UInt32(modeAllBits),
+            ]
+        )
 
         let parentSnapshot = try await requestMountGraph(path: split.parentPath, depth: 1)
         replaceMountGraph(
@@ -1434,7 +1442,15 @@ actor SpiderwebNamespaceSession {
         if request.isEmpty {
             return try await localGetattr(path: path)
         }
-        throw unsupportedNamespaceMutation(path: path, operation: "setattr")
+        let normalizedPath = normalizeAbsolutePath(path)
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_path_setattr_v2",
+            expectedType: "control.mount_path_setattr_v2",
+            payload: makeMountPathSetattrPayload(path: normalizedPath, request: request)
+        )
+        mountGraphFetchedAt = nil
+        return try await localGetattr(path: normalizedPath)
     }
 
     private func localGetxattr(path: String, name: String) async throws -> Data {
@@ -1646,6 +1662,29 @@ actor SpiderwebNamespaceSession {
             code: Int(ENOTSUP),
             userInfo: [NSLocalizedDescriptionKey: "Spiderweb namespace \(operation) is not supported for \(path)"]
         )
+    }
+
+    private func makeMountPathSetattrPayload(path: String, request: SpiderwebSetAttrRequest) -> [String: Any] {
+        var payload: [String: Any] = ["path": path]
+        if let mode = request.mode {
+            payload["mode"] = mode & UInt32(modeAllBits)
+        }
+        if let uid = request.uid {
+            payload["uid"] = uid
+        }
+        if let gid = request.gid {
+            payload["gid"] = gid
+        }
+        if let flags = request.flags {
+            payload["flags"] = flags
+        }
+        if let accessTimeNS = request.accessTimeNS {
+            payload["at_ns"] = accessTimeNS
+        }
+        if let modifyTimeNS = request.modifyTimeNS {
+            payload["mt_ns"] = modifyTimeNS
+        }
+        return payload
     }
 
     func remoteOperationsSnapshot() -> SpiderwebRemoteOperationSnapshot {

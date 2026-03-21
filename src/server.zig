@@ -6723,6 +6723,35 @@ fn handleWebSocketConnection(
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
+                            .mount_path_setattr_v2 => {
+                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
+                                const payload_json = handleMountPathControl(
+                                    allocator,
+                                    runtime_registry,
+                                    &namespace_session,
+                                    active_binding,
+                                    active_session_key,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
+                                    principal.role == .admin,
+                                    parsed.payload_json,
+                                    .mount_path_setattr_v2,
+                                ) catch |err| {
+                                    const response = try unified.buildControlError(
+                                        allocator,
+                                        parsed.id,
+                                        mountGraphErrorCode(err),
+                                        @errorName(err),
+                                    );
+                                    defer allocator.free(response);
+                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    continue;
+                                };
+                                defer allocator.free(payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_setattr_v2, parsed.id, payload_json);
+                                defer allocator.free(response);
+                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                continue;
+                            },
                             .session_resume => {
                                 var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
                                 defer payload.deinit();
@@ -7545,6 +7574,14 @@ fn getOptionalU32Field(obj: std.json.ObjectMap, field: []const u8) ?u32 {
     };
 }
 
+fn getOptionalI64Field(obj: std.json.ObjectMap, field: []const u8) ?i64 {
+    const value = obj.get(field) orelse return null;
+    return switch (value) {
+        .integer => if (value.integer >= std.math.minInt(i64) and value.integer <= std.math.maxInt(i64)) @intCast(value.integer) else null,
+        else => null,
+    };
+}
+
 fn decodeStandardBase64Owned(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
     const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(encoded);
     const decoded = try allocator.alloc(u8, decoded_len);
@@ -7968,6 +8005,21 @@ fn handleMountPathControl(
                 "{{\"path\":\"{s}\",\"mode\":\"{s}\",\"wait\":{s}}}",
                 .{ escaped_path, escaped_mode, if (wait) "true" else "false" },
             );
+        },
+        .mount_path_setattr_v2 => {
+            const absolute_path = try getRequiredStringField(payload.value.object, "path");
+            const mode = getOptionalU32Field(payload.value.object, "mode");
+            const uid = getOptionalU32Field(payload.value.object, "uid");
+            const gid = getOptionalU32Field(payload.value.object, "gid");
+            const flags = getOptionalU32Field(payload.value.object, "flags");
+            const at_ns = getOptionalI64Field(payload.value.object, "at_ns");
+            const mt_ns = getOptionalI64Field(payload.value.object, "mt_ns");
+            if (!(try session.trySetattrLocalFsBackedMountPath(absolute_path, mode, uid, gid, flags, at_ns, mt_ns))) {
+                return error.OperationNotSupported;
+            }
+            const escaped_path = try unified.jsonEscape(allocator, absolute_path);
+            defer allocator.free(escaped_path);
+            return std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         },
         else => return error.InvalidPayload,
     }

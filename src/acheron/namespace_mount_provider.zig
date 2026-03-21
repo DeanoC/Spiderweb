@@ -680,7 +680,6 @@ fn namespaceProviderRelease(ctx: *anyopaque, file: mount_provider.OpenFile) !voi
 }
 
 fn namespaceProviderCreate(ctx: *anyopaque, path: []const u8, mode: u32, flags: u32) !mount_provider.OpenFile {
-    _ = mode;
     const namespace_ctx = asCtx(ctx);
     const allocator = namespace_ctx.client.allocator;
     const normalized_path = normalizeAbsolutePath(path);
@@ -690,6 +689,9 @@ fn namespaceProviderCreate(ctx: *anyopaque, path: []const u8, mode: u32, flags: 
     // Materialize an empty file immediately so follow-up path-based operations
     // on the just-created entry behave the same way as the other mount backends.
     _ = try namespace_ctx.client.controlMountFileWrite(normalized_path, 0, "");
+    try namespace_ctx.client.controlMountPathSetattr(normalized_path, .{
+        .mode = mode & 0o7777,
+    });
     namespace_ctx.mount_graph.markStale();
 
     return namespace_ctx.storeHandle(allocator, .{

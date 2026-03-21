@@ -1,5 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const c = @cImport({
+    @cInclude("errno.h");
+    @cInclude("sys/stat.h");
+});
 const unified = @import("spider-protocol").unified;
 const protocol = @import("spider-protocol").protocol;
 const shared_exec = @import("spiderweb_node").chat_runtime_exec;
@@ -9054,6 +9058,100 @@ pub const Session = struct {
         try self.local_fs_lock_files.put(self.allocator, owned_key, .{
             .file = file,
         });
+        return true;
+    }
+
+    pub fn trySetattrLocalFsBackedMountPath(
+        self: *Session,
+        absolute_path: []const u8,
+        mode: ?u32,
+        uid: ?u32,
+        gid: ?u32,
+        flags: ?u32,
+        at_ns: ?i64,
+        mt_ns: ?i64,
+    ) !bool {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const host_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_path)) orelse return false;
+        defer self.allocator.free(host_path);
+
+        const maybe_dir = if (std.fs.path.isAbsolute(host_path))
+            std.fs.openDirAbsolute(host_path, .{ .iterate = true }) catch |err| switch (err) {
+                error.FileNotFound,
+                => return false,
+                error.NotDir => null,
+                else => return err,
+            }
+        else
+            std.fs.cwd().openDir(host_path, .{ .iterate = true }) catch |err| switch (err) {
+                error.FileNotFound,
+                => return false,
+                error.NotDir => null,
+                else => return err,
+            };
+
+        if (maybe_dir) |dir_value| {
+            var dir = dir_value;
+            defer dir.close();
+
+            if (mode) |value| try dir.chmod(@intCast(value & 0o7777));
+            if (uid != null or gid != null) try dir.chown(uid, gid);
+
+            if (at_ns != null or mt_ns != null) {
+                const dir_file: std.fs.File = .{ .handle = dir.fd };
+                const existing = try dir_file.stat();
+                try dir_file.updateTimes(
+                    at_ns orelse @intCast(existing.atime),
+                    mt_ns orelse @intCast(existing.mtime),
+                );
+            }
+        } else {
+            var file = if (std.fs.path.isAbsolute(host_path))
+                std.fs.openFileAbsolute(host_path, .{ .mode = .read_write }) catch |err| switch (err) {
+                    error.FileNotFound,
+                    error.NotDir,
+                    => return false,
+                    else => return err,
+                }
+            else
+                std.fs.cwd().openFile(host_path, .{ .mode = .read_write }) catch |err| switch (err) {
+                    error.FileNotFound,
+                    error.NotDir,
+                    => return false,
+                    else => return err,
+                };
+            defer file.close();
+
+            if (mode) |value| try file.chmod(@intCast(value & 0o7777));
+            if (uid != null or gid != null) try file.chown(uid, gid);
+
+            if (at_ns != null or mt_ns != null) {
+                const existing = try file.stat();
+                try file.updateTimes(
+                    at_ns orelse @intCast(existing.atime),
+                    mt_ns orelse @intCast(existing.mtime),
+                );
+            }
+        }
+
+        if (flags) |value| switch (builtin.os.tag) {
+            .macos, .ios => {
+                const path_z = try self.allocator.dupeZ(u8, host_path);
+                defer self.allocator.free(path_z);
+                if (c.chflags(path_z.ptr, value) != 0) {
+                    return switch (std.c._errno().*) {
+                        c.EACCES => error.AccessDenied,
+                        c.EPERM => error.AccessDenied,
+                        c.EROFS => error.ReadOnlyFileSystem,
+                        c.EINVAL => error.InvalidArgument,
+                        else => error.OperationNotSupported,
+                    };
+                }
+            },
+            else => if (value != 0) return error.OperationNotSupported,
+        };
+
+        try self.refreshLocalFsBackedAbsolutePath(normalized_path);
         return true;
     }
 

@@ -475,6 +475,46 @@ pub const NamespaceClient = struct {
         self.allocator.free(response);
     }
 
+    pub const MountPathSetattrOptions = struct {
+        mode: ?u32 = null,
+        uid: ?u32 = null,
+        gid: ?u32 = null,
+        flags: ?u32 = null,
+        at_ns: ?i64 = null,
+        mt_ns: ?i64 = null,
+    };
+
+    pub fn controlMountPathSetattr(self: *NamespaceClient, path: []const u8, options: MountPathSetattrOptions) !void {
+        const Payload = struct {
+            path: []const u8,
+            mode: ?u32 = null,
+            uid: ?u32 = null,
+            gid: ?u32 = null,
+            flags: ?u32 = null,
+            at_ns: ?i64 = null,
+            mt_ns: ?i64 = null,
+        };
+        const payload = try std.json.Stringify.valueAlloc(self.allocator, Payload{
+            .path = normalizeAbsolutePath(path),
+            .mode = options.mode,
+            .uid = options.uid,
+            .gid = options.gid,
+            .flags = options.flags,
+            .at_ns = options.at_ns,
+            .mt_ns = options.mt_ns,
+        }, .{
+            .emit_null_optional_fields = false,
+        });
+        defer self.allocator.free(payload);
+
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_setattr_v2",
+            "control.mount_path_setattr_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
     pub fn controlMountFileWriteWithOptions(
         self: *NamespaceClient,
         path: []const u8,

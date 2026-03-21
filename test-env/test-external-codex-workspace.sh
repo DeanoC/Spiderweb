@@ -1066,7 +1066,10 @@ install_bridge_runtime() {
     fi
     ln -sf "$node_bin" "$CODEX_BRIDGE_NODE"
     if command -v setsid >/dev/null 2>&1; then
-        ln -sf "$(command -v setsid)" "$CODEX_BRIDGE_SETSID"
+        cat > "$CODEX_BRIDGE_SETSID" <<EOF
+#!/usr/bin/env sh
+exec "$(command -v setsid)" "\$@"
+EOF
     else
         cat > "$CODEX_BRIDGE_SETSID" <<'EOF'
 #!/usr/bin/env python3

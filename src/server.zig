@@ -7558,6 +7558,17 @@ fn handleMountFileWriteControl(
         );
     }
 
+    if (try session.tryWriteBoundVenomProxyMountFile(absolute_path, merged)) {
+        const escaped_path = try unified.jsonEscape(allocator, absolute_path);
+        defer allocator.free(escaped_path);
+        const count = try mountGraphWriteResponseCount(decoded.len);
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d}}}",
+            .{ escaped_path, offset, count },
+        );
+    }
+
     try session.writeMountGraphFile(absolute_path, merged);
 
     const escaped_path = try unified.jsonEscape(allocator, absolute_path);

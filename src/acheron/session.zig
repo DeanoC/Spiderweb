@@ -237,6 +237,7 @@ const Node = struct {
     reported_mode: ?u32 = null,
     reported_size: ?u64 = null,
     last_dynamic_refresh_ms: i64 = 0,
+    dynamic_refresh_stale: bool = true,
     dynamic_refresh_in_progress: bool = false,
     children: std.StringHashMapUnmanaged(u32) = .{},
     special: SpecialKind = .none,
@@ -249,6 +250,7 @@ const Node = struct {
     }
 };
 
+const dynamic_directory_refresh_min_interval_ms: i64 = 1_000;
 const slow_dynamic_directory_refresh_warn_ms: u64 = 100;
 
 const FidState = struct {
@@ -1074,14 +1076,20 @@ pub const Session = struct {
 
     fn refreshDynamicDirectory(self: *Session, dir_id: u32) !void {
         const now_ms = std.time.milliTimestamp();
-        const previous_refresh_ms = blk: {
+        const state = blk: {
             const node = self.nodes.getPtr(dir_id) orelse return;
             if (node.kind != .dir) return;
             if (node.dynamic_refresh_in_progress) return;
-            const previous = node.last_dynamic_refresh_ms;
-            node.last_dynamic_refresh_ms = now_ms;
+            const previous_refresh_ms = node.last_dynamic_refresh_ms;
+            const previous_stale = node.dynamic_refresh_stale;
+            if (!previous_stale and previous_refresh_ms != 0 and (now_ms - previous_refresh_ms) < dynamic_directory_refresh_min_interval_ms) {
+                return;
+            }
             node.dynamic_refresh_in_progress = true;
-            break :blk previous;
+            break :blk .{
+                .previous_refresh_ms = previous_refresh_ms,
+                .previous_stale = previous_stale,
+            };
         };
         defer {
             if (self.nodes.getPtr(dir_id)) |node| {
@@ -1090,7 +1098,8 @@ pub const Session = struct {
         }
         errdefer {
             if (self.nodes.getPtr(dir_id)) |node| {
-                node.last_dynamic_refresh_ms = previous_refresh_ms;
+                node.last_dynamic_refresh_ms = state.previous_refresh_ms;
+                node.dynamic_refresh_stale = state.previous_stale;
             }
         }
         var timer = try std.time.Timer.start();
@@ -1102,6 +1111,11 @@ pub const Session = struct {
         }
         try self.refreshLocalFsDirectory(dir_id);
         try self.refreshBoundVenomProxyDirectory(dir_id);
+
+        if (self.nodes.getPtr(dir_id)) |node| {
+            node.last_dynamic_refresh_ms = std.time.milliTimestamp();
+            node.dynamic_refresh_stale = false;
+        }
 
         const elapsed_ms = timer.read() / std.time.ns_per_ms;
         if (elapsed_ms >= slow_dynamic_directory_refresh_warn_ms) {
@@ -6706,6 +6720,43 @@ pub const Session = struct {
         return outcome;
     }
 
+    pub fn tryWriteBoundVenomProxyMountFile(self: *Session, absolute_path: []const u8, data: []const u8) !bool {
+        const resolved_path = if (try self.resolveBoundPath(absolute_path)) |rebound|
+            rebound
+        else
+            try self.allocator.dupe(u8, absolute_path);
+        defer self.allocator.free(resolved_path);
+
+        const proxy = (try self.boundVenomProxyPathForAbsolutePath(resolved_path)) orelse return false;
+        defer self.allocator.free(proxy.remote_path);
+        if (std.mem.eql(u8, proxy.remote_path, "/")) return false;
+
+        var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return false;
+        defer router.deinit();
+
+        const open_file = router.open(proxy.remote_path, 1) catch |err| switch (err) {
+            error.FileNotFound => router.create(proxy.remote_path, 0o100644, 2) catch |create_err| return switch (create_err) {
+                error.FileNotFound,
+                error.OperationNotSupported,
+                => false,
+                else => create_err,
+            },
+            error.OperationNotSupported => return false,
+            else => return err,
+        };
+        defer router.close(open_file) catch {};
+
+        try router.truncate(proxy.remote_path, 0);
+        if (data.len != 0) {
+            const written = try router.write(open_file, 0, data);
+            if (written != data.len) return error.InvalidPayload;
+        }
+        try router.truncate(proxy.remote_path, data.len);
+        self.markMountGraphParentStale(absolute_path);
+        if (!std.mem.eql(u8, resolved_path, absolute_path)) self.markMountGraphParentStale(resolved_path);
+        return true;
+    }
+
     fn buildBoundVenomProxyStatPayload(self: *Session, node_id: u32) !?[]u8 {
         const absolute_path = try self.nodeAbsolutePath(node_id);
         defer self.allocator.free(absolute_path);
@@ -8585,6 +8636,7 @@ pub const Session = struct {
             defer info.deinit(self.allocator);
             return mapInternalMountWriteError(info.code);
         }
+        self.markMountGraphParentStale(absolute_path);
     }
 
     pub fn tryWriteLocalFsBackedMountFile(self: *Session, absolute_path: []const u8, data: []const u8) !bool {
@@ -10011,6 +10063,7 @@ pub const Session = struct {
         const child_name = namespaceAbsolutePathBaseName(absolute_path) orelse return;
         const parent_id = (try self.resolveAbsolutePathForMountGraphNoBinds(parent_path)) orelse return;
 
+        self.markDynamicDirectoryStale(parent_id);
         try self.refreshDynamicDirectory(parent_id);
         if (self.lookupChild(parent_id, child_name)) |child_id| {
             _ = try self.syncLocalFsFileNode(child_id);
@@ -10020,6 +10073,7 @@ pub const Session = struct {
     fn refreshLocalFsBackedParentAbsolutePath(self: *Session, absolute_path: []const u8) !void {
         const parent_path = namespaceAbsolutePathParent(absolute_path) orelse return;
         const parent_id = (try self.resolveAbsolutePathForMountGraphNoBinds(parent_path)) orelse return;
+        self.markDynamicDirectoryStale(parent_id);
         try self.refreshDynamicDirectory(parent_id);
     }
 
@@ -10040,6 +10094,18 @@ pub const Session = struct {
         if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/services")) return null;
 
         return self.resolveMissionContractHostPath(normalized_path) catch null;
+    }
+
+    fn markDynamicDirectoryStale(self: *Session, node_id: u32) void {
+        const node = self.nodes.getPtr(node_id) orelse return;
+        if (node.kind != .dir) return;
+        node.dynamic_refresh_stale = true;
+    }
+
+    fn markMountGraphParentStale(self: *Session, absolute_path: []const u8) void {
+        const parent_path = namespaceAbsolutePathParent(absolute_path) orelse return;
+        const parent_id = self.resolveAbsolutePathForMountGraphNoBinds(parent_path) catch return orelse return;
+        self.markDynamicDirectoryStale(parent_id);
     }
 
     fn tryResolveReadableLocalFsBackedHostPath(self: *Session, absolute_path: []const u8) !?[]u8 {
@@ -14565,6 +14631,97 @@ test "acheron_session: dynamic refresh skips re-entrant invocation" {
     local_fs_node.dynamic_refresh_in_progress = false;
     try session.refreshDynamicDirectory(local_fs_dir);
     try std.testing.expect(session.lookupChild(local_fs_dir, "second.txt") != null);
+}
+
+test "acheron_session: dynamic refresh skips recent clean refreshes until marked stale" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/first.txt",
+        .data = "one",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    const local_fs_dir = session.resolveAbsolutePathNoBinds("/nodes/local/fs") orelse return error.MissingNode;
+
+    try session.refreshDynamicDirectory(local_fs_dir);
+    try std.testing.expect(session.lookupChild(local_fs_dir, "first.txt") != null);
+
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/second.txt",
+        .data = "two",
+    });
+
+    try session.refreshDynamicDirectory(local_fs_dir);
+    try std.testing.expect(session.lookupChild(local_fs_dir, "second.txt") == null);
+
+    session.markDynamicDirectoryStale(local_fs_dir);
+    try session.refreshDynamicDirectory(local_fs_dir);
+    try std.testing.expect(session.lookupChild(local_fs_dir, "second.txt") != null);
+}
+
+test "acheron_session: local fs backed write invalidates recent directory refresh" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    const local_fs_dir = session.resolveAbsolutePathNoBinds("/nodes/local/fs") orelse return error.MissingNode;
+    try session.refreshDynamicDirectory(local_fs_dir);
+
+    try std.testing.expect(try session.tryWriteLocalFsBackedMountFile("/nodes/local/fs/game.py", "print('ok')\n"));
+    try std.testing.expect(session.lookupChild(local_fs_dir, "game.py") != null);
 }
 
 test "session: hostPathMatchesPrefixBoundary handles native separators" {

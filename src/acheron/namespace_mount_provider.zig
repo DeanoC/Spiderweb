@@ -410,6 +410,13 @@ const NamespaceProviderContext = struct {
         );
     }
 
+    fn refreshParentDirectoryAfterMutation(self: *NamespaceProviderContext, allocator: std.mem.Allocator, path: []const u8) void {
+        const parent_path = parentPath(path);
+        self.refreshMountGraph(allocator, parent_path, 1) catch {
+            self.mount_graph.markStale();
+        };
+    }
+
     fn ensureDirectoryChildrenLoaded(
         self: *NamespaceProviderContext,
         allocator: std.mem.Allocator,
@@ -546,6 +553,7 @@ const namespace_provider_vtable: mount_provider.Provider.VTable = .{
     .rmdir = namespaceProviderRmdir,
     .rename = namespaceProviderRename,
     .symlink = namespaceProviderSymlink,
+    .setattr = namespaceProviderSetattr,
     .setxattr = namespaceProviderSetxattr,
     .getxattr = namespaceProviderGetxattr,
     .listxattr = namespaceProviderListxattr,
@@ -726,10 +734,15 @@ fn namespaceProviderCreate(ctx: *anyopaque, path: []const u8, mode: u32, flags: 
     // Materialize an empty file immediately so follow-up path-based operations
     // on the just-created entry behave the same way as the other mount backends.
     _ = try namespace_ctx.client.controlMountFileWrite(normalized_path, 0, "");
-    try namespace_ctx.client.controlMountPathSetattr(normalized_path, .{
+    namespace_ctx.client.controlMountPathSetattr(normalized_path, .{
         .mode = mode & 0o7777,
-    });
-    namespace_ctx.mount_graph.markStale();
+    }) catch |err| switch (err) {
+        error.OperationNotSupported,
+        error.FileNotFound,
+        => {},
+        else => return err,
+    };
+    namespace_ctx.refreshParentDirectoryAfterMutation(allocator, normalized_path);
 
     return namespace_ctx.storeHandle(allocator, .{
         .path = try allocator.dupe(u8, normalized_path),
@@ -806,6 +819,32 @@ fn namespaceProviderSymlink(ctx: *anyopaque, target: []const u8, link_path: []co
     defer namespace_ctx.mutex.unlock();
     try namespace_ctx.client.controlMountPathSymlink(target, link_path);
     namespace_ctx.mount_graph.markStale();
+}
+
+fn namespaceProviderSetattr(
+    ctx: *anyopaque,
+    path: []const u8,
+    mode: ?u32,
+    uid: ?u32,
+    gid: ?u32,
+    flags: ?u32,
+    at_ns: ?i64,
+    mt_ns: ?i64,
+) !void {
+    const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_path = normalizeAbsolutePath(path);
+    try namespace_ctx.client.controlMountPathSetattr(normalized_path, .{
+        .mode = mode,
+        .uid = uid,
+        .gid = gid,
+        .flags = flags,
+        .at_ns = at_ns,
+        .mt_ns = mt_ns,
+    });
+    namespace_ctx.refreshParentDirectoryAfterMutation(allocator, normalized_path);
 }
 
 fn namespaceProviderSetxattr(ctx: *anyopaque, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {

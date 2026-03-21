@@ -236,6 +236,13 @@ pub const FuseAdapter = struct {
         self.path_cache.invalidatePathAndParent(stable_link_path.slice);
     }
 
+    pub fn setattrMode(self: *FuseAdapter, path: []const u8, mode: u32) !void {
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        try self.session.setattr(stable_path.slice, mode, null, null, null, null, null);
+        self.path_cache.invalidatePath(stable_path.slice);
+    }
+
     pub fn setxattr(self: *FuseAdapter, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
         var stable_path = try stabilizeFusePath(self.allocator, path);
         defer stable_path.deinit(self.allocator);
@@ -327,6 +334,7 @@ pub const FuseAdapter = struct {
             ops.mknod = cMknod;
             ops.create = cCreate;
             ops.mkdir = cMkdir;
+            ops.chmod = cChmod;
         }
         ops.unlink = cUnlink;
         ops.rmdir = cRmdir;
@@ -1311,6 +1319,15 @@ fn cMknod(path_c: [*c]const u8, mode: c.mode_t, dev: c.dev_t) callconv(.c) c_int
     const path = std.mem.span(path_c);
     const opened = adapter.create(path, @intCast(mode), 2) catch |err| return toFuseError(err);
     adapter.release(opened) catch {};
+    return 0;
+}
+
+fn cChmod(path_c: [*c]const u8, mode: c.mode_t, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
+    _ = fi;
+    const adapter = active_adapter orelse return -fs_protocol.Errno.EIO;
+    if (path_c == null) return -fs_protocol.Errno.EINVAL;
+    const path = std.mem.span(path_c);
+    adapter.setattrMode(path, @intCast(mode)) catch |err| return toFuseError(err);
     return 0;
 }
 

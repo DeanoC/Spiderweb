@@ -7115,7 +7115,7 @@ test "acheron_control_plane: workspace status filters invoke service mounts when
     defer allocator.free(upserted);
 
     const project_json = try plane.createProject(
-        "{\"name\":\"InvokeFilteredWorkspace\",\"vision\":\"InvokeFilteredWorkspace\",\"access_policy\":{\"actions\":{\"invoke\":\"open\"},\"agents\":{\"mother\":{\"invoke\":\"deny\"}}}}",
+        "{\"name\":\"InvokeFilteredWorkspace\",\"vision\":\"InvokeFilteredWorkspace\",\"access_policy\":{\"actions\":{\"invoke\":\"open\"},\"agents\":{\"default\":{\"invoke\":\"deny\"}}}}",
     );
     defer allocator.free(project_json);
     var project_parsed = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});

@@ -15,7 +15,6 @@ const control_plane_mod = @import("control_plane.zig");
 const acheron_router = @import("router.zig");
 const mission_store_mod = @import("../mission_store.zig");
 const events_venom = @import("../venoms/events.zig");
-const pairing_venom = @import("../venoms/pairing.zig");
 const terminal_venom = @import("../venoms/terminal.zig");
 const mounts_venom = @import("../venoms/mounts.zig");
 const home_venom = @import("../venoms/home.zig");
@@ -104,11 +103,6 @@ const SpecialKind = enum {
     event_wait_config,
     event_signal,
     event_next,
-    pairing_refresh,
-    pairing_approve,
-    pairing_deny,
-    pairing_invites_refresh,
-    pairing_invites_create,
     terminal_v2_invoke,
     terminal_v2_create,
     terminal_v2_resume,
@@ -121,7 +115,6 @@ const SpecialKind = enum {
 
 const default_wait_timeout_ms: i64 = events_venom.default_wait_timeout_ms;
 const wait_poll_interval_ms: u64 = events_venom.wait_poll_interval_ms;
-const debug_stream_log_max_bytes: usize = 2 * 1024 * 1024;
 const max_signal_events: usize = events_venom.max_signal_events;
 const local_fs_world_prefix = "/nodes/local/fs";
 const workspace_entrypoint_relative_namespace_root = "../../..";
@@ -222,8 +215,6 @@ const ScopedVenomBinding = struct {
         self.* = undefined;
     }
 };
-
-const PairingAction = pairing_venom.Action;
 
 const TerminalSession = terminal_venom.SessionState;
 
@@ -506,12 +497,6 @@ pub const Session = struct {
     active_project_venoms_index_id: u32 = 0,
     node_venom_events_log_id: u32 = 0,
     event_next_id: u32 = 0,
-    pairing_pending_id: u32 = 0,
-    pairing_last_result_id: u32 = 0,
-    pairing_last_error_id: u32 = 0,
-    pairing_invites_active_id: u32 = 0,
-    pairing_invites_last_result_id: u32 = 0,
-    pairing_invites_last_error_id: u32 = 0,
     terminal_status_id: u32 = 0,
     terminal_result_id: u32 = 0,
     terminal_sessions_id: u32 = 0,
@@ -916,16 +901,14 @@ pub const Session = struct {
         else
             try self.allocator.dupe(u8, "null");
         defer self.allocator.free(project_id_json);
-        const debug_visible = self.lookupChild(self.root_id, "debug") != null;
         const services_visible = self.lookupChild(self.root_id, "services") != null;
         const payload = try std.fmt.allocPrint(
             self.allocator,
-            "{{\"qid\":{{\"path\":{d},\"type\":\"dir\"}},\"layout\":\"spiderweb-fs\",\"project_id\":{s},\"roots\":[\"nodes\",\"agents\",\"global\"{s}{s}],\"dynamic_bind_paths\":{s},\"bind_count\":{d}}}",
+            "{{\"qid\":{{\"path\":{d},\"type\":\"dir\"}},\"layout\":\"spiderweb-fs\",\"project_id\":{s},\"roots\":[\"nodes\",\"agents\",\"global\"{s}],\"dynamic_bind_paths\":{s},\"bind_count\":{d}}}",
             .{
                 self.root_id,
                 project_id_json,
                 if (services_visible) ",\"services\"" else "",
-                if (debug_visible) ",\"debug\"" else "",
                 if (self.project_binds.items.len > 0) "true" else "false",
                 self.project_binds.items.len,
             },
@@ -1296,11 +1279,6 @@ pub const Session = struct {
             .github_pr_invoke, .github_pr_sync, .github_pr_ingest_event, .github_pr_publish_review => self.handleGitHubPrNamespaceWrite(special, node_id, data),
             .pr_review_invoke, .pr_review_configure_repo, .pr_review_get_repo, .pr_review_list_repos, .pr_review_intake, .pr_review_start, .pr_review_sync, .pr_review_run_validation, .pr_review_record_validation, .pr_review_draft_review, .pr_review_save_draft, .pr_review_record_review, .pr_review_advance => self.handlePrReviewNamespaceWrite(special, node_id, data),
             .missions_invoke, .missions_invoke_service, .missions_create, .missions_list, .missions_get, .missions_heartbeat, .missions_checkpoint, .missions_bootstrap_contract, .missions_recover, .missions_request_approval, .missions_approve, .missions_reject, .missions_resume, .missions_block, .missions_complete, .missions_fail, .missions_cancel => self.handleMissionsNamespaceWrite(special, node_id, data),
-            .pairing_refresh => self.handlePairingControlWrite(.refresh, data),
-            .pairing_approve => self.handlePairingControlWrite(.approve, data),
-            .pairing_deny => self.handlePairingControlWrite(.deny, data),
-            .pairing_invites_refresh => self.handlePairingControlWrite(.invites_refresh, data),
-            .pairing_invites_create => self.handlePairingControlWrite(.invites_create, data),
             .terminal_v2_invoke => self.handleTerminalV2InvokeWrite(node_id, data),
             .terminal_v2_create => self.handleTerminalV2CreateWrite(node_id, data),
             .terminal_v2_resume => self.handleTerminalV2ResumeWrite(node_id, data),
@@ -1414,8 +1392,6 @@ pub const Session = struct {
         defer policy.deinit(self.allocator);
         if (self.active_namespace_project_id) |value| self.allocator.free(value);
         self.active_namespace_project_id = try self.allocator.dupe(u8, policy.project_id);
-        const show_debug = policy.show_debug or self.is_admin;
-
         self.root_id = try self.addDir(null, "/", false);
         const nodes_root = try self.addDir(self.root_id, "nodes", false);
         self.nodes_root_id = nodes_root;
@@ -1423,10 +1399,6 @@ pub const Session = struct {
         const projects_root = try self.addDir(self.root_id, "projects", false);
         const global_root = try self.addDir(self.root_id, "global", false);
         const meta_root = try self.addDir(self.root_id, "meta", false);
-        const debug_root: ?u32 = if (show_debug)
-            try self.addDir(self.root_id, "debug", false)
-        else
-            null;
 
         try self.addDirectoryDescriptors(
             nodes_root,
@@ -1609,17 +1581,6 @@ pub const Session = struct {
             loaded_live_nodes,
         );
 
-        if (debug_root) |dir_id| {
-            try self.addDirectoryDescriptors(
-                dir_id,
-                "Debug",
-                "{\"kind\":\"debug\",\"entries\":[\"README.md\",\"pairing\"]}",
-                "{\"read\":true,\"write\":false}",
-                "Privileged debug surface.",
-            );
-            try self.addDebugPairingSurface(dir_id);
-        }
-
         try self.addDirectoryDescriptors(
             meta_root,
             "Meta",
@@ -1634,11 +1595,10 @@ pub const Session = struct {
         defer self.allocator.free(escaped_project);
         const view_json = try std.fmt.allocPrint(
             self.allocator,
-            "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"show_debug\":{s},\"nodes\":{d},\"visible_agents\":{d},\"project_links\":{d}}}",
+            "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"nodes\":{d},\"visible_agents\":{d},\"project_links\":{d}}}",
             .{
                 escaped_agent,
                 escaped_project,
-                if (show_debug) "true" else "false",
                 policy.nodes.items.len,
                 policy.visible_agents.items.len,
                 policy.project_links.items.len,
@@ -2182,10 +2142,6 @@ pub const Session = struct {
         if (suffix.len == 0) return try self.allocator.dupe(u8, bind_path);
         if (std.mem.eql(u8, bind_path, "/")) return try std.fmt.allocPrint(self.allocator, "{s}", .{suffix});
         return try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ bind_path, suffix });
-    }
-
-    fn addDebugPairingSurface(self: *Session, debug_root: u32) !void {
-        return pairing_venom.seedDebugSurface(self, debug_root);
     }
 
     pub fn refreshProjectBindsFromControlPlane(self: *Session) !void {
@@ -7256,10 +7212,6 @@ pub const Session = struct {
         return true;
     }
 
-    fn handlePairingControlWrite(self: *Session, action: PairingAction, raw_input: []const u8) !WriteOutcome {
-        return .{ .written = try pairing_venom.handleControlWrite(self, action, raw_input) };
-    }
-
     pub fn renderJsonValueToWriter(self: *Session, writer: anytype, value: std.json.Value) !void {
         switch (value) {
             .null => try writer.writeAll("null"),
@@ -11045,8 +10997,7 @@ fn isWorldAbsolutePath(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "/nodes/") or
         std.mem.startsWith(u8, path, "/agents/") or
         std.mem.startsWith(u8, path, "/services/") or
-        std.mem.startsWith(u8, path, "/global/") or
-        std.mem.startsWith(u8, path, "/debug/");
+        std.mem.startsWith(u8, path, "/global/");
 }
 
 fn defaultGlobalLibraryIndexMd() []const u8 {

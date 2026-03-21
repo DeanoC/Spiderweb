@@ -77,7 +77,7 @@ pub fn seedNamespaceAt(self: anytype, workspaces_dir: u32, base_path: []const u8
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Use list/get/up operation files, or invoke.json with op=list|get|up plus arguments. For Mother bootstrap provisioning, use up with activate=false.\n",
+        "Use list/get/up operation files, or invoke.json with op=list|get|up plus arguments. For initial workspace bootstrap provisioning, use up with activate=false.\n",
         false,
         .none,
     );

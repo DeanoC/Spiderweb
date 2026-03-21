@@ -36,7 +36,6 @@ pub const WorkspaceProjectLink = struct {
 };
 
 pub const WorkspacePolicy = struct {
-    show_debug: bool = false,
     project_id: []u8,
     nodes: std.ArrayListUnmanaged(WorkspaceNodePolicy) = .{},
     visible_agents: std.ArrayListUnmanaged([]u8) = .{},
@@ -85,7 +84,6 @@ pub fn loadWorkspacePolicy(allocator: std.mem.Allocator, options: LoadOptions) !
 fn initDefaults(allocator: std.mem.Allocator, options: LoadOptions) !WorkspacePolicy {
     const project_seed = options.project_id orelse "workspace";
     var policy = WorkspacePolicy{
-        .show_debug = false,
         .project_id = try allocator.dupe(u8, project_seed),
     };
     errdefer policy.deinit(allocator);
@@ -189,10 +187,6 @@ fn applyWorkspacePolicyFile(
         return;
     }
     const obj = parsed.value.object;
-
-    if (obj.get("show_debug")) |raw_value| {
-        if (raw_value == .bool) policy.show_debug = raw_value.bool;
-    }
 
     if (obj.get("project_id")) |raw_value| {
         if (raw_value == .string and raw_value.string.len > 0) {
@@ -350,7 +344,6 @@ test "workspace_policy: defaults provide a usable workspace view" {
     );
     defer policy.deinit(allocator);
 
-    try std.testing.expect(!policy.show_debug);
     try std.testing.expectEqualStrings("workspace-demo", policy.project_id);
     try std.testing.expect(policy.nodes.items.len > 0);
     try std.testing.expect(policy.project_links.items.len > 0);

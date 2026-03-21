@@ -3355,7 +3355,7 @@ const AgentRuntimeRegistry = struct {
         return false;
     }
 
-    fn isBootstrapMotherOnlyState(self: *AgentRuntimeRegistry) bool {
+    fn isBootstrapOnlyState(self: *AgentRuntimeRegistry) bool {
         return !self.hasNonSystemProject();
     }
 
@@ -3414,7 +3414,7 @@ const AgentRuntimeRegistry = struct {
     }
 
     fn buildInitialSessionBinding(self: *AgentRuntimeRegistry, role: ConnectionRole) !InitialSessionBinding {
-        const bootstrap_only = self.isBootstrapMotherOnlyState();
+        const bootstrap_only = self.isBootstrapOnlyState();
         if (try self.resolvePreferredBindingForRole(role)) |binding| {
             return .{
                 .binding = binding,
@@ -5933,7 +5933,7 @@ fn handleWebSocketConnection(
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 resetNamespaceSession(&namespace_session);
                                 connect_gate_error = null;
-                                bootstrap_only_mode = runtime_registry.isBootstrapMotherOnlyState();
+                                bootstrap_only_mode = runtime_registry.isBootstrapOnlyState();
                                 runtime_registry.rememberPrincipalSession(
                                     principal,
                                     session_key,

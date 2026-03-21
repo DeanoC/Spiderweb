@@ -1181,8 +1181,7 @@ fn writeJsonString(writer: anytype, value: []const u8) !void {
 fn isWorldAbsolutePath(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "/nodes/") or
         std.mem.startsWith(u8, path, "/agents/") or
-        std.mem.startsWith(u8, path, "/global/") or
-        std.mem.startsWith(u8, path, "/debug/");
+        std.mem.startsWith(u8, path, "/global/");
 }
 
 fn parseNodeVenomServicePath(path: []const u8) ?ParsedNodeVenomServicePath {

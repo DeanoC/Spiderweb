@@ -25,6 +25,7 @@ def load_json(path: Path):
 def emit(output_path: Path | None, payload: dict) -> int:
     encoded = json.dumps(payload, indent=2, sort_keys=True)
     if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(encoded + "\n", encoding="utf-8")
     print(encoded)
     return 0 if payload.get("ok") else 1
@@ -39,7 +40,10 @@ def main() -> int:
 
     workspace = Path(args.workspace).resolve()
     shared_data = Path(args.shared_data).resolve()
-    output_path = Path(args.output).resolve() if args.output else None
+    output_path = None
+    if args.output:
+        requested_output = Path(args.output)
+        output_path = requested_output if requested_output.is_absolute() else workspace / requested_output
 
     game_path = workspace / "game.py"
     manifest_path = workspace / "game_manifest.json"

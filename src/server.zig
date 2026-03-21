@@ -10,7 +10,6 @@ const acheron_session_mod = @import("acheron/session.zig");
 const fs_protocol = @import("spiderweb_fs").fs_protocol;
 const spiderweb_node = @import("spiderweb_node");
 const unified = @import("spider-protocol").unified;
-const mission_store_mod = @import("mission_store.zig");
 const default_max_agent_runtimes: usize = 64;
 const max_agent_id_len: usize = 64;
 const max_project_id_len: usize = 128;
@@ -2202,7 +2201,6 @@ const AgentRuntimeRegistry = struct {
     max_runtimes: usize,
     control_plane: control_plane_mod.ControlPlane,
     auth_tokens: AuthTokenStore,
-    missions: mission_store_mod.MissionStore,
     control_operator_token: ?[]u8 = null,
     control_project_scope_token: ?[]u8 = null,
     control_node_scope_token: ?[]u8 = null,
@@ -2294,7 +2292,6 @@ const AgentRuntimeRegistry = struct {
                 },
             ),
             .auth_tokens = AuthTokenStore.init(allocator, runtime_config),
-            .missions = mission_store_mod.MissionStore.init(allocator, runtime_config),
             .control_operator_token = operator_token,
             .control_project_scope_token = project_scope_token,
             .control_node_scope_token = node_scope_token,
@@ -2397,7 +2394,6 @@ const AgentRuntimeRegistry = struct {
         self.audit_records_mutex.unlock();
         self.control_plane.deinit();
         self.auth_tokens.deinit();
-        self.missions.deinit();
         self.allocator.free(self.default_agent_id);
     }
 
@@ -6018,7 +6014,6 @@ fn initNamespaceSessionForBinding(
             .sandbox_launcher = runtime_registry.runtime_config.sandbox_launcher,
             .sandbox_fs_mount_bin = runtime_registry.runtime_config.sandbox_fs_mount_bin,
             .control_plane = &runtime_registry.control_plane,
-            .mission_store = &runtime_registry.missions,
             .namespace_auth_token = namespace_auth_token,
             .control_operator_token = runtime_registry.control_operator_token,
             .actor_type = binding.actor_type,

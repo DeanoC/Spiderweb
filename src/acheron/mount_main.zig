@@ -1885,17 +1885,6 @@ fn liveSmokeWriteFile(client: *namespace_client.NamespaceClient, path: []const u
     try client.release(file);
 }
 
-fn extractMissionIdFromResultPayload(allocator: std.mem.Allocator, payload_json: []const u8) ![]u8 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidResponse;
-    const result_value = parsed.value.object.get("result") orelse return error.InvalidResponse;
-    if (result_value != .object) return error.InvalidResponse;
-    const mission_id_value = result_value.object.get("mission_id") orelse return error.InvalidResponse;
-    if (mission_id_value != .string or mission_id_value.string.len == 0) return error.InvalidResponse;
-    return allocator.dupe(u8, mission_id_value.string);
-}
-
 test "acheron_mount_main: parseEndpointFlag supports explicit mount path" {
     const parsed = try parseEndpointFlag("a=ws://127.0.0.1:18891/fs#work@/src");
     try std.testing.expectEqualStrings("a", parsed.name);
@@ -1984,7 +1973,7 @@ test "acheron_mount_main: explicit native mount requires namespace binding" {
     try std.testing.expectError(error.NativeNamespaceBindingRequired, makeNativeNamespaceBinding(.{}, null, null));
 }
 
-test "acheron_mount_main: live mac smoke covers terminal exec and pr review validation" {
+test "acheron_mount_main: live mac smoke covers terminal exec" {
     if (builtin.os.tag != .macos) return;
 
     const allocator = std.testing.allocator;
@@ -2031,30 +2020,6 @@ test "acheron_mount_main: live mac smoke covers terminal exec and pr review vali
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "\"operation\":\"exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "\"ok\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "dGVybWluYWwtb2s=") != null);
-
-    try liveSmokeWriteFile(
-        &client,
-        "/agents/self/pr_review/control/start.json",
-        "{\"repo_key\":\"DeanoC/Spiderweb\",\"pr_number\":130,\"checkout_path\":\"/nodes/local/fs\",\"default_review_commands\":[\"printf validation-ok\"]}",
-    );
-
-    const pr_start_result = try liveSmokeReadFile(allocator, &client, "/agents/self/pr_review/result.json");
-    defer allocator.free(pr_start_result);
-    const mission_id = try extractMissionIdFromResultPayload(allocator, pr_start_result);
-    defer allocator.free(mission_id);
-
-    const validation_payload = try std.fmt.allocPrint(allocator, "{{\"mission_id\":\"{s}\"}}", .{mission_id});
-    defer allocator.free(validation_payload);
-    try liveSmokeWriteFile(
-        &client,
-        "/agents/self/pr_review/control/run_validation.json",
-        validation_payload,
-    );
-
-    const pr_result = try liveSmokeReadFile(allocator, &client, "/agents/self/pr_review/result.json");
-    defer allocator.free(pr_result);
-    try std.testing.expect(std.mem.indexOf(u8, pr_result, "\"operation\":\"run_validation\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, pr_result, "\"ok\":true") != null);
 
     const terminal_current = try liveSmokeReadFile(allocator, &client, "/nodes/local/venoms/terminal/current.json");
     defer allocator.free(terminal_current);

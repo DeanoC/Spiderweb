@@ -13,7 +13,6 @@ const shared_node = @import("spiderweb_node");
 const workspace_policy = @import("../workspaces/policy.zig");
 const control_plane_mod = @import("control_plane.zig");
 const acheron_router = @import("router.zig");
-const mission_store_mod = @import("../mission_store.zig");
 const events_venom = @import("../venoms/events.zig");
 const terminal_venom = @import("../venoms/terminal.zig");
 const mounts_venom = @import("../venoms/mounts.zig");
@@ -22,9 +21,6 @@ const workers_venom = @import("../venoms/workers.zig");
 const venom_packages_service_venom = @import("../venoms/venom_packages_service.zig");
 const workspaces_venom = @import("../venoms/workspaces.zig");
 const git_venom = @import("../venoms/git.zig");
-const github_pr_venom = @import("../venoms/github_pr.zig");
-const missions_venom = @import("../venoms/missions.zig");
-const pr_review_venom = @import("../venoms/pr_review.zig");
 const venom_packages = @import("../venom_packages.zig");
 const venom_package = @import("../venom_package.zig");
 
@@ -58,40 +54,6 @@ const SpecialKind = enum {
     git_sync_checkout,
     git_status,
     git_diff_range,
-    github_pr_invoke,
-    github_pr_sync,
-    github_pr_ingest_event,
-    github_pr_publish_review,
-    pr_review_invoke,
-    pr_review_configure_repo,
-    pr_review_get_repo,
-    pr_review_list_repos,
-    pr_review_intake,
-    pr_review_start,
-    pr_review_sync,
-    pr_review_run_validation,
-    pr_review_record_validation,
-    pr_review_draft_review,
-    pr_review_save_draft,
-    pr_review_record_review,
-    pr_review_advance,
-    missions_invoke,
-    missions_invoke_service,
-    missions_create,
-    missions_list,
-    missions_get,
-    missions_heartbeat,
-    missions_checkpoint,
-    missions_bootstrap_contract,
-    missions_recover,
-    missions_request_approval,
-    missions_approve,
-    missions_reject,
-    missions_resume,
-    missions_block,
-    missions_complete,
-    missions_fail,
-    missions_cancel,
     mounts_invoke,
     mounts_list,
     mounts_mount,
@@ -454,7 +416,6 @@ pub const Session = struct {
         sandbox_launcher: ?[]const u8 = null,
         sandbox_fs_mount_bin: ?[]const u8 = null,
         control_plane: ?*control_plane_mod.ControlPlane = null,
-        mission_store: ?*mission_store_mod.MissionStore = null,
         namespace_auth_token: ?[]const u8 = null,
         control_operator_token: ?[]const u8 = null,
         actor_type: ?[]const u8 = null,
@@ -480,7 +441,6 @@ pub const Session = struct {
     sandbox_launcher: ?[]u8 = null,
     sandbox_fs_mount_bin: ?[]u8 = null,
     control_plane: ?*control_plane_mod.ControlPlane = null,
-    mission_store: ?*mission_store_mod.MissionStore = null,
     namespace_auth_token: ?[]u8 = null,
     control_operator_token: ?[]u8 = null,
     is_admin: bool = false,
@@ -501,28 +461,12 @@ pub const Session = struct {
     terminal_result_id: u32 = 0,
     terminal_sessions_id: u32 = 0,
     terminal_current_id: u32 = 0,
-    sub_brains_status_id: u32 = 0,
-    sub_brains_result_id: u32 = 0,
-    agents_status_id: u32 = 0,
-    agents_result_id: u32 = 0,
     projects_status_id: u32 = 0,
     projects_result_id: u32 = 0,
     git_status_id: u32 = 0,
     git_result_id: u32 = 0,
     git_status_alias_id: u32 = 0,
     git_result_alias_id: u32 = 0,
-    github_pr_status_id: u32 = 0,
-    github_pr_result_id: u32 = 0,
-    github_pr_status_alias_id: u32 = 0,
-    github_pr_result_alias_id: u32 = 0,
-    pr_review_status_id: u32 = 0,
-    pr_review_result_id: u32 = 0,
-    pr_review_status_alias_id: u32 = 0,
-    pr_review_result_alias_id: u32 = 0,
-    missions_status_id: u32 = 0,
-    missions_result_id: u32 = 0,
-    missions_status_alias_id: u32 = 0,
-    missions_result_alias_id: u32 = 0,
     mounts_status_id: u32 = 0,
     mounts_result_id: u32 = 0,
     mounts_status_alias_id: u32 = 0,
@@ -659,7 +603,6 @@ pub const Session = struct {
             .sandbox_launcher = owned_sandbox_launcher,
             .sandbox_fs_mount_bin = owned_sandbox_fs_mount_bin,
             .control_plane = options.control_plane,
-            .mission_store = options.mission_store,
             .namespace_auth_token = owned_namespace_auth_token,
             .control_operator_token = owned_control_operator_token,
             .is_admin = options.is_admin,
@@ -808,7 +751,6 @@ pub const Session = struct {
                 .sandbox_launcher = self.sandbox_launcher,
                 .sandbox_fs_mount_bin = self.sandbox_fs_mount_bin,
                 .control_plane = self.control_plane,
-                .mission_store = self.mission_store,
                 .namespace_auth_token = self.namespace_auth_token,
                 .control_operator_token = self.control_operator_token,
                 .actor_type = self.actor_type,
@@ -1152,7 +1094,7 @@ pub const Session = struct {
         const absolute_path = try self.nodeAbsolutePath(node_id);
         defer self.allocator.free(absolute_path);
         if (!pathMatchesPrefixBoundary(absolute_path, local_fs_world_prefix)) return null;
-        return try self.resolveMissionContractHostPath(absolute_path);
+        return try self.resolveWorkspaceHostPath(absolute_path);
     }
 
     fn resolveLocalFsSafeHostPath(self: *Session, host_path: []const u8) !?[]u8 {
@@ -1276,9 +1218,6 @@ pub const Session = struct {
             .venom_packages_invoke, .venom_packages_list, .venom_packages_get, .venom_packages_install, .venom_packages_remove => self.handleVenomPackagesNamespaceWrite(special, node_id, data),
             .projects_invoke, .projects_list, .projects_get, .projects_up => self.handleWorkspacesNamespaceWrite(special, node_id, data),
             .git_invoke, .git_sync_checkout, .git_status, .git_diff_range => self.handleGitNamespaceWrite(special, node_id, data),
-            .github_pr_invoke, .github_pr_sync, .github_pr_ingest_event, .github_pr_publish_review => self.handleGitHubPrNamespaceWrite(special, node_id, data),
-            .pr_review_invoke, .pr_review_configure_repo, .pr_review_get_repo, .pr_review_list_repos, .pr_review_intake, .pr_review_start, .pr_review_sync, .pr_review_run_validation, .pr_review_record_validation, .pr_review_draft_review, .pr_review_save_draft, .pr_review_record_review, .pr_review_advance => self.handlePrReviewNamespaceWrite(special, node_id, data),
-            .missions_invoke, .missions_invoke_service, .missions_create, .missions_list, .missions_get, .missions_heartbeat, .missions_checkpoint, .missions_bootstrap_contract, .missions_recover, .missions_request_approval, .missions_approve, .missions_reject, .missions_resume, .missions_block, .missions_complete, .missions_fail, .missions_cancel => self.handleMissionsNamespaceWrite(special, node_id, data),
             .terminal_v2_invoke => self.handleTerminalV2InvokeWrite(node_id, data),
             .terminal_v2_create => self.handleTerminalV2CreateWrite(node_id, data),
             .terminal_v2_resume => self.handleTerminalV2ResumeWrite(node_id, data),
@@ -3107,14 +3046,6 @@ pub const Session = struct {
         return git_venom.seedNamespaceAt(self, git_dir, base_path);
     }
 
-    fn seedAgentGitHubPrNamespace(self: *Session, github_pr_dir: u32) !void {
-        return github_pr_venom.seedNamespace(self, github_pr_dir);
-    }
-
-    fn seedAgentGitHubPrNamespaceAt(self: *Session, github_pr_dir: u32, base_path: []const u8) !void {
-        return github_pr_venom.seedNamespaceAt(self, github_pr_dir, base_path);
-    }
-
     fn seedAgentMountsNamespace(self: *Session, mounts_dir: u32) !void {
         return mounts_venom.seedNamespace(self, mounts_dir);
     }
@@ -3133,14 +3064,6 @@ pub const Session = struct {
 
     fn seedEventsNamespaceAt(self: *Session, events_dir: u32, base_path: []const u8) !void {
         return events_venom.seedNamespaceAt(self, events_dir, base_path);
-    }
-
-    fn seedAgentPrReviewNamespace(self: *Session, pr_review_dir: u32) !void {
-        return pr_review_venom.seedNamespace(self, pr_review_dir);
-    }
-
-    fn seedAgentPrReviewNamespaceAt(self: *Session, pr_review_dir: u32, base_path: []const u8) !void {
-        return pr_review_venom.seedNamespaceAt(self, pr_review_dir, base_path);
     }
 
     fn seedGlobalLibraryNamespace(self: *Session, library_dir: u32) !void {
@@ -4259,7 +4182,7 @@ pub const Session = struct {
     }
 
     fn readExistingWorkspaceAgentsContract(self: *Session) !?[]u8 {
-        const host_path = self.resolveMissionContractHostPath(workspace_agents_contract_path) catch return null;
+        const host_path = self.resolveWorkspaceHostPath(workspace_agents_contract_path) catch return null;
         defer self.allocator.free(host_path);
 
         const safe_host_path = (try self.resolveLocalFsSafeHostPath(host_path)) orelse return null;
@@ -4309,7 +4232,7 @@ pub const Session = struct {
             try self.setFileContent(namespace_file_id, merged);
         }
 
-        self.writeMissionContractFile(workspace_agents_contract_path, merged) catch {};
+        self.writeWorkspaceFile(workspace_agents_contract_path, merged) catch {};
     }
 
     fn buildProjectSourcesJson(
@@ -7246,10 +7169,6 @@ pub const Session = struct {
 
     pub const GitOp = git_venom.Op;
 
-    pub const GitHubPrOp = github_pr_venom.Op;
-
-    pub const PrReviewOp = pr_review_venom.Op;
-
     fn handleWorkspacesNamespaceWrite(self: *Session, special: SpecialKind, node_id: u32, raw_input: []const u8) !WriteOutcome {
         return .{ .written = try workspaces_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
     }
@@ -7309,10 +7228,6 @@ pub const Session = struct {
         };
 
         return self.executeGitOp(op, args_obj, raw_input.len);
-    }
-
-    fn handleGitHubPrNamespaceWrite(self: *Session, special: SpecialKind, node_id: u32, raw_input: []const u8) !WriteOutcome {
-        return .{ .written = try github_pr_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
     }
 
     fn parseGitOp(raw: []const u8) ?GitOp {
@@ -7399,73 +7314,66 @@ pub const Session = struct {
         return git_venom.buildGitFailureResultJson(self, op, code, message);
     }
 
-    pub fn buildGitHubPrSuccessResultJson(self: *Session, op: GitHubPrOp, result_json: []const u8) ![]u8 {
-        return github_pr_venom.buildGitHubPrSuccessResultJson(self, op, result_json);
-    }
-
-    pub fn buildGitHubPrFailureResultJson(self: *Session, op: GitHubPrOp, code: []const u8, message: []const u8) ![]u8 {
-        return github_pr_venom.buildGitHubPrFailureResultJson(self, op, code, message);
-    }
-
-    fn handlePrReviewNamespaceWrite(self: *Session, special: SpecialKind, node_id: u32, raw_input: []const u8) !WriteOutcome {
-        return .{ .written = try pr_review_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
-    }
-
-    pub const PrReviewResolvedContract = pr_review_venom.ResolvedContract;
-    pub const PrReviewContextSnapshot = pr_review_venom.ContextSnapshot;
-    pub const PrReviewStateSnapshot = pr_review_venom.StateSnapshot;
-    pub const PrReviewRepoConfigSnapshot = pr_review_venom.RepoConfigSnapshot;
-
-    pub fn bootstrapPrReviewMission(self: *Session, args_obj: std.json.ObjectMap) !mission_store_mod.MissionRecord {
-        return pr_review_venom.bootstrapMission(self, args_obj);
-    }
-
-    pub fn resolvePrReviewMissionContract(self: *Session, mission: mission_store_mod.MissionRecord) !PrReviewResolvedContract {
-        return pr_review_venom.resolveMissionContract(self, mission);
-    }
-
-    pub fn buildPrReviewRunId(self: *Session, repo_key: []const u8, pr_number: u64) ![]u8 {
-        return pr_review_venom.buildRunId(self, repo_key, pr_number);
-    }
-
-    pub fn loadConfiguredPrReviewRepo(self: *Session, repo_key: []const u8) !?PrReviewRepoConfigSnapshot {
-        return pr_review_venom.loadConfiguredRepo(self, repo_key);
-    }
-
-    pub fn findActivePrReviewMissionByRunId(
-        self: *Session,
-        store: *mission_store_mod.MissionStore,
-        run_id: []const u8,
-        project_id: ?[]const u8,
-    ) !?mission_store_mod.MissionRecord {
-        return pr_review_venom.findActiveMissionByRunId(self, store, run_id, project_id);
+    fn normalizeWorkspaceAbsolutePath(self: *Session, raw: []const u8) ![]u8 {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len == 0 or trimmed[0] != '/') return error.InvalidPayload;
+        const normalized = if (trimmed.len > 1)
+            std.mem.trimRight(u8, trimmed, "/")
+        else
+            trimmed;
+        return self.allocator.dupe(u8, normalized);
     }
 
     pub fn normalizeLocalWorkspaceAbsolutePath(self: *Session, raw_path: []const u8) ![]u8 {
-        const normalized = try self.normalizeMissionAbsolutePath(raw_path);
+        const normalized = try self.normalizeWorkspaceAbsolutePath(raw_path);
         errdefer self.allocator.free(normalized);
-        const host_path = try self.resolveMissionContractHostPath(normalized);
+        const host_path = try self.resolveWorkspaceHostPath(normalized);
         self.allocator.free(host_path);
         return normalized;
     }
 
-    pub fn readMissionContractFile(self: *Session, absolute_path: []const u8, max_bytes: usize) ![]u8 {
-        const host_path = try self.resolveMissionContractHostPath(absolute_path);
-        defer self.allocator.free(host_path);
-        if (std.fs.path.isAbsolute(host_path)) {
-            const file = try std.fs.openFileAbsolute(host_path, .{});
-            defer file.close();
-            return file.readToEndAlloc(self.allocator, max_bytes);
+    pub fn resolveWorkspaceHostPath(self: *Session, absolute_path: []const u8) ![]u8 {
+        const local_root = self.local_fs_export_root orelse return error.InvalidPayload;
+        const trimmed = std.mem.trimRight(u8, absolute_path, "/");
+        if (std.mem.eql(u8, trimmed, local_fs_world_prefix)) {
+            return self.allocator.dupe(u8, local_root);
         }
-        return std.fs.cwd().readFileAlloc(self.allocator, host_path, max_bytes);
+        const relative_path = try self.normalizeLocalFsRelativePath(absolute_path);
+        defer self.allocator.free(relative_path);
+        return std.fs.path.join(self.allocator, &.{ local_root, relative_path });
     }
 
-    pub fn loadPrReviewContextSnapshot(self: *Session, context_path: []const u8) !PrReviewContextSnapshot {
-        return pr_review_venom.loadContextSnapshot(self, context_path);
+    pub fn ensureWorkspaceDirectory(self: *Session, absolute_path: []const u8) !void {
+        const host_path = try self.resolveWorkspaceHostPath(absolute_path);
+        defer self.allocator.free(host_path);
+        mounts_venom.ensurePathExists(host_path) catch |err| switch (err) {
+            error.PathAlreadyExists,
+            error.NotDir,
+            error.AccessDenied,
+            => return error.InvalidPayload,
+            else => return err,
+        };
     }
 
-    pub fn loadPrReviewStateSnapshot(self: *Session, state_path: []const u8) !PrReviewStateSnapshot {
-        return pr_review_venom.loadStateSnapshot(self, state_path);
+    pub fn writeWorkspaceFile(self: *Session, absolute_path: []const u8, content: []const u8) !void {
+        const host_path = try self.resolveWorkspaceHostPath(absolute_path);
+        defer self.allocator.free(host_path);
+
+        const parent = std.fs.path.dirname(host_path) orelse return error.InvalidPayload;
+        mounts_venom.ensurePathExists(parent) catch |err| switch (err) {
+            error.PathAlreadyExists,
+            error.NotDir,
+            error.AccessDenied,
+            => return error.InvalidPayload,
+            else => return err,
+        };
+
+        const file = if (std.fs.path.isAbsolute(host_path))
+            try std.fs.createFileAbsolute(host_path, .{ .truncate = true })
+        else
+            try std.fs.cwd().createFile(host_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(content);
     }
 
     pub fn replaceOwnedString(self: *Session, target: *[]u8, value: []const u8) !void {
@@ -7501,150 +7409,6 @@ pub const Session = struct {
         return std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
     }
 
-    fn renderPrReviewStringArg(
-        self: *Session,
-        overrides: ?std.json.ObjectMap,
-        names: []const []const u8,
-        default: ?[]const u8,
-    ) ![]u8 {
-        return pr_review_venom.renderPrReviewStringArg(self, overrides, names, default);
-    }
-
-    fn renderPrReviewU64Arg(
-        self: *Session,
-        overrides: ?std.json.ObjectMap,
-        names: []const []const u8,
-        default: ?u64,
-    ) ![]u8 {
-        return pr_review_venom.renderPrReviewU64Arg(self, overrides, names, default);
-    }
-
-    fn renderPrReviewBoolArg(
-        self: *Session,
-        overrides: ?std.json.ObjectMap,
-        names: []const []const u8,
-        default: ?bool,
-    ) ![]u8 {
-        return pr_review_venom.renderPrReviewBoolArg(self, overrides, names, default);
-    }
-
-    pub fn buildPrReviewGitHubSyncRequestJson(
-        self: *Session,
-        context: PrReviewContextSnapshot,
-        overrides: ?std.json.ObjectMap,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewGitHubSyncRequestJson(self, context, overrides);
-    }
-
-    pub fn buildPrReviewGitSyncCheckoutRequestJson(
-        self: *Session,
-        context: PrReviewContextSnapshot,
-        overrides: ?std.json.ObjectMap,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewGitSyncCheckoutRequestJson(self, context, overrides);
-    }
-
-    pub fn buildPrReviewGitStatusRequestJson(
-        self: *Session,
-        context: PrReviewContextSnapshot,
-        overrides: ?std.json.ObjectMap,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewGitStatusRequestJson(self, context, overrides);
-    }
-
-    pub fn buildPrReviewGitDiffRangeRequestJson(
-        self: *Session,
-        context: PrReviewContextSnapshot,
-        overrides: ?std.json.ObjectMap,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewGitDiffRangeRequestJson(self, context, overrides);
-    }
-
-    pub fn buildPrReviewGitHubPublishRequestJson(
-        self: *Session,
-        context: PrReviewContextSnapshot,
-        recommendation_value: std.json.Value,
-        review_comment: ?[]const u8,
-        thread_actions_value: ?std.json.Value,
-        overrides: ?std.json.ObjectMap,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewGitHubPublishRequestJson(
-            self,
-            context,
-            recommendation_value,
-            review_comment,
-            thread_actions_value,
-            overrides,
-        );
-    }
-
-    pub fn buildPrReviewTerminalCreateRequestJson(self: *Session, checkout_path: []const u8) ![]u8 {
-        return pr_review_venom.buildPrReviewTerminalCreateRequestJson(self, checkout_path);
-    }
-
-    pub fn buildPrReviewValidationExecRequestJson(
-        self: *Session,
-        command_value: std.json.Value,
-        checkout_path: []const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewValidationExecRequestJson(self, command_value, checkout_path);
-    }
-
-    fn buildPrReviewServiceArtifactPayloadJson(
-        self: *Session,
-        service_path: []const u8,
-        invoke_path: []const u8,
-        request_payload_json: []const u8,
-        result_payload_json: []const u8,
-        status_payload_json: ?[]const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewServiceArtifactPayloadJson(
-            self,
-            service_path,
-            invoke_path,
-            request_payload_json,
-            result_payload_json,
-            status_payload_json,
-        );
-    }
-
-    pub fn invokePrReviewServiceCapture(
-        self: *Session,
-        store: *mission_store_mod.MissionStore,
-        mission_id: []const u8,
-        stage: []const u8,
-        summary: []const u8,
-        service_path: []const u8,
-        invoke_path: []const u8,
-        request_payload: []const u8,
-        artifact_root: []const u8,
-        artifact_relative_path: []const u8,
-        artifact_kind: []const u8,
-    ) !pr_review_venom.ServiceCapture {
-        return pr_review_venom.invokePrReviewServiceCapture(
-            self,
-            store,
-            mission_id,
-            stage,
-            summary,
-            service_path,
-            invoke_path,
-            request_payload,
-            artifact_root,
-            artifact_relative_path,
-            artifact_kind,
-        );
-    }
-
-    pub fn applyPrReviewContextFromGitHubSyncPayload(
-        self: *Session,
-        context: *PrReviewContextSnapshot,
-        state: *PrReviewStateSnapshot,
-        payload_json: []const u8,
-    ) !void {
-        return pr_review_venom.applyPrReviewContextFromGitHubSyncPayload(self, context, state, payload_json);
-    }
-
     pub fn extractTerminalExitCodeFromToolPayload(self: *Session, payload_json: []const u8) !?i32 {
         var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, payload_json, .{});
         defer parsed.deinit();
@@ -7660,390 +7424,6 @@ pub const Session = struct {
             },
             else => return error.InvalidPayload,
         };
-    }
-
-    pub fn applyPrReviewContextFromGitSyncPayload(
-        self: *Session,
-        context: *PrReviewContextSnapshot,
-        state: *PrReviewStateSnapshot,
-        payload_json: []const u8,
-    ) !void {
-        return pr_review_venom.applyPrReviewContextFromGitSyncPayload(self, context, state, payload_json);
-    }
-
-    pub fn applyPrReviewContextFromGitStatusPayload(
-        self: *Session,
-        context: *PrReviewContextSnapshot,
-        state: *PrReviewStateSnapshot,
-        payload_json: []const u8,
-    ) !void {
-        return pr_review_venom.applyPrReviewContextFromGitStatusPayload(self, context, state, payload_json);
-    }
-
-    pub fn applyPrReviewCommonStateFields(self: *Session, args_obj: std.json.ObjectMap, state: *PrReviewStateSnapshot) !void {
-        return pr_review_venom.applyPrReviewCommonStateFields(self, args_obj, state);
-    }
-
-    fn resolvePrReviewArtifactPath(self: *Session, artifact_root: []const u8, artifact_relative_path: []const u8) ![]u8 {
-        return pr_review_venom.resolvePrReviewArtifactPath(self, artifact_root, artifact_relative_path);
-    }
-
-    pub fn writePrReviewJsonArtifact(self: *Session, artifact_root: []const u8, artifact_relative_path: []const u8, value: std.json.Value) ![]u8 {
-        return pr_review_venom.writePrReviewJsonArtifact(self, artifact_root, artifact_relative_path, value);
-    }
-
-    pub fn writePrReviewArtifactPayload(self: *Session, artifact_root: []const u8, artifact_relative_path: []const u8, payload_json: []const u8) ![]u8 {
-        return pr_review_venom.writePrReviewArtifactPayload(self, artifact_root, artifact_relative_path, payload_json);
-    }
-
-    pub fn writePrReviewTextArtifact(self: *Session, artifact_root: []const u8, artifact_relative_path: []const u8, content: []const u8) ![]u8 {
-        return pr_review_venom.writePrReviewTextArtifact(self, artifact_root, artifact_relative_path, content);
-    }
-
-    pub fn buildPrReviewContextPayloadJson(
-        self: *Session,
-        provider: []const u8,
-        repo_key: []const u8,
-        pr_number: u64,
-        pr_url: []const u8,
-        base_branch: []const u8,
-        base_sha: []const u8,
-        head_branch: []const u8,
-        head_sha: []const u8,
-        checkout_path: []const u8,
-        review_policy_paths_json: []const u8,
-        default_review_commands_json: []const u8,
-        approval_policy_json: []const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewContextPayloadJson(
-            self,
-            provider,
-            repo_key,
-            pr_number,
-            pr_url,
-            base_branch,
-            base_sha,
-            head_branch,
-            head_sha,
-            checkout_path,
-            review_policy_paths_json,
-            default_review_commands_json,
-            approval_policy_json,
-        );
-    }
-
-    pub fn buildDefaultPrReviewStatePayloadJson(self: *Session, head_sha: []const u8) ![]u8 {
-        return pr_review_venom.buildDefaultPrReviewStatePayloadJson(self, head_sha);
-    }
-
-    pub fn buildPrReviewStatePayloadJson(self: *Session, state: PrReviewStateSnapshot) ![]u8 {
-        return pr_review_venom.buildPrReviewStatePayloadJson(self, state);
-    }
-
-    pub fn buildPrReviewStartDetailJson(
-        self: *Session,
-        mission_json: []const u8,
-        provider: []const u8,
-        repo_key: []const u8,
-        pr_number: u64,
-        pr_url: []const u8,
-        checkout_path: []const u8,
-        context_path: []const u8,
-        state_path: []const u8,
-        artifact_root: []const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewStartDetailJson(
-            self,
-            mission_json,
-            provider,
-            repo_key,
-            pr_number,
-            pr_url,
-            checkout_path,
-            context_path,
-            state_path,
-            artifact_root,
-        );
-    }
-
-    pub fn buildPrReviewIntakeDetailJson(
-        self: *Session,
-        mission_json: []const u8,
-        provider: []const u8,
-        repo_key: []const u8,
-        pr_number: u64,
-        pr_url: []const u8,
-        checkout_path: []const u8,
-        context_path: []const u8,
-        state_path: []const u8,
-        artifact_root: []const u8,
-        provider_sync_path: ?[]const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewIntakeDetailJson(
-            self,
-            mission_json,
-            provider,
-            repo_key,
-            pr_number,
-            pr_url,
-            checkout_path,
-            context_path,
-            state_path,
-            artifact_root,
-            provider_sync_path,
-        );
-    }
-
-    pub fn buildPrReviewSyncDetailJson(
-        self: *Session,
-        mission_json: []const u8,
-        phase: []const u8,
-        state_path: []const u8,
-        thread_actions_path: ?[]const u8,
-        provider_sync_path: ?[]const u8,
-        checkout_sync_path: ?[]const u8,
-        repo_status_path: ?[]const u8,
-        diff_range_path: ?[]const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewSyncDetailJson(
-            self,
-            mission_json,
-            phase,
-            state_path,
-            thread_actions_path,
-            provider_sync_path,
-            checkout_sync_path,
-            repo_status_path,
-            diff_range_path,
-        );
-    }
-
-    pub fn buildPrReviewValidationDetailJson(
-        self: *Session,
-        mission_json: []const u8,
-        phase: []const u8,
-        state_path: []const u8,
-        validation_path: []const u8,
-        session_create_path: ?[]const u8,
-        command_paths_json: []const u8,
-        session_close_path: ?[]const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewValidationDetailJson(
-            self,
-            mission_json,
-            phase,
-            state_path,
-            validation_path,
-            session_create_path,
-            command_paths_json,
-            session_close_path,
-        );
-    }
-
-    pub fn buildPrReviewReviewDetailJson(
-        self: *Session,
-        mission_json: []const u8,
-        phase: []const u8,
-        state_path: []const u8,
-        findings_path: []const u8,
-        recommendation_path: []const u8,
-        review_comment_path: ?[]const u8,
-        thread_actions_path: ?[]const u8,
-        publish_review_path: ?[]const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewReviewDetailJson(
-            self,
-            mission_json,
-            phase,
-            state_path,
-            findings_path,
-            recommendation_path,
-            review_comment_path,
-            thread_actions_path,
-            publish_review_path,
-        );
-    }
-
-    pub fn buildPrReviewSuccessResultJson(self: *Session, op: PrReviewOp, result_json: []const u8) ![]u8 {
-        return pr_review_venom.buildPrReviewSuccessResultJson(self, op, result_json);
-    }
-
-    pub fn buildPrReviewPartialFailureResultJson(
-        self: *Session,
-        op: PrReviewOp,
-        result_json: []const u8,
-        code: []const u8,
-        message: []const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewPartialFailureResultJson(self, op, result_json, code, message);
-    }
-
-    pub fn buildPrReviewFailureResultJson(self: *Session, op: PrReviewOp, code: []const u8, message: []const u8) ![]u8 {
-        return pr_review_venom.buildPrReviewFailureResultJson(self, op, code, message);
-    }
-
-    pub fn buildPrReviewValidationReportJson(
-        self: *Session,
-        status: []const u8,
-        summary: []const u8,
-        session_create_path: ?[]const u8,
-        commands_json: []const u8,
-        session_close_path: ?[]const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewValidationReportJson(
-            self,
-            status,
-            summary,
-            session_create_path,
-            commands_json,
-            session_close_path,
-        );
-    }
-
-    pub fn buildPrReviewValidationCommandEntryJson(
-        self: *Session,
-        index: usize,
-        request_payload_json: []const u8,
-        capture_path: []const u8,
-        result_payload_json: []const u8,
-        exit_code: ?i32,
-        error_code: ?[]const u8,
-        error_message: ?[]const u8,
-    ) ![]u8 {
-        return pr_review_venom.buildPrReviewValidationCommandEntryJson(
-            self,
-            index,
-            request_payload_json,
-            capture_path,
-            result_payload_json,
-            exit_code,
-            error_code,
-            error_message,
-        );
-    }
-
-    fn seedAgentMissionsNamespace(self: *Session, missions_dir: u32) !void {
-        return missions_venom.seedNamespace(self, missions_dir);
-    }
-
-    fn seedAgentMissionsNamespaceAt(self: *Session, missions_dir: u32, base_path: []const u8) !void {
-        return missions_venom.seedNamespaceAt(self, missions_dir, base_path);
-    }
-
-    pub const MissionOp = missions_venom.Op;
-
-    fn handleMissionsNamespaceWrite(self: *Session, special: SpecialKind, node_id: u32, raw_input: []const u8) !WriteOutcome {
-        return .{ .written = try missions_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
-    }
-
-    const ResolvedMissionBootstrapContract = missions_venom.ResolvedBootstrapContract;
-
-    pub fn parseMissionContractInput(self: *Session, args_obj: std.json.ObjectMap) !?mission_store_mod.MissionContractInput {
-        return missions_venom.parseMissionContractInput(self, args_obj);
-    }
-
-    pub fn parseMissionContractUpdateInput(self: *Session, args_obj: std.json.ObjectMap) !?mission_store_mod.MissionContractUpdateInput {
-        return missions_venom.parseMissionContractUpdateInput(self, args_obj);
-    }
-
-    pub fn resolveMissionBootstrapContract(
-        self: *Session,
-        mission: mission_store_mod.MissionRecord,
-        args_obj: std.json.ObjectMap,
-    ) !ResolvedMissionBootstrapContract {
-        return missions_venom.resolveMissionBootstrapContract(self, mission, args_obj);
-    }
-
-    pub fn resolveMissionContractHostPath(self: *Session, absolute_path: []const u8) ![]u8 {
-        return missions_venom.resolveContractHostPath(self, absolute_path);
-    }
-
-    pub fn ensureMissionContractDirectory(self: *Session, absolute_path: []const u8) !void {
-        return missions_venom.ensureContractDirectory(self, absolute_path);
-    }
-
-    pub fn writeMissionContractFile(self: *Session, absolute_path: []const u8, content: []const u8) !void {
-        return missions_venom.writeContractFile(self, absolute_path, content);
-    }
-
-    pub fn normalizeMissionAbsolutePath(self: *Session, raw: []const u8) ![]u8 {
-        return missions_venom.normalizeMissionAbsolutePath(self, raw);
-    }
-
-    pub fn deriveMissionServiceInvokePath(self: *Session, service_path: []const u8) ![]u8 {
-        return missions_venom.deriveMissionServiceInvokePath(self, service_path);
-    }
-
-    pub fn buildMissionServiceInvokeRequestPayload(self: *Session, args_obj: std.json.ObjectMap) ![]u8 {
-        return missions_venom.buildMissionServiceInvokeRequestPayload(self, args_obj);
-    }
-
-    pub fn buildMissionServiceInvocationDetailJson(
-        self: *Session,
-        mission_json: []const u8,
-        service_path: []const u8,
-        invoke_path: []const u8,
-        request_payload_json: []const u8,
-        result_payload_json: []const u8,
-        status_payload_json: ?[]const u8,
-    ) ![]u8 {
-        return missions_venom.buildMissionServiceInvocationDetailJson(
-            self,
-            mission_json,
-            service_path,
-            invoke_path,
-            request_payload_json,
-            result_payload_json,
-            status_payload_json,
-        );
-    }
-
-    pub fn buildMissionBootstrapContractDetailJson(
-        self: *Session,
-        mission_json: []const u8,
-        context_path: []const u8,
-        state_path: []const u8,
-        artifact_root: []const u8,
-    ) ![]u8 {
-        return missions_venom.buildMissionBootstrapContractDetailJson(self, mission_json, context_path, state_path, artifact_root);
-    }
-
-    pub fn buildMissionSuccessResultJson(self: *Session, op: MissionOp, result_json: []const u8) ![]u8 {
-        return missions_venom.buildMissionSuccessResultJson(self, op, result_json);
-    }
-
-    pub fn buildMissionPartialFailureResultJson(
-        self: *Session,
-        op: MissionOp,
-        result_json: []const u8,
-        code: []const u8,
-        message: []const u8,
-    ) ![]u8 {
-        return missions_venom.buildMissionPartialFailureResultJson(self, op, result_json, code, message);
-    }
-
-    pub fn buildMissionListJson(self: *Session, missions: []const mission_store_mod.MissionRecord) ![]u8 {
-        return missions_venom.buildMissionListJson(self, missions);
-    }
-
-    pub fn buildMissionRecordJson(self: *Session, mission: mission_store_mod.MissionRecord) ![]u8 {
-        return missions_venom.buildMissionRecordJson(self, mission);
-    }
-
-    pub fn buildMissionContractJson(self: *Session, contract: mission_store_mod.MissionContract) ![]u8 {
-        return missions_venom.buildMissionContractJson(self, contract);
-    }
-
-    pub fn buildMissionArtifactJson(self: *Session, artifact: mission_store_mod.MissionArtifact) ![]u8 {
-        return missions_venom.buildMissionArtifactJson(self, artifact);
-    }
-
-    pub fn buildMissionEventJson(self: *Session, event: mission_store_mod.MissionEvent) ![]u8 {
-        return missions_venom.buildMissionEventJson(self, event);
-    }
-
-    pub fn buildMissionApprovalJson(self: *Session, approval: mission_store_mod.MissionApproval) ![]u8 {
-        return missions_venom.buildMissionApprovalJson(self, approval);
     }
 
     pub fn renderJsonValue(self: *Session, value: std.json.Value) ![]u8 {
@@ -10018,7 +9398,7 @@ pub const Session = struct {
         if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/shared_data")) return null;
         if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/services")) return null;
 
-        return self.resolveMissionContractHostPath(normalized_path) catch null;
+        return self.resolveWorkspaceHostPath(normalized_path) catch null;
     }
 
     fn markDynamicDirectoryStale(self: *Session, node_id: u32) void {
@@ -10037,7 +9417,7 @@ pub const Session = struct {
         const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
         if (!pathMatchesPrefixBoundary(normalized_path, local_fs_world_prefix)) return null;
         if (std.mem.eql(u8, normalized_path, local_fs_world_prefix)) return null;
-        return self.resolveMissionContractHostPath(normalized_path) catch null;
+        return self.resolveWorkspaceHostPath(normalized_path) catch null;
     }
 
     fn namespaceAbsolutePathParent(path: []const u8) ?[]const u8 {
@@ -10109,7 +9489,7 @@ pub const Session = struct {
 
         const direct_workspace_root = if (cwd) |value| blk: {
             if (!pathMatchesPrefixBoundary(value, local_fs_world_prefix)) break :blk null;
-            break :blk try self.resolveMissionContractHostPath(local_fs_world_prefix);
+            break :blk try self.resolveWorkspaceHostPath(local_fs_world_prefix);
         } else null;
         defer if (direct_workspace_root) |value| self.allocator.free(value);
 
@@ -11304,13 +10684,6 @@ fn sameOptionalString(left: ?[]const u8, right: ?[]const u8) bool {
     return right == null;
 }
 
-fn isActiveMissionState(state: mission_store_mod.MissionState) bool {
-    return switch (state) {
-        .completed, .failed, .cancelled => false,
-        else => true,
-    };
-}
-
 fn kindName(kind: NodeKind) []const u8 {
     return switch (kind) {
         .dir => "dir",
@@ -11792,22 +11165,6 @@ fn runTestCommandCapture(
     }
 }
 
-fn extractMissionIdFromResultPayload(
-    allocator: std.mem.Allocator,
-    result_payload: []const u8,
-) ![]u8 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result_payload, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.TestExpectedResponse;
-    const result_value = parsed.value.object.get("result") orelse return error.TestExpectedResponse;
-    if (result_value != .object) return error.TestExpectedResponse;
-    const mission_value = result_value.object.get("mission") orelse return error.TestExpectedResponse;
-    if (mission_value != .object) return error.TestExpectedResponse;
-    const mission_id_value = mission_value.object.get("mission_id") orelse return error.TestExpectedResponse;
-    if (mission_id_value != .string or mission_id_value.string.len == 0) return error.TestExpectedResponse;
-    return allocator.dupe(u8, mission_id_value.string);
-}
-
 fn decodeReadResponseData(allocator: std.mem.Allocator, frame: []const u8) ![]u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, frame, .{});
     defer parsed.deinit();
@@ -11832,7 +11189,7 @@ test "acheron_session: preferred service paths use workspace bindings when avail
     defer control_plane.deinit();
 
     const project_json = try control_plane.createProject(
-        "{\"name\":\"SessionServicePaths\",\"vision\":\"SessionServicePaths\",\"template_id\":\"github\"}",
+        "{\"name\":\"SessionServicePaths\",\"vision\":\"SessionServicePaths\"}",
     );
     defer allocator.free(project_json);
 
@@ -11862,13 +11219,13 @@ test "acheron_session: preferred service paths use workspace bindings when avail
     );
     defer bound_session.deinit();
 
-    const bound_github_path = try bound_session.resolvePreferredServicePath("github_pr", "/control/sync.json");
-    defer allocator.free(bound_github_path);
-    try std.testing.expectEqualStrings("/services/github_pr/control/sync.json", bound_github_path);
+    const bound_home_path = try bound_session.resolvePreferredServicePath("home", "/control/ensure.json");
+    defer allocator.free(bound_home_path);
+    try std.testing.expectEqualStrings("/services/home/control/ensure.json", bound_home_path);
 
-    const bound_missions_path = try bound_session.resolvePreferredServicePath("missions", "/control/request_approval.json");
-    defer allocator.free(bound_missions_path);
-    try std.testing.expectEqualStrings("/services/missions/control/request_approval.json", bound_missions_path);
+    const bound_git_path = try bound_session.resolvePreferredServicePath("git", "/control/invoke.json");
+    defer allocator.free(bound_git_path);
+    try std.testing.expectEqualStrings("/services/git/control/invoke.json", bound_git_path);
 
     var unbound_session = try Session.initWithOptions(
         allocator,
@@ -11881,9 +11238,9 @@ test "acheron_session: preferred service paths use workspace bindings when avail
     );
     defer unbound_session.deinit();
 
-    const unbound_github_path = try unbound_session.resolvePreferredServicePath("github_pr", "/control/sync.json");
-    defer allocator.free(unbound_github_path);
-    try std.testing.expectEqualStrings("/global/github_pr/control/sync.json", unbound_github_path);
+    const unbound_home_path = try unbound_session.resolvePreferredServicePath("home", "/control/ensure.json");
+    defer allocator.free(unbound_home_path);
+    try std.testing.expectEqualStrings("/global/home/control/ensure.json", unbound_home_path);
 }
 
 test "acheron_session: workspace AGENTS contract is seeded and preserves user notes" {
@@ -13974,319 +13331,6 @@ test "acheron_session: services terminal exec updates live service status and re
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "\"operation\":\"exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "\"ok\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "dGVybWluYWwtb2s=") != null);
-}
-
-test "acheron_session: missions namespace enforces mission ownership across agents" {
-    const allocator = std.testing.allocator;
-
-    var mission_store = try mission_store_mod.MissionStore.initWithPath(allocator, null);
-    defer mission_store.deinit();
-
-    const runtime_handle_a = try runtime_handle_mod.RuntimeHandle.createUnavailable(
-        allocator,
-        "execution_failed",
-        "runtime unavailable",
-    );
-    defer runtime_handle_a.destroy();
-
-    const runtime_handle_b = try runtime_handle_mod.RuntimeHandle.createUnavailable(
-        allocator,
-        "execution_failed",
-        "runtime unavailable",
-    );
-    defer runtime_handle_b.destroy();
-
-    var session_a = try Session.initWithOptions(
-        allocator,
-        runtime_handle_a,
-        "agent-a",
-        .{
-            .mission_store = &mission_store,
-            .actor_type = "agent",
-            .actor_id = "worker-a",
-        },
-    );
-    defer session_a.deinit();
-
-    var session_b = try Session.initWithOptions(
-        allocator,
-        runtime_handle_b,
-        "agent-b",
-        .{
-            .mission_store = &mission_store,
-            .actor_type = "agent",
-            .actor_id = "worker-b",
-        },
-    );
-    defer session_b.deinit();
-
-    try protocolWriteFile(
-        &session_a,
-        allocator,
-        380,
-        381,
-        &.{ "agents", "self", "missions", "control", "create.json" },
-        "{\"use_case\":\"pr_review\",\"title\":\"Review PR 91\"}",
-        980,
-    );
-
-    const create_result = try protocolReadFile(
-        &session_a,
-        allocator,
-        382,
-        383,
-        &.{ "agents", "self", "missions", "result.json" },
-        981,
-    );
-    defer allocator.free(create_result);
-    const mission_id = try extractMissionIdFromResultPayload(allocator, create_result);
-    defer allocator.free(mission_id);
-
-    try protocolWriteFile(
-        &session_b,
-        allocator,
-        384,
-        385,
-        &.{ "agents", "self", "missions", "control", "list.json" },
-        "{}",
-        982,
-    );
-
-    const list_result = try protocolReadFile(
-        &session_b,
-        allocator,
-        386,
-        387,
-        &.{ "agents", "self", "missions", "result.json" },
-        983,
-    );
-    defer allocator.free(list_result);
-    try std.testing.expect(std.mem.indexOf(u8, list_result, "\"operation\":\"list\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, list_result, "\"count\":0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, list_result, mission_id) == null);
-
-    const get_payload = try std.fmt.allocPrint(allocator, "{{\"mission_id\":\"{s}\"}}", .{mission_id});
-    defer allocator.free(get_payload);
-    const get_error = try protocolWriteFileExpectError(
-        &session_b,
-        allocator,
-        388,
-        389,
-        &.{ "agents", "self", "missions", "control", "get.json" },
-        get_payload,
-        984,
-        "forbidden",
-    );
-    defer allocator.free(get_error);
-
-    const resume_payload = try std.fmt.allocPrint(allocator, "{{\"mission_id\":\"{s}\",\"stage\":\"reviewing\"}}", .{mission_id});
-    defer allocator.free(resume_payload);
-    const resume_error = try protocolWriteFileExpectError(
-        &session_b,
-        allocator,
-        390,
-        391,
-        &.{ "agents", "self", "missions", "control", "resume.json" },
-        resume_payload,
-        985,
-        "forbidden",
-    );
-    defer allocator.free(resume_error);
-}
-
-test "acheron_session: pr_review run_validation denied when shell_exec is blocked" {
-    const allocator = std.testing.allocator;
-
-    var mission_store = try mission_store_mod.MissionStore.initWithPath(allocator, null);
-    defer mission_store.deinit();
-
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try tmp_dir.dir.makePath("exports");
-    try tmp_dir.dir.makePath("agents");
-    try tmp_dir.dir.writeFile(.{
-        .sub_path = "agents/reviewer-denied_config.json",
-        .data = "{\"agent_id\":\"reviewer-denied\",\"primary\":{\"denied_tools\":[\"shell_exec\"]}}",
-    });
-
-    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(root);
-    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
-    defer allocator.free(exports_dir);
-    const agents_dir = try std.fs.path.join(allocator, &.{ root, "agents" });
-    defer allocator.free(agents_dir);
-
-    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
-        allocator,
-        "execution_failed",
-        "runtime unavailable",
-    );
-    defer runtime_handle.destroy();
-
-    var session = try Session.initWithOptions(
-        allocator,
-        runtime_handle,
-        "reviewer-host",
-        .{
-            .mission_store = &mission_store,
-            .local_fs_export_root = exports_dir,
-            .agents_dir = agents_dir,
-            .actor_type = "agent",
-            .actor_id = "reviewer-denied",
-        },
-    );
-    defer session.deinit();
-
-    try protocolWriteFile(
-        &session,
-        allocator,
-        732,
-        733,
-        &.{ "agents", "self", "pr_review", "control", "start.json" },
-        "{\"repo_key\":\"DeanoC/Spiderweb\",\"pr_number\":129,\"default_review_commands\":[\"printf validation-ok\"]}",
-        1816,
-    );
-
-    const start_result = try protocolReadFile(
-        &session,
-        allocator,
-        734,
-        735,
-        &.{ "agents", "self", "pr_review", "result.json" },
-        1817,
-    );
-    defer allocator.free(start_result);
-    const mission_id = try extractMissionIdFromResultPayload(allocator, start_result);
-    defer allocator.free(mission_id);
-
-    const validation_payload = try std.fmt.allocPrint(allocator, "{{\"mission_id\":\"{s}\"}}", .{mission_id});
-    defer allocator.free(validation_payload);
-    try protocolWriteFile(
-        &session,
-        allocator,
-        736,
-        737,
-        &.{ "agents", "self", "pr_review", "control", "run_validation.json" },
-        validation_payload,
-        1818,
-    );
-
-    const pr_review_result = try protocolReadFile(
-        &session,
-        allocator,
-        738,
-        739,
-        &.{ "agents", "self", "pr_review", "result.json" },
-        1819,
-    );
-    defer allocator.free(pr_review_result);
-    try std.testing.expect(std.mem.indexOf(u8, pr_review_result, "\"operation\":\"run_validation\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, pr_review_result, "\"ok\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, pr_review_result, "\"code\":\"tool_not_allowed\"") != null);
-
-    const terminal_current = try protocolReadFile(
-        &session,
-        allocator,
-        740,
-        741,
-        &.{ "nodes", "local", "venoms", "terminal", "current.json" },
-        1820,
-    );
-    defer allocator.free(terminal_current);
-    try std.testing.expect(std.mem.indexOf(u8, terminal_current, "\"session\":null") != null);
-}
-
-test "acheron_session: pr_review run_validation succeeds without interactive terminal sessions" {
-    const allocator = std.testing.allocator;
-
-    var mission_store = try mission_store_mod.MissionStore.initWithPath(allocator, null);
-    defer mission_store.deinit();
-
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    try tmp_dir.dir.makePath("exports");
-
-    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(root);
-    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
-    defer allocator.free(exports_dir);
-
-    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
-        allocator,
-        "execution_failed",
-        "runtime unavailable",
-    );
-    defer runtime_handle.destroy();
-
-    var session = try Session.initWithOptions(
-        allocator,
-        runtime_handle,
-        "reviewer-host",
-        .{
-            .mission_store = &mission_store,
-            .local_fs_export_root = exports_dir,
-            .actor_type = "agent",
-            .actor_id = "reviewer-host",
-        },
-    );
-    defer session.deinit();
-
-    try protocolWriteFile(
-        &session,
-        allocator,
-        1821,
-        1822,
-        &.{ "agents", "self", "pr_review", "control", "start.json" },
-        "{\"repo_key\":\"DeanoC/Spiderweb\",\"pr_number\":130,\"checkout_path\":\"/nodes/local/fs\",\"default_review_commands\":[\"printf validation-ok\"]}",
-        1823,
-    );
-
-    const start_result = try protocolReadFile(
-        &session,
-        allocator,
-        1824,
-        1825,
-        &.{ "agents", "self", "pr_review", "result.json" },
-        1826,
-    );
-    defer allocator.free(start_result);
-    const mission_id = try extractMissionIdFromResultPayload(allocator, start_result);
-    defer allocator.free(mission_id);
-
-    const validation_payload = try std.fmt.allocPrint(allocator, "{{\"mission_id\":\"{s}\"}}", .{mission_id});
-    defer allocator.free(validation_payload);
-    try protocolWriteFile(
-        &session,
-        allocator,
-        1827,
-        1828,
-        &.{ "agents", "self", "pr_review", "control", "run_validation.json" },
-        validation_payload,
-        1829,
-    );
-
-    const pr_review_result = try protocolReadFile(
-        &session,
-        allocator,
-        1830,
-        1831,
-        &.{ "agents", "self", "pr_review", "result.json" },
-        1832,
-    );
-    defer allocator.free(pr_review_result);
-    try std.testing.expect(std.mem.indexOf(u8, pr_review_result, "\"operation\":\"run_validation\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, pr_review_result, "\"ok\":true") != null);
-
-    const terminal_current = try protocolReadFile(
-        &session,
-        allocator,
-        1833,
-        1834,
-        &.{ "nodes", "local", "venoms", "terminal", "current.json" },
-        1835,
-    );
-    defer allocator.free(terminal_current);
-    try std.testing.expect(std.mem.indexOf(u8, terminal_current, "\"session\":null") != null);
 }
 
 test "acheron_session: local fs export rejects symlink targets outside export root" {

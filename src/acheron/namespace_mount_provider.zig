@@ -642,10 +642,11 @@ fn namespaceProviderOpen(ctx: *anyopaque, path: []const u8, flags: u32) !mount_p
     defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
     const node = try namespace_ctx.lookupNode(allocator, path);
+    const normalized_path = normalizeAbsolutePath(path);
 
     if (flagsRequireWrite(flags) and !node.writable) return error.ReadOnlyFilesystem;
 
-    const backing: HandleBacking = if (nodeIsDirectory(node))
+    var backing: HandleBacking = if (nodeIsDirectory(node))
         .{ .@"inline" = try allocator.dupe(u8, "") }
     else if (node.content_mode != null and
         (node.content_mode.? == .inline_snapshot or node.content_mode.? == .delta_snapshot))
@@ -653,8 +654,20 @@ fn namespaceProviderOpen(ctx: *anyopaque, path: []const u8, flags: u32) !mount_p
     else
         .remote;
 
+    if (flagsRequireWrite(flags) and hasTruncateOnOpen(flags) and !nodeIsDirectory(node.*)) {
+        _ = try namespace_ctx.client.controlMountFileWriteWithOptions(
+            normalized_path,
+            0,
+            "",
+            0,
+        );
+        namespace_ctx.mount_graph.markStale();
+        backing.deinit(allocator);
+        backing = .{ .@"inline" = try allocator.dupe(u8, "") };
+    }
+
     return namespace_ctx.storeHandle(allocator, .{
-        .path = try allocator.dupe(u8, normalizeAbsolutePath(path)),
+        .path = try allocator.dupe(u8, normalized_path),
         .node_id = node.id,
         .flags = flags,
         .writable = node.writable,
@@ -701,6 +714,13 @@ fn namespaceProviderCreate(ctx: *anyopaque, path: []const u8, mode: u32, flags: 
     const allocator = namespace_ctx.client.allocator;
     const normalized_path = normalizeAbsolutePath(path);
     const parent_path = parentPath(normalized_path);
+    if (hasExclusiveCreate(flags)) {
+        _ = namespace_ctx.lookupNode(allocator, normalized_path) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (namespace_ctx.mount_graph.lookupPath(normalized_path) != null) return error.AlreadyExists;
+    }
     _ = try namespace_ctx.ensureDirectoryNode(allocator, parent_path);
 
     // Materialize an empty file immediately so follow-up path-based operations
@@ -1001,6 +1021,14 @@ fn flagsRequireWrite(flags: u32) bool {
     return (flags & 0x3) != 0;
 }
 
+fn hasTruncateOnOpen(flags: u32) bool {
+    return (flags & 0x200) != 0 or (flags & 0x400) != 0;
+}
+
+fn hasExclusiveCreate(flags: u32) bool {
+    return (flags & 0x80) != 0 or (flags & 0x800) != 0;
+}
+
 fn currentProcessAttrOwner() struct { uid: u32, gid: u32 } {
     return switch (builtin.os.tag) {
         .linux => .{ .uid = @intCast(std.os.linux.getuid()), .gid = @intCast(std.os.linux.getgid()) },
@@ -1188,4 +1216,14 @@ test "namespace_mount_provider: scoped snapshot merges do not duplicate ancestor
     try std.testing.expect(child_names.contains("AGENTS.md"));
     try std.testing.expect(child_names.contains("validate_game.py"));
     try std.testing.expect(child_names.contains(".spiderweb"));
+}
+
+test "namespace_mount_provider: recognizes truncate and exclusive flag variants" {
+    try std.testing.expect(hasTruncateOnOpen(0x200));
+    try std.testing.expect(hasTruncateOnOpen(0x400));
+    try std.testing.expect(!hasTruncateOnOpen(0));
+
+    try std.testing.expect(hasExclusiveCreate(0x80));
+    try std.testing.expect(hasExclusiveCreate(0x800));
+    try std.testing.expect(!hasExclusiveCreate(0));
 }

@@ -2477,138 +2477,9 @@ const AgentRuntimeRegistry = struct {
         return self.auth_tokens.rotateRoleToken(role);
     }
 
-    const ConnectGateError = struct {
-        code: []const u8,
-        message: []const u8,
-    };
-
     const InitialSessionBinding = struct {
         binding: SessionBinding,
-        connect_gate_error: ?ConnectGateError = null,
-        bootstrap_only: bool = false,
     };
-
-    const ProjectSetupSnapshot = struct {
-        vision: ?[]u8 = null,
-        mount_count: usize = 0,
-
-        fn deinit(self: *ProjectSetupSnapshot, allocator: std.mem.Allocator) void {
-            if (self.vision) |value| allocator.free(value);
-            self.* = undefined;
-        }
-    };
-
-    const ProjectSetupHint = struct {
-        required: bool = false,
-        message: ?[]u8 = null,
-        project_id: ?[]u8 = null,
-        project_vision: ?[]u8 = null,
-
-        fn deinit(self: *ProjectSetupHint, allocator: std.mem.Allocator) void {
-            if (self.message) |value| allocator.free(value);
-            if (self.project_id) |value| allocator.free(value);
-            if (self.project_vision) |value| allocator.free(value);
-            self.* = undefined;
-        }
-    };
-
-    fn projectSetupSnapshot(self: *AgentRuntimeRegistry, project_id: []const u8, is_admin: bool) !ProjectSetupSnapshot {
-        const escaped_project = try unified.jsonEscape(self.allocator, project_id);
-        defer self.allocator.free(escaped_project);
-        const payload = try std.fmt.allocPrint(self.allocator, "{{\"project_id\":\"{s}\"}}", .{escaped_project});
-        defer self.allocator.free(payload);
-        const project_json = try self.control_plane.getProjectWithRole(payload, is_admin);
-        defer self.allocator.free(project_json);
-
-        var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, project_json, .{});
-        defer parsed.deinit();
-        if (parsed.value != .object) return error.InvalidResponse;
-
-        const vision_owned = if (parsed.value.object.get("vision")) |vision_val| blk: {
-            if (vision_val != .string) break :blk null;
-            if (vision_val.string.len == 0) break :blk null;
-            break :blk try self.allocator.dupe(u8, vision_val.string);
-        } else null;
-
-        var mount_count: usize = 0;
-        if (parsed.value.object.get("mounts")) |mounts_val| {
-            if (mounts_val == .array) mount_count = mounts_val.array.items.len;
-        }
-
-        return .{
-            .vision = vision_owned,
-            .mount_count = mount_count,
-        };
-    }
-
-    fn projectSetupHint(
-        self: *AgentRuntimeRegistry,
-        role: ConnectionRole,
-        active_binding: SessionBinding,
-        bootstrap_only: bool,
-    ) !ProjectSetupHint {
-        var hint = ProjectSetupHint{};
-        errdefer hint.deinit(self.allocator);
-
-        if (active_binding.project_id) |project_id| {
-            hint.project_id = try self.allocator.dupe(u8, project_id);
-        } else {
-            return hint;
-        }
-
-        if (bootstrap_only and role == .access) {
-            hint.required = true;
-            hint.message = try self.allocator.dupe(
-                u8,
-                "Workspace setup required: use spiderweb-control workspace_create, mount the workspace locally, then start Spider Monkey against that mounted folder.",
-            );
-            return hint;
-        }
-
-        const project_id = hint.project_id.?;
-        if (std.mem.eql(u8, project_id, system_project_id)) return hint;
-
-        var snapshot = self.projectSetupSnapshot(project_id, role == .access) catch |err| {
-            std.log.warn("failed to compute project setup snapshot for {s}: {s}", .{ project_id, @errorName(err) });
-            return hint;
-        };
-        defer snapshot.deinit(self.allocator);
-
-        if (snapshot.vision) |vision| {
-            hint.project_vision = try self.allocator.dupe(u8, vision);
-        }
-
-        const vision_text = snapshot.vision orelse "";
-        const vision_missing = std.mem.trim(u8, vision_text, " \t\r\n").len == 0;
-        const mounts_missing = snapshot.mount_count == 0;
-        const first_agent = self.firstAgentForProject(role, project_id);
-        defer if (first_agent) |agent_id| self.allocator.free(agent_id);
-        const agent_missing = first_agent == null;
-        hint.required = vision_missing or mounts_missing or agent_missing;
-
-        if (hint.required) {
-            hint.message = if (agent_missing)
-                try std.fmt.allocPrint(
-                    self.allocator,
-                    "Workspace setup required for {s}: attach an external worker to the mounted workspace.",
-                    .{project_id},
-                )
-            else if (mounts_missing)
-                try std.fmt.allocPrint(
-                    self.allocator,
-                    "Project setup required for {s}: no workspace mounts are configured yet.",
-                    .{project_id},
-                )
-            else
-                try std.fmt.allocPrint(
-                    self.allocator,
-                    "Project setup required for {s}: project vision is missing.",
-                    .{project_id},
-                );
-        }
-
-        return hint;
-    }
 
     fn dispatchRuntimeAgentControlForTarget(
         self: *AgentRuntimeRegistry,
@@ -2811,28 +2682,6 @@ const AgentRuntimeRegistry = struct {
         return true;
     }
 
-    fn hasNonSystemProject(self: *AgentRuntimeRegistry) bool {
-        const payload = self.control_plane.listProjects() catch return false;
-        defer self.allocator.free(payload);
-
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, payload, .{}) catch return false;
-        defer parsed.deinit();
-        if (parsed.value != .object) return false;
-        const projects = parsed.value.object.get("projects") orelse return false;
-        if (projects != .array) return false;
-        for (projects.array.items) |item| {
-            if (item != .object) continue;
-            const id_val = item.object.get("project_id") orelse continue;
-            if (id_val != .string) continue;
-            if (!std.mem.eql(u8, id_val.string, system_project_id)) return true;
-        }
-        return false;
-    }
-
-    fn isBootstrapOnlyState(self: *AgentRuntimeRegistry) bool {
-        return !self.hasNonSystemProject();
-    }
-
     fn firstAgentForProject(self: *AgentRuntimeRegistry, role: ConnectionRole, project_id: []const u8) ?[]u8 {
         const include_primary = role == .access and std.mem.eql(u8, project_id, system_project_id);
         return self.control_plane.firstProjectAgent(project_id, include_primary) catch null;
@@ -2874,11 +2723,9 @@ const AgentRuntimeRegistry = struct {
     }
 
     fn buildInitialSessionBinding(self: *AgentRuntimeRegistry, role: ConnectionRole) !InitialSessionBinding {
-        const bootstrap_only = self.isBootstrapOnlyState();
         if (try self.resolvePreferredBindingForRole(role)) |binding| {
             return .{
                 .binding = binding,
-                .bootstrap_only = bootstrap_only,
             };
         }
 
@@ -2890,14 +2737,6 @@ const AgentRuntimeRegistry = struct {
                 .project_id = null,
                 .project_token = null,
             },
-            .connect_gate_error = .{
-                .code = if (bootstrap_only) "provisioning_required" else "project_context_required",
-                .message = if (bootstrap_only)
-                    "no workspace is available; create one with spiderweb-control workspace_create, mount it, and start Spider Monkey"
-                else
-                    "workspace selection is required; call control.session_attach with workspace_id",
-            },
-            .bootstrap_only = bootstrap_only,
         };
     }
 
@@ -4473,8 +4312,6 @@ fn handleWebSocketConnection(
 
     var initial_binding = try runtime_registry.buildInitialSessionBinding(principal.role);
     defer initial_binding.binding.deinit(allocator);
-    var connect_gate_error = initial_binding.connect_gate_error;
-    var bootstrap_only_mode = initial_binding.bootstrap_only;
     try upsertSessionBinding(
         allocator,
         &session_bindings,
@@ -4564,19 +4401,6 @@ fn handleWebSocketConnection(
                             try writeFrameLocked(stream, &connection_write_mutex, "", .close);
                             return;
                         }
-                        if (connect_gate_error != null and !isConnectGateExemptControlType(control_type)) {
-                            const gate = connect_gate_error.?;
-                            const response = try unified.buildControlError(
-                                allocator,
-                                parsed.id,
-                                gate.code,
-                                gate.message,
-                            );
-                            defer allocator.free(response);
-                            try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                            continue;
-                        }
-
                         switch (control_type) {
                             .version => {
                                 validateControlVersionPayload(allocator, parsed.payload_json) catch |err| {
@@ -4880,8 +4704,6 @@ fn handleWebSocketConnection(
                                 const current_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 var previous_active_binding = try cloneSessionBinding(allocator, current_binding);
                                 defer previous_active_binding.deinit(allocator);
-                                const security_correlation = parsed.correlation_id orelse parsed.id;
-
                                 if (!isValidSessionKey(session_key)) {
                                     const response = try unified.buildControlError(
                                         allocator,
@@ -4921,29 +4743,6 @@ fn handleWebSocketConnection(
                                     attach_project_token = existing_binding.?.project_token;
                                 }
 
-                                if (std.mem.eql(u8, attach_agent_id, system_agent_id) and
-                                    !std.mem.eql(u8, attach_project_id, system_project_id))
-                                {
-                                    runtime_registry.appendSecurityAuditAndDebug(
-                                        current_binding.agent_id,
-                                        .session_attach,
-                                        principal.role,
-                                        security_correlation,
-                                        "session_attach_forbidden_primary_project",
-                                        false,
-                                        "forbidden",
-                                        "reserved system agent can only attach to the reserved system workspace",
-                                    );
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "forbidden",
-                                        "reserved system agent can only attach to the reserved system workspace",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
                                 const rebind_requested = if (existing_binding) |binding|
                                     !std.mem.eql(u8, binding.agent_id, attach_agent_id) or
                                         !optionalStringsEqual(binding.project_id, attach_project_id)
@@ -5034,8 +4833,6 @@ fn handleWebSocketConnection(
                                 defer allocator.free(response);
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 resetNamespaceSession(&namespace_session);
-                                connect_gate_error = null;
-                                bootstrap_only_mode = runtime_registry.isBootstrapOnlyState();
                                 runtime_registry.rememberPrincipalSession(
                                     principal,
                                     session_key,
@@ -7113,67 +6910,6 @@ fn isControlAdminOnly(control_type: unified.ControlType) bool {
     };
 }
 
-fn isConnectGateExemptControlType(control_type: unified.ControlType) bool {
-    return switch (control_type) {
-        .version,
-        .connect,
-        .session_attach,
-        .session_restore,
-        .session_history,
-        .agent_ensure,
-        .agent_list,
-        .agent_get,
-        .node_invite_create,
-        .node_join_request,
-        .node_join_pending_list,
-        .node_join_approve,
-        .node_join_deny,
-        .node_join,
-        .node_ensure,
-        .node_lease_refresh,
-        .venom_bind,
-        .venom_upsert,
-        .venom_get,
-        .node_list,
-        .node_get,
-        .node_delete,
-        .workspace_create,
-        .workspace_update,
-        .workspace_delete,
-        .workspace_list,
-        .workspace_get,
-        .workspace_template_list,
-        .workspace_template_get,
-        .workspace_mount_set,
-        .workspace_mount_remove,
-        .workspace_mount_list,
-        .workspace_bind_set,
-        .workspace_bind_remove,
-        .workspace_bind_list,
-        .workspace_token_rotate,
-        .workspace_token_revoke,
-        .workspace_activate,
-        .workspace_status,
-        .workspace_up,
-        .project_create,
-        .project_update,
-        .project_delete,
-        .project_list,
-        .project_get,
-        .project_mount_set,
-        .project_mount_remove,
-        .project_mount_list,
-        .project_token_rotate,
-        .project_token_revoke,
-        .project_activate,
-        .project_up,
-        .reconcile_status,
-        .audit_tail,
-        => true,
-        else => false,
-    };
-}
-
 fn sendWebSocketErrorAndClose(
     allocator: std.mem.Allocator,
     stream: *std.net.Stream,
@@ -8116,7 +7852,6 @@ test "server: admin initial binding prefers remembered workspace target" {
         var owned = initial.binding;
         owned.deinit(allocator);
     }
-    try std.testing.expect(initial.connect_gate_error == null);
     try std.testing.expectEqualStrings("roger", initial.binding.agent_id);
     try std.testing.expect(initial.binding.project_id != null);
     try std.testing.expectEqualStrings(project_id_value.string, initial.binding.project_id.?);
@@ -9344,75 +9079,6 @@ test "server: control.auth_rotate reports storage_error when token persistence f
     var pong = try readServerFrame(allocator, &client);
     defer pong.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, pong.payload, "\"type\":\"control.pong\"") != null);
-
-    try websocket_transport.writeFrame(&client, "", .close);
-    var close_reply = try readServerFrame(allocator, &client);
-    defer close_reply.deinit(allocator);
-    try std.testing.expectEqual(@as(u8, 0x8), close_reply.opcode);
-
-    try std.testing.expect(server_ctx.err_name == null);
-}
-
-test "server: session_attach forbids reserved system agent on non-system workspace" {
-    const allocator = std.testing.allocator;
-    var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .state_directory = "",
-        .state_db_filename = "",
-    }, null);
-    defer runtime_registry.deinit();
-    try setAuthTokensForTests(&runtime_registry, "access-secret");
-
-    const project_up_payload = "{\"name\":\"NonSystem\",\"vision\":\"non-system\",\"activate\":false}";
-    const project_up_result = try runtime_registry.control_plane.projectUpWithRole(system_agent_id, project_up_payload, true);
-    defer allocator.free(project_up_result);
-
-    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up_result, .{});
-    defer parsed_project.deinit();
-    if (parsed_project.value != .object) return error.TestExpectedResult;
-    const project_id_val = parsed_project.value.object.get("project_id") orelse return error.TestExpectedResult;
-    if (project_id_val != .string or project_id_val.string.len == 0) return error.TestExpectedResult;
-    const non_system_project_id = project_id_val.string;
-
-    var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
-    defer listener.deinit();
-
-    var server_ctx = WsTestServerCtx{
-        .allocator = allocator,
-        .runtime_registry = &runtime_registry,
-        .listener = &listener,
-    };
-    defer server_ctx.deinit();
-
-    const server_thread = try std.Thread.spawn(.{}, runSingleWsConnection, .{&server_ctx});
-    defer server_thread.join();
-
-    var client = try std.net.tcpConnectToAddress(listener.listen_address);
-    defer client.close();
-    try performClientHandshakeWithBearerToken(allocator, &client, "/", "access-secret");
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"system-agent-guard-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
-    var version_ack = try readServerFrame(allocator, &client);
-    defer version_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.connect\",\"id\":\"system-agent-guard-connect\"}");
-    var connect_ack = try readServerFrame(allocator, &client);
-    defer connect_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-
-    const attach_request = try std.fmt.allocPrint(
-        allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"system-agent-guard-attach\",\"payload\":{{\"session_key\":\"main\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\"}}}}",
-        .{ system_agent_id, non_system_project_id },
-    );
-    defer allocator.free(attach_request);
-    try writeClientTextFrameMasked(&client, attach_request);
-
-    var attach_error = try readServerFrame(allocator, &client);
-    defer attach_error.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, attach_error.payload, "\"type\":\"control.error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, attach_error.payload, "\"code\":\"forbidden\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, attach_error.payload, "reserved system agent can only attach to the reserved system workspace") != null);
 
     try websocket_transport.writeFrame(&client, "", .close);
     var close_reply = try readServerFrame(allocator, &client);

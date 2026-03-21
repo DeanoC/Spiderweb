@@ -1319,7 +1319,19 @@ actor SpiderwebNamespaceSession {
     }
 
     private func localReadlink(path: String) async throws -> String {
-        throw unsupportedNamespaceMutation(path: path, operation: "readlink")
+        remoteOperationSnapshot.lookup &+= 1
+        let response = try await sendControlRequest(
+            type: "control.mount_path_readlink_v2",
+            expectedType: "control.mount_path_readlink_v2",
+            payload: ["path": normalizeAbsolutePath(path)]
+        )
+        guard
+            let payload = response["payload"] as? [String: Any],
+            let target = stringValue(payload["target"])
+        else {
+            throw SpiderwebProtocolFailure.invalidEnvelope
+        }
+        return target
     }
 
     private func localCreate(path: String, mode: UInt32, flags: UInt32) async throws -> SpiderwebCreateHandleResponse {
@@ -1447,25 +1459,87 @@ actor SpiderwebNamespaceSession {
     }
 
     private func localUnlink(path: String) async throws {
-        throw unsupportedNamespaceMutation(path: path, operation: "unlink")
+        let normalizedPath = normalizeAbsolutePath(path)
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_path_unlink_v2",
+            expectedType: "control.mount_path_unlink_v2",
+            payload: ["path": normalizedPath]
+        )
+        try await refreshNamespaceMutationScopes([endpointParentPath(normalizedPath)])
     }
 
     private func localMkdir(path: String) async throws {
-        throw unsupportedNamespaceMutation(path: path, operation: "mkdir")
+        let normalizedPath = normalizeAbsolutePath(path)
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_path_mkdir_v2",
+            expectedType: "control.mount_path_mkdir_v2",
+            payload: ["path": normalizedPath]
+        )
+        try await refreshNamespaceMutationScopes([endpointParentPath(normalizedPath)])
     }
 
     private func localRmdir(path: String) async throws {
-        throw unsupportedNamespaceMutation(path: path, operation: "rmdir")
+        let normalizedPath = normalizeAbsolutePath(path)
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_path_rmdir_v2",
+            expectedType: "control.mount_path_rmdir_v2",
+            payload: ["path": normalizedPath]
+        )
+        try await refreshNamespaceMutationScopes([endpointParentPath(normalizedPath)])
     }
 
     private func localRename(oldPath: String, newPath: String) async throws {
-        _ = newPath
-        throw unsupportedNamespaceMutation(path: oldPath, operation: "rename")
+        let normalizedOldPath = normalizeAbsolutePath(oldPath)
+        let normalizedNewPath = normalizeAbsolutePath(newPath)
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_path_rename_v2",
+            expectedType: "control.mount_path_rename_v2",
+            payload: [
+                "old_path": normalizedOldPath,
+                "new_path": normalizedNewPath,
+            ]
+        )
+        try await refreshNamespaceMutationScopes([
+            endpointParentPath(normalizedOldPath),
+            endpointParentPath(normalizedNewPath),
+        ])
     }
 
     private func localSymlink(target: String, linkPath: String) async throws {
-        _ = target
-        throw unsupportedNamespaceMutation(path: linkPath, operation: "symlink")
+        let normalizedLinkPath = normalizeAbsolutePath(linkPath)
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_path_symlink_v2",
+            expectedType: "control.mount_path_symlink_v2",
+            payload: [
+                "target": target,
+                "link_path": normalizedLinkPath,
+            ]
+        )
+        try await refreshNamespaceMutationScopes([endpointParentPath(normalizedLinkPath)])
+    }
+
+    private func refreshNamespaceMutationScopes(_ scopePaths: [String]) async throws {
+        var refreshed = Set<String>()
+        for rawPath in scopePaths {
+            let normalizedPath = normalizeAbsolutePath(rawPath)
+            if refreshed.contains(normalizedPath) {
+                continue
+            }
+            let snapshot = try await requestMountGraph(path: normalizedPath, depth: 1)
+            replaceMountGraph(
+                with: snapshot,
+                scopePath: normalizedPath,
+                depth: 1,
+                replaceAll: normalizedPath == "/"
+            )
+            refreshed.insert(normalizedPath)
+        }
+        mountGraphFetchedAt = Date()
     }
 
     private func reserveNamespaceHandleID() -> UInt64 {

@@ -8899,6 +8899,52 @@ pub const Session = struct {
         return true;
     }
 
+    pub fn tryReadlinkLocalFsBackedMountPath(self: *Session, absolute_path: []const u8) !?[]u8 {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const host_path = (try self.tryResolveReadableLocalFsBackedHostPath(normalized_path)) orelse return null;
+        defer self.allocator.free(host_path);
+
+        var buffer_len: usize = 256;
+        while (buffer_len <= 64 * 1024) : (buffer_len *= 2) {
+            const buffer = try self.allocator.alloc(u8, buffer_len);
+            defer self.allocator.free(buffer);
+            const target = try std.posix.readlink(host_path, buffer);
+            if (target.len < buffer_len) return self.allocator.dupe(u8, target);
+        }
+        return error.NameTooLong;
+    }
+
+    pub fn trySymlinkLocalFsBackedMountPath(self: *Session, target: []const u8, link_absolute_path: []const u8) !bool {
+        const normalized_link_path = std.mem.trimRight(u8, link_absolute_path, "/");
+        const host_link_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_link_path)) orelse return false;
+        defer self.allocator.free(host_link_path);
+
+        const host_parent = std.fs.path.dirname(host_link_path) orelse return false;
+        var parent_dir = if (std.fs.path.isAbsolute(host_parent))
+            std.fs.openDirAbsolute(host_parent, .{}) catch |err| switch (err) {
+                error.FileNotFound,
+                error.NotDir,
+                => return false,
+                else => return err,
+            }
+        else
+            std.fs.cwd().openDir(host_parent, .{}) catch |err| switch (err) {
+                error.FileNotFound,
+                error.NotDir,
+                => return false,
+                else => return err,
+            };
+        parent_dir.close();
+
+        if (std.fs.path.isAbsolute(host_link_path))
+            try std.fs.symLinkAbsolute(target, host_link_path, .{})
+        else
+            try std.fs.cwd().symLink(target, host_link_path, .{});
+
+        try self.refreshLocalFsBackedAbsolutePath(normalized_link_path);
+        return true;
+    }
+
     pub fn buildMountGraphSnapshotPayload(
         self: *Session,
         workspace_json: []const u8,
@@ -10019,6 +10065,13 @@ pub const Session = struct {
         if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/shared_data")) return null;
         if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/services")) return null;
 
+        return self.resolveMissionContractHostPath(normalized_path) catch null;
+    }
+
+    fn tryResolveReadableLocalFsBackedHostPath(self: *Session, absolute_path: []const u8) !?[]u8 {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        if (!pathMatchesPrefixBoundary(normalized_path, local_fs_world_prefix)) return null;
+        if (std.mem.eql(u8, normalized_path, local_fs_world_prefix)) return null;
         return self.resolveMissionContractHostPath(normalized_path) catch null;
     }
 
@@ -14307,6 +14360,51 @@ test "acheron_session: local fs export rejects symlink targets outside export ro
     const leak = try session.tryReadInternalPath("/nodes/local/fs/leak.txt");
     defer if (leak) |value| allocator.free(value);
     try std.testing.expect(leak == null);
+}
+
+test "acheron_session: local fs mount path readlink and symlink controls use the export root" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/target.txt",
+        .data = "linked-content",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expect(try session.trySymlinkLocalFsBackedMountPath("target.txt", "/nodes/local/fs/link.txt"));
+    const target = (try session.tryReadlinkLocalFsBackedMountPath("/nodes/local/fs/link.txt")) orelse return error.TestUnexpectedResult;
+    defer allocator.free(target);
+    try std.testing.expectEqualStrings("target.txt", target);
+
+    const linked = (try session.tryReadInternalPath("/nodes/local/fs/link.txt")) orelse return error.TestUnexpectedResult;
+    defer allocator.free(linked);
+    try std.testing.expectEqualStrings("linked-content", linked);
 }
 
 test "acheron_session: local fs refresh sees new files immediately" {

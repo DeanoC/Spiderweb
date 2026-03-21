@@ -767,10 +767,9 @@ fn namespaceProviderRename(ctx: *anyopaque, old_path: []const u8, new_path: []co
 }
 
 fn namespaceProviderSymlink(ctx: *anyopaque, target: []const u8, link_path: []const u8) !void {
-    _ = ctx;
-    _ = target;
-    _ = link_path;
-    return error.OperationNotSupported;
+    const namespace_ctx = asCtx(ctx);
+    try namespace_ctx.client.controlMountPathSymlink(target, link_path);
+    namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderSetxattr(ctx: *anyopaque, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {

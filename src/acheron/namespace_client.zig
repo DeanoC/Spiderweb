@@ -293,6 +293,18 @@ pub const NamespaceClient = struct {
         return self.controlMountFileWriteWithOptions(path, offset, data, null);
     }
 
+    pub fn controlMountPathReadlink(self: *NamespaceClient, path: []const u8) ![]u8 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        defer self.allocator.free(payload);
+        return self.controlRequestPayloadWithReconnect(
+            "control.mount_path_readlink_v2",
+            "control.mount_path_readlink_v2",
+            payload,
+        );
+    }
+
     pub fn controlMountPathMkdir(self: *NamespaceClient, path: []const u8) !void {
         const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
         defer self.allocator.free(escaped_path);
@@ -346,6 +358,25 @@ pub const NamespaceClient = struct {
         const response = try self.controlRequestPayloadWithReconnect(
             "control.mount_path_rename_v2",
             "control.mount_path_rename_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathSymlink(self: *NamespaceClient, target: []const u8, link_path: []const u8) !void {
+        const escaped_target = try jsonEscape(self.allocator, target);
+        defer self.allocator.free(escaped_target);
+        const escaped_link_path = try jsonEscape(self.allocator, normalizeAbsolutePath(link_path));
+        defer self.allocator.free(escaped_link_path);
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"target\":\"{s}\",\"link_path\":\"{s}\"}}",
+            .{ escaped_target, escaped_link_path },
+        );
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_symlink_v2",
+            "control.mount_path_symlink_v2",
             payload,
         );
         self.allocator.free(response);

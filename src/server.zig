@@ -5724,9 +5724,6 @@ fn handleWebSocketConnection(
                             .venom_bind,
                             .venom_upsert,
                             .venom_get,
-                            .agent_ensure,
-                            .agent_list,
-                            .agent_get,
                             .node_list,
                             .node_get,
                             .node_delete,
@@ -7418,10 +7415,6 @@ fn handleControlPlaneCommand(
         .venom_bind => try runtime_registry.control_plane.bindPreferredVenomProvider(effective_payload),
         .venom_upsert => try runtime_registry.control_plane.nodeVenomUpsert(effective_payload),
         .venom_get => try runtime_registry.control_plane.nodeVenomGet(effective_payload),
-        .agent_ensure,
-        .agent_list,
-        .agent_get,
-        => error.UnsupportedLegacyApi,
         .node_list => try runtime_registry.control_plane.listNodes(),
         .node_get => try runtime_registry.control_plane.getNode(effective_payload),
         .node_delete => try runtime_registry.control_plane.deleteNode(effective_payload),
@@ -7474,6 +7467,7 @@ fn handleControlPlaneCommand(
 
 fn controlPlaneErrorCode(err: anyerror) []const u8 {
     return switch (err) {
+        error.UnsupportedControlPlaneOperation => "unsupported_control_plane_operation",
         error.UnsupportedLegacyApi => "unsupported_legacy_api",
         error.AccessDenied => "forbidden",
         error.InvalidAgentId => "invalid_payload",

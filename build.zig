@@ -189,14 +189,6 @@ pub fn build(b: *std.Build) void {
     spiderweb_mod.addImport("spiderweb_fs_source_policy", spiderweb_fs_source_policy_mod);
     spiderweb_mod.addImport("ziggy-tool-runtime", ziggy_tool_runtime_module);
 
-    // Add agent_config module for flat config loading
-    const agent_config_mod = b.createModule(.{
-        .root_source_file = b.path("src/agents/agent_config.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    spiderweb_mod.addImport("agent_config", agent_config_mod);
-
     const spiderweb = b.addExecutable(.{
         .name = "spiderweb",
         .root_module = spiderweb_mod,

@@ -650,7 +650,7 @@ pub const ControlPlane = struct {
             changed = true;
         }
 
-        const host_project = self.projects.getPtr(host_project_id) orelse return;
+        const host_project = getHostProjectPtrLocked(self) catch return;
         if (try ensureHostProjectBindsLocked(self, host_project)) {
             host_project.updated_at_ms = now_ms;
             changed = true;
@@ -679,7 +679,7 @@ pub const ControlPlane = struct {
         if (mount_specs.len == 0) return ControlPlaneError.MissingField;
         if (!self.nodes.contains(node_id)) return ControlPlaneError.NodeNotFound;
         try self.ensureBuiltinHostProjectLocked(now_ms);
-        const project = self.projects.getPtr(host_project_id) orelse return ControlPlaneError.ProjectNotFound;
+        const project = try getHostProjectPtrLocked(self);
 
         var normalized_paths = std.ArrayListUnmanaged([]u8){};
         defer {
@@ -2008,7 +2008,7 @@ pub const ControlPlane = struct {
 
         const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
         defer self.allocator.free(mount_path);
-        const project = self.projects.getPtr(host_project_id) orelse return ControlPlaneError.ProjectNotFound;
+        const project = try getHostProjectPtrLocked(self);
         const removed_count = removeProjectMountEntriesLocked(
             self.allocator,
             project,
@@ -2096,8 +2096,15 @@ pub const ControlPlane = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
-        const project = self.projects.get(project_id) orelse return false;
+        const project = getPublicProjectLocked(self, project_id) catch return false;
         return project.mounts.items.len > 0;
+    }
+
+    pub fn hostHasMounts(self: *ControlPlane) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
+        return hostProjectHasMountsLocked(self);
     }
 
     pub fn snapshotActiveProjectBindings(
@@ -2536,7 +2543,7 @@ pub const ControlPlane = struct {
         const now_ms = std.time.milliTimestamp();
         _ = self.reapExpiredLeasesLocked(now_ms);
         try self.ensureBuiltinHostProjectLocked(now_ms);
-        const project = self.projects.getPtr(host_project_id) orelse return ControlPlaneError.ProjectNotFound;
+        const project = try getHostProjectPtrLocked(self);
 
         if (self.active_project_by_agent.getPtr(self.host_actor_id)) |existing| {
             self.allocator.free(existing.*);
@@ -5996,6 +6003,19 @@ fn getPublicProjectPtrLocked(self: *ControlPlane, project_id: []const u8) !*Proj
     return project;
 }
 
+fn getHostProjectLocked(self: *ControlPlane) !Project {
+    return self.projects.get(host_project_id) orelse ControlPlaneError.ProjectNotFound;
+}
+
+fn getHostProjectPtrLocked(self: *ControlPlane) !*Project {
+    return self.projects.getPtr(host_project_id) orelse ControlPlaneError.ProjectNotFound;
+}
+
+fn hostProjectHasMountsLocked(self: *ControlPlane) bool {
+    const project = getHostProjectLocked(self) catch return false;
+    return project.mounts.items.len > 0;
+}
+
 fn removeProjectMountEntriesLocked(
     allocator: std.mem.Allocator,
     project: *Project,
@@ -6036,15 +6056,15 @@ fn ensureDefaultProjectMountsLocked(self: *ControlPlane, project: *Project) !boo
     if (project.kind == .host_internal) return false;
 
     var changed = false;
-    var mounted_from_system = false;
-    if (self.projects.get(host_project_id)) |system_project| {
-        for (system_project.mounts.items) |system_mount| {
-            if (!self.nodes.contains(system_mount.node_id)) continue;
+    var mounted_from_host = false;
+    if (getHostProjectLocked(self)) |host_project| {
+        for (host_project.mounts.items) |host_mount| {
+            if (!self.nodes.contains(host_mount.node_id)) continue;
 
             const remapped_path = try remapSystemMountPathForProject(
                 self.allocator,
                 project.id,
-                system_mount.mount_path,
+                host_mount.mount_path,
             );
             errdefer self.allocator.free(remapped_path);
 
@@ -6074,15 +6094,15 @@ fn ensureDefaultProjectMountsLocked(self: *ControlPlane, project: *Project) !boo
 
             try project.mounts.append(self.allocator, .{
                 .mount_path = remapped_path,
-                .node_id = try self.allocator.dupe(u8, system_mount.node_id),
-                .export_name = try self.allocator.dupe(u8, system_mount.export_name),
+                .node_id = try self.allocator.dupe(u8, host_mount.node_id),
+                .export_name = try self.allocator.dupe(u8, host_mount.export_name),
             });
-            mounted_from_system = true;
+            mounted_from_host = true;
             changed = true;
         }
-    }
+    } else |_| {}
 
-    if (!mounted_from_system and !projectHasCanonicalWorkspaceMount(project)) {
+    if (!mounted_from_host and !projectHasCanonicalWorkspaceMount(project)) {
         var default_node_id: ?[]const u8 = null;
         var node_it = self.nodes.iterator();
         if (node_it.next()) |entry| default_node_id = entry.key_ptr.*;

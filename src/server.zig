@@ -2827,23 +2827,23 @@ const AgentRuntimeRegistry = struct {
             self.allocator.free(bindings);
         }
 
-        // Keep the reserved system runtime resident independently of active
+        // Keep the hidden host runtime resident independently of active
         // workspace assignment so internal control-plane provisioning paths
         // remain available even when user-facing routes prefer mounted workspaces.
-        if (self.control_plane.projectHasMounts(host_project_id)) {
-            var system_attach_state = self.ensureRuntimeWarmup(
+        if (self.control_plane.hostHasMounts()) {
+            var host_attach_state = self.ensureRuntimeWarmup(
                 host_actor_id,
                 host_project_id,
                 null,
                 retry_on_error,
             ) catch |err| blk: {
                 std.log.warn(
-                    "system runtime residency warmup failed: agent={s} project={s} err={s}",
+                    "host runtime residency warmup failed: agent={s} project={s} err={s}",
                     .{ host_actor_id, host_project_id, @errorName(err) },
                 );
                 break :blk null;
             };
-            if (system_attach_state) |*attach_state| attach_state.deinit(self.allocator);
+            if (host_attach_state) |*attach_state| attach_state.deinit(self.allocator);
         }
 
         for (bindings) |binding| {

@@ -2120,6 +2120,14 @@ pub const ControlPlane = struct {
         return null;
     }
 
+    pub fn agentActiveInProject(self: *ControlPlane, agent_id: []const u8, project_id: []const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
+        const active_project_id = self.active_project_by_agent.get(agent_id) orelse return false;
+        return std.mem.eql(u8, active_project_id, project_id);
+    }
+
     pub fn projectHasMounts(self: *ControlPlane, project_id: []const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();

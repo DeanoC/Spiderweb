@@ -9,7 +9,6 @@ const control_plane_mod = @import("acheron/control_plane.zig");
 const acheron_session_mod = @import("acheron/session.zig");
 const fs_protocol = @import("spiderweb_fs").fs_protocol;
 const spiderweb_node = @import("spiderweb_node");
-const agent_registry_mod = @import("agents/agent_registry.zig");
 const unified = @import("spider-protocol").unified;
 const mission_store_mod = @import("mission_store.zig");
 const default_max_agent_runtimes: usize = 64;
@@ -2737,21 +2736,6 @@ const AgentRuntimeRegistry = struct {
         } else if (configured_default.len > 0) {
             allocator.free(effective_default);
             effective_default = allocator.dupe(u8, configured_default) catch @panic("OOM");
-        } else {
-            var registry = agent_registry_mod.AgentRegistry.init(
-                allocator,
-                ".",
-                runtime_config.agents_dir,
-                runtime_config.assets_dir,
-            );
-            defer registry.deinit();
-            registry.scan() catch |err| {
-                std.log.warn("failed to scan agents while resolving default route: {s}", .{@errorName(err)});
-            };
-            if (registry.getDefaultAgent()) |agent| {
-                allocator.free(effective_default);
-                effective_default = allocator.dupe(u8, agent.id) catch @panic("OOM");
-            }
         }
         const operator_token = parseOptionalEnvOwned(allocator, control_operator_token_env);
         const project_scope_token = parseOptionalEnvOwned(allocator, control_project_scope_token_env);
@@ -3359,18 +3343,6 @@ const AgentRuntimeRegistry = struct {
         return !self.hasNonSystemProject();
     }
 
-    fn agentExists(self: *AgentRuntimeRegistry, agent_id: []const u8) bool {
-        var registry = agent_registry_mod.AgentRegistry.init(
-            self.allocator,
-            ".",
-            self.runtime_config.agents_dir,
-            self.runtime_config.assets_dir,
-        );
-        defer registry.deinit();
-        registry.scan() catch return false;
-        return registry.getAgent(agent_id) != null;
-    }
-
     fn firstAgentForProject(self: *AgentRuntimeRegistry, role: ConnectionRole, project_id: []const u8) ?[]u8 {
         const include_primary = role == .admin and std.mem.eql(u8, project_id, system_project_id);
         return self.control_plane.firstProjectAgent(project_id, include_primary) catch null;
@@ -3386,10 +3358,12 @@ const AgentRuntimeRegistry = struct {
 
             if (self.projectExistsWithRole(remembered.project_id, is_admin)) {
                 var chosen_agent: ?[]u8 = null;
-                if (self.agentExists(remembered.agent_id)) {
+                if (self.control_plane.agentActiveInProject(remembered.agent_id, remembered.project_id)) {
                     chosen_agent = try self.allocator.dupe(u8, remembered.agent_id);
                 } else if (self.firstAgentForProject(role, remembered.project_id)) |fallback| {
                     chosen_agent = fallback;
+                } else {
+                    chosen_agent = try self.allocator.dupe(u8, remembered.agent_id);
                 }
 
                 if (chosen_agent) |agent_id| {
@@ -9045,17 +9019,6 @@ test "server: admin initial binding prefers remembered workspace target" {
     const project_id_value = parsed.value.object.get("project_id") orelse return error.TestExpectedResult;
     if (project_id_value != .string or project_id_value.string.len == 0) return error.TestExpectedResult;
 
-    var registry = agent_registry_mod.AgentRegistry.init(
-        allocator,
-        ".",
-        runtime_registry.runtime_config.agents_dir,
-        runtime_registry.runtime_config.assets_dir,
-    );
-    defer registry.deinit();
-    try registry.scan();
-    if (registry.getAgent("roger") == null) {
-        try registry.createAgent("roger", null);
-    }
     try runtime_registry.auth_tokens.setRememberedTarget(.admin, "roger", project_id_value.string);
 
     const initial = try runtime_registry.buildInitialSessionBinding(.admin);
@@ -9394,17 +9357,6 @@ test "server: workspace namespace stays project-scoped across user session agent
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
-
-    var registry = agent_registry_mod.AgentRegistry.init(
-        allocator,
-        ".",
-        runtime_registry.runtime_config.agents_dir,
-        runtime_registry.runtime_config.assets_dir,
-    );
-    defer registry.deinit();
-    try registry.scan();
-    if (registry.getAgent("alice") == null) try registry.createAgent("alice", null);
-    if (registry.getAgent("bob") == null) try registry.createAgent("bob", null);
 
     const project_up = try runtime_registry.control_plane.projectUpWithRole(
         system_agent_id,
@@ -9972,16 +9924,6 @@ test "server: user connect stays minimal even when another project is active" {
     }, null);
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
-
-    var registry = agent_registry_mod.AgentRegistry.init(
-        allocator,
-        ".",
-        runtime_registry.runtime_config.agents_dir,
-        runtime_registry.runtime_config.assets_dir,
-    );
-    defer registry.deinit();
-    try registry.scan();
-    if (registry.getAgent("alice") == null) try registry.createAgent("alice", null);
 
     const project_up = try runtime_registry.control_plane.projectUpWithRole(
         system_agent_id,

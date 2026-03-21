@@ -8909,7 +8909,7 @@ pub const Session = struct {
             const buffer = try self.allocator.alloc(u8, buffer_len);
             defer self.allocator.free(buffer);
             const target = try std.posix.readlink(host_path, buffer);
-            if (target.len < buffer_len) return self.allocator.dupe(u8, target);
+            if (target.len < buffer_len) return try self.allocator.dupe(u8, target);
         }
         return error.NameTooLong;
     }

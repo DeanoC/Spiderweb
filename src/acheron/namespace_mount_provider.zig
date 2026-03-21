@@ -339,6 +339,7 @@ const HandleState = struct {
     flags: u32,
     writable: bool,
     backing: HandleBacking,
+    lock_held: bool = false,
 
     fn deinit(self: *HandleState, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
@@ -672,6 +673,10 @@ fn namespaceProviderRelease(ctx: *anyopaque, file: mount_provider.OpenFile) !voi
     var state = try namespace_ctx.takeHandle(file);
     defer state.deinit(allocator);
     try namespace_ctx.flushBufferedHandle(&state);
+    if (state.lock_held) {
+        namespace_ctx.client.controlMountPathLock(state.path, "unlock", true) catch {};
+        state.lock_held = false;
+    }
 }
 
 fn namespaceProviderCreate(ctx: *anyopaque, path: []const u8, mode: u32, flags: u32) !mount_provider.OpenFile {
@@ -773,40 +778,35 @@ fn namespaceProviderSymlink(ctx: *anyopaque, target: []const u8, link_path: []co
 }
 
 fn namespaceProviderSetxattr(ctx: *anyopaque, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
-    _ = ctx;
-    _ = path;
-    _ = name;
-    _ = value;
-    _ = flags;
-    return error.OperationNotSupported;
+    const namespace_ctx = asCtx(ctx);
+    try namespace_ctx.client.controlMountPathSetxattr(path, name, value, flags);
+    namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderGetxattr(ctx: *anyopaque, path: []const u8, name: []const u8) ![]u8 {
-    _ = ctx;
-    _ = path;
-    _ = name;
-    return error.OperationNotSupported;
+    return asCtx(ctx).client.controlMountPathGetxattr(path, name);
 }
 
 fn namespaceProviderListxattr(ctx: *anyopaque, path: []const u8) ![]u8 {
-    _ = ctx;
-    _ = path;
-    return error.OperationNotSupported;
+    return asCtx(ctx).client.controlMountPathListxattr(path);
 }
 
 fn namespaceProviderRemovexattr(ctx: *anyopaque, path: []const u8, name: []const u8) !void {
-    _ = ctx;
-    _ = path;
-    _ = name;
-    return error.OperationNotSupported;
+    const namespace_ctx = asCtx(ctx);
+    try namespace_ctx.client.controlMountPathRemovexattr(path, name);
+    namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderLock(ctx: *anyopaque, file: mount_provider.OpenFile, mode: mount_provider.LockMode, wait: bool) !void {
-    _ = ctx;
-    _ = file;
-    _ = mode;
-    _ = wait;
-    return error.OperationNotSupported;
+    const namespace_ctx = asCtx(ctx);
+    const state = try namespace_ctx.getHandle(file);
+    const mode_name = switch (mode) {
+        .shared => "shared",
+        .exclusive => "exclusive",
+        .unlock => "unlock",
+    };
+    try namespace_ctx.client.controlMountPathLock(state.path, mode_name, wait);
+    state.lock_held = mode != .unlock;
 }
 
 fn namespaceProviderTryKeepAliveIfIdle(ctx: *anyopaque) !bool {

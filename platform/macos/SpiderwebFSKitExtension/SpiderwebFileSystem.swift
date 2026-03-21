@@ -1438,24 +1438,71 @@ actor SpiderwebNamespaceSession {
     }
 
     private func localGetxattr(path: String, name: String) async throws -> Data {
-        _ = name
-        throw unsupportedNamespaceMutation(path: path, operation: "getxattr")
+        let normalizedPath = normalizeAbsolutePath(path)
+        remoteOperationSnapshot.lookup &+= 1
+        let response = try await sendControlRequest(
+            type: "control.mount_path_getxattr_v2",
+            expectedType: "control.mount_path_getxattr_v2",
+            payload: [
+                "path": normalizedPath,
+                "name": name,
+            ]
+        )
+        guard
+            let payload = response["payload"] as? [String: Any],
+            let valueB64 = stringValue(payload["value_b64"]),
+            let value = Data(base64Encoded: valueB64)
+        else {
+            throw SpiderwebProtocolFailure.invalidEnvelope
+        }
+        return value
     }
 
     private func localSetxattr(path: String, name: String, value: Data, flags: UInt32) async throws {
-        _ = name
-        _ = value
-        _ = flags
-        throw unsupportedNamespaceMutation(path: path, operation: "setxattr")
+        let normalizedPath = normalizeAbsolutePath(path)
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_path_setxattr_v2",
+            expectedType: "control.mount_path_setxattr_v2",
+            payload: [
+                "path": normalizedPath,
+                "name": name,
+                "value_b64": value.base64EncodedString(),
+                "flags": flags,
+            ]
+        )
+        mountGraphFetchedAt = nil
     }
 
     private func localListxattrs(path: String) async throws -> [String] {
-        throw unsupportedNamespaceMutation(path: path, operation: "listxattr")
+        let normalizedPath = normalizeAbsolutePath(path)
+        remoteOperationSnapshot.lookup &+= 1
+        let response = try await sendControlRequest(
+            type: "control.mount_path_listxattr_v2",
+            expectedType: "control.mount_path_listxattr_v2",
+            payload: ["path": normalizedPath]
+        )
+        guard
+            let payload = response["payload"] as? [String: Any],
+            let names = payload["names"] as? [String]
+        else {
+            throw SpiderwebProtocolFailure.invalidEnvelope
+        }
+        return names
     }
 
     private func localRemovexattr(path: String, name: String) async throws {
-        _ = name
-        throw unsupportedNamespaceMutation(path: path, operation: "removexattr")
+        let normalizedPath = normalizeAbsolutePath(path)
+        remoteOperationSnapshot.lookup &+= 1
+        _ = try await sendControlRequest(
+            type: "control.mount_path_removexattr_v2",
+            expectedType: "control.mount_path_removexattr_v2",
+            payload: [
+                "path": normalizedPath,
+                "name": name,
+            ]
+        )
+        mountGraphFetchedAt = nil
     }
 
     private func localUnlink(path: String) async throws {

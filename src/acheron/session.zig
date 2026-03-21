@@ -394,6 +394,15 @@ const WorkerPresence = struct {
     }
 };
 
+const LocalFsLockEntry = struct {
+    file: std.fs.File,
+
+    fn deinit(self: *LocalFsLockEntry) void {
+        self.file.close();
+        self.* = undefined;
+    }
+};
+
 fn deinitResponseFrames(allocator: std.mem.Allocator, frames: [][]u8) void {
     for (frames) |frame| allocator.free(frame);
     allocator.free(frames);
@@ -564,6 +573,7 @@ pub const Session = struct {
     current_terminal_session_id: ?[]u8 = null,
     next_terminal_session_seq: u64 = 1,
     worker_presence: std.StringHashMapUnmanaged(WorkerPresence) = .{},
+    local_fs_lock_files: std.StringHashMapUnmanaged(LocalFsLockEntry) = .{},
     project_binds: std.ArrayListUnmanaged(PathBind) = .{},
     scoped_venom_bindings: std.ArrayListUnmanaged(ScopedVenomBinding) = .{},
     node_aliases: std.AutoHashMapUnmanaged(u32, u32) = .{},
@@ -690,6 +700,7 @@ pub const Session = struct {
         self.clearProjectBinds();
         self.clearScopedVenomBindings();
         self.clearWorkerPresence();
+        self.clearLocalFsLockFiles();
         self.node_aliases.deinit(self.allocator);
         self.clearWorkspaceMountFsAuthTokens();
         self.clearWorkspaceMountFsUrls();
@@ -788,6 +799,17 @@ pub const Session = struct {
         }
         self.worker_presence.deinit(self.allocator);
         self.worker_presence = .{};
+    }
+
+    fn clearLocalFsLockFiles(self: *Session) void {
+        var it = self.local_fs_lock_files.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            var lock_entry = entry.value_ptr.*;
+            lock_entry.deinit();
+        }
+        self.local_fs_lock_files.deinit(self.allocator);
+        self.local_fs_lock_files = .{};
     }
 
     pub fn setRuntimeBinding(
@@ -8942,6 +8964,96 @@ pub const Session = struct {
             try std.fs.cwd().symLink(target, host_link_path, .{});
 
         try self.refreshLocalFsBackedAbsolutePath(normalized_link_path);
+        return true;
+    }
+
+    pub fn trySetxattrLocalFsBackedMountPath(self: *Session, absolute_path: []const u8, name: []const u8, value: []const u8, flags: u32) !bool {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const host_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_path)) orelse return false;
+        defer self.allocator.free(host_path);
+
+        try shared_node.fs_local_source_adapter.setXattrAbsolute(self.allocator, host_path, name, value, flags);
+        try self.refreshLocalFsBackedAbsolutePath(normalized_path);
+        return true;
+    }
+
+    pub fn tryGetxattrLocalFsBackedMountPath(self: *Session, absolute_path: []const u8, name: []const u8) !?[]u8 {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const host_path = (try self.tryResolveReadableLocalFsBackedHostPath(normalized_path)) orelse return null;
+        defer self.allocator.free(host_path);
+
+        return try shared_node.fs_local_source_adapter.getXattrAbsolute(self.allocator, host_path, name);
+    }
+
+    pub fn tryListxattrLocalFsBackedMountPath(self: *Session, absolute_path: []const u8) !?[]u8 {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const host_path = (try self.tryResolveReadableLocalFsBackedHostPath(normalized_path)) orelse return null;
+        defer self.allocator.free(host_path);
+
+        return try shared_node.fs_local_source_adapter.listXattrAbsolute(self.allocator, host_path);
+    }
+
+    pub fn tryRemovexattrLocalFsBackedMountPath(self: *Session, absolute_path: []const u8, name: []const u8) !bool {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const host_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_path)) orelse return false;
+        defer self.allocator.free(host_path);
+
+        try shared_node.fs_local_source_adapter.removeXattrAbsolute(self.allocator, host_path, name);
+        try self.refreshLocalFsBackedAbsolutePath(normalized_path);
+        return true;
+    }
+
+    pub fn tryLockLocalFsBackedMountPath(self: *Session, absolute_path: []const u8, mode_name: []const u8, wait: bool) !bool {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const mode: shared_node.fs_local_source_adapter.LockMode = if (std.mem.eql(u8, mode_name, "shared"))
+            .shared
+        else if (std.mem.eql(u8, mode_name, "exclusive"))
+            .exclusive
+        else if (std.mem.eql(u8, mode_name, "unlock"))
+            .unlock
+        else
+            return error.InvalidArgument;
+
+        if (mode == .unlock) {
+            if (self.local_fs_lock_files.fetchRemove(normalized_path)) |removed| {
+                self.allocator.free(removed.key);
+                var entry = removed.value;
+                defer entry.deinit();
+                try shared_node.fs_local_source_adapter.lockFile(&entry.file, .unlock, true);
+            }
+            return true;
+        }
+
+        if (self.local_fs_lock_files.getPtr(normalized_path)) |entry| {
+            try shared_node.fs_local_source_adapter.lockFile(&entry.file, mode, wait);
+            return true;
+        }
+
+        const host_path = (try self.tryResolveReadableLocalFsBackedHostPath(normalized_path)) orelse return false;
+        defer self.allocator.free(host_path);
+
+        var file = if (std.fs.path.isAbsolute(host_path))
+            std.fs.openFileAbsolute(host_path, .{ .mode = .read_only }) catch |err| switch (err) {
+                error.FileNotFound,
+                error.NotDir,
+                => return false,
+                else => return err,
+            }
+        else
+            std.fs.cwd().openFile(host_path, .{ .mode = .read_only }) catch |err| switch (err) {
+                error.FileNotFound,
+                error.NotDir,
+                => return false,
+                else => return err,
+            };
+        errdefer file.close();
+
+        try shared_node.fs_local_source_adapter.lockFile(&file, mode, wait);
+        const owned_key = try self.allocator.dupe(u8, normalized_path);
+        errdefer self.allocator.free(owned_key);
+        try self.local_fs_lock_files.put(self.allocator, owned_key, .{
+            .file = file,
+        });
         return true;
     }
 

@@ -66,7 +66,7 @@ bash ./install.sh
 # Release-binary path
 SPIDERWEB_NON_INTERACTIVE=1 \
 SPIDERWEB_INSTALL_SOURCE=release \
-SPIDERWEB_RELEASE_ARCHIVE_URL=https://github.com/DeanoC/Spiderweb/releases/download/v0.3.1/spiderweb-linux-x86_64.tar.gz \
+SPIDERWEB_RELEASE_ARCHIVE_URL=https://github.com/DeanoC/Spiderweb/releases/download/vX.Y.Z/spiderweb-linux-x86_64.tar.gz \
 SPIDERWEB_RELEASE_ARCHIVE_SHA256=<sha256> \
 SPIDERWEB_INSTALL_ZSS=0 \
 SPIDERWEB_INSTALL_SYSTEMD=0 \
@@ -86,6 +86,11 @@ This harness documents and exercises the Linux-first external Codex operator pat
 - plain Codex launch in live or manual-handoff mode
 - agent-driven in-workspace bootstrap, validation, and report artifact capture
 
+The harness assumes one Spiderweb-owned mount model across macOS, Linux, and
+Windows: workers start in the mounted project directory, and `.spiderweb` is a
+server-projected part of that same namespace rather than a client overlay or
+direct endpoint shortcut.
+
 Mounted namespace paths used by the harness:
 
 - local writable project tree: `/nodes/local/fs`
@@ -94,10 +99,28 @@ Mounted namespace paths used by the harness:
 - namespace metadata: `/meta/*`
 - generic project services: `/services/*`
 
-Run it directly from the repo root:
+Run the Linux harness directly from the repo root:
 
 ```bash
 bash test-env/test-external-codex-workspace.sh
+```
+
+On macOS with OrbStack installed, use the Orb wrapper so the exact same Linux
+harness runs inside Orb:
+
+```bash
+bash test-env/test-external-codex-workspace-orb.sh
+```
+
+Use `ORB_MACHINE=<name>` or `ORB_USER=<user>` if you need a non-default Orb
+target.
+
+For the native macOS mount path, use the dedicated native harness after the
+current Spiderweb app build has been installed with
+`spiderweb-config config install-fs-extension`:
+
+```bash
+bash test-env/test-external-codex-workspace-macos.sh
 ```
 
 Or through `make`:
@@ -142,15 +165,15 @@ Codex launch controls:
 - `CODEX_DISABLE_APPS=1`: inject `--disable apps` by default because the current live Spiderweb path is more reliable without the apps surface in non-interactive `exec`
 - `CODEX_DISABLE_SHELL_SNAPSHOT=1`: inject `--disable shell_snapshot` by default because the current live Spiderweb path is more reliable without shell snapshotting in non-interactive `exec`
 - `CODEX_ALLOW_HOST_CODEX_HOME=1`: temporarily allow writes under host `~/.codex` for reliability while still reporting them as a `codex_home` machine-independence gap
-- `SPIDERWEB_INSTALL_SOURCE=auto|source|release`: choose whether the harness compiles Spiderweb locally or installs from a prebuilt archive. Installer default: `auto`, which now prefers the latest published GitHub release on supported Linux machines and falls back to source when a matching release asset is not available or when source-specific overrides are set
-- `SPIDERWEB_RELEASE_ARCHIVE_URL`: release asset URL to use when `SPIDERWEB_INSTALL_SOURCE=release`. Default in the external Codex harness: `https://github.com/DeanoC/Spiderweb/releases/download/v0.3.1/spiderweb-linux-x86_64.tar.gz`
+- `SPIDERWEB_INSTALL_SOURCE=auto|source|release`: choose whether the harness compiles Spiderweb locally or installs from a prebuilt archive. Default: `auto`, which delegates to `install.sh` defaults and retries with `source` if the selected release path cannot provide the current harness binary set
+- `SPIDERWEB_RELEASE_ARCHIVE_URL`: release asset URL to use when `SPIDERWEB_INSTALL_SOURCE=release`. Default: unset
 - `SPIDERWEB_RELEASE_ARCHIVE_SHA256`: optional checksum for the release archive
-- `SPIDERWEB_RELEASE_VERSION`: label recorded in installer output for the chosen release build. Default in the external Codex harness: `v0.3.1`
+- `SPIDERWEB_RELEASE_VERSION`: label recorded in installer output for the chosen release build. Default: unset
 
 Current note:
 
 - The standalone installer now defaults to the latest published GitHub release on supported Linux machines to avoid unnecessary rebuilds for normal users.
-- The external Codex harness still defaults to the pinned `v0.3.1` release asset for repeatability. Set `SPIDERWEB_INSTALL_SOURCE=source` when you explicitly want a local source build instead.
+- The external Codex harness now follows the installer defaults and automatically retries with `source` when a selected release path is missing binaries that the current checkout expects.
 
 Expected output artifacts:
 
@@ -210,11 +233,11 @@ Operator notes:
 
 - prefer the installer-first Linux path for this harness; use `./install-fs-mount.sh` only when the namespace mount happens on a separate Linux machine
 - the harness is about the standalone node + namespace story, not the older routed `--workspace-url` only flow
-- the namespace root exposed by `spiderweb-fs-mount` is the canonical external-agent entrypoint
-- the clean writable project tree is `/nodes/local/fs`; Spiderweb’s own runtime root is kept separate from that workspace on purpose
-- the harness creates only a generic `dev`-template workspace baseline; after attach, Spiderweb must surface a real workspace-root `AGENTS.md`, and the external agent is responsible for reading that file first and then following the referenced bootstrap metadata from inside the workspace
-- `AGENTS.md` is the human-facing workspace contract; `agent_bootstrap.json` and `agent_bootstrap_quickref.json` remain the exact machine-readable contract for discovery order, preferred `/services/*` usage, self-home provisioning, service verification/repair, and persistence semantics
-- the expected interactive user flow is: start `codex` in the namespace root, give a short prompt that tells it to read `AGENTS.md`, and let it write outputs under `nodes/local/fs/`
+- the mounted project directory exposed at `nodes/local/fs` is the canonical external-agent entrypoint
+- the clean writable project tree is `nodes/local/fs`; Spiderweb’s own runtime root is kept separate from that workspace on purpose
+- the harness creates only a generic `dev`-template workspace baseline; after attach, Spiderweb must surface a real project-root `AGENTS.md`, and the external agent is responsible for reading that file first and then following the project-local `./.spiderweb/*` bootstrap projection from inside the workspace
+- `AGENTS.md` is the human-facing workspace contract; `./.spiderweb/agent_bootstrap.json` and `./.spiderweb/agent_bootstrap_quickref.json` are the exact machine-readable bootstrap surface for discovery order, preferred `./.spiderweb/services/*` usage, self-home provisioning, service verification/repair, and persistence semantics
+- the expected interactive user flow is: start `codex` in the mounted project directory, give a short prompt that tells it to read `AGENTS.md`, and let it work relative to that directory
 - shared project binds persist across agent detach/reattach, while worker-private loopback state is expected to be ephemeral
 - `CODEX_AUTH_MODE=api_key` is still the strict fresh-install path, but `existing_login` is temporarily acceptable for reliability because host `~/.codex` writes are allowlisted by default while still reported as a `codex_home` machine-independence gap
 - `CODEX_LAUNCH_CMD` is optional; the harness can build a default launcher around the pinned `codex exec` flow
@@ -231,9 +254,13 @@ Operator notes:
 CODEX_MODE=live \
 CODEX_AUTH_MODE=api_key \
 OPENAI_API_KEY=... \
-CODEX_LAUNCH_CMD='cat {prompt_file} | {codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --add-dir {namespace_meta_dir} --add-dir {project_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {namespace_root} -o {artifact_dir}/codex_last_message.txt -' \
+CODEX_LAUNCH_CMD='cat {prompt_file} | {codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --add-dir {namespace_meta_dir} --add-dir {project_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -' \
 bash test-env/test-external-codex-workspace.sh
 ```
+
+Native macOS runs default to `TRACE_BACKEND=none` because the Linux `strace`
+path is not available there; the bootstrap and usage report still infer required
+reads from the Codex event log.
 
 ## Embedded Multi-Service Integration Test
 

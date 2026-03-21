@@ -625,17 +625,29 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
     if (!status.supported_os) return error.UnsupportedMacosVersion;
     const target_app_path = status.app_path;
     const source_app_path = blk: {
+        if (status.source_app_path) |value| {
+            if (!std.mem.eql(u8, value, target_app_path)) break :blk value;
+        }
         if (pathExists(target_app_path)) break :blk target_app_path;
         if (status.source_app_path) |value| break :blk value;
         std.log.err("Could not find Spiderweb.app to register. Reinstall Spiderweb.app or build it from Xcode under platform/macos.", .{});
         return error.NativeFsExtensionNotInstalled;
     };
     const source_is_installed_app = std.mem.eql(u8, source_app_path, target_app_path);
-    const filesystem_source_path = if (status.source_filesystem_bundle_path) |value|
+    var filesystem_source_path = if (status.source_filesystem_bundle_path) |value|
         try allocator.dupe(u8, value)
     else
         null;
     defer if (filesystem_source_path) |value| allocator.free(value);
+
+    if (!source_is_installed_app) {
+        if (filesystem_source_path) |value| {
+            if (std.mem.startsWith(u8, value, target_app_path)) {
+                allocator.free(value);
+                filesystem_source_path = null;
+            }
+        }
+    }
 
     const install_script_path = if (filesystem_source_path == null)
         try native_mount_support.resolveFilesystemBundleInstallScriptPath(allocator)

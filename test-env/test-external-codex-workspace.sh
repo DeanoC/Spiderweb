@@ -15,31 +15,22 @@ ASSET_DIR="$ROOT_DIR/test-env/codex-assets"
 HOST_HOME_DIR="${HOME:-}"
 BIND_ADDR="${BIND_ADDR:-127.0.0.1}"
 
-if [[ -v SPIDERWEB_PORT ]]; then
-    SPIDERWEB_PORT="$SPIDERWEB_PORT"
-else
-    SPIDERWEB_PORT=""
-fi
-if [[ -v LOCAL_WORKSPACE_NODE_PORT ]]; then
-    LOCAL_WORKSPACE_NODE_PORT="$LOCAL_WORKSPACE_NODE_PORT"
-else
-    LOCAL_WORKSPACE_NODE_PORT=""
-fi
-if [[ -v REMOTE_NODE_PORT ]]; then
-    REMOTE_NODE_PORT="$REMOTE_NODE_PORT"
-else
-    REMOTE_NODE_PORT=""
-fi
+SPIDERWEB_PORT="${SPIDERWEB_PORT-}"
+LOCAL_WORKSPACE_NODE_PORT="${LOCAL_WORKSPACE_NODE_PORT-}"
+REMOTE_NODE_PORT="${REMOTE_NODE_PORT-}"
 
+SPIDERWEB_E2E_VARIANT="${SPIDERWEB_E2E_VARIANT:-linux}"
 CODEX_MODE="${CODEX_MODE:-auto}"
 CODEX_LAUNCH_CMD="${CODEX_LAUNCH_CMD:-}"
-TRACE_BACKEND="${TRACE_BACKEND:-strace}"
+TRACE_BACKEND="${TRACE_BACKEND:-}"
 KEEP_TEMP="${KEEP_TEMP:-0}"
 CODEX_BIN="${CODEX_BIN:-}"
 CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.111.0}"
 CODEX_AUTH_MODE="${CODEX_AUTH_MODE:-auto}"
 CODEX_API_KEY_ENV="${CODEX_API_KEY_ENV:-OPENAI_API_KEY}"
 CODEX_HOME_DIR="${CODEX_HOME_DIR:-$HOST_HOME_DIR}"
+CODEX_MODEL="${CODEX_MODEL:-}"
+CODEX_MODEL_REASONING_EFFORT="${CODEX_MODEL_REASONING_EFFORT:-low}"
 EXTERNAL_AGENT_ID="${EXTERNAL_AGENT_ID:-codex}"
 CODEX_TIMEOUT_SECONDS="${CODEX_TIMEOUT_SECONDS:-900}"
 CODEX_IDLE_TIMEOUT_SECONDS="${CODEX_IDLE_TIMEOUT_SECONDS:-0}"
@@ -53,8 +44,8 @@ CODEX_ENABLE_TERMINAL_BRIDGE="${CODEX_ENABLE_TERMINAL_BRIDGE:-1}"
 CODEX_ENABLE_GIT_BRIDGE="${CODEX_ENABLE_GIT_BRIDGE:-1}"
 CODEX_INSTALL_IF_MISSING="${CODEX_INSTALL_IF_MISSING:-1}"
 SPIDERWEB_INSTALL_SOURCE="${SPIDERWEB_INSTALL_SOURCE:-auto}"
-SPIDERWEB_RELEASE_VERSION="${SPIDERWEB_RELEASE_VERSION:-v0.3.1}"
-SPIDERWEB_RELEASE_ARCHIVE_URL="${SPIDERWEB_RELEASE_ARCHIVE_URL:-https://github.com/DeanoC/Spiderweb/releases/download/${SPIDERWEB_RELEASE_VERSION}/spiderweb-linux-x86_64.tar.gz}"
+SPIDERWEB_RELEASE_VERSION="${SPIDERWEB_RELEASE_VERSION:-}"
+SPIDERWEB_RELEASE_ARCHIVE_URL="${SPIDERWEB_RELEASE_ARCHIVE_URL:-}"
 SPIDERWEB_RELEASE_ARCHIVE_SHA256="${SPIDERWEB_RELEASE_ARCHIVE_SHA256:-}"
 MANUAL_EXIT_CODE=20
 OUTPUT_DIR="${OUTPUT_DIR:-/tmp/spiderweb-external-codex-workspace-$(date +%Y%m%d-%H%M%S)-$$}"
@@ -68,12 +59,30 @@ log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
 log_fail() { echo -e "${RED}[FAIL]${NC} $1"; }
 
+is_linux_variant() {
+    [[ "$SPIDERWEB_E2E_VARIANT" == "linux" ]]
+}
+
+is_macos_native_variant() {
+    [[ "$SPIDERWEB_E2E_VARIANT" == "macos-native" ]]
+}
+
 require_bin() {
     if ! command -v "$1" >/dev/null 2>&1; then
         log_fail "required command not found: $1"
         exit 1
     fi
 }
+
+required_spiderweb_bins=(
+    spiderweb
+    spiderweb-config
+    spiderweb-control
+    spiderweb-fs-mount
+    spiderweb-fs-node
+    spiderweb-local-node
+    spiderweb-local-service
+)
 
 run_with_timeout() {
     local seconds="$1"
@@ -106,13 +115,27 @@ shell_quote() {
     printf '%q' "$1"
 }
 
-ensure_linux_host() {
+ensure_supported_host() {
     local platform
     platform="$(uname -s)"
-    if [[ "$platform" != "Linux" ]]; then
-        log_fail "this harness currently supports Linux only (found: $platform)"
-        exit 1
-    fi
+    case "$SPIDERWEB_E2E_VARIANT" in
+        linux)
+            if [[ "$platform" != "Linux" ]]; then
+                log_fail "this harness currently supports Linux only (found: $platform). On macOS, use test-env/test-external-codex-workspace-orb.sh or test-env/test-external-codex-workspace-macos.sh"
+                exit 1
+            fi
+            ;;
+        macos-native)
+            if [[ "$platform" != "Darwin" ]]; then
+                log_fail "the native macOS harness requires Darwin (found: $platform)"
+                exit 1
+            fi
+            ;;
+        *)
+            log_fail "unsupported SPIDERWEB_E2E_VARIANT: $SPIDERWEB_E2E_VARIANT"
+            exit 1
+            ;;
+    esac
 }
 
 SPIDERWEB_PID=""
@@ -145,8 +168,14 @@ cleanup() {
     local exit_code=$?
 
     if [[ -n "${MOUNT_POINT:-}" && -d "${MOUNT_POINT:-}" ]]; then
-        if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$MOUNT_POINT"; then
-            fusermount3 -u "$MOUNT_POINT" >/dev/null 2>&1 || true
+        if is_linux_variant; then
+            if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$MOUNT_POINT"; then
+                fusermount3 -u "$MOUNT_POINT" >/dev/null 2>&1 || true
+            fi
+        elif is_macos_native_variant; then
+            if command -v diskutil >/dev/null 2>&1; then
+                diskutil unmount force "$MOUNT_POINT" >/dev/null 2>&1 || true
+            fi
         fi
     fi
 
@@ -177,11 +206,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ensure_linux_host
+ensure_supported_host
 require_bin jq
 require_bin python3
-require_bin fusermount3
 require_bin bash
+if is_linux_variant; then
+    require_bin fusermount3
+fi
+
+if [[ -z "$TRACE_BACKEND" ]]; then
+    # Linux runs default to strace for extra mount/client debugging. Native
+    # macOS runs fall back to "none" because strace is not available there.
+    if is_linux_variant; then
+        TRACE_BACKEND="strace"
+    else
+        TRACE_BACKEND="none"
+    fi
+fi
 
 if [[ -z "$SPIDERWEB_PORT" ]]; then
     SPIDERWEB_PORT="$(pick_free_port)"
@@ -198,10 +239,18 @@ RUN_STARTED_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 TEST_TMP_DIR="$(mktemp -d)"
 TEMP_HOME="$TEST_TMP_DIR/home"
-INSTALL_DIR="$TEMP_HOME/.local/bin"
-PATH="$INSTALL_DIR:$PATH"
-export PATH
-mkdir -p "$TEMP_HOME" "$INSTALL_DIR"
+REPO_BUILD_INSTALL_DIR="$ROOT_DIR/zig-out/bin"
+if is_macos_native_variant; then
+    INSTALL_DIR="/Applications/Spiderweb.app/Contents/Resources"
+else
+    INSTALL_DIR="$TEMP_HOME/.local/bin"
+    PATH="$INSTALL_DIR:$PATH"
+    export PATH
+fi
+mkdir -p "$TEMP_HOME"
+if ! is_macos_native_variant; then
+    mkdir -p "$INSTALL_DIR"
+fi
 
 INSTALL_LOG="$OUTPUT_DIR/logs/install.log"
 SPIDERWEB_LOG="$OUTPUT_DIR/logs/spiderweb.log"
@@ -223,6 +272,7 @@ WORKSPACE_EXPORT_ROOT="$TEST_TMP_DIR/workspace-export"
 REMOTE_EXPORT_ROOT="$TEST_TMP_DIR/remote-export"
 MOUNT_POINT="$TEST_TMP_DIR/mount"
 MOUNT_WORKSPACE_PATH="$MOUNT_POINT/nodes/local/fs"
+CODEX_PROGRESS_WORKSPACE_PATH="$WORKSPACE_EXPORT_ROOT"
 PROMPT_FILE="$OUTPUT_DIR/codex_prompt.txt"
 HANDOFF_DIR="$OUTPUT_DIR/codex_handoff"
 VALIDATION_OUTPUT="$OUTPUT_DIR/game_validation.json"
@@ -253,16 +303,18 @@ CODEX_BRIDGE_SHELL="$CODEX_BRIDGE_DIR/spiderweb-terminal-shell"
 CODEX_BRIDGE_GIT="$CODEX_BRIDGE_DIR/git"
 CODEX_STDIN_LAUNCHER="$CODEX_BRIDGE_DIR/codex-exec-stdin-launcher"
 CODEX_BRIDGE_PYTHON="$CODEX_BRIDGE_DIR/python3"
+CODEX_BRIDGE_NODE="$CODEX_BRIDGE_DIR/node"
+CODEX_BRIDGE_SETSID="$CODEX_BRIDGE_DIR/setsid"
 CODEX_BRIDGE_LSB_RELEASE="$CODEX_BRIDGE_DIR/lsb_release"
 CODEX_BRIDGE_GETCONF="$CODEX_BRIDGE_DIR/getconf"
 CODEX_EXEC_PATH=""
 AGENT_HOME_TARGET_ROOT="$WORKSPACE_EXPORT_ROOT/.spiderweb/agents/$EXTERNAL_AGENT_ID/home"
 AGENT_HOME_MOUNT_ROOT="$MOUNT_WORKSPACE_PATH/.spiderweb/agents/$EXTERNAL_AGENT_ID/home"
-AGENT_HOME_XDG_CONFIG="$AGENT_HOME_MOUNT_ROOT/.config"
-AGENT_HOME_XDG_CACHE="$AGENT_HOME_MOUNT_ROOT/.cache"
-AGENT_HOME_XDG_DATA="$AGENT_HOME_MOUNT_ROOT/.local/share"
-AGENT_HOME_XDG_STATE="$AGENT_HOME_MOUNT_ROOT/.local/state"
-AGENT_HOME_TMP="$AGENT_HOME_MOUNT_ROOT/tmp"
+AGENT_HOME_TARGET_XDG_CONFIG="$AGENT_HOME_TARGET_ROOT/.config"
+AGENT_HOME_TARGET_XDG_CACHE="$AGENT_HOME_TARGET_ROOT/.cache"
+AGENT_HOME_TARGET_XDG_DATA="$AGENT_HOME_TARGET_ROOT/.local/share"
+AGENT_HOME_TARGET_XDG_STATE="$AGENT_HOME_TARGET_ROOT/.local/state"
+AGENT_HOME_TARGET_TMP="$AGENT_HOME_TARGET_ROOT/tmp"
 
 AUTH_TOKENS_FILE="$LTM_DIR/auth_tokens.json"
 mkdir -p \
@@ -293,6 +345,9 @@ build_usage_report() {
     )
     if [[ -d "$CODEX_RUNTIME_ROOT" ]]; then
         cmd+=(--allowed-runtime-root "$CODEX_RUNTIME_ROOT")
+    fi
+    if [[ -d "$AGENT_HOME_TARGET_ROOT" ]]; then
+        cmd+=(--allowed-runtime-root "$AGENT_HOME_TARGET_ROOT")
     fi
     for bridge_exec in "${CODEX_ALLOWED_BRIDGE_EXECS[@]}"; do
         if [[ -n "$bridge_exec" ]]; then
@@ -341,6 +396,8 @@ write_codex_runtime_snapshot() {
         --arg runtime_root "$CODEX_RUNTIME_ROOT" \
         --arg existing_home "$CODEX_HOME_DIR" \
         --arg mounted_home "$AGENT_HOME_MOUNT_ROOT" \
+        --arg configured_model "$CODEX_MODEL" \
+        --arg configured_reasoning_effort "$CODEX_MODEL_REASONING_EFFORT" \
         --arg timeout_seconds "$CODEX_TIMEOUT_SECONDS" \
         --arg idle_timeout_seconds "$CODEX_IDLE_TIMEOUT_SECONDS" \
         --arg json_events "$CODEX_JSON_EVENTS" \
@@ -361,6 +418,8 @@ write_codex_runtime_snapshot() {
             codex_runtime_root: $runtime_root,
             existing_login_home: $existing_home,
             mounted_agent_home: $mounted_home,
+            configured_model: ($configured_model | if . == "" then null else . end),
+            configured_reasoning_effort: ($configured_reasoning_effort | if . == "" then null else . end),
             timeout_seconds: ($timeout_seconds | tonumber),
             idle_timeout_seconds: ($idle_timeout_seconds | tonumber),
             json_events: ($json_events == "1"),
@@ -391,7 +450,7 @@ PY
 }
 
 workspace_first_write_info() {
-    python3 - "$MOUNT_WORKSPACE_PATH" <<'PY'
+    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -402,6 +461,8 @@ best = None
 
 if workspace.exists():
     for entry in workspace.rglob("*"):
+        if ".spiderweb" in entry.parts:
+            continue
         if entry.name in skip:
             continue
         try:
@@ -448,13 +509,13 @@ observe_codex_progress() {
     local changed=0
     local first_write_info
 
-    if [[ -z "$CODEX_BOOTSTRAP_COMPLETE_AT_UTC" && -s "$MOUNT_POINT/services/home/control/ensure.json" ]]; then
-        CODEX_BOOTSTRAP_COMPLETE_AT_UTC="$(file_mtime_utc "$MOUNT_POINT/services/home/control/ensure.json" || true)"
+    if [[ -z "$CODEX_BOOTSTRAP_COMPLETE_AT_UTC" && -s "$MOUNT_WORKSPACE_PATH/.spiderweb/services/home/control/ensure.json" ]]; then
+        CODEX_BOOTSTRAP_COMPLETE_AT_UTC="$(file_mtime_utc "$MOUNT_WORKSPACE_PATH/.spiderweb/services/home/control/ensure.json" || true)"
         if [[ -n "$CODEX_BOOTSTRAP_COMPLETE_AT_UTC" ]]; then
-            CODEX_BOOTSTRAP_COMPLETE_SOURCE="/services/home/control/ensure.json"
+            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/control/ensure.json"
         else
             CODEX_BOOTSTRAP_COMPLETE_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-            CODEX_BOOTSTRAP_COMPLETE_SOURCE="/services/home/control/ensure.json (observed)"
+            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/control/ensure.json (observed)"
         fi
         changed=1
     fi
@@ -653,22 +714,145 @@ wait_for_workspace_mounts() {
     return 1
 }
 
+probe_path_kind_quick() {
+    local kind="$1"
+    local path="$2"
+    local timeout_secs=1
+    if is_macos_native_variant; then
+        timeout_secs=5
+    fi
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$timeout_secs" python3 - "$kind" "$path" <<'PY' >/dev/null 2>&1
+import os
+import sys
+
+kind = sys.argv[1]
+path = sys.argv[2]
+if kind == "file":
+    raise SystemExit(0 if os.path.isfile(path) else 1)
+if kind == "dir":
+    raise SystemExit(0 if os.path.isdir(path) else 1)
+raise SystemExit(2)
+PY
+        return $?
+    fi
+
+    python3 - "$kind" "$path" "$timeout_secs" <<'PY' >/dev/null 2>&1
+import os
+import signal
+import sys
+
+kind = sys.argv[1]
+path = sys.argv[2]
+timeout_secs = int(sys.argv[3])
+
+def on_alarm(_signum, _frame):
+    raise TimeoutError()
+
+signal.signal(signal.SIGALRM, on_alarm)
+signal.alarm(timeout_secs)
+try:
+    if kind == "file":
+        raise SystemExit(0 if os.path.isfile(path) else 1)
+    if kind == "dir":
+        raise SystemExit(0 if os.path.isdir(path) else 1)
+    raise SystemExit(2)
+except TimeoutError:
+    raise SystemExit(124)
+finally:
+    signal.alarm(0)
+PY
+}
+
 wait_for_namespace_mount() {
-    for _ in $(seq 1 180); do
-        if [[ -f "$MOUNT_POINT/meta/protocol.json" &&
-              -f "$MOUNT_POINT/projects/$PROJECT_ID/meta/agent_bootstrap_quickref.json" &&
-              -f "$MOUNT_POINT/projects/$PROJECT_ID/meta/mounted_services.json" &&
-              -f "$MOUNT_POINT/projects/$PROJECT_ID/meta/workspace_status.json" &&
-              -f "$MOUNT_POINT/projects/$PROJECT_ID/meta/venom_packages.json" &&
-              -f "$MOUNT_POINT/projects/$PROJECT_ID/meta/agent_bootstrap.json" &&
-              -d "$MOUNT_WORKSPACE_PATH" &&
-              -f "$MOUNT_WORKSPACE_PATH/AGENTS.md" &&
-              -d "$MOUNT_POINT/shared_data" ]]; then
+    local deadline=$((SECONDS + 45))
+    local probe_timeout_secs=2
+    if is_macos_native_variant; then
+        deadline=$((SECONDS + 90))
+        probe_timeout_secs=8
+    fi
+
+    while (( SECONDS < deadline )); do
+        if python3 - "$MOUNT_POINT" "$MOUNT_WORKSPACE_PATH" "$PROJECT_ID" "$probe_timeout_secs" <<'PY' >/dev/null 2>&1
+import signal
+import sys
+from pathlib import Path
+
+mount_point = Path(sys.argv[1])
+workspace_path = Path(sys.argv[2])
+project_id = sys.argv[3]
+timeout_secs = int(sys.argv[4])
+
+required_dirs = [
+    workspace_path,
+    mount_point / "shared_data",
+]
+required_files = [
+    mount_point / "meta" / "protocol.json",
+    mount_point / "projects" / project_id / "meta" / "agent_bootstrap_quickref.json",
+    workspace_path / ".spiderweb" / "protocol.json",
+    workspace_path / ".spiderweb" / "shared_data" / "world_seed.json",
+]
+
+def on_alarm(_signum, _frame):
+    raise TimeoutError()
+
+signal.signal(signal.SIGALRM, on_alarm)
+signal.alarm(timeout_secs)
+try:
+    if not mount_point.is_dir():
+        raise SystemExit(1)
+    list(mount_point.iterdir())
+    for path in required_dirs:
+        if not path.is_dir():
+            raise SystemExit(1)
+    list(workspace_path.iterdir())
+    for path in required_files:
+        if not path.is_file():
+            raise SystemExit(1)
+    raise SystemExit(0)
+except TimeoutError:
+    raise SystemExit(124)
+finally:
+    signal.alarm(0)
+PY
+        then
             return 0
         fi
-        sleep 0.2
+        sleep 0.5
     done
     return 1
+}
+
+probe_directory_listing_quick() {
+    local path="$1"
+    local timeout_secs=2
+    if is_macos_native_variant; then
+        timeout_secs=8
+    fi
+    python3 - "$path" "$timeout_secs" <<'PY'
+import signal
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+timeout_secs = int(sys.argv[2])
+
+def on_alarm(_signum, _frame):
+    raise TimeoutError()
+
+signal.signal(signal.SIGALRM, on_alarm)
+signal.alarm(timeout_secs)
+try:
+    next(path.iterdir(), None)
+except TimeoutError:
+    raise SystemExit(124)
+except Exception:
+    raise SystemExit(1)
+finally:
+    signal.alarm(0)
+PY
 }
 
 assert_seeded_workspace_layout() {
@@ -696,12 +880,36 @@ expected = [".spiderweb", "AGENTS.md", "validate_game.py"]
 entries = sorted(item.name for item in workspace.iterdir())
 if entries != expected:
     raise SystemExit(f"expected attached workspace entries {expected}, found {entries}")
+managed = workspace / ".spiderweb"
+required = [
+    managed / "protocol.json",
+    managed / "agent_bootstrap_quickref.json",
+    managed / "agent_bootstrap.json",
+    managed / "workspace_status.json",
+    managed / "mounted_services.json",
+    managed / "venom_packages.json",
+    managed / "services" / "home" / "control" / "ensure.json",
+    managed / "services" / "mounts" / "control" / "bind.json",
+    managed / "local_venoms" / "home" / "control" / "ensure.json",
+    managed / "shared_data" / "world_seed.json",
+    managed / "shared_data" / "items_seed.json",
+    managed / "shared_data" / "puzzle_seed.json",
+]
+missing = [str(path.relative_to(workspace)) for path in required if not path.is_file()]
+if missing:
+    raise SystemExit(f"missing local bootstrap files: {missing}")
 PY
 }
 
 inject_codex_cli_workarounds() {
     local cmd="$1"
 
+    if [[ -n "$CODEX_MODEL" && "$cmd" != *" -m "* && "$cmd" != *" --model "* ]]; then
+        cmd="${cmd/ exec / exec -m $(shell_quote "$CODEX_MODEL") }"
+    fi
+    if [[ -n "$CODEX_MODEL_REASONING_EFFORT" && "$cmd" != *"model_reasoning_effort"* ]]; then
+        cmd="${cmd/ exec / exec -c model_reasoning_effort=$(shell_quote "$CODEX_MODEL_REASONING_EFFORT") }"
+    fi
     if [[ "$CODEX_DISABLE_COLLABORATION_MODES" == "1" && "$cmd" != *"--disable collaboration_modes"* ]]; then
         cmd="${cmd/ exec / exec --disable collaboration_modes }"
     fi
@@ -771,50 +979,61 @@ You are working inside a Spiderweb-mounted workspace.
 
 Read order:
 1. Read this `AGENTS.md` first and treat it as mandatory workspace guidance.
-2. Treat the mounted namespace root as `/` for this session. Then read only these required files, in order:
-   - `meta/protocol.json`
-   - `projects/{project_id}/meta/agent_bootstrap_quickref.json`
-   - `projects/{project_id}/meta/agent_bootstrap.json`
-   - `shared_data/world_seed.json`
-   - `shared_data/items_seed.json`
-   - `shared_data/puzzle_seed.json`
+2. Treat the current working directory as the mounted project write root for this session. Then read only these required files, in order:
+   - `./.spiderweb/protocol.json`
+   - `./.spiderweb/agent_bootstrap_quickref.json`
+   - `./.spiderweb/agent_bootstrap.json`
+   - `./.spiderweb/shared_data/world_seed.json`
+   - `./.spiderweb/shared_data/items_seed.json`
+   - `./.spiderweb/shared_data/puzzle_seed.json`
 
 Bootstrap rules:
-- Prefer `/services/*` paths over fallback namespace locations.
-- If `/services/home/control/ensure.json` succeeds once, treat home bootstrap as complete.
-- If `agent_bootstrap_quickref.json` says `all_required_services_present=true`, do not keep probing `/services/*` and move directly into implementation.
-- If required services are missing, repair them through `/services/mounts/control/bind.json` using the machine-readable bootstrap metadata.
-- Keep project writes inside `nodes/local/fs/` unless the user explicitly asks otherwise.
+- Prefer `./.spiderweb/services/*` paths over fallback local venom locations.
+- If `./.spiderweb/services/home/control/ensure.json` succeeds once, treat home bootstrap as complete.
+- If `agent_bootstrap_quickref.json` says `all_required_services_present=true`, do not keep probing `./.spiderweb/services/*` and move directly into implementation.
+- If required services are missing, repair them through `./.spiderweb/services/mounts/control/bind.json` using the machine-readable bootstrap metadata.
+- Keep project writes inside the current directory `.` unless the user explicitly asks otherwise.
 - When creating or fixing a project file, rewrite the whole file in one pass instead of appending partial repair fragments.
-- If `game.py` fails compile or walkthrough validation, delete and recreate `game.py` from scratch before retrying.
+- If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
+- If `game.py` fails compile or walkthrough validation, delete and recreate `game.py` from scratch before retrying. If a regenerated `game.py` still fails compile, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
+- Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless the walkthrough or validator exits non-zero.
+- Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated input prompts such as `> `.
+- Treat `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json` as successful when it exits with code `0`.
+- Do not rerun either validation command through nested shell wrappers or alternate redirection forms unless the command itself failed.
 - Preserve existing workspace support files such as `./validate_game.py`.
 - Do not run broad scans such as `find`, `rg --files`, or recursive `ls` across `services/`, `projects/`, or `meta/`. Read only the exact listed files directly.
+- Do not climb out of this directory with `..` to discover Spiderweb paths. Use the local Spiderweb-managed `./.spiderweb/` projection instead.
 
 Namespace facts:
-- Namespace root: `./`
-- Namespace alias: `/AGENTS.md`
-- Project write root: `nodes/local/fs` (namespace alias `/nodes/local/fs`)
-- Shared data root: `shared_data` (namespace alias `/shared_data`)
-- Service root: `services` (namespace alias `/services`)
+- Current working directory: `.`
+- This file: `./AGENTS.md`
+- Project write root: `.`
+- Spiderweb-managed entrypoint root: `./.spiderweb`
+- Shared data root: `./.spiderweb/shared_data`
+- Service root: `./.spiderweb/services`
+- Fallback local venom root: `./.spiderweb/local_venoms`
 - Machine bootstrap metadata:
-  - `projects/{project_id}/meta/agent_bootstrap_quickref.json`
-  - `projects/{project_id}/meta/agent_bootstrap.json`
-- Future Spiderweb-managed artifacts may appear under `nodes/local/fs/.spiderweb/`.
+  - `./.spiderweb/agent_bootstrap_quickref.json`
+  - `./.spiderweb/agent_bootstrap.json`
+- Future Spiderweb-managed artifacts may appear under `./.spiderweb/`.
 
 Task source:
 - The concrete task comes from the user prompt, not from `TASK.md`.
 - After the required reads above, begin implementation and validation immediately unless a required service is genuinely missing.
 - If the user asks for the standard text-adventure task, completion means:
-  - write `nodes/local/fs/game.py`, `nodes/local/fs/game_manifest.json`, `nodes/local/fs/walkthrough.txt`, and `nodes/local/fs/README.md`
-  - run `python3 -m py_compile nodes/local/fs/game.py`
-  - run `python3 nodes/local/fs/game.py < nodes/local/fs/walkthrough.txt`
-  - run `python3 nodes/local/fs/validate_game.py --workspace nodes/local/fs --shared-data shared_data --output nodes/local/fs/game_validation.json`
+  - write `game.py`, `game_manifest.json`, `walkthrough.txt`, and `README.md` in the current directory
+  - keep the lantern behind all seeded puzzle gates and do not leave alternate exits or shortcuts that bypass a required seeded puzzle
+  - run `python3 -m py_compile game.py`
+  - run `python3 game.py < walkthrough.txt`
+  - run `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json`
   - if a validation step fails, fix the project files and rerun only the failed step
+  - if a file-write command times out or fails partway through, check exactly which target files landed and then rewrite only the missing or incomplete files cleanly
+  - a `0` exit code from the walkthrough or validator means the step succeeded, even if stdout contains prompts like `> `
   - do not stop after partial outputs; finish when all required files exist and validation succeeds
 
 Do not:
 - Invent old metadata field names when the current JSON already defines the contract.
-- Create root-level symlink hacks for `/meta`, `/services`, or `/shared_data`.
+- Create symlink hacks or duplicate bootstrap files outside `./.spiderweb/`.
 <!-- SPIDERWEB:END MANAGED -->
 
 ## User Notes
@@ -841,6 +1060,7 @@ setup_spiderweb_runtime_root() {
 }
 
 install_bridge_runtime() {
+    local node_bin=""
     mkdir -p "$CODEX_BRIDGE_DIR"
     cp "$CODEX_BRIDGE_COMMON_SRC" "$CODEX_BRIDGE_COMMON"
     cp "$CODEX_BRIDGE_SHELL_SRC" "$CODEX_BRIDGE_SHELL"
@@ -849,11 +1069,36 @@ install_bridge_runtime() {
     cp "$CODEX_BRIDGE_LSB_RELEASE_SRC" "$CODEX_BRIDGE_LSB_RELEASE"
     cp "$CODEX_BRIDGE_GETCONF_SRC" "$CODEX_BRIDGE_GETCONF"
     ln -sf "$(command -v python3)" "$CODEX_BRIDGE_PYTHON"
+    node_bin="$(command -v node 2>/dev/null || command -v nodejs 2>/dev/null || true)"
+    if [[ -z "$node_bin" ]]; then
+        log_fail "node is required to run the pinned Codex CLI inside the isolated mounted environment"
+        exit 1
+    fi
+    ln -sf "$node_bin" "$CODEX_BRIDGE_NODE"
+    if command -v setsid >/dev/null 2>&1; then
+        cat > "$CODEX_BRIDGE_SETSID" <<EOF
+#!/usr/bin/env sh
+exec "$(command -v setsid)" "\$@"
+EOF
+    else
+        cat > "$CODEX_BRIDGE_SETSID" <<'EOF'
+#!/usr/bin/env python3
+import os
+import sys
+
+if len(sys.argv) < 2:
+    raise SystemExit("usage: setsid <command> [args...]")
+
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+EOF
+    fi
     chmod +x \
         "$CODEX_BRIDGE_COMMON" \
         "$CODEX_BRIDGE_SHELL" \
         "$CODEX_BRIDGE_GIT" \
         "$CODEX_STDIN_LAUNCHER" \
+        "$CODEX_BRIDGE_SETSID" \
         "$CODEX_BRIDGE_LSB_RELEASE" \
         "$CODEX_BRIDGE_GETCONF"
     CODEX_EXEC_PATH="$CODEX_BRIDGE_DIR:$INSTALL_DIR:/usr/local/bin:/usr/bin:/bin"
@@ -861,6 +1106,8 @@ install_bridge_runtime() {
     CODEX_ALLOWED_BRIDGE_EXECS=()
     CODEX_ALLOWED_BRIDGE_EXECS+=("$CODEX_STDIN_LAUNCHER")
     CODEX_ALLOWED_BRIDGE_EXECS+=("$CODEX_BRIDGE_PYTHON")
+    CODEX_ALLOWED_BRIDGE_EXECS+=("$CODEX_BRIDGE_NODE")
+    CODEX_ALLOWED_BRIDGE_EXECS+=("$CODEX_BRIDGE_SETSID")
     CODEX_ALLOWED_BRIDGE_EXECS+=("$CODEX_BRIDGE_LSB_RELEASE")
     CODEX_ALLOWED_BRIDGE_EXECS+=("$CODEX_BRIDGE_GETCONF")
     if [[ "$CODEX_ENABLE_TERMINAL_BRIDGE" == "1" ]]; then
@@ -873,16 +1120,16 @@ install_bridge_runtime() {
 
 prepare_mounted_codex_home() {
     mkdir -p \
-        "$AGENT_HOME_MOUNT_ROOT" \
-        "$AGENT_HOME_XDG_CONFIG" \
-        "$AGENT_HOME_XDG_CACHE" \
-        "$AGENT_HOME_XDG_DATA" \
-        "$AGENT_HOME_XDG_STATE" \
-        "$AGENT_HOME_TMP"
+        "$AGENT_HOME_TARGET_ROOT" \
+        "$AGENT_HOME_TARGET_ROOT/.config" \
+        "$AGENT_HOME_TARGET_ROOT/.cache" \
+        "$AGENT_HOME_TARGET_ROOT/.local/share" \
+        "$AGENT_HOME_TARGET_ROOT/.local/state" \
+        "$AGENT_HOME_TARGET_ROOT/tmp"
 }
 
 write_mounted_codex_config() {
-    local target_codex_dir="$AGENT_HOME_MOUNT_ROOT/.codex"
+    local target_codex_dir="$AGENT_HOME_TARGET_ROOT/.codex"
     mkdir -p "$target_codex_dir"
     cat > "$target_codex_dir/config.toml" <<'EOF'
 check_for_update_on_startup = false
@@ -900,11 +1147,11 @@ sync_existing_login_into_mounted_home() {
         log_fail "mounted_login requested, but no .codex directory exists in CODEX_HOME_DIR"
         return 1
     fi
-    rm -rf "$AGENT_HOME_MOUNT_ROOT/.codex"
-    mkdir -p "$AGENT_HOME_MOUNT_ROOT/.codex"
+    rm -rf "$AGENT_HOME_TARGET_ROOT/.codex"
+    mkdir -p "$AGENT_HOME_TARGET_ROOT/.codex"
 
     local source_codex_dir="$CODEX_HOME_DIR/.codex"
-    local target_codex_dir="$AGENT_HOME_MOUNT_ROOT/.codex"
+    local target_codex_dir="$AGENT_HOME_TARGET_ROOT/.codex"
     local copied_any=0
     local candidate
     for candidate in auth.json version.json; do
@@ -1022,11 +1269,11 @@ configure_codex_env() {
     local tmp_dir="$CODEX_RUNTIME_ROOT/tmp"
 
     if [[ "$auth_mode" == "api_key" || "$auth_mode" == "mounted_login" ]]; then
-        xdg_config_home="$AGENT_HOME_XDG_CONFIG"
-        xdg_cache_home="$AGENT_HOME_XDG_CACHE"
-        xdg_data_home="$AGENT_HOME_XDG_DATA"
-        xdg_state_home="$AGENT_HOME_XDG_STATE"
-        tmp_dir="$AGENT_HOME_TMP"
+        xdg_config_home="$AGENT_HOME_TARGET_XDG_CONFIG"
+        xdg_cache_home="$AGENT_HOME_TARGET_XDG_CACHE"
+        xdg_data_home="$AGENT_HOME_TARGET_XDG_DATA"
+        xdg_state_home="$AGENT_HOME_TARGET_XDG_STATE"
+        tmp_dir="$AGENT_HOME_TARGET_TMP"
     fi
 
     mkdir -p "$tmp_dir" "$xdg_config_home" "$xdg_cache_home" "$xdg_data_home" "$xdg_state_home"
@@ -1039,8 +1286,9 @@ configure_codex_env() {
         XDG_DATA_HOME="$xdg_data_home"
         XDG_STATE_HOME="$xdg_state_home"
         TMPDIR="$tmp_dir"
+        PYTHONPYCACHEPREFIX="$tmp_dir/pycache"
         PATH="$CODEX_EXEC_PATH"
-        PWD="$MOUNT_POINT"
+        PWD="$MOUNT_WORKSPACE_PATH"
         GIT_CEILING_DIRECTORIES="$MOUNT_POINT"
         GIT_DISCOVERY_ACROSS_FILESYSTEM=0
         GIT_CONFIG_NOSYSTEM=1
@@ -1134,7 +1382,7 @@ setup_codex_auth() {
     if [[ "$requested_mode" == "api_key" ]]; then
         prepare_mounted_codex_home
         CODEX_SELECTED_AUTH_MODE="api_key"
-        CODEX_EFFECTIVE_HOME="$AGENT_HOME_MOUNT_ROOT"
+        CODEX_EFFECTIVE_HOME="$AGENT_HOME_TARGET_ROOT"
         configure_codex_env "$CODEX_SELECTED_AUTH_MODE" "$CODEX_EFFECTIVE_HOME"
 
         if ! printf '%s\n' "$api_key" | "${CODEX_ENV_BASE[@]}" "$CODEX_RESOLVED_BIN" login --with-api-key >"$CODEX_AUTH_LOG" 2>&1; then
@@ -1146,7 +1394,7 @@ setup_codex_auth() {
         prepare_mounted_codex_home
         sync_existing_login_into_mounted_home
         CODEX_SELECTED_AUTH_MODE="mounted_login"
-        CODEX_EFFECTIVE_HOME="$AGENT_HOME_MOUNT_ROOT"
+        CODEX_EFFECTIVE_HOME="$AGENT_HOME_TARGET_ROOT"
         configure_codex_env "$CODEX_SELECTED_AUTH_MODE" "$CODEX_EFFECTIVE_HOME"
 
         if ! "${CODEX_ENV_BASE[@]}" "$CODEX_RESOLVED_BIN" login status >"$CODEX_AUTH_LOG" 2>&1; then
@@ -1171,7 +1419,7 @@ setup_codex_auth() {
 }
 
 default_codex_launch_cmd() {
-    printf '%s' '{codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --color never --add-dir {namespace_meta_dir} --add-dir {project_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {namespace_root} -o {artifact_dir}/codex_last_message.txt -'
+    printf '%s' '{codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --color never --add-dir {namespace_meta_dir} --add-dir {project_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -'
 }
 
 render_codex_launch_command() {
@@ -1201,9 +1449,10 @@ render_codex_launch_command() {
 }
 
 progress_fingerprint() {
-    python3 - "$MOUNT_WORKSPACE_PATH" "$CODEX_STDOUT_LOG" "$CODEX_STDERR_LOG" "$CODEX_PTY_LOG" <<'PY'
+    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" "$CODEX_STDOUT_LOG" "$CODEX_STDERR_LOG" "$CODEX_PTY_LOG" <<'PY'
 from pathlib import Path
 import sys
+import os
 
 workspace = Path(sys.argv[1])
 stdout_log = Path(sys.argv[2])
@@ -1214,15 +1463,29 @@ skip_files = {"AGENTS.md", "validate_game.py"}
 count = 0
 latest = 0
 if workspace.exists():
-    for entry in workspace.rglob("*"):
-        if entry.name in skip_files:
-            continue
-        try:
-            stat = entry.stat()
-        except FileNotFoundError:
-            continue
-        count += 1
-        latest = max(latest, stat.st_mtime_ns)
+    for root, dirs, files in os.walk(workspace, topdown=True):
+        dirs[:] = [name for name in dirs if name != ".spiderweb"]
+        root_path = Path(root)
+        for name in dirs:
+            if name in skip_files:
+                continue
+            entry = root_path / name
+            try:
+                stat = entry.stat()
+            except FileNotFoundError:
+                continue
+            count += 1
+            latest = max(latest, stat.st_mtime_ns)
+        for name in files:
+            if name in skip_files:
+                continue
+            entry = root_path / name
+            try:
+                stat = entry.stat()
+            except FileNotFoundError:
+                continue
+            count += 1
+            latest = max(latest, stat.st_mtime_ns)
 
 stdout_size = stdout_log.stat().st_size if stdout_log.exists() else 0
 stderr_size = stderr_log.stat().st_size if stderr_log.exists() else 0
@@ -1279,12 +1542,17 @@ summarize_codex_events() {
 }
 
 run_live_codex() {
-    if [[ "$TRACE_BACKEND" != "strace" ]]; then
-        log_fail "unsupported TRACE_BACKEND: $TRACE_BACKEND"
-        exit 1
-    fi
-    require_bin strace
-    require_bin setsid
+    case "$TRACE_BACKEND" in
+        strace)
+            require_bin strace
+            ;;
+        none)
+            ;;
+        *)
+            log_fail "unsupported TRACE_BACKEND: $TRACE_BACKEND"
+            exit 1
+            ;;
+    esac
     if [[ "$CODEX_USE_PTY" == "1" ]]; then
         require_bin script
     fi
@@ -1312,31 +1580,65 @@ run_live_codex() {
         pty_inner_cmd="$(shell_quote "$CODEX_STDIN_LAUNCHER") $(shell_quote "$PROMPT_FILE") $quoted_cmd"
         local quoted_pty_inner_cmd
         quoted_pty_inner_cmd="$(shell_quote "$pty_inner_cmd")"
-        (
-            cd "$MOUNT_POINT"
-            "${CODEX_ENV_BASE[@]}" \
-                SHELL=/bin/bash \
-                CODEX_STDIN_LAUNCHER_SHELL=/bin/bash \
-                CODEX_TARGET_SHELL="$codex_target_shell" \
-                GIT_DIR= \
-                GIT_WORK_TREE= \
-                setsid \
-                strace -ff -s 4096 -e trace=%file,%process -o "$STRACE_PREFIX" \
-                script -qefc "bash -lc $quoted_pty_inner_cmd" "$CODEX_PTY_LOG" >"$CODEX_STDOUT_LOG" 2>"$CODEX_STDERR_LOG"
-        ) &
+        local -a pty_launch_cmd
+        if is_macos_native_variant; then
+            pty_launch_cmd=(script -q "$CODEX_PTY_LOG" /bin/bash -lc "$pty_inner_cmd")
+        else
+            pty_launch_cmd=(script -qefc "bash -lc $quoted_pty_inner_cmd" "$CODEX_PTY_LOG")
+        fi
+        if [[ "$TRACE_BACKEND" == "strace" ]]; then
+            (
+                cd "$MOUNT_WORKSPACE_PATH"
+                "${CODEX_ENV_BASE[@]}" \
+                    SHELL=/bin/bash \
+                    CODEX_STDIN_LAUNCHER_SHELL=/bin/bash \
+                    CODEX_TARGET_SHELL="$codex_target_shell" \
+                    GIT_DIR= \
+                    GIT_WORK_TREE= \
+                    "$CODEX_BRIDGE_SETSID" \
+                    strace -ff -s 4096 -e trace=%file,%process -o "$STRACE_PREFIX" \
+                    "${pty_launch_cmd[@]}" >"$CODEX_STDOUT_LOG" 2>"$CODEX_STDERR_LOG"
+            ) &
+        else
+            (
+                cd "$MOUNT_WORKSPACE_PATH"
+                "${CODEX_ENV_BASE[@]}" \
+                    SHELL=/bin/bash \
+                    CODEX_STDIN_LAUNCHER_SHELL=/bin/bash \
+                    CODEX_TARGET_SHELL="$codex_target_shell" \
+                    GIT_DIR= \
+                    GIT_WORK_TREE= \
+                    "$CODEX_BRIDGE_SETSID" \
+                    "${pty_launch_cmd[@]}" >"$CODEX_STDOUT_LOG" 2>"$CODEX_STDERR_LOG"
+            ) &
+        fi
     else
-        (
-            cd "$MOUNT_POINT"
-            "${CODEX_ENV_BASE[@]}" \
-                SHELL=/bin/bash \
-                CODEX_STDIN_LAUNCHER_SHELL=/bin/bash \
-                CODEX_TARGET_SHELL="$codex_target_shell" \
-                GIT_DIR= \
-                GIT_WORK_TREE= \
-                setsid \
-                strace -ff -s 4096 -e trace=%file,%process -o "$STRACE_PREFIX" \
-                "$CODEX_STDIN_LAUNCHER" "$PROMPT_FILE" "$cmd" >"$CODEX_STDOUT_LOG" 2>"$CODEX_STDERR_LOG"
-        ) &
+        if [[ "$TRACE_BACKEND" == "strace" ]]; then
+            (
+                cd "$MOUNT_WORKSPACE_PATH"
+                "${CODEX_ENV_BASE[@]}" \
+                    SHELL=/bin/bash \
+                    CODEX_STDIN_LAUNCHER_SHELL=/bin/bash \
+                    CODEX_TARGET_SHELL="$codex_target_shell" \
+                    GIT_DIR= \
+                    GIT_WORK_TREE= \
+                    "$CODEX_BRIDGE_SETSID" \
+                    strace -ff -s 4096 -e trace=%file,%process -o "$STRACE_PREFIX" \
+                    "$CODEX_STDIN_LAUNCHER" "$PROMPT_FILE" "$cmd" >"$CODEX_STDOUT_LOG" 2>"$CODEX_STDERR_LOG"
+            ) &
+        else
+            (
+                cd "$MOUNT_WORKSPACE_PATH"
+                "${CODEX_ENV_BASE[@]}" \
+                    SHELL=/bin/bash \
+                    CODEX_STDIN_LAUNCHER_SHELL=/bin/bash \
+                    CODEX_TARGET_SHELL="$codex_target_shell" \
+                    GIT_DIR= \
+                    GIT_WORK_TREE= \
+                    "$CODEX_BRIDGE_SETSID" \
+                    "$CODEX_STDIN_LAUNCHER" "$PROMPT_FILE" "$cmd" >"$CODEX_STDOUT_LOG" 2>"$CODEX_STDERR_LOG"
+            ) &
+        fi
     fi
     local runner_pid="$!"
 
@@ -1361,28 +1663,140 @@ run_live_codex() {
     CODEX_RUN_STATE="completed"
 }
 
-log_info "Running installer into isolated HOME..."
-HOME="$TEMP_HOME" \
-PATH="$PATH" \
-SPIDERWEB_NON_INTERACTIVE=1 \
-SPIDERWEB_INSTALL_DIR="$INSTALL_DIR" \
-SPIDERWEB_REPO_DIR="$ROOT_DIR" \
-SPIDERWEB_INSTALL_ZSS=0 \
-SPIDERWEB_INSTALL_SYSTEMD=0 \
-SPIDERWEB_INSTALL_SOURCE="$SPIDERWEB_INSTALL_SOURCE" \
-SPIDERWEB_RELEASE_ARCHIVE_URL="$SPIDERWEB_RELEASE_ARCHIVE_URL" \
-SPIDERWEB_RELEASE_ARCHIVE_SHA256="$SPIDERWEB_RELEASE_ARCHIVE_SHA256" \
-SPIDERWEB_RELEASE_VERSION="$SPIDERWEB_RELEASE_VERSION" \
-SPIDERWEB_START_AFTER_INSTALL=0 \
-bash "$ROOT_DIR/install.sh" >"$INSTALL_LOG" 2>&1
+run_spiderweb_installer() {
+    local install_source="$1"
+    local release_url="$2"
+    local release_version="$3"
 
-for bin in spiderweb spiderweb-config spiderweb-control spiderweb-fs-mount spiderweb-fs-node; do
-    if [[ ! -x "$INSTALL_DIR/$bin" ]]; then
-        log_fail "installer did not produce expected binary: $bin"
-        exit 1
+    if [[ "$install_source" == "release" && -z "$release_version" ]]; then
+        log_fail "SPIDERWEB_RELEASE_VERSION is required when SPIDERWEB_INSTALL_SOURCE=release"
+        return 1
     fi
-done
-log_pass "installer completed and produced required binaries"
+
+    HOME="$TEMP_HOME" \
+    PATH="$PATH" \
+    SPIDERWEB_NON_INTERACTIVE=1 \
+    SPIDERWEB_INSTALL_DIR="$INSTALL_DIR" \
+    SPIDERWEB_REPO_DIR="$ROOT_DIR" \
+    SPIDERWEB_INSTALL_ZSS=0 \
+    SPIDERWEB_INSTALL_SYSTEMD=0 \
+    SPIDERWEB_INSTALL_SOURCE="$install_source" \
+    SPIDERWEB_RELEASE_ARCHIVE_URL="$release_url" \
+    SPIDERWEB_RELEASE_ARCHIVE_SHA256="$SPIDERWEB_RELEASE_ARCHIVE_SHA256" \
+    SPIDERWEB_RELEASE_VERSION="$release_version" \
+    SPIDERWEB_START_AFTER_INSTALL=0 \
+    bash "$ROOT_DIR/install.sh" >"$INSTALL_LOG" 2>&1
+}
+
+first_missing_spiderweb_bin_in() {
+    local bin_dir="$1"
+    local bin
+    for bin in "${required_spiderweb_bins[@]}"; do
+        if [[ ! -x "$bin_dir/$bin" ]]; then
+            printf '%s' "$bin"
+            return 0
+        fi
+    done
+    return 1
+}
+
+clear_installed_spiderweb_bins() {
+    local bin
+    for bin in "${required_spiderweb_bins[@]}"; do
+        rm -f "$INSTALL_DIR/$bin"
+    done
+}
+
+install_spiderweb_harness_binaries() {
+    if is_macos_native_variant; then
+        log_info "Building Spiderweb binaries from the current checkout for native macOS E2E..."
+        (
+            cd "$ROOT_DIR"
+            zig build
+        ) >"$INSTALL_LOG" 2>&1 || {
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        }
+
+        local missing_bin=""
+        if missing_bin="$(first_missing_spiderweb_bin_in "$REPO_BUILD_INSTALL_DIR")"; then
+            log_fail "repo build did not produce expected binary in zig-out/bin: $missing_bin"
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        fi
+
+        if missing_bin="$(first_missing_spiderweb_bin_in "$INSTALL_DIR")"; then
+            log_fail "installed Spiderweb app is missing required runtime binary: $missing_bin"
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        fi
+
+        log_pass "repo build completed and native runtime will use signed app resources"
+        return 0
+    fi
+
+    local requested_source="$SPIDERWEB_INSTALL_SOURCE"
+
+    log_info "Running installer into isolated HOME..."
+    if ! run_spiderweb_installer "$requested_source" "$SPIDERWEB_RELEASE_ARCHIVE_URL" "$SPIDERWEB_RELEASE_VERSION"; then
+        if [[ "$requested_source" != "auto" ]]; then
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        fi
+        log_info "Auto installer path failed; retrying with source build for current checkout..."
+        clear_installed_spiderweb_bins
+        run_spiderweb_installer "source" "" "" || {
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        }
+    fi
+
+    local missing_bin=""
+    if missing_bin="$(first_missing_spiderweb_bin_in "$INSTALL_DIR")"; then
+        if [[ "$requested_source" != "auto" ]]; then
+            log_fail "installer did not produce expected binary: $missing_bin"
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        fi
+
+        log_info "Auto installer result is missing '$missing_bin'; retrying with source build for current checkout..."
+        clear_installed_spiderweb_bins
+        run_spiderweb_installer "source" "" "" || {
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        }
+
+        if missing_bin="$(first_missing_spiderweb_bin_in "$INSTALL_DIR")"; then
+            log_fail "source installer still did not produce expected binary: $missing_bin"
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        fi
+    fi
+
+    log_pass "installer completed and produced required binaries"
+}
+
+ensure_macos_native_mount_ready() {
+    if ! is_macos_native_variant; then
+        return 0
+    fi
+
+    local status_output=""
+    status_output="$("$INSTALL_DIR/spiderweb-config" config fs-extension-status 2>&1)" || {
+        printf '%s\n' "$status_output" >>"$INSTALL_LOG"
+        log_fail "could not read native FS extension status"
+        return 1
+    }
+    printf '%s\n' "$status_output" >>"$INSTALL_LOG"
+
+    if ! grep -q 'ready:[[:space:]]*yes' <<<"$status_output"; then
+        log_fail "native macOS FS extension is not ready; run install-fs-extension for the current build before rerunning the harness"
+        return 1
+    fi
+}
+
+install_spiderweb_harness_binaries
+ensure_macos_native_mount_ready
 
 setup_spiderweb_runtime_root
 cp "$ASSET_DIR/shared_data/"* "$REMOTE_EXPORT_ROOT/"
@@ -1400,7 +1814,10 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<EOF
     "default_agent_id": "default",
     "ltm_directory": "$LTM_DIR",
     "ltm_filename": "runtime-memory.db",
-    "spider_web_root": "$SPIDERWEB_RUNTIME_ROOT"
+    "spider_web_root": "$SPIDERWEB_RUNTIME_ROOT",
+    "local_node": {
+      "export_path": "$WORKSPACE_EXPORT_ROOT"
+    }
   }
 }
 EOF
@@ -1503,18 +1920,30 @@ fi
 log_pass "workspace topology converged for project $PROJECT_ID"
 
 log_info "Mounting namespace ..."
-HOME="$TEMP_HOME" \
+MOUNT_BACKEND_ARGS=()
+MOUNT_HOME="$TEMP_HOME"
+if is_macos_native_variant; then
+    MOUNT_BACKEND_ARGS+=(--mount-backend native)
+    MOUNT_HOME="$HOST_HOME_DIR"
+fi
+HOME="$MOUNT_HOME" \
 "$INSTALL_DIR/spiderweb-fs-mount" \
     --namespace-url "$CONTROL_URL" \
     --workspace-id "$PROJECT_ID" \
     --auth-token "$SPIDERWEB_AUTH_TOKEN" \
     --agent-id codex \
     --session-key e2e \
+    "${MOUNT_BACKEND_ARGS[@]}" \
     mount "$MOUNT_POINT" >"$MOUNT_LOG" 2>&1 &
 MOUNT_PID="$!"
 
 if ! wait_for_namespace_mount; then
     log_fail "namespace mount did not become ready"
+    tail -n 200 "$MOUNT_LOG" || true
+    exit 1
+fi
+if ! probe_directory_listing_quick "$MOUNT_WORKSPACE_PATH"; then
+    log_fail "namespace mount root is present but workspace listing is not ready"
     tail -n 200 "$MOUNT_LOG" || true
     exit 1
 fi

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import argparse
 import json
 import subprocess
@@ -8,9 +10,9 @@ from pathlib import Path
 
 
 REQUIRED_SHARED_INPUTS = [
-    "/shared_data/world_seed.json",
-    "/shared_data/items_seed.json",
-    "/shared_data/puzzle_seed.json",
+    "./.spiderweb/shared_data/world_seed.json",
+    "./.spiderweb/shared_data/items_seed.json",
+    "./.spiderweb/shared_data/puzzle_seed.json",
 ]
 EXPECTED_VICTORY = "VICTORY: Lantern of Nine Paths recovered"
 

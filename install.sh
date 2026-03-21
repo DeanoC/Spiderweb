@@ -841,7 +841,15 @@ if [[ "$INSTALL_SOURCE_RESOLVED" == "source" && -d "$REPO_DIR" ]]; then
 fi
 
 mkdir -p "$INSTALL_DIR"
-SPIDERWEB_BINARIES=(spiderweb spiderweb-config spiderweb-control spiderweb-fs-mount spiderweb-fs-node)
+SPIDERWEB_BINARIES=(
+    spiderweb
+    spiderweb-config
+    spiderweb-control
+    spiderweb-fs-mount
+    spiderweb-fs-node
+    spiderweb-local-node
+    spiderweb-local-service
+)
 if [[ "$INSTALL_SOURCE_RESOLVED" == "source" ]]; then
     install_spiderweb_from_source
 else

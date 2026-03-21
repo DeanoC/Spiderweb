@@ -87,6 +87,8 @@ final class SpiderwebBridgeVolume:
 
     let maximumLinkCount = 1
     let maximumNameLength = 255
+    let maximumFileSize: UInt64 = UInt64.max
+    let maximumFileSizeInBits = 65
     let restrictsOwnershipChanges = false
     let truncatesLongNames = false
     let itemDeactivationPolicy: FSVolume.ItemDeactivationOptions = .always

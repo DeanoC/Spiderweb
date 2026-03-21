@@ -1,6 +1,6 @@
 # Spiderweb Test Environment Makefile
 
-.PHONY: help build up down shell test wipe logs status test-embed-multi-service test-external-codex-workspace test-external-codex-repeatability test-external-codex-cli-matrix package-external-codex-repro test-distributed-workspace test-distributed-workspace-bootstrap test-distributed-workspace-drift test-distributed-workspace-matrix test-distributed-workspace-encrypted test-distributed-workspace-operator-token test-distributed-soak-chaos test-unified-v2-protocol
+.PHONY: help build up down shell test wipe logs status test-embed-multi-service test-external-codex-workspace test-external-codex-workspace-orb test-external-codex-workspace-macos test-external-codex-repeatability test-external-codex-cli-matrix package-external-codex-repro test-distributed-workspace test-distributed-workspace-bootstrap test-distributed-workspace-drift test-distributed-workspace-matrix test-distributed-workspace-encrypted test-distributed-workspace-operator-token test-distributed-soak-chaos test-unified-v2-protocol
 
 help: ## Show this help message
 	@echo "Spiderweb Test Environment"
@@ -55,6 +55,20 @@ test-external-codex-workspace: ## Run external Codex workspace end-to-end harnes
 		exit 1; \
 	fi
 	@bash ./test-external-codex-workspace.sh
+
+test-external-codex-workspace-orb: ## Run external Codex workspace harness in Orb on macOS
+	@if [ ! -f ./test-external-codex-workspace-orb.sh ]; then \
+		echo "Missing ./test-external-codex-workspace-orb.sh. Add the Orb wrapper to test-env/ first."; \
+		exit 1; \
+	fi
+	@bash ./test-external-codex-workspace-orb.sh
+
+test-external-codex-workspace-macos: ## Run native macOS external Codex workspace harness
+	@if [ ! -f ./test-external-codex-workspace-macos.sh ]; then \
+		echo "Missing ./test-external-codex-workspace-macos.sh. Add the native macOS harness to test-env/ first."; \
+		exit 1; \
+	fi
+	@bash ./test-external-codex-workspace-macos.sh
 
 test-external-codex-repeatability: ## Run the external Codex harness multiple times and summarize reliability/bootstrap stability
 	@if [ ! -f ./test-external-codex-repeatability.sh ]; then \

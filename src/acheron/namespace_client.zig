@@ -253,6 +253,303 @@ pub const NamespaceClient = struct {
         return readControlPayloadFor(self, request_id, "control.workspace_status");
     }
 
+    pub fn controlMountAttach(self: *NamespaceClient, path: []const u8, depth: u32) ![]u8 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"path\":\"{s}\",\"depth\":{d}}}",
+            .{ escaped_path, depth },
+        );
+        defer self.allocator.free(payload);
+
+        return self.controlRequestPayloadWithReconnect(
+            "control.mount_attach_v2",
+            "control.mount_attach_v2",
+            payload,
+        );
+    }
+
+    pub fn controlMountFileRead(self: *NamespaceClient, path: []const u8, offset: u64, length: u32) ![]u8 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"path\":\"{s}\",\"offset\":{d},\"length\":{d}}}",
+            .{ escaped_path, offset, length },
+        );
+        defer self.allocator.free(payload);
+
+        return self.controlRequestPayloadWithReconnect(
+            "control.mount_file_read_v2",
+            "control.mount_file_read_v2",
+            payload,
+        );
+    }
+
+    pub fn controlMountFileWrite(self: *NamespaceClient, path: []const u8, offset: u64, data: []const u8) !u32 {
+        return self.controlMountFileWriteWithOptions(path, offset, data, null);
+    }
+
+    pub fn controlMountPathReadlink(self: *NamespaceClient, path: []const u8) ![]u8 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        defer self.allocator.free(payload);
+        return self.controlRequestPayloadWithReconnect(
+            "control.mount_path_readlink_v2",
+            "control.mount_path_readlink_v2",
+            payload,
+        );
+    }
+
+    pub fn controlMountPathMkdir(self: *NamespaceClient, path: []const u8) !void {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_mkdir_v2",
+            "control.mount_path_mkdir_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathUnlink(self: *NamespaceClient, path: []const u8) !void {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_unlink_v2",
+            "control.mount_path_unlink_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathRmdir(self: *NamespaceClient, path: []const u8) !void {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_rmdir_v2",
+            "control.mount_path_rmdir_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathRename(self: *NamespaceClient, old_path: []const u8, new_path: []const u8) !void {
+        const escaped_old_path = try jsonEscape(self.allocator, normalizeAbsolutePath(old_path));
+        defer self.allocator.free(escaped_old_path);
+        const escaped_new_path = try jsonEscape(self.allocator, normalizeAbsolutePath(new_path));
+        defer self.allocator.free(escaped_new_path);
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"old_path\":\"{s}\",\"new_path\":\"{s}\"}}",
+            .{ escaped_old_path, escaped_new_path },
+        );
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_rename_v2",
+            "control.mount_path_rename_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathSymlink(self: *NamespaceClient, target: []const u8, link_path: []const u8) !void {
+        const escaped_target = try jsonEscape(self.allocator, target);
+        defer self.allocator.free(escaped_target);
+        const escaped_link_path = try jsonEscape(self.allocator, normalizeAbsolutePath(link_path));
+        defer self.allocator.free(escaped_link_path);
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"target\":\"{s}\",\"link_path\":\"{s}\"}}",
+            .{ escaped_target, escaped_link_path },
+        );
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_symlink_v2",
+            "control.mount_path_symlink_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathSetxattr(self: *NamespaceClient, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const escaped_name = try jsonEscape(self.allocator, name);
+        defer self.allocator.free(escaped_name);
+        const encoded = try encodeBase64(self.allocator, value);
+        defer self.allocator.free(encoded);
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"path\":\"{s}\",\"name\":\"{s}\",\"value_b64\":\"{s}\",\"flags\":{d}}}",
+            .{ escaped_path, escaped_name, encoded, flags },
+        );
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_setxattr_v2",
+            "control.mount_path_setxattr_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathGetxattr(self: *NamespaceClient, path: []const u8, name: []const u8) ![]u8 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const escaped_name = try jsonEscape(self.allocator, name);
+        defer self.allocator.free(escaped_name);
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"path\":\"{s}\",\"name\":\"{s}\"}}",
+            .{ escaped_path, escaped_name },
+        );
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_getxattr_v2",
+            "control.mount_path_getxattr_v2",
+            payload,
+        );
+        defer self.allocator.free(response);
+        return parseGetxattrPayload(self.allocator, response);
+    }
+
+    pub fn controlMountPathListxattr(self: *NamespaceClient, path: []const u8) ![]u8 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_listxattr_v2",
+            "control.mount_path_listxattr_v2",
+            payload,
+        );
+        defer self.allocator.free(response);
+        return parseListxattrPayload(self.allocator, response);
+    }
+
+    pub fn controlMountPathRemovexattr(self: *NamespaceClient, path: []const u8, name: []const u8) !void {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const escaped_name = try jsonEscape(self.allocator, name);
+        defer self.allocator.free(escaped_name);
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"path\":\"{s}\",\"name\":\"{s}\"}}",
+            .{ escaped_path, escaped_name },
+        );
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_removexattr_v2",
+            "control.mount_path_removexattr_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathLock(self: *NamespaceClient, path: []const u8, mode: []const u8, wait: bool) !void {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const escaped_mode = try jsonEscape(self.allocator, mode);
+        defer self.allocator.free(escaped_mode);
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"path\":\"{s}\",\"mode\":\"{s}\",\"wait\":{s}}}",
+            .{ escaped_path, escaped_mode, if (wait) "true" else "false" },
+        );
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_lock_v2",
+            "control.mount_path_lock_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub const MountPathSetattrOptions = struct {
+        mode: ?u32 = null,
+        uid: ?u32 = null,
+        gid: ?u32 = null,
+        flags: ?u32 = null,
+        at_ns: ?i64 = null,
+        mt_ns: ?i64 = null,
+    };
+
+    pub fn controlMountPathSetattr(self: *NamespaceClient, path: []const u8, options: MountPathSetattrOptions) !void {
+        const Payload = struct {
+            path: []const u8,
+            mode: ?u32 = null,
+            uid: ?u32 = null,
+            gid: ?u32 = null,
+            flags: ?u32 = null,
+            at_ns: ?i64 = null,
+            mt_ns: ?i64 = null,
+        };
+        const payload = try std.json.Stringify.valueAlloc(self.allocator, Payload{
+            .path = normalizeAbsolutePath(path),
+            .mode = options.mode,
+            .uid = options.uid,
+            .gid = options.gid,
+            .flags = options.flags,
+            .at_ns = options.at_ns,
+            .mt_ns = options.mt_ns,
+        }, .{
+            .emit_null_optional_fields = false,
+        });
+        defer self.allocator.free(payload);
+
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_setattr_v2",
+            "control.mount_path_setattr_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountFileWriteWithOptions(
+        self: *NamespaceClient,
+        path: []const u8,
+        offset: u64,
+        data: []const u8,
+        truncate_to_size: ?u64,
+    ) !u32 {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const encoded = try encodeBase64(self.allocator, data);
+        defer self.allocator.free(encoded);
+
+        const payload = if (truncate_to_size) |requested_size|
+            try std.fmt.allocPrint(
+                self.allocator,
+                "{{\"path\":\"{s}\",\"offset\":{d},\"data_b64\":\"{s}\",\"truncate_to_size\":{d}}}",
+                .{ escaped_path, offset, encoded, requested_size },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.allocator,
+                "{{\"path\":\"{s}\",\"offset\":{d},\"data_b64\":\"{s}\"}}",
+                .{ escaped_path, offset, encoded },
+            );
+        defer self.allocator.free(payload);
+
+        const payload_json = try self.controlRequestPayloadWithReconnect(
+            "control.mount_file_write_v2",
+            "control.mount_file_write_v2",
+            payload,
+        );
+        defer self.allocator.free(payload_json);
+        return parseWriteCount(self.allocator, payload_json);
+    }
+
     pub fn attachNamespaceRoot(self: *NamespaceClient, session_key: []const u8) !void {
         try self.setActiveSessionKey(session_key);
         const version_payload = try self.callAcheron(
@@ -473,28 +770,19 @@ pub const NamespaceClient = struct {
     }
 
     pub fn unlink(self: *NamespaceClient, path: []const u8) !void {
-        _ = self;
-        _ = path;
-        return error.OperationNotSupported;
+        try self.controlMountPathUnlink(path);
     }
 
     pub fn mkdir(self: *NamespaceClient, path: []const u8) !void {
-        _ = self;
-        _ = path;
-        return error.OperationNotSupported;
+        try self.controlMountPathMkdir(path);
     }
 
     pub fn rmdir(self: *NamespaceClient, path: []const u8) !void {
-        _ = self;
-        _ = path;
-        return error.OperationNotSupported;
+        try self.controlMountPathRmdir(path);
     }
 
     pub fn rename(self: *NamespaceClient, old_path: []const u8, new_path: []const u8) !void {
-        _ = self;
-        _ = old_path;
-        _ = new_path;
-        return error.OperationNotSupported;
+        try self.controlMountPathRename(old_path, new_path);
     }
 
     pub fn lock(self: *NamespaceClient, handle: NamespaceHandle, mode: []const u8, wait: bool) !void {
@@ -702,6 +990,34 @@ pub const NamespaceClient = struct {
         const request_id = try std.fmt.allocPrint(self.allocator, "ns-{d}", .{self.next_control_id});
         self.next_control_id += 1;
         return request_id;
+    }
+
+    fn controlRequestPayloadWithReconnect(
+        self: *NamespaceClient,
+        msg_type: []const u8,
+        expected_type: []const u8,
+        payload_json: []const u8,
+    ) ![]u8 {
+        return self.controlRequestPayloadOnce(msg_type, expected_type, payload_json) catch |err| {
+            if (!isTransportError(err)) return err;
+            const session_key = self.active_session_key orelse return err;
+            const owned_session_key = try self.copySessionKeyForReconnect(session_key);
+            defer self.allocator.free(owned_session_key);
+            try self.reconnectControlSession(owned_session_key);
+            return self.controlRequestPayloadOnce(msg_type, expected_type, payload_json);
+        };
+    }
+
+    fn controlRequestPayloadOnce(
+        self: *NamespaceClient,
+        msg_type: []const u8,
+        expected_type: []const u8,
+        payload_json: []const u8,
+    ) ![]u8 {
+        const request_id = try self.nextControlRequestId();
+        defer self.allocator.free(request_id);
+        try self.writeControlRequest(msg_type, request_id, payload_json);
+        return readControlPayloadFor(self, request_id, expected_type);
     }
 
     fn writeControlRequest(self: *NamespaceClient, msg_type: []const u8, request_id: []const u8, payload_json: []const u8) !void {
@@ -1170,6 +1486,38 @@ fn parseWriteCount(allocator: std.mem.Allocator, payload_json: []const u8) !u32 
     return @intCast(n);
 }
 
+fn parseGetxattrPayload(allocator: std.mem.Allocator, payload_json: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidResponse;
+    const value_b64 = getRequiredString(parsed.value.object, "value_b64") orelse return error.InvalidResponse;
+    return decodeBase64(allocator, value_b64);
+}
+
+fn parseListxattrPayload(allocator: std.mem.Allocator, payload_json: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidResponse;
+    const names_value = parsed.value.object.get("names") orelse return error.InvalidResponse;
+    if (names_value != .array) return error.InvalidResponse;
+
+    var total_len: usize = 0;
+    for (names_value.array.items) |entry| {
+        if (entry != .string) return error.InvalidResponse;
+        total_len = std.math.add(usize, total_len, entry.string.len + 1) catch return error.InvalidResponse;
+    }
+
+    const out = try allocator.alloc(u8, total_len);
+    var cursor: usize = 0;
+    for (names_value.array.items) |entry| {
+        @memcpy(out[cursor .. cursor + entry.string.len], entry.string);
+        cursor += entry.string.len;
+        out[cursor] = 0;
+        cursor += 1;
+    }
+    return out;
+}
+
 fn optionalOwnedString(allocator: std.mem.Allocator, obj: std.json.ObjectMap, key: []const u8) !?[]u8 {
     const value = obj.get(key) orelse return null;
     if (value != .string or value.string.len == 0) return null;
@@ -1386,12 +1734,19 @@ fn mapRemoteErrorCode(code: []const u8) anyerror {
     if (std.mem.eql(u8, code, "project_context_required")) return error.ProjectRequired;
     if (std.mem.eql(u8, code, "missing_field")) return error.MissingField;
     if (std.mem.eql(u8, code, "invalid_payload") or std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;
+    if (std.mem.eql(u8, code, "einval")) return error.InvalidPayload;
     if (std.mem.eql(u8, code, "enoent")) return error.FileNotFound;
+    if (std.mem.eql(u8, code, "eacces")) return error.PermissionDenied;
     if (std.mem.eql(u8, code, "eperm")) return error.PermissionDenied;
     if (std.mem.eql(u8, code, "enotdir")) return error.NotDirectory;
     if (std.mem.eql(u8, code, "eisdir")) return error.IsDirectory;
     if (std.mem.eql(u8, code, "eexist")) return error.AlreadyExists;
     if (std.mem.eql(u8, code, "erofs") or std.mem.eql(u8, code, "readonly")) return error.ReadOnlyFilesystem;
+    if (std.mem.eql(u8, code, "enosys")) return error.OperationNotSupported;
+    if (std.mem.eql(u8, code, "enodata")) return error.NoData;
+    if (std.mem.eql(u8, code, "eagain")) return error.WouldBlock;
+    if (std.mem.eql(u8, code, "erange")) return error.Range;
+    if (std.mem.eql(u8, code, "eio")) return error.UnexpectedControlResponse;
     if (std.mem.eql(u8, code, "unsupported")) return error.OperationNotSupported;
     if (std.mem.eql(u8, code, "runtime_warming")) return error.RuntimeWarming;
     if (std.mem.eql(u8, code, "runtime_unavailable")) return error.RuntimeUnavailable;
@@ -1425,6 +1780,12 @@ test "namespace_client: remote payload validation errors stay specific" {
     try std.testing.expect(mapRemoteErrorCode("missing_field") == error.MissingField);
     try std.testing.expect(mapRemoteErrorCode("invalid_payload") == error.InvalidPayload);
     try std.testing.expect(mapRemoteErrorCode("invalid") == error.InvalidPayload);
+    try std.testing.expect(mapRemoteErrorCode("einval") == error.InvalidPayload);
+    try std.testing.expect(mapRemoteErrorCode("eacces") == error.PermissionDenied);
+    try std.testing.expect(mapRemoteErrorCode("enosys") == error.OperationNotSupported);
+    try std.testing.expect(mapRemoteErrorCode("enodata") == error.NoData);
+    try std.testing.expect(mapRemoteErrorCode("eagain") == error.WouldBlock);
+    try std.testing.expect(mapRemoteErrorCode("erange") == error.Range);
 }
 
 test "namespace_client: stat attrs synthesize mode from kind when remote mode is zero" {

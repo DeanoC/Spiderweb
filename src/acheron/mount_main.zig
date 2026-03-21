@@ -2,16 +2,19 @@ const builtin = @import("builtin");
 const std = @import("std");
 const fs_router = @import("acheron_fs_router");
 const fs_fuse_adapter = @import("spiderweb_fs_fuse_adapter");
-const hybrid_mount_provider = @import("hybrid_mount_provider.zig");
 const mount_provider = @import("spiderweb_mount_provider");
 const mount_state = @import("mount_state.zig");
 const native_mount_protocol = @import("spiderweb_native_mount_protocol");
 const native_mount_support = @import("native_mount_support.zig");
 const namespace_client = @import("namespace_client.zig");
+const namespace_contract = @import("namespace_contract.zig");
+const namespace_mount_provider = @import("namespace_mount_provider.zig");
 
 const control_reply_timeout_ms: i32 = 45_000;
 const control_handshake_timeout_ms: i32 = 10_000;
 const native_mount_timeout_ms: u64 = 30_000;
+const namespace_warmup_deadline_ms: i64 = 10_000;
+const namespace_warmup_retry_ms: u64 = 200;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -28,7 +31,6 @@ pub fn main() !void {
         for (owned_endpoint_fields.items) |value| allocator.free(value);
         owned_endpoint_fields.deinit(allocator);
     }
-
     var remaining = std.ArrayListUnmanaged([]const u8){};
     defer remaining.deinit(allocator);
     var workspace_url: ?[]const u8 = null;
@@ -117,6 +119,51 @@ pub fn main() !void {
         );
         defer hydrated.deinit(allocator);
         try appendHydratedEndpointSpecs(allocator, &endpoint_specs, &owned_endpoint_fields, hydrated.items.items);
+
+        var client = try namespace_client.NamespaceClient.connect(allocator, url, resolved_workspace_auth_token);
+        errdefer client.deinit();
+
+        var connect_info = try client.controlConnect();
+        defer connect_info.deinit(allocator);
+
+        const resolved_project_id = if (workspace_id) |project_id|
+            try allocator.dupe(u8, project_id)
+        else if (connect_info.project_id) |project_id|
+            try allocator.dupe(u8, project_id)
+        else
+            return error.ProjectRequired;
+        defer allocator.free(resolved_project_id);
+
+        var state_store = try mount_state.ClientStateStore.init(allocator);
+        defer state_store.deinit();
+
+        const resolved_agent_id = if (namespace_agent_id) |agent_id|
+            try allocator.dupe(u8, agent_id)
+        else
+            try state_store.loadOrCreateAgentId(url, resolved_project_id);
+        defer allocator.free(resolved_agent_id);
+
+        const resolved_session_key = if (namespace_session_key) |session_key|
+            try allocator.dupe(u8, session_key)
+        else
+            try mount_state.ClientStateStore.generateEphemeralSessionKey(allocator);
+        defer allocator.free(resolved_session_key);
+
+        var attach_info = try client.controlSessionAttach(.{
+            .session_key = resolved_session_key,
+            .agent_id = resolved_agent_id,
+            .project_id = resolved_project_id,
+            .project_token = workspace_token,
+        });
+        defer attach_info.deinit(allocator);
+
+        namespace_status = .{
+            .namespace_url = try allocator.dupe(u8, url),
+            .project_id = try allocator.dupe(u8, resolved_project_id),
+            .agent_id = try allocator.dupe(u8, resolved_agent_id),
+            .session_key = try allocator.dupe(u8, resolved_session_key),
+        };
+        namespace_client_instance = client;
     } else if (namespace_url) |url| {
         var client = try namespace_client.NamespaceClient.connect(allocator, url, resolved_workspace_auth_token);
         errdefer client.deinit();
@@ -155,8 +202,6 @@ pub fn main() !void {
         });
         defer attach_info.deinit(allocator);
 
-        try client.attachNamespaceRoot(attach_info.session_key);
-
         var hydrated = try fetchWorkspaceEndpointSpecs(
             allocator,
             url,
@@ -194,13 +239,18 @@ pub fn main() !void {
         try printHelp();
         return error.InvalidArguments;
     }
+    if (workspace_url == null and namespace_url == null) {
+        try validateStandaloneEndpointMountPaths(allocator, endpoint_specs.items);
+    }
 
     var router = try fs_router.Router.init(allocator, endpoint_specs.items);
     defer router.deinit();
     const provider = if (namespace_client_instance) |*client|
-        try hybrid_mount_provider.init(allocator, &router, client)
-    else
-        try mount_provider.initRouterProvider(allocator, &router);
+        try namespace_mount_provider.init(allocator, client)
+    else blk: {
+        if (workspace_url != null or namespace_url != null) return error.InvalidState;
+        break :blk try mount_provider.initRouterProvider(allocator, &router);
+    };
     var adapter = fs_fuse_adapter.FuseAdapter.init(allocator, provider);
     defer adapter.deinit();
 
@@ -433,7 +483,10 @@ pub fn main() !void {
             }
         }
         if (workspace_url) |url| {
-            if (workspace_sync_interval_ms > 0) {
+            if (namespace_client_instance != null) {
+                // Attached namespace sessions already carry the live Spiderweb
+                // view, so there is nothing client-side to reconcile.
+            } else if (workspace_sync_interval_ms > 0) {
                 const ctx = try allocator.create(WorkspaceSyncContext);
                 errdefer allocator.destroy(ctx);
                 ctx.* = .{
@@ -463,6 +516,9 @@ pub fn main() !void {
             keepalive_thread = try std.Thread.spawn(.{}, namespaceKeepaliveThreadMain, .{ctx});
             keepalive_ctx = ctx;
         }
+        if (namespace_client_instance != null) {
+            warmDefaultNamespaceViews(allocator, &adapter);
+        }
         adapter.mountWithBackend(mountpoint, effective_backend) catch |err| {
             reportMountCommandError(err, mountpoint, effective_backend);
             return err;
@@ -473,6 +529,54 @@ pub fn main() !void {
     std.log.err("unknown command: {s}", .{command});
     try printHelp();
     return error.InvalidArguments;
+}
+
+fn warmDefaultNamespaceViews(allocator: std.mem.Allocator, adapter: *fs_fuse_adapter.FuseAdapter) void {
+    const warm_paths = [_]struct {
+        path: []const u8,
+        list: bool,
+    }{
+        .{ .path = "/nodes/local/fs", .list = true },
+        .{ .path = "/nodes/local/fs/.spiderweb", .list = true },
+        .{ .path = "/shared_data", .list = true },
+    };
+
+    for (warm_paths) |entry| {
+        warmNamespacePath(allocator, adapter, entry.path, entry.list);
+    }
+}
+
+fn warmNamespacePath(
+    allocator: std.mem.Allocator,
+    adapter: *fs_fuse_adapter.FuseAdapter,
+    path: []const u8,
+    list_children: bool,
+) void {
+    const deadline = std.time.milliTimestamp() + namespace_warmup_deadline_ms;
+    var last_error: ?anyerror = null;
+
+    while (std.time.milliTimestamp() < deadline) {
+        const attr_json = adapter.getattr(path) catch |err| {
+            last_error = err;
+            std.Thread.sleep(namespace_warmup_retry_ms * std.time.ns_per_ms);
+            continue;
+        };
+        allocator.free(attr_json);
+
+        if (!list_children) return;
+
+        const listing_json = adapter.readdir(path, 0, 64) catch |err| {
+            last_error = err;
+            std.Thread.sleep(namespace_warmup_retry_ms * std.time.ns_per_ms);
+            continue;
+        };
+        allocator.free(listing_json);
+        return;
+    }
+
+    if (last_error) |err| {
+        std.log.warn("namespace warmup incomplete for {s}: {s}", .{ path, @errorName(err) });
+    }
 }
 
 fn parseEndpointFlag(raw: []const u8) !fs_router.EndpointConfig {
@@ -513,10 +617,15 @@ fn parseEndpointFlag(raw: []const u8) !fs_router.EndpointConfig {
 
 fn printHelp() !void {
     const help =
-        \\spiderweb-fs-mount - Distributed filesystem router client
+        \\spiderweb-fs-mount - Spiderweb namespace mount client
         \\
         \\Usage:
         \\  spiderweb-fs-mount [--workspace-url <ws-url> | --namespace-url <ws-url>] [--workspace-id <id>] [--workspace-token <token>] [--auth-token <token>] [--agent-id <id>] [--session-key <key>] [--mount-backend auto|native|fuse|winfsp] [--workspace-sync-interval-ms <ms>] [--namespace-keepalive-interval-ms <ms>] [--endpoint <name>=<ws-url>[#export][@/mount]] <command> [args]
+        \\  Spiderweb workspace mounts have one path: attach a namespace session and mount the Spiderweb-owned view.
+        \\  --workspace-url asks Spiderweb control to resolve the workspace and attach a namespace session for it.
+        \\  --namespace-url starts from an already attached Spiderweb session.
+        \\  The mounted tree must be identical either way; backends consume the Spiderweb namespace and do not implement their own routing, overlays, or bypass rules.
+        \\  Standalone --endpoint mode is only for direct endpoint debugging and may not claim Spiderweb-owned roots such as /nodes, /services, /shared_data, /.spiderweb, or /meta.
         \\  On macOS, auto prefers the native FSKit backend and falls back to macFUSE.
         \\  On macOS, native mounts can use any writable absolute mountpoint. Fuse mounts still require /Volumes/<name> and macFUSE 5.x.
         \\
@@ -553,6 +662,23 @@ fn printHelp() !void {
         \\
     ;
     try std.fs.File.stdout().writeAll(help);
+}
+
+fn validateStandaloneEndpointMountPaths(
+    allocator: std.mem.Allocator,
+    endpoint_specs: []const fs_router.EndpointConfig,
+) !void {
+    for (endpoint_specs) |endpoint| {
+        const owned_mount_path = if (endpoint.mount_path == null)
+            try std.fmt.allocPrint(allocator, "/{s}", .{endpoint.name})
+        else
+            null;
+        defer if (owned_mount_path) |value| allocator.free(value);
+
+        const mount_path = endpoint.mount_path orelse owned_mount_path.?;
+        if (!namespace_contract.isReservedStandaloneEndpointMountPath(mount_path)) continue;
+        return error.ReservedNamespacePath;
+    }
 }
 
 const NamespaceStatus = struct {
@@ -1773,6 +1899,42 @@ test "acheron_mount_main: connectWorkspaceHasMounts requires non-empty mounts ar
     var parsed_with_mount = try std.json.parseFromSlice(std.json.Value, allocator, "{\"workspace\":{\"mounts\":[{\"mount_path\":\"/m\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}]}}", .{});
     defer parsed_with_mount.deinit();
     try std.testing.expect(connectWorkspaceHasMounts(parsed_with_mount.value.object.get("workspace")));
+}
+
+test "acheron_mount_main: workspace status parsing tolerates deprecated metadata without changing mount resolution" {
+    const allocator = std.testing.allocator;
+    var specs = WorkspaceEndpointSpecs{ .allocator = allocator };
+    defer specs.deinit(allocator);
+
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\",\"namespace_owned_subpaths\":[\"/AGENTS.md\",\"/.spiderweb\"]}]}",
+        .{},
+    );
+    defer parsed.deinit();
+
+    try appendWorkspaceMountSpecsFromStatusObject(allocator, &specs, parsed.value.object);
+    try std.testing.expectEqual(@as(usize, 1), specs.items.items.len);
+    try std.testing.expectEqualStrings("/nodes/local/fs", specs.items.items[0].mount_path);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/v2/fs", specs.items.items[0].url);
+}
+
+test "acheron_mount_main: standalone endpoint mode rejects Spiderweb namespace roots" {
+    const allocator = std.testing.allocator;
+    const endpoint_specs = [_]fs_router.EndpointConfig{
+        .{
+            .name = "local",
+            .url = "ws://127.0.0.1:18891/v2/fs",
+            .export_name = null,
+            .mount_path = "/nodes/local/fs",
+        },
+    };
+
+    try std.testing.expectError(
+        error.ReservedNamespacePath,
+        validateStandaloneEndpointMountPaths(allocator, &endpoint_specs),
+    );
 }
 
 test "acheron_mount_main: auto native backend requires namespace binding" {

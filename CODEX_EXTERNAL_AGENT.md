@@ -13,13 +13,13 @@ Use a Linux host for the documented Codex E2E path.
 
 - install the host tools first with `./install.sh`
 - keep Spiderweb’s runtime root separate from the Codex project tree
-- use one clean standalone `spiderweb-fs-node` for `/nodes/local/fs` and one standalone node for `/shared_data`
+- use one clean standalone node export for the project tree and one standalone node export for shared data; Spiderweb mounts them into `/nodes/local/fs` and `/shared_data`
 - mount the workspace with `spiderweb-fs-mount --namespace-url ...`
-- launch plain Codex from the namespace root, and treat `/nodes/local/fs` as the writable project subtree inside that namespace
+- launch plain Codex in the mounted project directory at `/nodes/local/fs`
 
 Windows `spiderweb-fs-mount` remains useful for separate client validation, but the new external Codex harness is Linux-first.
 
-The canonical interactive entrypoint is the namespace root exposed by `spiderweb-fs-mount`. A short prompt like `Read AGENTS.md and follow it` should be enough to bootstrap the agent, with project files written under `nodes/local/fs/`.
+The canonical interactive entrypoint is the mounted project directory exposed at `/nodes/local/fs`. A short prompt like `Read AGENTS.md and follow it` should be enough to bootstrap the agent through the project-local `./.spiderweb/*` contract, with project files written relative to `.`.
 
 ## Installer-First Linux Flow
 
@@ -49,7 +49,7 @@ The same installer can skip local compilation by using the published release ass
 
 ```bash
 SPIDERWEB_INSTALL_SOURCE=release \
-SPIDERWEB_RELEASE_ARCHIVE_URL=https://github.com/DeanoC/Spiderweb/releases/download/v0.3.1/spiderweb-linux-x86_64.tar.gz \
+SPIDERWEB_RELEASE_ARCHIVE_URL=https://github.com/DeanoC/Spiderweb/releases/download/vX.Y.Z/spiderweb-linux-x86_64.tar.gz \
 SPIDERWEB_RELEASE_ARCHIVE_SHA256=<sha256> \
 ./install.sh
 ```
@@ -107,7 +107,8 @@ Notes:
 
 ## Namespace Mount For Codex
 
-Use namespace mode for the harness. That is the path which exposes `/meta`, `/projects`, `/services`, `/nodes`, and `/agents` together:
+The harness currently uses `--namespace-url` so the mount starts from an
+attached Spiderweb session:
 
 ```bash
 spiderweb-fs-mount \
@@ -121,6 +122,9 @@ spiderweb-fs-mount \
 
 Codex itself does not need a Spiderweb-specific runtime binary. It only needs filesystem access to the mounted namespace.
 
+Once the mount is attached, the worker-facing entrypoint is still the mounted
+project directory at `/nodes/local/fs`, not the namespace root.
+
 ## External Codex E2E Harness
 
 The new end-to-end entrypoint is:
@@ -128,6 +132,16 @@ The new end-to-end entrypoint is:
 ```bash
 bash test-env/test-external-codex-workspace.sh
 ```
+
+On macOS with OrbStack installed, use the Orb wrapper so the unchanged Linux
+harness runs inside Orb:
+
+```bash
+bash test-env/test-external-codex-workspace-orb.sh
+```
+
+Use `ORB_MACHINE=<name>` or `ORB_USER=<user>` when you need to target a
+specific Orb VM or Linux user.
 
 Or through `make`:
 
@@ -144,7 +158,7 @@ What this harness is expected to cover:
 - installer-first Linux host flow
 - generic `dev`-template workspace baseline plus standalone workspace/remote node lifecycle
 - namespace mount with `spiderweb-fs-mount --namespace-url ...`
-- pinned plain Codex bootstrap, auth, launch, or manual handoff preparation
+- pinned plain Codex bootstrap, auth, launch, or manual handoff preparation from the mounted project directory
 - agent-driven in-workspace bootstrap through generic `/services/*`
 - validation and report artifact capture
 
@@ -208,14 +222,14 @@ The harness should expose these launch controls:
 - `CODEX_DISABLE_APPS=1`: inject `--disable apps` by default because the current live Spiderweb path is more reliable without the apps surface in non-interactive `exec`.
 - `CODEX_DISABLE_SHELL_SNAPSHOT=1`: inject `--disable shell_snapshot` by default because the current live Spiderweb path is more reliable without shell snapshotting in non-interactive `exec`.
 - `CODEX_ALLOW_HOST_CODEX_HOME=1`: temporarily allow writes under host `~/.codex` for reliability while still reporting them as a `codex_home` machine-independence gap.
-- `SPIDERWEB_INSTALL_SOURCE=auto|source|release`: choose whether the harness compiles Spiderweb locally or installs from a prebuilt archive. Default: `auto`, which currently resolves to the published `v0.3.1` release asset in the external Codex harness.
-- `SPIDERWEB_RELEASE_ARCHIVE_URL`: release asset URL to use when `SPIDERWEB_INSTALL_SOURCE=release`. Default in the external Codex harness: `https://github.com/DeanoC/Spiderweb/releases/download/v0.3.1/spiderweb-linux-x86_64.tar.gz`.
+- `SPIDERWEB_INSTALL_SOURCE=auto|source|release`: choose whether the harness compiles Spiderweb locally or installs from a prebuilt archive. Default: `auto`, which follows `install.sh` defaults and retries with `source` if the chosen release path is too old for the current harness binary set.
+- `SPIDERWEB_RELEASE_ARCHIVE_URL`: release asset URL to use when `SPIDERWEB_INSTALL_SOURCE=release`. Default: unset.
 - `SPIDERWEB_RELEASE_ARCHIVE_SHA256`: optional checksum for the release archive.
-- `SPIDERWEB_RELEASE_VERSION`: label recorded in installer output for the chosen release build. Default in the external Codex harness: `v0.3.1`.
+- `SPIDERWEB_RELEASE_VERSION`: label recorded in installer output for the chosen release build. Default: unset.
 
 Current note:
 
-- The external Codex harness now defaults to the published `v0.3.1` release asset to avoid rebuilding Spiderweb on every run. Set `SPIDERWEB_INSTALL_SOURCE=source` when you explicitly want a local source build instead.
+- The external Codex harness now follows the installer defaults and retries with `source` when the selected release path is missing binaries required by the current checkout.
 
 Practical rule:
 
@@ -300,12 +314,12 @@ This is the main difference between `CODEX_MODE=auto` and `CODEX_MODE=live`.
 Once an external agent is dropped into the mounted workspace, the intended discovery order is:
 
 1. `./AGENTS.md`
-2. `/meta/protocol.json`
-3. `/projects/<project_id>/meta/agent_bootstrap_quickref.json`
-4. `/projects/<project_id>/meta/agent_bootstrap.json`
-5. `/projects/<project_id>/meta/workspace_status.json`
-6. `/projects/<project_id>/meta/venom_packages.json`
-7. `/shared_data/...` or other task-specific mounted inputs from the user prompt
+2. `./.spiderweb/protocol.json`
+3. `./.spiderweb/agent_bootstrap_quickref.json`
+4. `./.spiderweb/agent_bootstrap.json`
+5. `./.spiderweb/workspace_status.json`
+6. `./.spiderweb/venom_packages.json`
+7. `./.spiderweb/shared_data/...` or other task-specific mounted inputs from the user prompt
 
 `AGENTS.md` is the human-facing front door. The JSON files remain the exact machine-readable source of truth.
 
@@ -315,10 +329,10 @@ The attached agent, not the harness, should perform these steps after mount:
 
 1. Read `AGENTS.md`.
 2. Follow `AGENTS.md` into `agent_bootstrap_quickref.json` and `agent_bootstrap.json`.
-3. Ensure its durable home through `/services/home/control/ensure.json`.
-4. Verify the required generic `/services/*` entries.
-5. If a required service is missing, repair it through `/services/mounts/control/bind.json` using the fallback namespace roots described in `agent_bootstrap.json`.
-6. Optionally register worker-private venoms through `/services/workers/control/register.json` when the task needs them.
+3. Ensure its durable home through `./.spiderweb/services/home/control/ensure.json`.
+4. Verify the required generic `./.spiderweb/services/*` entries.
+5. If a required service is missing, repair it through `./.spiderweb/services/mounts/control/bind.json` using the fallback roots described in `agent_bootstrap.json`.
+6. Optionally register worker-private venoms through `./.spiderweb/services/workers/control/register.json` when the task needs them.
 7. Perform the workspace task from the user prompt and validate it.
 
 Persistence model for this milestone:
@@ -337,10 +351,11 @@ What this gives Codex:
 - the live control-file contract for each service
 - the agent identity files Spiderweb seeded for the current `agent_id`
 
-For the current external Codex harness, the important writable/data paths inside the namespace are:
+For the current external Codex harness, the important workspace-visible paths are:
 
-- local writable project tree: `/nodes/local/fs`
-- remote shared seed data: `/shared_data`
+- writable project tree: `.`
+- Spiderweb-managed bootstrap and services: `./.spiderweb`
+- shared seed data: `./.spiderweb/shared_data`
 
 In the current harness, Spiderweb’s own runtime root is intentionally not the Codex project tree. That separation keeps `agents/` and `templates/` out of Codex’s cwd and makes the workspace topology match what a fresh user should see.
 
@@ -351,8 +366,8 @@ Use something close to this when placing a fresh Codex into a Spiderweb mount:
 ```text
 You are operating inside a Spiderweb-mounted workspace.
 Treat the filesystem as the contract.
-Treat /nodes/local/fs as the writable project tree and /shared_data as the required remote input mount.
-Inspect /meta/protocol.json, /projects/<project_id>/meta/mounted_services.json, and /projects/<project_id>/meta/workspace_status.json first.
+Treat . as the writable project tree and ./.spiderweb/shared_data as the required remote input mount.
+Inspect ./.spiderweb/protocol.json, ./.spiderweb/mounted_services.json, and ./.spiderweb/workspace_status.json first.
 Read only the fields you need; do not dump whole metadata files back into the terminal.
 After the discovery reads, create the deliverable files immediately and iterate only if validation fails.
 ```
@@ -365,5 +380,7 @@ Right now, the safest external Codex story is:
 - use installer-first binaries for the host flow
 - attach remote content with standalone `spiderweb-fs-node`
 - mount the namespace with `spiderweb-fs-mount`
+- treat the mounted result as the Spiderweb namespace itself; the mount client
+  must not rebuild Spiderweb roots from direct export paths
 - treat project metadata discovery as stable
 - use the dedicated fallback handoff when live Codex launch is unavailable

@@ -743,28 +743,27 @@ fn namespaceProviderTruncate(ctx: *anyopaque, path: []const u8, size: u64) !void
 }
 
 fn namespaceProviderUnlink(ctx: *anyopaque, path: []const u8) !void {
-    _ = ctx;
-    _ = path;
-    return error.OperationNotSupported;
+    const namespace_ctx = asCtx(ctx);
+    try namespace_ctx.client.controlMountPathUnlink(path);
+    namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderMkdir(ctx: *anyopaque, path: []const u8) !void {
-    _ = ctx;
-    _ = path;
-    return error.OperationNotSupported;
+    const namespace_ctx = asCtx(ctx);
+    try namespace_ctx.client.controlMountPathMkdir(path);
+    namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderRmdir(ctx: *anyopaque, path: []const u8) !void {
-    _ = ctx;
-    _ = path;
-    return error.OperationNotSupported;
+    const namespace_ctx = asCtx(ctx);
+    try namespace_ctx.client.controlMountPathRmdir(path);
+    namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderRename(ctx: *anyopaque, old_path: []const u8, new_path: []const u8) !void {
-    _ = ctx;
-    _ = old_path;
-    _ = new_path;
-    return error.OperationNotSupported;
+    const namespace_ctx = asCtx(ctx);
+    try namespace_ctx.client.controlMountPathRename(old_path, new_path);
+    namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderSymlink(ctx: *anyopaque, target: []const u8, link_path: []const u8) !void {

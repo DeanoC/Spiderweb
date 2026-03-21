@@ -6404,6 +6404,122 @@ fn handleWebSocketConnection(
                                 try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                 continue;
                             },
+                            .mount_path_mkdir_v2 => {
+                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
+                                const payload_json = handleMountPathMutationControl(
+                                    allocator,
+                                    runtime_registry,
+                                    &namespace_session,
+                                    active_binding,
+                                    active_session_key,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
+                                    principal.role == .admin,
+                                    parsed.payload_json,
+                                    .mount_path_mkdir_v2,
+                                ) catch |err| {
+                                    const response = try unified.buildControlError(
+                                        allocator,
+                                        parsed.id,
+                                        mountGraphErrorCode(err),
+                                        @errorName(err),
+                                    );
+                                    defer allocator.free(response);
+                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    continue;
+                                };
+                                defer allocator.free(payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_mkdir_v2, parsed.id, payload_json);
+                                defer allocator.free(response);
+                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                continue;
+                            },
+                            .mount_path_unlink_v2 => {
+                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
+                                const payload_json = handleMountPathMutationControl(
+                                    allocator,
+                                    runtime_registry,
+                                    &namespace_session,
+                                    active_binding,
+                                    active_session_key,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
+                                    principal.role == .admin,
+                                    parsed.payload_json,
+                                    .mount_path_unlink_v2,
+                                ) catch |err| {
+                                    const response = try unified.buildControlError(
+                                        allocator,
+                                        parsed.id,
+                                        mountGraphErrorCode(err),
+                                        @errorName(err),
+                                    );
+                                    defer allocator.free(response);
+                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    continue;
+                                };
+                                defer allocator.free(payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_unlink_v2, parsed.id, payload_json);
+                                defer allocator.free(response);
+                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                continue;
+                            },
+                            .mount_path_rmdir_v2 => {
+                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
+                                const payload_json = handleMountPathMutationControl(
+                                    allocator,
+                                    runtime_registry,
+                                    &namespace_session,
+                                    active_binding,
+                                    active_session_key,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
+                                    principal.role == .admin,
+                                    parsed.payload_json,
+                                    .mount_path_rmdir_v2,
+                                ) catch |err| {
+                                    const response = try unified.buildControlError(
+                                        allocator,
+                                        parsed.id,
+                                        mountGraphErrorCode(err),
+                                        @errorName(err),
+                                    );
+                                    defer allocator.free(response);
+                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    continue;
+                                };
+                                defer allocator.free(payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_rmdir_v2, parsed.id, payload_json);
+                                defer allocator.free(response);
+                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                continue;
+                            },
+                            .mount_path_rename_v2 => {
+                                const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
+                                const payload_json = handleMountPathMutationControl(
+                                    allocator,
+                                    runtime_registry,
+                                    &namespace_session,
+                                    active_binding,
+                                    active_session_key,
+                                    trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
+                                    principal.role == .admin,
+                                    parsed.payload_json,
+                                    .mount_path_rename_v2,
+                                ) catch |err| {
+                                    const response = try unified.buildControlError(
+                                        allocator,
+                                        parsed.id,
+                                        mountGraphErrorCode(err),
+                                        @errorName(err),
+                                    );
+                                    defer allocator.free(response);
+                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    continue;
+                                };
+                                defer allocator.free(payload_json);
+                                const response = try unified.buildControlAck(allocator, .mount_path_rename_v2, parsed.id, payload_json);
+                                defer allocator.free(response);
+                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                continue;
+                            },
                             .session_resume => {
                                 var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
                                 defer payload.deinit();
@@ -7471,6 +7587,71 @@ fn handleMountFileWriteControl(
     );
 }
 
+fn handleMountPathMutationControl(
+    allocator: std.mem.Allocator,
+    runtime_registry: *AgentRuntimeRegistry,
+    namespace_session: *?acheron_session_mod.Session,
+    binding: SessionBinding,
+    session_key: []const u8,
+    trusted_namespace_mount_url: ?[]const u8,
+    is_admin: bool,
+    payload_json: ?[]const u8,
+    control_type: unified.ControlType,
+) ![]u8 {
+    var payload = try parseControlPayloadObject(allocator, payload_json);
+    defer payload.deinit();
+    if (payload.value != .object) return error.InvalidPayload;
+
+    const session = try getOrInitNamespaceSessionForBinding(
+        allocator,
+        namespace_session,
+        runtime_registry,
+        binding,
+        session_key,
+        trusted_namespace_mount_url,
+        is_admin,
+    );
+
+    switch (control_type) {
+        .mount_path_mkdir_v2 => {
+            const absolute_path = try getRequiredStringField(payload.value.object, "path");
+            if (!(try session.tryMkdirLocalFsBackedMountPath(absolute_path))) return error.OperationNotSupported;
+            const escaped_path = try unified.jsonEscape(allocator, absolute_path);
+            defer allocator.free(escaped_path);
+            return std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        },
+        .mount_path_unlink_v2 => {
+            const absolute_path = try getRequiredStringField(payload.value.object, "path");
+            if (!(try session.tryUnlinkLocalFsBackedMountPath(absolute_path))) return error.OperationNotSupported;
+            const escaped_path = try unified.jsonEscape(allocator, absolute_path);
+            defer allocator.free(escaped_path);
+            return std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        },
+        .mount_path_rmdir_v2 => {
+            const absolute_path = try getRequiredStringField(payload.value.object, "path");
+            if (!(try session.tryRmdirLocalFsBackedMountPath(absolute_path))) return error.OperationNotSupported;
+            const escaped_path = try unified.jsonEscape(allocator, absolute_path);
+            defer allocator.free(escaped_path);
+            return std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        },
+        .mount_path_rename_v2 => {
+            const old_path = try getRequiredStringField(payload.value.object, "old_path");
+            const new_path = try getRequiredStringField(payload.value.object, "new_path");
+            if (!(try session.tryRenameLocalFsBackedMountPath(old_path, new_path))) return error.OperationNotSupported;
+            const escaped_old_path = try unified.jsonEscape(allocator, old_path);
+            defer allocator.free(escaped_old_path);
+            const escaped_new_path = try unified.jsonEscape(allocator, new_path);
+            defer allocator.free(escaped_new_path);
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"old_path\":\"{s}\",\"new_path\":\"{s}\"}}",
+                .{ escaped_old_path, escaped_new_path },
+            );
+        },
+        else => return error.InvalidPayload,
+    }
+}
+
 fn optionalStringsEqual(left: ?[]const u8, right: ?[]const u8) bool {
     if (left == null and right == null) return true;
     if (left == null or right == null) return false;
@@ -8400,6 +8581,9 @@ fn mountGraphErrorCode(err: anyerror) []const u8 {
         error.AccessDenied => "eacces",
         error.InvalidPayload => "einval",
         error.InvalidOffset => "einval",
+        error.PathAlreadyExists,
+        error.AlreadyExists,
+        => "eexist",
         error.NotDir => "enotdir",
         error.IsDir => "eisdir",
         error.OperationNotSupported => "enosys",

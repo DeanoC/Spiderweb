@@ -8799,13 +8799,7 @@ pub const Session = struct {
 
     pub fn tryWriteLocalFsBackedMountFile(self: *Session, absolute_path: []const u8, data: []const u8) !bool {
         const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
-        if (!pathMatchesPrefixBoundary(normalized_path, local_fs_world_prefix)) return false;
-        if (std.mem.eql(u8, normalized_path, local_fs_world_prefix)) return false;
-
-        if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/shared_data")) return false;
-        if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/services")) return false;
-
-        const host_path = self.resolveMissionContractHostPath(normalized_path) catch return false;
+        const host_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_path)) orelse return false;
         defer self.allocator.free(host_path);
 
         const host_parent = std.fs.path.dirname(host_path) orelse return false;
@@ -8839,6 +8833,69 @@ pub const Session = struct {
         try file.writeAll(data);
 
         try self.refreshLocalFsBackedAbsolutePath(normalized_path);
+        return true;
+    }
+
+    pub fn tryMkdirLocalFsBackedMountPath(self: *Session, absolute_path: []const u8) !bool {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const host_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_path)) orelse return false;
+        defer self.allocator.free(host_path);
+
+        if (std.fs.path.isAbsolute(host_path))
+            try std.fs.makeDirAbsolute(host_path)
+        else
+            try std.fs.cwd().makeDir(host_path);
+
+        try self.refreshLocalFsBackedAbsolutePath(normalized_path);
+        return true;
+    }
+
+    pub fn tryUnlinkLocalFsBackedMountPath(self: *Session, absolute_path: []const u8) !bool {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const host_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_path)) orelse return false;
+        defer self.allocator.free(host_path);
+
+        if (std.fs.path.isAbsolute(host_path))
+            try std.fs.deleteFileAbsolute(host_path)
+        else
+            try std.fs.cwd().deleteFile(host_path);
+
+        try self.removeLocalFsBackedAbsolutePathFromMountGraph(normalized_path);
+        try self.refreshLocalFsBackedParentAbsolutePath(normalized_path);
+        return true;
+    }
+
+    pub fn tryRmdirLocalFsBackedMountPath(self: *Session, absolute_path: []const u8) !bool {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        const host_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_path)) orelse return false;
+        defer self.allocator.free(host_path);
+
+        if (std.fs.path.isAbsolute(host_path))
+            try std.fs.deleteDirAbsolute(host_path)
+        else
+            try std.fs.cwd().deleteDir(host_path);
+
+        try self.removeLocalFsBackedAbsolutePathFromMountGraph(normalized_path);
+        try self.refreshLocalFsBackedParentAbsolutePath(normalized_path);
+        return true;
+    }
+
+    pub fn tryRenameLocalFsBackedMountPath(self: *Session, old_absolute_path: []const u8, new_absolute_path: []const u8) !bool {
+        const normalized_old_path = std.mem.trimRight(u8, old_absolute_path, "/");
+        const normalized_new_path = std.mem.trimRight(u8, new_absolute_path, "/");
+        const old_host_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_old_path)) orelse return false;
+        defer self.allocator.free(old_host_path);
+        const new_host_path = (try self.tryResolveMutableLocalFsBackedHostPath(normalized_new_path)) orelse return false;
+        defer self.allocator.free(new_host_path);
+
+        if (std.fs.path.isAbsolute(old_host_path) and std.fs.path.isAbsolute(new_host_path))
+            try std.fs.renameAbsolute(old_host_path, new_host_path)
+        else
+            try std.fs.cwd().rename(old_host_path, new_host_path);
+
+        try self.removeLocalFsBackedAbsolutePathFromMountGraph(normalized_old_path);
+        try self.refreshLocalFsBackedParentAbsolutePath(normalized_old_path);
+        try self.refreshLocalFsBackedAbsolutePath(normalized_new_path);
         return true;
     }
 
@@ -9938,6 +9995,31 @@ pub const Session = struct {
         if (self.lookupChild(parent_id, child_name)) |child_id| {
             _ = try self.syncLocalFsFileNode(child_id);
         }
+    }
+
+    fn refreshLocalFsBackedParentAbsolutePath(self: *Session, absolute_path: []const u8) !void {
+        const parent_path = namespaceAbsolutePathParent(absolute_path) orelse return;
+        const parent_id = (try self.resolveAbsolutePathForMountGraphNoBinds(parent_path)) orelse return;
+        try self.refreshDynamicDirectory(parent_id);
+    }
+
+    fn removeLocalFsBackedAbsolutePathFromMountGraph(self: *Session, absolute_path: []const u8) !void {
+        const parent_path = namespaceAbsolutePathParent(absolute_path) orelse return;
+        const child_name = namespaceAbsolutePathBaseName(absolute_path) orelse return;
+        const parent_id = (try self.resolveAbsolutePathForMountGraphNoBinds(parent_path)) orelse return;
+        const child_id = self.lookupChild(parent_id, child_name) orelse return;
+        try self.deleteNodeRecursive(child_id);
+    }
+
+    fn tryResolveMutableLocalFsBackedHostPath(self: *Session, absolute_path: []const u8) !?[]u8 {
+        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
+        if (!pathMatchesPrefixBoundary(normalized_path, local_fs_world_prefix)) return null;
+        if (std.mem.eql(u8, normalized_path, local_fs_world_prefix)) return null;
+
+        if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/shared_data")) return null;
+        if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute ++ "/services")) return null;
+
+        return self.resolveMissionContractHostPath(normalized_path) catch null;
     }
 
     fn namespaceAbsolutePathParent(path: []const u8) ?[]const u8 {

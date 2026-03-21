@@ -293,6 +293,64 @@ pub const NamespaceClient = struct {
         return self.controlMountFileWriteWithOptions(path, offset, data, null);
     }
 
+    pub fn controlMountPathMkdir(self: *NamespaceClient, path: []const u8) !void {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_mkdir_v2",
+            "control.mount_path_mkdir_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathUnlink(self: *NamespaceClient, path: []const u8) !void {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_unlink_v2",
+            "control.mount_path_unlink_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathRmdir(self: *NamespaceClient, path: []const u8) !void {
+        const escaped_path = try jsonEscape(self.allocator, normalizeAbsolutePath(path));
+        defer self.allocator.free(escaped_path);
+        const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_rmdir_v2",
+            "control.mount_path_rmdir_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
+    pub fn controlMountPathRename(self: *NamespaceClient, old_path: []const u8, new_path: []const u8) !void {
+        const escaped_old_path = try jsonEscape(self.allocator, normalizeAbsolutePath(old_path));
+        defer self.allocator.free(escaped_old_path);
+        const escaped_new_path = try jsonEscape(self.allocator, normalizeAbsolutePath(new_path));
+        defer self.allocator.free(escaped_new_path);
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"old_path\":\"{s}\",\"new_path\":\"{s}\"}}",
+            .{ escaped_old_path, escaped_new_path },
+        );
+        defer self.allocator.free(payload);
+        const response = try self.controlRequestPayloadWithReconnect(
+            "control.mount_path_rename_v2",
+            "control.mount_path_rename_v2",
+            payload,
+        );
+        self.allocator.free(response);
+    }
+
     pub fn controlMountFileWriteWithOptions(
         self: *NamespaceClient,
         path: []const u8,
@@ -548,28 +606,19 @@ pub const NamespaceClient = struct {
     }
 
     pub fn unlink(self: *NamespaceClient, path: []const u8) !void {
-        _ = self;
-        _ = path;
-        return error.OperationNotSupported;
+        try self.controlMountPathUnlink(path);
     }
 
     pub fn mkdir(self: *NamespaceClient, path: []const u8) !void {
-        _ = self;
-        _ = path;
-        return error.OperationNotSupported;
+        try self.controlMountPathMkdir(path);
     }
 
     pub fn rmdir(self: *NamespaceClient, path: []const u8) !void {
-        _ = self;
-        _ = path;
-        return error.OperationNotSupported;
+        try self.controlMountPathRmdir(path);
     }
 
     pub fn rename(self: *NamespaceClient, old_path: []const u8, new_path: []const u8) !void {
-        _ = self;
-        _ = old_path;
-        _ = new_path;
-        return error.OperationNotSupported;
+        try self.controlMountPathRename(old_path, new_path);
     }
 
     pub fn lock(self: *NamespaceClient, handle: NamespaceHandle, mode: []const u8, wait: bool) !void {

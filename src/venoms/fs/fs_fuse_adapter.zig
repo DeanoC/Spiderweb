@@ -159,6 +159,7 @@ pub const FuseAdapter = struct {
         if (self.helper_client) |*client| return client.create(stable_path.slice, mode, flags);
         const result = try self.session.create(stable_path.slice, mode, flags);
         self.path_cache.invalidatePathAndParent(stable_path.slice);
+        self.cacheCreatedRegularFileAttr(stable_path.slice, mode);
         return result;
     }
 
@@ -172,6 +173,7 @@ pub const FuseAdapter = struct {
         }
         const result = try self.session.createAndStoreHandle(stable_path.slice, mode, flags);
         self.path_cache.invalidatePathAndParent(stable_path.slice);
+        self.cacheCreatedRegularFileAttr(stable_path.slice, mode);
         return result;
     }
 
@@ -457,6 +459,26 @@ pub const FuseAdapter = struct {
             next_local_handle.* +%= 1;
         }
         return local_id;
+    }
+
+    fn cacheCreatedRegularFileAttr(self: *FuseAdapter, path: []const u8, mode: u32) void {
+        const effective_mode = if ((mode & 0o170000) == 0) mode | 0o100000 else mode;
+        const now_ms = std.time.milliTimestamp();
+        const now_ns = std.time.nanoTimestamp();
+        const attr_json = std.fmt.allocPrint(
+            self.allocator,
+            "{{\"id\":0,\"k\":1,\"m\":{d},\"n\":1,\"u\":{d},\"g\":{d},\"sz\":0,\"at\":{d},\"mt\":{d},\"ct\":{d},\"gen\":0}}",
+            .{
+                effective_mode,
+                @as(u32, 0),
+                @as(u32, 0),
+                now_ns,
+                now_ns,
+                now_ns,
+            },
+        ) catch return;
+        defer self.allocator.free(attr_json);
+        self.path_cache.putAttr(path, attr_json, now_ms) catch {};
     }
 };
 

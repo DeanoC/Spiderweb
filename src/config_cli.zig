@@ -1993,8 +1993,8 @@ fn printAuthUsage() !void {
         \\  spiderweb-config auth status [--reveal]
         \\  spiderweb-config auth reset --yes
         \\
-        \\`auth reset --yes` regenerates BOTH admin and user tokens in auth_tokens.json.
-        \\Use only for emergency recovery (for example lost admin token).
+        \\`auth reset --yes` regenerates the saved auth tokens in auth_tokens.json.
+        \\Use only for emergency recovery (for example when local access breaks).
         \\
     ;
     try std.fs.File.stdout().writeAll(usage);

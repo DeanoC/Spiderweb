@@ -160,6 +160,7 @@ pub fn main() !void {
         namespace_status = .{
             .namespace_url = try allocator.dupe(u8, url),
             .project_id = try allocator.dupe(u8, resolved_project_id),
+            .project_name = if (hydrated.workspace_name) |value| try allocator.dupe(u8, value) else null,
             .agent_id = try allocator.dupe(u8, resolved_agent_id),
             .session_key = try allocator.dupe(u8, resolved_session_key),
         };
@@ -215,6 +216,7 @@ pub fn main() !void {
         namespace_status = .{
             .namespace_url = try allocator.dupe(u8, url),
             .project_id = try allocator.dupe(u8, resolved_project_id),
+            .project_name = if (hydrated.workspace_name) |value| try allocator.dupe(u8, value) else null,
             .agent_id = try allocator.dupe(u8, resolved_agent_id),
             .session_key = try allocator.dupe(u8, resolved_session_key),
         };
@@ -684,12 +686,14 @@ fn validateStandaloneEndpointMountPaths(
 const NamespaceStatus = struct {
     namespace_url: ?[]u8 = null,
     project_id: ?[]u8 = null,
+    project_name: ?[]u8 = null,
     agent_id: ?[]u8 = null,
     session_key: ?[]u8 = null,
 
     fn deinit(self: *NamespaceStatus, allocator: std.mem.Allocator) void {
         if (self.namespace_url) |value| allocator.free(value);
         if (self.project_id) |value| allocator.free(value);
+        if (self.project_name) |value| allocator.free(value);
         if (self.agent_id) |value| allocator.free(value);
         if (self.session_key) |value| allocator.free(value);
         self.* = .{};
@@ -923,7 +927,7 @@ fn requestNativeMount(
         .namespace_keepalive_interval_ms = namespace_keepalive_interval_ms,
         .endpoints = native_endpoints,
         .namespace = namespace_binding,
-    }, native_mount_timeout_ms);
+    }, native_mount_timeout_ms, namespace_status.project_name);
 }
 
 fn buildSharedHelperLaunchConfig(
@@ -1040,9 +1044,24 @@ fn buildNativeNamespaceStatusFromWorkspace(
     });
     defer attach_info.deinit(allocator);
 
+    const workspace_status_json = try client.controlWorkspaceStatus(resolved_project_id, workspace_token);
+    defer allocator.free(workspace_status_json);
+
+    var parsed_status = try std.json.parseFromSlice(std.json.Value, allocator, workspace_status_json, .{});
+    defer parsed_status.deinit();
+    if (parsed_status.value != .object) return error.InvalidWorkspacePayload;
+    const project_name = if (getOptionalString(parsed_status.value.object, "workspace_name") orelse
+        getOptionalString(parsed_status.value.object, "name") orelse
+        getOptionalString(parsed_status.value.object, "project_name")) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (project_name) |value| allocator.free(value);
+
     return .{
         .namespace_url = try allocator.dupe(u8, workspace_url),
         .project_id = resolved_project_id,
+        .project_name = project_name,
         .agent_id = resolved_agent_id,
         .session_key = resolved_session_key,
     };
@@ -1058,10 +1077,11 @@ fn buildNamespaceStatusJson(
     defer allocator.free(router_status);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"mode\":\"namespace\",\"namespace_url\":\"{s}\",\"project_id\":\"{s}\",\"agent_id\":\"{s}\",\"session_key\":\"{s}\",\"router\":{s}}}",
+        "{{\"mode\":\"namespace\",\"namespace_url\":\"{s}\",\"project_id\":\"{s}\",\"project_name\":\"{s}\",\"agent_id\":\"{s}\",\"session_key\":\"{s}\",\"router\":{s}}}",
         .{
             namespace_status.namespace_url orelse "",
             namespace_status.project_id orelse "",
+            namespace_status.project_name orelse "",
             namespace_status.agent_id orelse "",
             namespace_status.session_key orelse "",
             router_status,
@@ -1184,10 +1204,12 @@ const WorkspaceEndpointSpec = struct {
 
 const WorkspaceEndpointSpecs = struct {
     allocator: std.mem.Allocator,
+    workspace_name: ?[]u8 = null,
     items: std.ArrayListUnmanaged(WorkspaceEndpointSpec) = .{},
 
     fn deinit(self: *WorkspaceEndpointSpecs, allocator: std.mem.Allocator) void {
         _ = allocator;
+        if (self.workspace_name) |value| self.allocator.free(value);
         for (self.items.items) |*item| item.deinit(self.allocator);
         self.items.deinit(self.allocator);
         self.* = undefined;
@@ -1459,6 +1481,15 @@ fn appendWorkspaceMountSpecsFromStatusObject(
     specs: *WorkspaceEndpointSpecs,
     status_obj: std.json.ObjectMap,
 ) !void {
+    if (specs.workspace_name == null) {
+        const workspace_name = getOptionalString(status_obj, "workspace_name") orelse
+            getOptionalString(status_obj, "name") orelse
+            getOptionalString(status_obj, "project_name");
+        if (workspace_name) |value| {
+            specs.workspace_name = try allocator.dupe(u8, value);
+        }
+    }
+
     const mounts_value = status_obj.get("mounts") orelse return;
     if (mounts_value != .array) return error.InvalidWorkspacePayload;
 
@@ -1499,6 +1530,12 @@ fn appendWorkspaceMountSpecsFromStatusObject(
         };
         try specs.items.append(allocator, spec);
     }
+}
+
+fn getOptionalString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    if (value != .string or value.string.len == 0) return null;
+    return value.string;
 }
 
 fn negotiateControlVersion(

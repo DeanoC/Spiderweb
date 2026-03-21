@@ -364,7 +364,7 @@ const NamespaceProviderContext = struct {
     }
 
     fn lookupNode(self: *NamespaceProviderContext, allocator: std.mem.Allocator, path: []const u8) !*const OwnedMountGraphNode {
-        const stable_path = try stabilizeLookupPath(allocator, path);
+        const stable_path = try stabilizeNormalizedPath(allocator, path);
         defer allocator.free(stable_path);
         return self.resolveMountGraphNode(allocator, stable_path);
     }
@@ -586,7 +586,8 @@ fn namespaceProviderReaddir(ctx: *anyopaque, path: []const u8, cookie: u64, max_
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
-    const normalized_path = normalizeAbsolutePath(path);
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
     _ = try namespace_ctx.ensureDirectoryNode(allocator, normalized_path);
     try namespace_ctx.ensureDirectoryChildrenLoaded(allocator, normalized_path, 1);
     const directory = try namespace_ctx.ensureDirectoryNode(allocator, normalized_path);
@@ -652,7 +653,8 @@ fn namespaceProviderOpen(ctx: *anyopaque, path: []const u8, flags: u32) !mount_p
     defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
     const node = try namespace_ctx.lookupNode(allocator, path);
-    const normalized_path = normalizeAbsolutePath(path);
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
 
     if (flagsRequireWrite(flags) and !node.writable) return error.ReadOnlyFilesystem;
 
@@ -722,7 +724,8 @@ fn namespaceProviderCreate(ctx: *anyopaque, path: []const u8, mode: u32, flags: 
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
-    const normalized_path = normalizeAbsolutePath(path);
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
     const parent_path = parentPath(normalized_path);
     if (hasExclusiveCreate(flags)) {
         _ = namespace_ctx.lookupNode(allocator, normalized_path) catch |err| switch (err) {
@@ -773,7 +776,9 @@ fn namespaceProviderTruncate(ctx: *anyopaque, path: []const u8, size: u64) !void
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    const normalized_path = normalizeAbsolutePath(path);
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
     _ = try namespace_ctx.client.controlMountFileWriteWithOptions(
         normalized_path,
         0,
@@ -787,7 +792,10 @@ fn namespaceProviderUnlink(ctx: *anyopaque, path: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    try namespace_ctx.client.controlMountPathUnlink(path);
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
+    try namespace_ctx.client.controlMountPathUnlink(normalized_path);
     namespace_ctx.mount_graph.markStale();
 }
 
@@ -795,7 +803,10 @@ fn namespaceProviderMkdir(ctx: *anyopaque, path: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    try namespace_ctx.client.controlMountPathMkdir(path);
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
+    try namespace_ctx.client.controlMountPathMkdir(normalized_path);
     namespace_ctx.mount_graph.markStale();
 }
 
@@ -803,7 +814,10 @@ fn namespaceProviderRmdir(ctx: *anyopaque, path: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    try namespace_ctx.client.controlMountPathRmdir(path);
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
+    try namespace_ctx.client.controlMountPathRmdir(normalized_path);
     namespace_ctx.mount_graph.markStale();
 }
 
@@ -811,7 +825,12 @@ fn namespaceProviderRename(ctx: *anyopaque, old_path: []const u8, new_path: []co
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    try namespace_ctx.client.controlMountPathRename(old_path, new_path);
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_old_path = try stabilizeNormalizedPath(allocator, old_path);
+    defer allocator.free(normalized_old_path);
+    const normalized_new_path = try stabilizeNormalizedPath(allocator, new_path);
+    defer allocator.free(normalized_new_path);
+    try namespace_ctx.client.controlMountPathRename(normalized_old_path, normalized_new_path);
     namespace_ctx.mount_graph.markStale();
 }
 
@@ -819,7 +838,12 @@ fn namespaceProviderSymlink(ctx: *anyopaque, target: []const u8, link_path: []co
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    try namespace_ctx.client.controlMountPathSymlink(target, link_path);
+    const allocator = namespace_ctx.client.allocator;
+    const stable_target = try allocator.dupe(u8, target);
+    defer allocator.free(stable_target);
+    const normalized_link_path = try stabilizeNormalizedPath(allocator, link_path);
+    defer allocator.free(normalized_link_path);
+    try namespace_ctx.client.controlMountPathSymlink(stable_target, normalized_link_path);
     namespace_ctx.mount_graph.markStale();
 }
 
@@ -837,7 +861,8 @@ fn namespaceProviderSetattr(
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
-    const normalized_path = normalizeAbsolutePath(path);
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
     try namespace_ctx.client.controlMountPathSetattr(normalized_path, .{
         .mode = mode,
         .uid = uid,
@@ -853,7 +878,10 @@ fn namespaceProviderSetxattr(ctx: *anyopaque, path: []const u8, name: []const u8
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    try namespace_ctx.client.controlMountPathSetxattr(path, name, value, flags);
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
+    try namespace_ctx.client.controlMountPathSetxattr(normalized_path, name, value, flags);
     namespace_ctx.mount_graph.markStale();
 }
 
@@ -861,21 +889,30 @@ fn namespaceProviderGetxattr(ctx: *anyopaque, path: []const u8, name: []const u8
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    return namespace_ctx.client.controlMountPathGetxattr(path, name);
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
+    return namespace_ctx.client.controlMountPathGetxattr(normalized_path, name);
 }
 
 fn namespaceProviderListxattr(ctx: *anyopaque, path: []const u8) ![]u8 {
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    return namespace_ctx.client.controlMountPathListxattr(path);
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
+    return namespace_ctx.client.controlMountPathListxattr(normalized_path);
 }
 
 fn namespaceProviderRemovexattr(ctx: *anyopaque, path: []const u8, name: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
     namespace_ctx.mutex.lock();
     defer namespace_ctx.mutex.unlock();
-    try namespace_ctx.client.controlMountPathRemovexattr(path, name);
+    const allocator = namespace_ctx.client.allocator;
+    const normalized_path = try stabilizeNormalizedPath(allocator, path);
+    defer allocator.free(normalized_path);
+    try namespace_ctx.client.controlMountPathRemovexattr(normalized_path, name);
     namespace_ctx.mount_graph.markStale();
 }
 
@@ -954,9 +991,14 @@ fn normalizeAbsolutePath(path: []const u8) []const u8 {
     return path;
 }
 
-fn stabilizeLookupPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    if (builtin.os.tag != .linux) return allocator.dupe(u8, path);
-    return allocator.dupe(u8, path);
+fn stabilizeNormalizedPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const stable_path = try allocator.dupe(u8, path);
+    const normalized_path = normalizeAbsolutePath(stable_path);
+    if (normalized_path.ptr == stable_path.ptr and normalized_path.len == stable_path.len) return stable_path;
+
+    const trimmed_path = try allocator.dupe(u8, normalized_path);
+    allocator.free(stable_path);
+    return trimmed_path;
 }
 
 fn parentPath(path: []const u8) []const u8 {

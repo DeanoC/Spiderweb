@@ -32,10 +32,10 @@ const local_node_default_name = "spiderweb-local";
 const local_node_service_binary_name = "spiderweb-local-service";
 const local_node_ready_timeout_ms: u64 = 10_000;
 const local_node_ready_poll_ms: u64 = 100;
-const system_agent_id = "spiderweb";
-const system_project_id = control_plane_mod.spider_web_project_id;
+const host_actor_id = "spiderweb";
+const host_project_id = control_plane_mod.host_project_id;
 const legacy_local_node_mount_agents_self_capabilities = "/global/capabilities";
-const legacy_local_node_mount_projects_system_agents_self_capabilities = "/nodes/local/projects/" ++ system_project_id ++ "/global/capabilities";
+const legacy_local_node_mount_projects_host_agents_self_capabilities = "/nodes/local/projects/" ++ host_project_id ++ "/global/capabilities";
 const control_operator_token_env = "SPIDERWEB_CONTROL_OPERATOR_TOKEN";
 const control_project_scope_token_env = "SPIDERWEB_CONTROL_PROJECT_SCOPE_TOKEN";
 const control_node_scope_token_env = "SPIDERWEB_CONTROL_NODE_SCOPE_TOKEN";
@@ -2249,11 +2249,11 @@ const AgentRuntimeRegistry = struct {
         max_runtimes: usize,
     ) AgentRuntimeRegistry {
         const configured_default = std.mem.trim(u8, runtime_config.default_agent_id, " \t\r\n");
-        var effective_default = allocator.dupe(u8, system_agent_id) catch @panic("OOM");
+        var effective_default = allocator.dupe(u8, host_actor_id) catch @panic("OOM");
         if (configured_default.len > 0 and !isValidAgentId(configured_default)) {
             std.log.warn(
                 "Invalid default_agent_id '{s}', falling back to '{s}'",
-                .{ configured_default, system_agent_id },
+                .{ configured_default, host_actor_id },
             );
         } else if (configured_default.len > 0) {
             allocator.free(effective_default);
@@ -2288,7 +2288,7 @@ const AgentRuntimeRegistry = struct {
                 runtime_config.state_directory,
                 runtime_config.state_db_filename,
                 .{
-                    .primary_agent_id = system_agent_id,
+                    .host_actor_id = host_actor_id,
                     .spider_web_root = runtime_config.spider_web_root,
                     .node_venom_event_history_max = history_max,
                 },
@@ -2431,7 +2431,7 @@ const AgentRuntimeRegistry = struct {
         errdefer supervisor.deinit();
         try supervisor.start();
 
-        self.pruneLegacySystemCapabilityMounts();
+        self.pruneLegacyHostCapabilityMounts();
 
         var installed = false;
         self.mutex.lock();
@@ -2683,7 +2683,7 @@ const AgentRuntimeRegistry = struct {
     }
 
     fn firstAgentForProject(self: *AgentRuntimeRegistry, role: ConnectionRole, project_id: []const u8) ?[]u8 {
-        const include_primary = role == .access and std.mem.eql(u8, project_id, system_project_id);
+        const include_primary = role == .access and std.mem.eql(u8, project_id, host_project_id);
         return self.control_plane.firstProjectAgent(project_id, include_primary) catch null;
     }
 
@@ -2748,7 +2748,7 @@ const AgentRuntimeRegistry = struct {
         project_id: ?[]const u8,
     ) void {
         const concrete_project = project_id orelse return;
-        if (std.mem.eql(u8, concrete_project, system_project_id)) return;
+        if (std.mem.eql(u8, concrete_project, host_project_id)) return;
         self.auth_tokens.recordSessionActivity(
             principal.role,
             session_key,
@@ -2830,16 +2830,16 @@ const AgentRuntimeRegistry = struct {
         // Keep the reserved system runtime resident independently of active
         // workspace assignment so internal control-plane provisioning paths
         // remain available even when user-facing routes prefer mounted workspaces.
-        if (self.control_plane.projectHasMounts(system_project_id)) {
+        if (self.control_plane.projectHasMounts(host_project_id)) {
             var system_attach_state = self.ensureRuntimeWarmup(
-                system_agent_id,
-                system_project_id,
+                host_actor_id,
+                host_project_id,
                 null,
                 retry_on_error,
             ) catch |err| blk: {
                 std.log.warn(
                     "system runtime residency warmup failed: agent={s} project={s} err={s}",
-                    .{ system_agent_id, system_project_id, @errorName(err) },
+                    .{ host_actor_id, host_project_id, @errorName(err) },
                 );
                 break :blk null;
             };
@@ -2848,8 +2848,8 @@ const AgentRuntimeRegistry = struct {
 
         for (bindings) |binding| {
             if (!self.control_plane.projectHasMounts(binding.project_id)) continue;
-            if (std.mem.eql(u8, binding.agent_id, system_agent_id) and
-                !std.mem.eql(u8, binding.project_id, system_project_id))
+            if (std.mem.eql(u8, binding.agent_id, host_actor_id) and
+                !std.mem.eql(u8, binding.project_id, host_project_id))
             {
                 continue;
             }
@@ -3667,13 +3667,13 @@ const AgentRuntimeRegistry = struct {
         return self.control_plane.metricsPrometheus();
     }
 
-    fn pruneLegacySystemCapabilityMounts(self: *AgentRuntimeRegistry) void {
+    fn pruneLegacyHostCapabilityMounts(self: *AgentRuntimeRegistry) void {
         const legacy_paths = [_][]const u8{
             legacy_local_node_mount_agents_self_capabilities,
-            legacy_local_node_mount_projects_system_agents_self_capabilities,
+            legacy_local_node_mount_projects_host_agents_self_capabilities,
         };
         for (legacy_paths) |mount_path| {
-            const escaped_project = unified.jsonEscape(self.allocator, system_project_id) catch continue;
+            const escaped_project = unified.jsonEscape(self.allocator, host_project_id) catch continue;
             defer self.allocator.free(escaped_project);
             const escaped_mount = unified.jsonEscape(self.allocator, mount_path) catch continue;
             defer self.allocator.free(escaped_mount);
@@ -4505,13 +4505,13 @@ fn handleWebSocketConnection(
                                         "metrics_forbidden",
                                         false,
                                         "forbidden",
-                                        "operation requires admin token",
+                                        "operation requires access token",
                                     );
                                     const response = try unified.buildControlError(
                                         allocator,
                                         parsed.id,
                                         "forbidden",
-                                        "operation requires admin token",
+                                        "operation requires access token",
                                     );
                                     defer allocator.free(response);
                                     try writeFrameLocked(stream, &connection_write_mutex, response, .text);
@@ -4540,13 +4540,13 @@ fn handleWebSocketConnection(
                                         "auth_status_forbidden",
                                         false,
                                         "forbidden",
-                                        "operation requires admin token",
+                                        "operation requires access token",
                                     );
                                     const response = try unified.buildControlError(
                                         allocator,
                                         parsed.id,
                                         "forbidden",
-                                        "operation requires admin token",
+                                        "operation requires access token",
                                     );
                                     defer allocator.free(response);
                                     try writeFrameLocked(stream, &connection_write_mutex, response, .text);
@@ -4575,13 +4575,13 @@ fn handleWebSocketConnection(
                                         "auth_rotate_forbidden",
                                         false,
                                         "forbidden",
-                                        "operation requires admin token",
+                                        "operation requires access token",
                                     );
                                     const response = try unified.buildControlError(
                                         allocator,
                                         parsed.id,
                                         "forbidden",
-                                        "operation requires admin token",
+                                        "operation requires access token",
                                     );
                                     defer allocator.free(response);
                                     try writeFrameLocked(stream, &connection_write_mutex, response, .text);
@@ -7723,7 +7723,7 @@ test "server: workspace template control ops expose dev catalog entries" {
     const listed = try handleControlPlaneCommand(
         &runtime_registry,
         .workspace_template_list,
-        system_agent_id,
+        host_actor_id,
         true,
         null,
         null,
@@ -7736,7 +7736,7 @@ test "server: workspace template control ops expose dev catalog entries" {
     const fetched = try handleControlPlaneCommand(
         &runtime_registry,
         .workspace_template_get,
-        system_agent_id,
+        host_actor_id,
         true,
         "{\"template_id\":\"dev\"}",
         null,
@@ -7775,7 +7775,7 @@ test "server: workspace bind control ops rewrite workspace payload and response 
     const bound = try handleControlPlaneCommand(
         &runtime_registry,
         .workspace_bind_set,
-        system_agent_id,
+        host_actor_id,
         false,
         bind_req,
         null,
@@ -7794,7 +7794,7 @@ test "server: workspace bind control ops rewrite workspace payload and response 
     const listed = try handleControlPlaneCommand(
         &runtime_registry,
         .workspace_bind_list,
-        system_agent_id,
+        host_actor_id,
         false,
         list_req,
         null,
@@ -7813,7 +7813,7 @@ test "server: workspace bind control ops rewrite workspace payload and response 
     const removed = try handleControlPlaneCommand(
         &runtime_registry,
         .workspace_bind_remove,
-        system_agent_id,
+        host_actor_id,
         false,
         remove_req,
         null,
@@ -7834,7 +7834,7 @@ test "server: admin initial binding prefers remembered workspace target" {
     try setAuthTokensForTests(&runtime_registry, "access-secret");
 
     const project_up = try runtime_registry.control_plane.projectUpWithRole(
-        system_agent_id,
+        host_actor_id,
         "{\"name\":\"Admin Remembered\",\"vision\":\"Remembered target test\",\"activate\":false}",
         true,
     );
@@ -8182,7 +8182,7 @@ test "server: workspace namespace stays project-scoped across user session agent
     try setAuthTokensForTests(&runtime_registry, "access-secret");
 
     const project_up = try runtime_registry.control_plane.projectUpWithRole(
-        system_agent_id,
+        host_actor_id,
         "{\"name\":\"Scope Test\",\"vision\":\"Project-scoped namespace\",\"activate\":false}",
         true,
     );
@@ -8747,7 +8747,7 @@ test "server: user connect stays minimal even when another project is active" {
     try setAuthTokensForTests(&runtime_registry, "access-secret");
 
     const project_up = try runtime_registry.control_plane.projectUpWithRole(
-        system_agent_id,
+        host_actor_id,
         "{\"name\":\"Needs Attach\",\"vision\":\"Needs Attach\",\"activate\":false}",
         true,
     );
@@ -9277,23 +9277,23 @@ test "server: project runtime switches persona when agent changes" {
     try std.testing.expect(runtime_registry.hasRuntimeForBinding(runtime_registry.default_agent_id, project_id));
     try std.testing.expectEqual(@as(usize, 1), runtime_registry.by_agent.count());
 
-    const second_runtime = try runtime_registry.getOrCreate(system_agent_id, project_id, null);
+    const second_runtime = try runtime_registry.getOrCreate(host_actor_id, project_id, null);
     defer second_runtime.release();
     try std.testing.expect(second_runtime != first_runtime);
     try std.testing.expect(!runtime_registry.hasRuntimeForBinding(runtime_registry.default_agent_id, project_id));
-    try std.testing.expect(runtime_registry.hasRuntimeForBinding(system_agent_id, project_id));
+    try std.testing.expect(runtime_registry.hasRuntimeForBinding(host_actor_id, project_id));
     try std.testing.expectEqual(@as(usize, 1), runtime_registry.by_agent.count());
 
     const stale_lookup = runtime_registry.getRuntimeForBindingIfReady(runtime_registry.default_agent_id, project_id);
     try std.testing.expect(stale_lookup == null);
 
-    const active_lookup = runtime_registry.getRuntimeForBindingIfReady(system_agent_id, project_id) orelse return error.TestExpectedResult;
+    const active_lookup = runtime_registry.getRuntimeForBindingIfReady(host_actor_id, project_id) orelse return error.TestExpectedResult;
     active_lookup.release();
 
     runtime_registry.mutex.lock();
     defer runtime_registry.mutex.unlock();
     const active_entry = runtime_registry.by_agent.getPtr(project_id) orelse return error.TestExpectedResult;
-    try std.testing.expectEqualStrings(system_agent_id, active_entry.runtime_agent_id);
+    try std.testing.expectEqualStrings(host_actor_id, active_entry.runtime_agent_id);
 }
 
 test "server: getOrCreate replaces unhealthy runtime for same agent" {
@@ -9625,7 +9625,7 @@ test "server: invalid configured default agent falls back to built-in default" {
     cfg.default_agent_id = ".";
 
     const registry = AgentRuntimeRegistry.initWithLimits(allocator, cfg, null, 8);
-    try std.testing.expectEqualStrings(system_agent_id, registry.default_agent_id);
+    try std.testing.expectEqualStrings(host_actor_id, registry.default_agent_id);
 }
 
 test "server: materializeMountGraphWriteData preserves suffix on offset zero partial writes" {

@@ -592,6 +592,20 @@ final class SpiderwebAppController: ObservableObject {
         copyToClipboard(mountCommand(for: mount))
     }
 
+    private static func suggestedWorkspaceMountpoint(for workspace: SpiderwebWorkspaceSummary) -> String {
+        let fallback = workspace.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = workspace.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = raw.isEmpty ? fallback : raw
+        let collapsed = source.unicodeScalars.map { scalar -> String in
+            CharacterSet.alphanumerics.contains(scalar) ? String(scalar) : "-"
+        }
+        .joined()
+        .replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        let component = collapsed.isEmpty ? fallback : collapsed
+        return "\(NSHomeDirectory())/Spiderweb/\(component)"
+    }
+
     func beginNewMount(kind: SpiderwebSavedMountKind) {
         mountEditor = SpiderwebMountEditorDraft()
         mountEditor.kind = kind
@@ -605,7 +619,7 @@ final class SpiderwebAppController: ObservableObject {
             }
             mountEditor.name = workspace.name
             mountEditor.workspaceID = workspace.id
-            mountEditor.mountpoint = "\(NSHomeDirectory())/Spiderweb/\(workspace.id)"
+            mountEditor.mountpoint = Self.suggestedWorkspaceMountpoint(for: workspace)
         } else {
             mountEditor.mountpoint = "\(NSHomeDirectory())/Spiderweb/remote"
         }
@@ -818,7 +832,6 @@ final class SpiderwebAppController: ObservableObject {
                     arguments: ["--url", Self.localServerURL, "--auth-token", adminToken, "workspace_up", payload]
                 )
                 let response = try Self.extractControlPayloadObject(from: result.stdout)
-                let workspaceID = (response["workspace_id"] ?? response["project_id"]) as? String ?? name
                 let created = response["created"] as? Bool ?? false
                 let workspaceObject = response["workspace"] as? [String: Any]
                 let mountCount = (workspaceObject?["mount_count"] as? Int) ?? (workspaceObject?["mount_count"] as? NSNumber)?.intValue ?? 0
@@ -840,12 +853,12 @@ final class SpiderwebAppController: ObservableObject {
                 let statusMessage: String
                 if mountCount > 0 {
                     statusMessage = created
-                        ? "Created workspace “\(name)” as \(workspaceID)"
-                        : "Updated existing workspace “\(name)” (\(workspaceID))"
+                        ? "Created workspace “\(name)”"
+                        : "Updated workspace “\(name)”"
                 } else {
                     statusMessage = created
-                        ? "Created workspace “\(name)” as \(workspaceID), but it is not mountable yet because the local filesystem node is not ready."
-                        : "Updated existing workspace “\(name)” (\(workspaceID)), but it is still not mountable because the local filesystem node is not ready."
+                        ? "Created workspace “\(name)”, but it is not mountable yet because the local filesystem node is not ready."
+                        : "Updated workspace “\(name)”, but it is still not mountable because the local filesystem node is not ready."
                 }
 
                 await MainActor.run {
@@ -886,7 +899,7 @@ final class SpiderwebAppController: ObservableObject {
         draft.name = workspace.name
         draft.serverURL = Self.localServerURL
         draft.workspaceID = workspace.id
-        draft.mountpoint = "\(NSHomeDirectory())/Spiderweb/\(workspace.id)"
+        draft.mountpoint = Self.suggestedWorkspaceMountpoint(for: workspace)
         mountEditor = draft
         selectedSection = .mounts
     }

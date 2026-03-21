@@ -84,53 +84,63 @@ pub const FuseAdapter = struct {
     }
 
     pub fn getattr(self: *FuseAdapter, path: []const u8) ![]u8 {
-        if (self.helper_client) |*client| return client.getattr(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.getattr(stable_path.slice);
 
         const now = std.time.milliTimestamp();
-        if (self.path_cache.getAttr(path, now)) |cached| return cached;
-        if (self.path_cache.isNegative(path, now)) return error.FileNotFound;
+        if (self.path_cache.getAttr(stable_path.slice, now)) |cached| return cached;
+        if (self.path_cache.isNegative(stable_path.slice, now)) return error.FileNotFound;
 
         const gen = self.path_cache.mutationGen();
-        const result = self.session.getattr(path) catch |err| {
+        const result = self.session.getattr(stable_path.slice) catch |err| {
             if (err == error.FileNotFound and self.path_cache.mutationGen() == gen) {
-                self.path_cache.putNegative(path, now) catch {};
+                self.path_cache.putNegative(stable_path.slice, now) catch {};
             }
             return err;
         };
 
-        self.path_cache.putAttr(path, result, now) catch {};
+        self.path_cache.putAttr(stable_path.slice, result, now) catch {};
         return result;
     }
 
     pub fn readdir(self: *FuseAdapter, path: []const u8, cookie: u64, max_entries: u32) ![]u8 {
-        if (self.helper_client) |*client| return client.readdir(path, cookie, max_entries);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.readdir(stable_path.slice, cookie, max_entries);
 
         const now = std.time.milliTimestamp();
-        if (self.path_cache.getDir(path, cookie, now)) |cached| return cached;
+        if (self.path_cache.getDir(stable_path.slice, cookie, now)) |cached| return cached;
 
-        const result = self.session.readdir(path, cookie, max_entries) catch |err| return err;
+        const result = self.session.readdir(stable_path.slice, cookie, max_entries) catch |err| return err;
 
-        self.path_cache.putDir(path, cookie, result, now) catch {};
+        self.path_cache.putDir(stable_path.slice, cookie, result, now) catch {};
         return result;
     }
 
     pub fn statfs(self: *FuseAdapter, path: []const u8) ![]u8 {
-        if (self.helper_client) |*client| return client.statfs(path);
-        return self.session.statfs(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.statfs(stable_path.slice);
+        return self.session.statfs(stable_path.slice);
     }
 
     pub fn open(self: *FuseAdapter, path: []const u8, flags: u32) !mount_provider.OpenFile {
-        if (self.helper_client) |*client| return client.open(path, flags);
-        return self.session.open(path, flags);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.open(stable_path.slice, flags);
+        return self.session.open(stable_path.slice, flags);
     }
 
     pub fn openAndStoreHandle(self: *FuseAdapter, path: []const u8, flags: u32) !u64 {
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
         if (self.helper_client) |*client| {
-            const open_file = try client.open(path, flags);
+            const open_file = try client.open(stable_path.slice, flags);
             errdefer client.release(open_file) catch {};
             return self.storeOpenHandle(open_file);
         }
-        return self.session.openAndStoreHandle(path, flags);
+        return self.session.openAndStoreHandle(stable_path.slice, flags);
     }
 
     pub fn read(self: *FuseAdapter, file: mount_provider.OpenFile, off: u64, len: u32) ![]u8 {
@@ -144,20 +154,24 @@ pub const FuseAdapter = struct {
     }
 
     pub fn create(self: *FuseAdapter, path: []const u8, mode: u32, flags: u32) !mount_provider.OpenFile {
-        if (self.helper_client) |*client| return client.create(path, mode, flags);
-        const result = try self.session.create(path, mode, flags);
-        self.path_cache.invalidatePathAndParent(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.create(stable_path.slice, mode, flags);
+        const result = try self.session.create(stable_path.slice, mode, flags);
+        self.path_cache.invalidatePathAndParent(stable_path.slice);
         return result;
     }
 
     pub fn createAndStoreHandle(self: *FuseAdapter, path: []const u8, mode: u32, flags: u32) !u64 {
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
         if (self.helper_client) |*client| {
-            const open_file = try client.create(path, mode, flags);
+            const open_file = try client.create(stable_path.slice, mode, flags);
             errdefer client.release(open_file) catch {};
             return self.storeOpenHandle(open_file);
         }
-        const result = try self.session.createAndStoreHandle(path, mode, flags);
-        self.path_cache.invalidatePathAndParent(path);
+        const result = try self.session.createAndStoreHandle(stable_path.slice, mode, flags);
+        self.path_cache.invalidatePathAndParent(stable_path.slice);
         return result;
     }
 
@@ -167,65 +181,89 @@ pub const FuseAdapter = struct {
     }
 
     pub fn truncate(self: *FuseAdapter, path: []const u8, size: u64) !void {
-        if (self.helper_client) |*client| return client.truncate(path, size);
-        try self.session.truncate(path, size);
-        self.path_cache.invalidatePath(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.truncate(stable_path.slice, size);
+        try self.session.truncate(stable_path.slice, size);
+        self.path_cache.invalidatePath(stable_path.slice);
     }
 
     pub fn unlink(self: *FuseAdapter, path: []const u8) !void {
-        if (self.helper_client) |*client| return client.unlink(path);
-        try self.session.unlink(path);
-        self.path_cache.invalidatePathAndParent(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.unlink(stable_path.slice);
+        try self.session.unlink(stable_path.slice);
+        self.path_cache.invalidatePathAndParent(stable_path.slice);
     }
 
     pub fn mkdir(self: *FuseAdapter, path: []const u8) !void {
-        if (self.helper_client) |*client| return client.mkdir(path);
-        try self.session.mkdir(path);
-        self.path_cache.invalidatePathAndParent(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.mkdir(stable_path.slice);
+        try self.session.mkdir(stable_path.slice);
+        self.path_cache.invalidatePathAndParent(stable_path.slice);
     }
 
     pub fn rmdir(self: *FuseAdapter, path: []const u8) !void {
-        if (self.helper_client) |*client| return client.rmdir(path);
-        try self.session.rmdir(path);
-        self.path_cache.invalidatePathAndParent(path);
-        self.path_cache.invalidateTree(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.rmdir(stable_path.slice);
+        try self.session.rmdir(stable_path.slice);
+        self.path_cache.invalidatePathAndParent(stable_path.slice);
+        self.path_cache.invalidateTree(stable_path.slice);
     }
 
     pub fn rename(self: *FuseAdapter, old_path: []const u8, new_path: []const u8) !void {
-        if (self.helper_client) |*client| return client.rename(old_path, new_path);
-        try self.session.rename(old_path, new_path);
-        self.path_cache.invalidatePathAndParent(old_path);
-        self.path_cache.invalidatePathAndParent(new_path);
-        self.path_cache.invalidateTree(old_path);
-        self.path_cache.invalidateTree(new_path);
+        var stable_old_path = try stabilizeFusePath(self.allocator, old_path);
+        defer stable_old_path.deinit(self.allocator);
+        var stable_new_path = try stabilizeFusePath(self.allocator, new_path);
+        defer stable_new_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.rename(stable_old_path.slice, stable_new_path.slice);
+        try self.session.rename(stable_old_path.slice, stable_new_path.slice);
+        self.path_cache.invalidatePathAndParent(stable_old_path.slice);
+        self.path_cache.invalidatePathAndParent(stable_new_path.slice);
+        self.path_cache.invalidateTree(stable_old_path.slice);
+        self.path_cache.invalidateTree(stable_new_path.slice);
     }
 
     pub fn symlink(self: *FuseAdapter, target: []const u8, link_path: []const u8) !void {
-        if (self.helper_client) |*client| return client.symlink(target, link_path);
-        try self.session.symlink(target, link_path);
-        self.path_cache.invalidatePathAndParent(link_path);
+        var stable_target = try stabilizeFusePath(self.allocator, target);
+        defer stable_target.deinit(self.allocator);
+        var stable_link_path = try stabilizeFusePath(self.allocator, link_path);
+        defer stable_link_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.symlink(stable_target.slice, stable_link_path.slice);
+        try self.session.symlink(stable_target.slice, stable_link_path.slice);
+        self.path_cache.invalidatePathAndParent(stable_link_path.slice);
     }
 
     pub fn setxattr(self: *FuseAdapter, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
-        if (self.helper_client) |*client| return client.setxattr(path, name, value, flags);
-        try self.session.setxattr(path, name, value, flags);
-        self.path_cache.invalidatePath(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.setxattr(stable_path.slice, name, value, flags);
+        try self.session.setxattr(stable_path.slice, name, value, flags);
+        self.path_cache.invalidatePath(stable_path.slice);
     }
 
     pub fn getxattr(self: *FuseAdapter, path: []const u8, name: []const u8) ![]u8 {
-        if (self.helper_client) |*client| return client.getxattr(path, name);
-        return self.session.getxattr(path, name);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.getxattr(stable_path.slice, name);
+        return self.session.getxattr(stable_path.slice, name);
     }
 
     pub fn listxattr(self: *FuseAdapter, path: []const u8) ![]u8 {
-        if (self.helper_client) |*client| return client.listxattr(path);
-        return self.session.listxattr(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.listxattr(stable_path.slice);
+        return self.session.listxattr(stable_path.slice);
     }
 
     pub fn removexattr(self: *FuseAdapter, path: []const u8, name: []const u8) !void {
-        if (self.helper_client) |*client| return client.removexattr(path, name);
-        try self.session.removexattr(path, name);
-        self.path_cache.invalidatePath(path);
+        var stable_path = try stabilizeFusePath(self.allocator, path);
+        defer stable_path.deinit(self.allocator);
+        if (self.helper_client) |*client| return client.removexattr(stable_path.slice, name);
+        try self.session.removexattr(stable_path.slice, name);
+        self.path_cache.invalidatePath(stable_path.slice);
     }
 
     pub fn lock(self: *FuseAdapter, file: mount_provider.OpenFile, mode: mount_provider.LockMode, wait: bool) !void {
@@ -413,6 +451,25 @@ pub const FuseAdapter = struct {
         return local_id;
     }
 };
+
+const StableFusePath = struct {
+    slice: []const u8,
+    owned: ?[]u8 = null,
+
+    fn deinit(self: *StableFusePath, allocator: std.mem.Allocator) void {
+        if (self.owned) |owned| allocator.free(owned);
+        self.* = undefined;
+    }
+};
+
+fn stabilizeFusePath(allocator: std.mem.Allocator, path: []const u8) !StableFusePath {
+    if (builtin.os.tag != .linux) return .{ .slice = path };
+    const owned = try allocator.dupe(u8, path);
+    return .{
+        .slice = owned,
+        .owned = owned,
+    };
+}
 
 pub fn mountpointMustExistBeforeMount(backend: FuseAdapter.MountBackend) bool {
     _ = backend;
@@ -712,27 +769,38 @@ fn cReaddirWin(
         if (filler_rc != 0) return 0;
     }
 
+    var names = std.ArrayListUnmanaged([*:0]u8){};
+    defer {
+        for (names.items) |name_z| freeArgZ(adapter.allocator, name_z);
+        names.deinit(adapter.allocator);
+    }
+    var stats = std.ArrayListUnmanaged(c.struct_fuse_stat){};
+    defer stats.deinit(adapter.allocator);
+    names.ensureTotalCapacity(adapter.allocator, ents.array.items.len) catch return -fs_protocol.Errno.EIO;
+    stats.ensureTotalCapacity(adapter.allocator, ents.array.items.len) catch return -fs_protocol.Errno.EIO;
+
     var idx: u64 = 0;
     for (ents.array.items) |entry| {
         if (entry != .object) continue;
         const name_val = entry.object.get("name") orelse continue;
         if (name_val != .string) continue;
         const name_z = adapter.allocator.dupeZ(u8, name_val.string) catch return -fs_protocol.Errno.EIO;
-        defer adapter.allocator.free(name_z);
+        names.appendAssumeCapacity(@ptrCast(name_z.ptr));
+        const name_ptr = names.items[names.items.len - 1];
 
         const next_cookie = std.math.add(u64, cookie, idx + 1) catch std.math.maxInt(u64);
         const next_off: c.fuse_off_t = std.math.cast(c.fuse_off_t, next_cookie) orelse 0;
-        var stat_buf: c.struct_fuse_stat = std.mem.zeroes(c.struct_fuse_stat);
         var stat_ptr: [*c]const c.struct_fuse_stat = null;
         if (entry.object.get("attr")) |attr_val| {
             if (attr_val == .object) {
                 if (parseAttrFromObject(attr_val.object)) |attr| {
-                    fillStatFromParsedAttr(&stat_buf, attr);
-                    stat_ptr = @ptrCast(&stat_buf);
+                    stats.appendAssumeCapacity(std.mem.zeroes(c.struct_fuse_stat));
+                    fillStatFromParsedAttr(&stats.items[stats.items.len - 1], attr);
+                    stat_ptr = @ptrCast(&stats.items[stats.items.len - 1]);
                 } else |_| {}
             }
         }
-        if (filler.?(buf, @ptrCast(name_z.ptr), stat_ptr, next_off) != 0) break;
+        if (filler.?(buf, name_ptr, stat_ptr, next_off) != 0) break;
         idx += 1;
     }
     return 0;
@@ -797,29 +865,40 @@ fn cReaddir(
         if (filler_rc != 0) return 0;
     }
 
+    var names = std.ArrayListUnmanaged([*:0]u8){};
+    defer {
+        for (names.items) |name_z| freeArgZ(adapter.allocator, name_z);
+        names.deinit(adapter.allocator);
+    }
+    var stats = std.ArrayListUnmanaged(c.struct_stat){};
+    defer stats.deinit(adapter.allocator);
+    names.ensureTotalCapacity(adapter.allocator, ents.array.items.len) catch return -fs_protocol.Errno.EIO;
+    stats.ensureTotalCapacity(adapter.allocator, ents.array.items.len) catch return -fs_protocol.Errno.EIO;
+
     var idx: u64 = 0;
     for (ents.array.items) |entry| {
         if (entry != .object) continue;
         const name_val = entry.object.get("name") orelse continue;
         if (name_val != .string) continue;
         const name_z = adapter.allocator.dupeZ(u8, name_val.string) catch return -fs_protocol.Errno.EIO;
-        defer adapter.allocator.free(name_z);
+        names.appendAssumeCapacity(@ptrCast(name_z.ptr));
+        const name_ptr = names.items[names.items.len - 1];
 
         const next_off: c.off_t = if (builtin.os.tag == .windows) blk: {
             const next_cookie = std.math.add(u64, cookie, idx + 1) catch std.math.maxInt(u64);
             break :blk std.math.cast(c.off_t, next_cookie) orelse 0;
         } else 0;
-        var stat_buf: c.struct_stat = std.mem.zeroes(c.struct_stat);
         var stat_ptr: [*c]const c.struct_stat = null;
         if (entry.object.get("attr")) |attr_val| {
             if (attr_val == .object) {
                 if (parseAttrFromObject(attr_val.object)) |attr| {
-                    fillStatFromParsedAttr(&stat_buf, attr);
-                    stat_ptr = @ptrCast(&stat_buf);
+                    stats.appendAssumeCapacity(std.mem.zeroes(c.struct_stat));
+                    fillStatFromParsedAttr(&stats.items[stats.items.len - 1], attr);
+                    stat_ptr = @ptrCast(&stats.items[stats.items.len - 1]);
                 } else |_| {}
             }
         }
-        const filler_rc = filler.?(buf, @ptrCast(name_z.ptr), stat_ptr, next_off, c.FUSE_FILL_DIR_DEFAULTS);
+        const filler_rc = filler.?(buf, name_ptr, stat_ptr, next_off, c.FUSE_FILL_DIR_DEFAULTS);
         fuseTrace("readdir entry name={s} rc={d}", .{ name_val.string, filler_rc });
         if (filler_rc != 0) break;
         idx += 1;

@@ -17,7 +17,7 @@ const namespace_warmup_deadline_ms: i64 = 10_000;
 const namespace_warmup_retry_ms: u64 = 200;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

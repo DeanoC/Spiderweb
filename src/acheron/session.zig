@@ -13,8 +13,6 @@ const shared_node = @import("spiderweb_node");
 const workspace_policy = @import("../workspaces/policy.zig");
 const control_plane_mod = @import("control_plane.zig");
 const acheron_router = @import("router.zig");
-const agent_config = @import("../agents/agent_config.zig");
-const agent_registry = @import("../agents/agent_registry.zig");
 const mission_store_mod = @import("../mission_store.zig");
 const events_venom = @import("../venoms/events.zig");
 const pairing_venom = @import("../venoms/pairing.zig");
@@ -23,7 +21,6 @@ const mounts_venom = @import("../venoms/mounts.zig");
 const home_venom = @import("../venoms/home.zig");
 const workers_venom = @import("../venoms/workers.zig");
 const venom_packages_service_venom = @import("../venoms/venom_packages_service.zig");
-const agents_venom = @import("../venoms/agents.zig");
 const workspaces_venom = @import("../venoms/workspaces.zig");
 const git_venom = @import("../venoms/git.zig");
 const github_pr_venom = @import("../venoms/github_pr.zig");
@@ -43,9 +40,6 @@ const SpecialKind = enum {
     none,
     agent_venoms_index,
     node_venom_events_log,
-    agents_invoke,
-    agents_list,
-    agents_create,
     home_invoke,
     home_ensure,
     workers_invoke,
@@ -162,16 +156,6 @@ const bootstrap_required_services = [_]BootstrapRequiredService{
     .{ .id = "search_code", .invoke_path = "/services/search_code/control/invoke.json" },
     .{ .id = "library" },
     .{ .id = "events" },
-};
-
-const agent_create_capabilities = [_][]const u8{
-    "agents.create",
-    "agent.create",
-    "agents.manage",
-    "agent_manage",
-    "agent_admin",
-    "provision_agents",
-    "plan",
 };
 
 const WaitSourceKind = events_venom.WaitSourceKind;
@@ -1278,9 +1262,6 @@ pub const Session = struct {
             .home_invoke, .home_ensure => self.handleHomeNamespaceWrite(special, node_id, data),
             .workers_invoke, .workers_register, .workers_heartbeat, .workers_detach => self.handleWorkersNamespaceWrite(special, node_id, data),
             .venom_packages_invoke, .venom_packages_list, .venom_packages_get, .venom_packages_install, .venom_packages_remove => self.handleVenomPackagesNamespaceWrite(special, node_id, data),
-            .agents_invoke => self.handleAgentsInvokeWrite(node_id, data),
-            .agents_list => self.handleAgentsListWrite(node_id, data),
-            .agents_create => self.handleAgentsCreateWrite(node_id, data),
             .projects_invoke, .projects_list, .projects_get, .projects_up => self.handleWorkspacesNamespaceWrite(special, node_id, data),
             .git_invoke, .git_sync_checkout, .git_status, .git_diff_range => self.handleGitNamespaceWrite(special, node_id, data),
             .github_pr_invoke, .github_pr_sync, .github_pr_ingest_event, .github_pr_publish_review => self.handleGitHubPrNamespaceWrite(special, node_id, data),
@@ -1688,7 +1669,6 @@ pub const Session = struct {
         try self.registerExistingGlobalVenomBinding(global_root, "terminal", "project_namespace");
         try self.registerExistingGlobalVenomBinding(global_root, "mounts", "project_namespace");
         try self.registerExistingGlobalVenomBinding(global_root, "workers", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "agents", "project_namespace");
         try self.registerExistingGlobalVenomBinding(global_root, "workspaces", "project_namespace");
         try self.registerExistingGlobalVenomBinding(global_root, "git", "project_namespace");
         try self.registerExistingGlobalVenomBinding(global_root, "github_pr", "project_namespace");
@@ -2558,11 +2538,6 @@ pub const Session = struct {
         self.mounts_status_alias_id = self.lookupChild(mounts_alias_dir, "status.json") orelse 0;
         self.mounts_result_alias_id = self.lookupChild(mounts_alias_dir, "result.json") orelse 0;
 
-        const agents_dir = try self.addDir(local_venoms_root, "agents", false);
-        try self.seedAgentAgentsNamespaceAt(agents_dir, "/nodes/local/venoms/agents");
-        try self.seedBuiltinPackageMetadata(agents_dir, "agents");
-        _ = try self.cloneLocalCatalogVenomAlias(agents_dir, global_root, "agents");
-
         const workspaces_dir = try self.addDir(local_venoms_root, "workspaces", false);
         try self.seedAgentWorkspacesNamespaceAt(workspaces_dir, "/nodes/local/venoms/workspaces");
         try self.seedBuiltinPackageMetadata(workspaces_dir, "workspaces");
@@ -3201,14 +3176,6 @@ pub const Session = struct {
 
     fn seedAgentMountsNamespaceAt(self: *Session, mounts_dir: u32, base_path: []const u8) !void {
         return mounts_venom.seedNamespaceAt(self, mounts_dir, base_path);
-    }
-
-    fn seedAgentAgentsNamespace(self: *Session, agents_dir: u32) !void {
-        return self.seedAgentAgentsNamespaceAt(agents_dir, "/global/agents");
-    }
-
-    fn seedAgentAgentsNamespaceAt(self: *Session, agents_dir: u32, base_path: []const u8) !void {
-        return agents_venom.seedNamespaceAt(self, agents_dir, base_path);
     }
 
     fn seedAgentWorkspacesNamespace(self: *Session, workspaces_dir: u32) !void {
@@ -7281,106 +7248,10 @@ pub const Session = struct {
         return mounts_venom.ensurePathExists(path);
     }
 
-    fn handleAgentsInvokeWrite(self: *Session, invoke_node_id: u32, raw_input: []const u8) !WriteOutcome {
-        return .{ .written = try agents_venom.handleInvokeWrite(self, invoke_node_id, raw_input) };
-    }
-
-    fn handleAgentsListWrite(self: *Session, list_node_id: u32, raw_input: []const u8) !WriteOutcome {
-        return .{ .written = try agents_venom.handleListWrite(self, list_node_id, raw_input) };
-    }
-
-    fn handleAgentsCreateWrite(self: *Session, create_node_id: u32, raw_input: []const u8) !WriteOutcome {
-        return .{ .written = try agents_venom.handleCreateWrite(self, create_node_id, raw_input) };
-    }
-
-    const AgentAbilities = struct {
-        can_create_agents: bool,
-    };
-
-    pub fn canCreateAgents(self: *Session) bool {
-        const abilities = self.resolveAgentAbilities() catch return false;
-        return abilities.can_create_agents;
-    }
-
     pub fn isToolAllowedForCurrentAgent(self: *Session, tool_name: []const u8) !bool {
-        const policy_agent_id = if (std.mem.eql(u8, self.actor_type, "agent") and self.actor_id.len > 0)
-            self.actor_id
-        else
-            self.agent_id;
-
-        var config = try agent_config.loadAgentConfigFromDir(self.allocator, self.agents_dir, policy_agent_id);
-        if (config == null and !std.mem.eql(u8, policy_agent_id, self.agent_id)) {
-            config = try agent_config.loadAgentConfigFromDir(self.allocator, self.agents_dir, self.agent_id);
-        }
-        if (config == null) return true;
-
-        var owned_config = config.?;
-        defer owned_config.deinit();
-
-        const primary = owned_config.primary.view();
-
-        if (primary.denied_tools) |denied_tools| {
-            if (toolListContains(denied_tools, tool_name)) return false;
-        }
-
-        if (primary.allowed_tools) |allowed_tools| {
-            return toolListContains(allowed_tools, tool_name);
-        }
-
+        _ = self;
+        _ = tool_name;
         return true;
-    }
-
-    fn resolveAgentAbilities(self: *Session) !AgentAbilities {
-        var abilities = AgentAbilities{
-            .can_create_agents = std.mem.eql(u8, self.agent_id, "spiderweb"),
-        };
-
-        if (try agent_config.loadAgentConfigFromDir(self.allocator, self.agents_dir, self.agent_id)) |config| {
-            defer {
-                var owned = config;
-                owned.deinit();
-            }
-            if (config.primary.capabilities) |caps| {
-                for (caps.items) |capability| {
-                    if (capabilityMatchesAny(capability, &agent_create_capabilities)) {
-                        abilities.can_create_agents = true;
-                    }
-                }
-            }
-        }
-
-        var registry = agent_registry.AgentRegistry.init(
-            self.allocator,
-            ".",
-            self.agents_dir,
-            self.assets_dir,
-        );
-        defer registry.deinit();
-        registry.scan() catch return abilities;
-        if (registry.getAgent(self.agent_id)) |info| {
-            for (info.capabilities.items) |capability| {
-                switch (capability) {
-                    .plan => abilities.can_create_agents = true,
-                    else => {},
-                }
-            }
-        }
-
-        return abilities;
-    }
-
-    fn capabilityMatchesAny(capability: []const u8, accepted: []const []const u8) bool {
-        for (accepted) |candidate| {
-            if (std.ascii.eqlIgnoreCase(capability, candidate)) return true;
-        }
-        return false;
-    }
-
-    fn toolListContains(list: std.ArrayListUnmanaged([]u8), tool_name: []const u8) bool {
-        for (list.items) |item| {
-            if (std.mem.eql(u8, item, tool_name)) return true;
-        }
-        return false;
     }
 
     fn extractOptionalStringByNames(
@@ -11160,8 +11031,8 @@ fn defaultGlobalLibraryTopicProjectMountsAndBinds() []const u8 {
 
 fn defaultGlobalLibraryTopicAgentManagementAndSubBrains() []const u8 {
     return "# Agent Management and Sub-Brains\n\n" ++
-        "Use `/global/agents` for list/create, `/global/workspaces` for list/get/up, and worker-owned `/nodes/<worker-node>/venoms/sub_brains/*` for private sub-brain control.\n" ++
-        "Mutation operations depend on capability flags and service permissions.\n";
+        "Spiderweb no longer provisions or manages internal agents.\n" ++
+        "Use `/global/workspaces` for list/get/up and worker-owned `/nodes/<worker-node>/venoms/sub_brains/*` for private sub-brain control.\n";
 }
 
 fn pathMatchesPrefixBoundary(path: []const u8, prefix: []const u8) bool {

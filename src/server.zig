@@ -9,7 +9,6 @@ const control_plane_mod = @import("acheron/control_plane.zig");
 const acheron_session_mod = @import("acheron/session.zig");
 const fs_protocol = @import("spiderweb_fs").fs_protocol;
 const spiderweb_node = @import("spiderweb_node");
-const agent_config_mod = @import("agents/agent_config.zig");
 const agent_registry_mod = @import("agents/agent_registry.zig");
 const unified = @import("spider-protocol").unified;
 const mission_store_mod = @import("mission_store.zig");
@@ -69,16 +68,6 @@ const runtime_warmup_error_retry_backoff_ms: i64 = 10_000;
 const runtime_residency_worker_interval_ms_default: u64 = 1_000;
 const session_heartbeat_ttl_ms: i64 = 5 * 60 * 1000;
 const agent_heartbeat_ttl_ms: i64 = 5 * 60 * 1000;
-
-const agent_create_capabilities = [_][]const u8{
-    "agents.create",
-    "agent.create",
-    "agents.manage",
-    "agent_manage",
-    "agent_admin",
-    "provision_agents",
-    "plan",
-};
 
 const DebugStreamFileSink = struct {
     allocator: std.mem.Allocator,
@@ -535,6 +524,17 @@ fn derivePublicFsUrl(allocator: std.mem.Allocator, public_base_url: []const u8) 
     }
     const without_trailing = std.mem.trimRight(u8, trimmed, "/");
     return std.fmt.allocPrint(allocator, "{s}/fs", .{without_trailing});
+}
+
+fn buildInternalNodeFsUrl(
+    allocator: std.mem.Allocator,
+    bind_addr: []const u8,
+    port: u16,
+    node_id: []const u8,
+) ![]u8 {
+    const path = try std.fmt.allocPrint(allocator, "/fs/node/{s}", .{node_id});
+    defer allocator.free(path);
+    return formatInternalWsUrl(allocator, bind_addr, port, path);
 }
 
 fn deriveConnectionWorkspaceUrl(
@@ -2667,60 +2667,6 @@ fn pathMatchesControlTarget(path: []const u8, target: []const u8) bool {
     return std.mem.eql(u8, normalized, target);
 }
 
-fn capabilityMatchesAny(capability: []const u8, accepted: []const []const u8) bool {
-    for (accepted) |candidate| {
-        if (std.ascii.eqlIgnoreCase(capability, candidate)) return true;
-    }
-    return false;
-}
-
-fn canAgentCreateAgentsWithRegistryPaths(
-    allocator: std.mem.Allocator,
-    agents_dir: []const u8,
-    assets_dir: []const u8,
-    agent_id: []const u8,
-) bool {
-    var can_create = std.mem.eql(u8, agent_id, system_agent_id);
-
-    if (agent_config_mod.loadAgentConfigFromDir(
-        allocator,
-        agents_dir,
-        agent_id,
-    ) catch null) |config| {
-        defer {
-            var owned = config;
-            owned.deinit();
-        }
-        if (config.primary.capabilities) |caps| {
-            for (caps.items) |capability| {
-                if (capabilityMatchesAny(capability, &agent_create_capabilities)) {
-                    can_create = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    var registry = agent_registry_mod.AgentRegistry.init(
-        allocator,
-        ".",
-        agents_dir,
-        assets_dir,
-    );
-    defer registry.deinit();
-    registry.scan() catch return can_create;
-    if (registry.getAgent(agent_id)) |info| {
-        for (info.capabilities.items) |capability| {
-            switch (capability) {
-                .plan => return true,
-                else => {},
-            }
-        }
-    }
-
-    return can_create;
-}
-
 const AgentRuntimeRegistry = struct {
     allocator: std.mem.Allocator,
     runtime_config: Config.RuntimeConfig,
@@ -2987,101 +2933,6 @@ const AgentRuntimeRegistry = struct {
 
     fn authStatusJson(self: *AgentRuntimeRegistry) ![]u8 {
         return self.auth_tokens.statusJson();
-    }
-
-    fn listAgentsPayloadWithRole(self: *AgentRuntimeRegistry, is_admin: bool) ![]u8 {
-        _ = is_admin;
-        var registry = agent_registry_mod.AgentRegistry.init(
-            self.allocator,
-            ".",
-            self.runtime_config.agents_dir,
-            self.runtime_config.assets_dir,
-        );
-        defer registry.deinit();
-        try registry.scan();
-
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.appendSlice(self.allocator, "{\"agents\":[");
-        var first = true;
-        for (registry.listAgents()) |agent| {
-            if (!first) try out.append(self.allocator, ',');
-            first = false;
-            try appendAgentInfoJson(self.allocator, &out, agent);
-        }
-        try out.appendSlice(self.allocator, "]}");
-        return out.toOwnedSlice(self.allocator);
-    }
-
-    fn getAgentPayloadWithRole(
-        self: *AgentRuntimeRegistry,
-        payload_json: ?[]const u8,
-        is_admin: bool,
-    ) ![]u8 {
-        _ = is_admin;
-        const agent_id = try parseAgentIdFromPayload(self.allocator, payload_json);
-        defer self.allocator.free(agent_id);
-
-        var registry = agent_registry_mod.AgentRegistry.init(
-            self.allocator,
-            ".",
-            self.runtime_config.agents_dir,
-            self.runtime_config.assets_dir,
-        );
-        defer registry.deinit();
-        try registry.scan();
-
-        const agent = registry.getAgent(agent_id) orelse return error.AgentNotFound;
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.appendSlice(self.allocator, "{\"agent\":");
-        try appendAgentInfoJson(self.allocator, &out, agent.*);
-        try out.append(self.allocator, '}');
-        return out.toOwnedSlice(self.allocator);
-    }
-
-    fn ensureAgentPayloadWithRole(
-        self: *AgentRuntimeRegistry,
-        payload_json: ?[]const u8,
-        requesting_agent_id: []const u8,
-        is_admin: bool,
-    ) ![]u8 {
-        const agent_id = try parseAgentIdFromPayload(self.allocator, payload_json);
-        defer self.allocator.free(agent_id);
-        if (!isValidAgentId(agent_id)) return error.InvalidAgentId;
-
-        var registry = agent_registry_mod.AgentRegistry.init(
-            self.allocator,
-            ".",
-            self.runtime_config.agents_dir,
-            self.runtime_config.assets_dir,
-        );
-        defer registry.deinit();
-        try registry.scan();
-
-        var created = false;
-        if (registry.getAgent(agent_id) == null) {
-            if (!is_admin and !self.canAgentCreateAgents(requesting_agent_id)) return error.AccessDenied;
-            try registry.createAgent(agent_id, null);
-            created = true;
-        }
-
-        const agent = registry.getAgent(agent_id) orelse return error.AgentNotFound;
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.writer(self.allocator).print("{{\"created\":{s},\"agent\":", .{if (created) "true" else "false"});
-        try appendAgentInfoJson(self.allocator, &out, agent.*);
-        try out.append(self.allocator, '}');
-        return out.toOwnedSlice(self.allocator);
-    }
-
-    fn canAgentCreateAgents(self: *AgentRuntimeRegistry, agent_id: []const u8) bool {
-        return canAgentCreateAgentsWithRegistryPaths(
-            self.allocator,
-            self.runtime_config.agents_dir,
-            self.runtime_config.assets_dir,
-            agent_id,
-        );
     }
 
     fn startLocalNodeSupervisor(self: *AgentRuntimeRegistry, bind_addr: []const u8, port: u16) !void {
@@ -4841,6 +4692,8 @@ const AgentRuntimeRegistry = struct {
 const LocalNodeSupervisor = struct {
     allocator: std.mem.Allocator,
     control_plane: *control_plane_mod.ControlPlane,
+    bind_addr: []u8,
+    port: u16,
     control_url: []u8,
     control_auth_token: []u8,
     binary_path: []u8,
@@ -4883,6 +4736,8 @@ const LocalNodeSupervisor = struct {
         supervisor.* = .{
             .allocator = allocator,
             .control_plane = control_plane,
+            .bind_addr = try allocator.dupe(u8, bind_addr),
+            .port = port,
             .control_url = try formatInternalWsUrl(allocator, bind_addr, port, "/"),
             .control_auth_token = try allocator.dupe(u8, control_auth_token),
             .binary_path = if (std.fs.path.isAbsolute(local_cfg.binary))
@@ -4915,6 +4770,7 @@ const LocalNodeSupervisor = struct {
 
     fn deinit(self: *LocalNodeSupervisor) void {
         if (self.thread != null) @panic("LocalNodeSupervisor.deinit called before join");
+        self.allocator.free(self.bind_addr);
         self.allocator.free(self.control_url);
         self.allocator.free(self.control_auth_token);
         self.allocator.free(self.binary_path);
@@ -4966,10 +4822,16 @@ const LocalNodeSupervisor = struct {
         try ensureDirectoryExists(self.state_dir);
         try deleteTreeIfPresent(self.manifests_dir);
         try ensureDirectoryExists(self.manifests_dir);
-        const join_payload = try self.control_plane.ensureNode(local_node_default_name, "", 15 * 60 * 1000);
-        defer self.allocator.free(join_payload);
-        const node_id = try parseNodeIdFromJoinPayload(self.allocator, join_payload);
+        const initial_join_payload = try self.control_plane.ensureNode(local_node_default_name, "", 15 * 60 * 1000);
+        defer self.allocator.free(initial_join_payload);
+        const node_id = try parseNodeIdFromJoinPayload(self.allocator, initial_join_payload);
         defer self.allocator.free(node_id);
+
+        const routed_fs_url = try buildInternalNodeFsUrl(self.allocator, self.bind_addr, self.port, node_id);
+        defer self.allocator.free(routed_fs_url);
+
+        const join_payload = try self.control_plane.ensureNode(local_node_default_name, routed_fs_url, 15 * 60 * 1000);
+        defer self.allocator.free(join_payload);
         try writeFileReplacing(self.state_path, join_payload);
         try self.control_plane.ensureSpiderWebMount(node_id, self.export_name);
         try self.writeManifestFiles();
@@ -5580,65 +5442,12 @@ fn handleWebSocketConnection(
                             },
                             .connect => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                var project_setup = try runtime_registry.projectSetupHint(
-                                    principal.role,
-                                    active_binding,
-                                    bootstrap_only_mode,
-                                );
-                                defer project_setup.deinit(allocator);
-                                const escaped_role = switch (principal.role) {
-                                    .admin => "admin",
-                                    .user => "user",
-                                };
-                                const escaped_actor_type = try unified.jsonEscape(allocator, active_binding.actor_type);
-                                defer allocator.free(escaped_actor_type);
-                                const escaped_actor_id = try unified.jsonEscape(allocator, active_binding.actor_id);
-                                defer allocator.free(escaped_actor_id);
                                 const project_json = if (active_binding.project_id) |project_id| blk: {
                                     const escaped_project = try unified.jsonEscape(allocator, project_id);
                                     defer allocator.free(escaped_project);
                                     break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_project});
                                 } else try allocator.dupe(u8, "null");
                                 defer allocator.free(project_json);
-                                const bootstrap_message_json = if (bootstrap_only_mode and principal.role == .admin) blk: {
-                                    const escaped_bootstrap = try unified.jsonEscape(
-                                        allocator,
-                                        "Workspace setup required: create a workspace, mount it locally, and start Spider Monkey against that mounted folder.",
-                                    );
-                                    defer allocator.free(escaped_bootstrap);
-                                    break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_bootstrap});
-                                } else try allocator.dupe(u8, "null");
-                                defer allocator.free(bootstrap_message_json);
-                                const project_setup_message_json = if (project_setup.message) |setup_message| blk: {
-                                    const escaped_message = try unified.jsonEscape(allocator, setup_message);
-                                    defer allocator.free(escaped_message);
-                                    break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_message});
-                                } else try allocator.dupe(u8, "null");
-                                defer allocator.free(project_setup_message_json);
-                                const project_setup_project_id_json = if (project_setup.project_id) |setup_project_id| blk: {
-                                    const escaped_project_id = try unified.jsonEscape(allocator, setup_project_id);
-                                    defer allocator.free(escaped_project_id);
-                                    break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_project_id});
-                                } else try allocator.dupe(u8, "null");
-                                defer allocator.free(project_setup_project_id_json);
-                                const project_setup_vision_json = if (project_setup.project_vision) |setup_vision| blk: {
-                                    const escaped_vision = try unified.jsonEscape(allocator, setup_vision);
-                                    defer allocator.free(escaped_vision);
-                                    break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_vision});
-                                } else try allocator.dupe(u8, "null");
-                                defer allocator.free(project_setup_vision_json);
-                                const connect_gate_json = if (connect_gate_error) |gate| blk: {
-                                    const escaped_code = try unified.jsonEscape(allocator, gate.code);
-                                    defer allocator.free(escaped_code);
-                                    const escaped_message = try unified.jsonEscape(allocator, gate.message);
-                                    defer allocator.free(escaped_message);
-                                    break :blk try std.fmt.allocPrint(
-                                        allocator,
-                                        "{{\"code\":\"{s}\",\"message\":\"{s}\"}}",
-                                        .{ escaped_code, escaped_message },
-                                    );
-                                } else try allocator.dupe(u8, "null");
-                                defer allocator.free(connect_gate_json);
                                 const workspace_json = try buildWorkspaceStatusPayloadForBinding(
                                     allocator,
                                     runtime_registry,
@@ -5649,24 +5458,13 @@ fn handleWebSocketConnection(
                                 defer allocator.free(workspace_json);
                                 const payload = try std.fmt.allocPrint(
                                     allocator,
-                                    "{{\"agent_id\":\"{s}\",\"actor_type\":\"{s}\",\"actor_id\":\"{s}\",\"project_id\":{s},\"workspace\":{s},\"session\":\"{s}\",\"protocol\":\"{s}\",\"role\":\"{s}\",\"bootstrap_only\":{},\"bootstrap_message\":{s},\"project_setup_required\":{},\"project_setup_message\":{s},\"project_setup_project_id\":{s},\"project_setup_project_vision\":{s},\"requires_session_attach\":{},\"connect_gate\":{s}}}",
+                                    "{{\"agent_id\":\"{s}\",\"project_id\":{s},\"workspace\":{s},\"session\":\"{s}\",\"protocol\":\"{s}\"}}",
                                     .{
                                         active_binding.agent_id,
-                                        escaped_actor_type,
-                                        escaped_actor_id,
                                         project_json,
                                         workspace_json,
                                         active_session_key,
                                         control_protocol_version,
-                                        escaped_role,
-                                        bootstrap_only_mode,
-                                        bootstrap_message_json,
-                                        project_setup.required,
-                                        project_setup_message_json,
-                                        project_setup_project_id_json,
-                                        project_setup_vision_json,
-                                        connect_gate_error != null,
-                                        connect_gate_json,
                                     },
                                 );
                                 defer allocator.free(payload);
@@ -5935,8 +5733,6 @@ fn handleWebSocketConnection(
                                     continue;
                                 };
                                 var attach_project_token = getOptionalStringField(payload.value.object, "project_token");
-                                var attach_actor_type = getOptionalStringField(payload.value.object, "actor_type");
-                                var attach_actor_id = getOptionalStringField(payload.value.object, "actor_id");
                                 const current_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 var previous_active_binding = try cloneSessionBinding(allocator, current_binding);
                                 defer previous_active_binding.deinit(allocator);
@@ -5979,50 +5775,6 @@ fn handleWebSocketConnection(
                                 const existing_binding = session_bindings.get(session_key);
                                 if (existing_binding != null and std.mem.eql(u8, existing_binding.?.agent_id, attach_agent_id) and attach_project_token == null) {
                                     attach_project_token = existing_binding.?.project_token;
-                                }
-                                if (existing_binding != null and attach_actor_type == null) {
-                                    attach_actor_type = existing_binding.?.actor_type;
-                                }
-                                if (existing_binding != null and attach_actor_id == null) {
-                                    attach_actor_id = existing_binding.?.actor_id;
-                                }
-                                if (attach_actor_type == null) attach_actor_type = defaultActorTypeForRole(principal.role);
-                                if (attach_actor_id == null) attach_actor_id = defaultActorIdForPrincipal(principal);
-                                if (!isValidActorType(attach_actor_type.?)) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "invalid actor_type",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                if (!isValidActorId(attach_actor_id.?)) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "invalid actor_id",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                if (principal.role == .user and
-                                    (!std.mem.eql(u8, attach_actor_type.?, defaultActorTypeForRole(principal.role)) or
-                                        !std.mem.eql(u8, attach_actor_id.?, defaultActorIdForPrincipal(principal))))
-                                {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "forbidden",
-                                        "user role cannot override actor identity",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
                                 }
 
                                 if (principal.role == .user and std.mem.eql(u8, attach_agent_id, system_agent_id)) {
@@ -6123,8 +5875,8 @@ fn handleWebSocketConnection(
                                     &session_bindings,
                                     session_key,
                                     attach_agent_id,
-                                    attach_actor_type.?,
-                                    attach_actor_id.?,
+                                    defaultActorTypeForRole(principal.role),
+                                    defaultActorIdForPrincipal(principal),
                                     attach_project_id,
                                     attach_project_token,
                                 );
@@ -6165,8 +5917,6 @@ fn handleWebSocketConnection(
                                     allocator,
                                     session_key,
                                     active_binding.agent_id,
-                                    active_binding.actor_type,
-                                    active_binding.actor_id,
                                     active_binding.project_id,
                                     workspace_json,
                                     attach_json,
@@ -6281,8 +6031,6 @@ fn handleWebSocketConnection(
                                     allocator,
                                     session_key,
                                     binding.agent_id,
-                                    binding.actor_type,
-                                    binding.actor_id,
                                     binding.project_id,
                                     attach_json,
                                     session_last_active_ms,
@@ -6822,8 +6570,6 @@ fn handleWebSocketConnection(
                                     allocator,
                                     session_key,
                                     binding.agent_id,
-                                    binding.actor_type,
-                                    binding.actor_id,
                                     binding.project_id,
                                     workspace_json,
                                     attach_json,
@@ -8105,8 +7851,6 @@ fn buildSessionAttachAckPayload(
     allocator: std.mem.Allocator,
     session_key: []const u8,
     agent_id: []const u8,
-    actor_type: []const u8,
-    actor_id: []const u8,
     project_id: ?[]const u8,
     workspace_json: []const u8,
     attach_json: []const u8,
@@ -8115,10 +7859,6 @@ fn buildSessionAttachAckPayload(
     defer allocator.free(escaped_session);
     const escaped_agent = try unified.jsonEscape(allocator, agent_id);
     defer allocator.free(escaped_agent);
-    const escaped_actor_type = try unified.jsonEscape(allocator, actor_type);
-    defer allocator.free(escaped_actor_type);
-    const escaped_actor_id = try unified.jsonEscape(allocator, actor_id);
-    defer allocator.free(escaped_actor_id);
     const project_json = if (project_id) |value| blk: {
         const escaped = try unified.jsonEscape(allocator, value);
         defer allocator.free(escaped);
@@ -8128,8 +7868,8 @@ fn buildSessionAttachAckPayload(
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"actor_type\":\"{s}\",\"actor_id\":\"{s}\",\"project_id\":{s},\"workspace\":{s},\"attach\":{s}}}",
-        .{ escaped_session, escaped_agent, escaped_actor_type, escaped_actor_id, project_json, workspace_json, attach_json },
+        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":{s},\"workspace\":{s},\"attach\":{s}}}",
+        .{ escaped_session, escaped_agent, project_json, workspace_json, attach_json },
     );
 }
 
@@ -8137,8 +7877,6 @@ fn buildSessionStatusPayload(
     allocator: std.mem.Allocator,
     session_key: []const u8,
     agent_id: []const u8,
-    actor_type: []const u8,
-    actor_id: []const u8,
     project_id: ?[]const u8,
     attach_json: []const u8,
     session_last_active_ms: i64,
@@ -8150,10 +7888,6 @@ fn buildSessionStatusPayload(
     defer allocator.free(escaped_session);
     const escaped_agent = try unified.jsonEscape(allocator, agent_id);
     defer allocator.free(escaped_agent);
-    const escaped_actor_type = try unified.jsonEscape(allocator, actor_type);
-    defer allocator.free(escaped_actor_type);
-    const escaped_actor_id = try unified.jsonEscape(allocator, actor_id);
-    defer allocator.free(escaped_actor_id);
     const project_json = if (project_id) |value| blk: {
         const escaped = try unified.jsonEscape(allocator, value);
         defer allocator.free(escaped);
@@ -8163,12 +7897,10 @@ fn buildSessionStatusPayload(
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"actor_type\":\"{s}\",\"actor_id\":\"{s}\",\"project_id\":{s},\"attach\":{s},\"session_last_activity_ms\":{d},\"session_stale\":{},\"agent_last_heartbeat_ms\":{d},\"agent_stale\":{},\"recoverable\":true}}",
+        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":{s},\"attach\":{s},\"session_last_activity_ms\":{d},\"session_stale\":{},\"agent_last_heartbeat_ms\":{d},\"agent_stale\":{},\"recoverable\":true}}",
         .{
             escaped_session,
             escaped_agent,
-            escaped_actor_type,
-            escaped_actor_id,
             project_json,
             attach_json,
             session_last_active_ms,
@@ -8200,10 +7932,6 @@ fn buildSessionListPayload(
         defer allocator.free(escaped_key);
         const escaped_agent = try unified.jsonEscape(allocator, entry.value_ptr.agent_id);
         defer allocator.free(escaped_agent);
-        const escaped_actor_type = try unified.jsonEscape(allocator, entry.value_ptr.actor_type);
-        defer allocator.free(escaped_actor_type);
-        const escaped_actor_id = try unified.jsonEscape(allocator, entry.value_ptr.actor_id);
-        defer allocator.free(escaped_actor_id);
         const project_json = if (entry.value_ptr.project_id) |project_id| blk: {
             const escaped_project = try unified.jsonEscape(allocator, project_id);
             defer allocator.free(escaped_project);
@@ -8211,8 +7939,8 @@ fn buildSessionListPayload(
         } else try allocator.dupe(u8, "null");
         defer allocator.free(project_json);
         try out.writer(allocator).print(
-            "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"actor_type\":\"{s}\",\"actor_id\":\"{s}\",\"project_id\":{s}}}",
-            .{ escaped_key, escaped_agent, escaped_actor_type, escaped_actor_id, project_json },
+            "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":{s}}}",
+            .{ escaped_key, escaped_agent, project_json },
         );
     }
     try out.appendSlice(allocator, "]}");
@@ -8859,7 +8587,7 @@ fn handleControlPlaneCommand(
     defer if (request_json) |value| runtime_registry.allocator.free(value);
 
     const effective_payload = if (request_json) |value| @as(?[]const u8, value) else payload_json;
-    const raw_response_json = switch (control_type_canonical) {
+    const raw_response_json = try switch (control_type_canonical) {
         .node_invite_create => try runtime_registry.control_plane.createNodeInvite(effective_payload),
         .node_join_request => try runtime_registry.control_plane.nodeJoinRequest(effective_payload),
         .node_join_pending_list => try runtime_registry.control_plane.listPendingNodeJoins(effective_payload),
@@ -8871,9 +8599,10 @@ fn handleControlPlaneCommand(
         .venom_bind => try runtime_registry.control_plane.bindPreferredVenomProvider(effective_payload),
         .venom_upsert => try runtime_registry.control_plane.nodeVenomUpsert(effective_payload),
         .venom_get => try runtime_registry.control_plane.nodeVenomGet(effective_payload),
-        .agent_ensure => try runtime_registry.ensureAgentPayloadWithRole(effective_payload, agent_id, is_admin),
-        .agent_list => try runtime_registry.listAgentsPayloadWithRole(is_admin),
-        .agent_get => try runtime_registry.getAgentPayloadWithRole(effective_payload, is_admin),
+        .agent_ensure,
+        .agent_list,
+        .agent_get,
+        => error.UnsupportedLegacyApi,
         .node_list => try runtime_registry.control_plane.listNodes(),
         .node_get => try runtime_registry.control_plane.getNode(effective_payload),
         .node_delete => try runtime_registry.control_plane.deleteNode(effective_payload),
@@ -8901,10 +8630,16 @@ fn handleControlPlaneCommand(
     };
     errdefer runtime_registry.allocator.free(raw_response_json);
 
-    const response_json = if (control_type_canonical == .workspace_status)
-        try rewriteWorkspaceStatusFsUrls(runtime_registry.allocator, raw_response_json, connection_workspace_url)
-    else
-        raw_response_json;
+    const response_json = blk: {
+        if (control_type_canonical == .workspace_status) {
+            break :blk try rewriteWorkspaceStatusFsUrls(
+                runtime_registry.allocator,
+                raw_response_json,
+                connection_workspace_url,
+            );
+        }
+        break :blk raw_response_json;
+    };
     if (response_json.ptr != raw_response_json.ptr) runtime_registry.allocator.free(raw_response_json);
     errdefer runtime_registry.allocator.free(response_json);
 
@@ -8920,6 +8655,7 @@ fn handleControlPlaneCommand(
 
 fn controlPlaneErrorCode(err: anyerror) []const u8 {
     return switch (err) {
+        error.UnsupportedLegacyApi => "unsupported_legacy_api",
         error.AccessDenied => "forbidden",
         error.InvalidAgentId => "invalid_payload",
         control_plane_mod.ControlPlaneError.InvalidPayload => "invalid_payload",
@@ -8964,66 +8700,6 @@ fn mountGraphErrorCode(err: anyerror) []const u8 {
         error.OperationNotSupported => "enosys",
         else => "eio",
     };
-}
-
-fn parseAgentIdFromPayload(allocator: std.mem.Allocator, payload_json: ?[]const u8) ![]u8 {
-    const raw = payload_json orelse return error.MissingField;
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidPayload;
-    const id_val = parsed.value.object.get("agent_id") orelse return error.MissingField;
-    if (id_val != .string or id_val.string.len == 0) return error.InvalidPayload;
-    return allocator.dupe(u8, id_val.string);
-}
-
-fn agentCapabilityName(value: agent_registry_mod.AgentCapability) []const u8 {
-    return switch (value) {
-        .general => "general",
-        .code => "code",
-        .plan => "plan",
-        .research => "research",
-    };
-}
-
-fn appendAgentInfoJson(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    agent: agent_registry_mod.AgentInfo,
-) !void {
-    const escaped_id = try unified.jsonEscape(allocator, agent.id);
-    defer allocator.free(escaped_id);
-    const escaped_name = try unified.jsonEscape(allocator, agent.name);
-    defer allocator.free(escaped_name);
-    const escaped_description = try unified.jsonEscape(allocator, agent.description);
-    defer allocator.free(escaped_description);
-
-    const persona_pack_json = if (agent.persona_pack) |value| blk: {
-        const escaped = try unified.jsonEscape(allocator, value);
-        defer allocator.free(escaped);
-        break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped});
-    } else try allocator.dupe(u8, "null");
-    defer allocator.free(persona_pack_json);
-
-    try out.writer(allocator).print(
-        "{{\"id\":\"{s}\",\"name\":\"{s}\",\"description\":\"{s}\",\"is_default\":{s},\"identity_loaded\":{s},\"persona_pack\":{s},\"capabilities\":[",
-        .{
-            escaped_id,
-            escaped_name,
-            escaped_description,
-            if (agent.is_default) "true" else "false",
-            if (agent.identity_loaded) "true" else "false",
-            persona_pack_json,
-        },
-    );
-
-    for (agent.capabilities.items, 0..) |capability, index| {
-        if (index > 0) try out.append(allocator, ',');
-        const escaped_capability = try unified.jsonEscape(allocator, agentCapabilityName(capability));
-        defer allocator.free(escaped_capability);
-        try out.writer(allocator).print("\"{s}\"", .{escaped_capability});
-    }
-
-    try out.appendSlice(allocator, "]}");
 }
 
 fn resolveAgentIdFromConnectionPath(path: []const u8, default_agent_id: []const u8) ?[]const u8 {
@@ -9808,200 +9484,6 @@ test "server: workspace namespace stays project-scoped across user session agent
     try std.testing.expect(server_ctx.err_name == null);
 }
 
-test "server: control.agent_list and control.agent_get expose registry metadata" {
-    const allocator = std.testing.allocator;
-    const nonce = std.crypto.random.int(u64);
-    const root = try std.fmt.allocPrint(allocator, ".tmp-agent-registry-{d}", .{nonce});
-    defer allocator.free(root);
-    defer std.fs.cwd().deleteTree(root) catch {};
-    try std.fs.cwd().makePath(root);
-
-    const agents_dir = try std.fs.path.join(allocator, &.{ root, "agents" });
-    defer allocator.free(agents_dir);
-    try std.fs.cwd().makePath(agents_dir);
-
-    const system_agent_dir = try std.fs.path.join(allocator, &.{ agents_dir, system_agent_id });
-    defer allocator.free(system_agent_dir);
-    try std.fs.cwd().makePath(system_agent_dir);
-    const system_agent_json_path = try std.fs.path.join(allocator, &.{ system_agent_dir, "agent.json" });
-    defer allocator.free(system_agent_json_path);
-    try std.fs.cwd().writeFile(.{
-        .sub_path = system_agent_json_path,
-        .data =
-        \\{
-        \\  "name": "Spiderweb",
-        \\  "description": "Workspace host control identity",
-        \\  "is_default": true,
-        \\  "capabilities": ["general","plan"]
-        \\}
-        ,
-    });
-
-    const bob_dir = try std.fs.path.join(allocator, &.{ agents_dir, "bob" });
-    defer allocator.free(bob_dir);
-    try std.fs.cwd().makePath(bob_dir);
-    const bob_json_path = try std.fs.path.join(allocator, &.{ bob_dir, "agent.json" });
-    defer allocator.free(bob_json_path);
-    try std.fs.cwd().writeFile(.{
-        .sub_path = bob_json_path,
-        .data =
-        \\{
-        \\  "name": "Bob",
-        \\  "description": "Worker agent",
-        \\  "capabilities": ["general","code"]
-        \\}
-        ,
-    });
-
-    var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .state_directory = "",
-        .state_db_filename = "",
-        .agents_dir = agents_dir,
-        .assets_dir = root,
-        .default_agent_id = system_agent_id,
-    }, null);
-    defer runtime_registry.deinit();
-    try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
-    try seedUserRememberedTargetForTests(&runtime_registry, "user-auth");
-
-    var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
-    defer listener.deinit();
-
-    var server_ctx = WsTestServerCtx{
-        .allocator = allocator,
-        .runtime_registry = &runtime_registry,
-        .listener = &listener,
-    };
-    defer server_ctx.deinit();
-
-    const server_thread = try std.Thread.spawn(.{}, runSingleWsConnection, .{&server_ctx});
-    defer server_thread.join();
-
-    var client = try std.net.tcpConnectToAddress(listener.listen_address);
-    defer client.close();
-    try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"agent-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
-    var version_ack = try readServerFrame(allocator, &client);
-    defer version_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.connect\",\"id\":\"agent-connect\"}");
-    var connect_ack = try readServerFrame(allocator, &client);
-    defer connect_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.agent_list\",\"id\":\"agent-list\"}");
-    var list_reply = try readServerFrame(allocator, &client);
-    defer list_reply.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, list_reply.payload, "\"type\":\"control.agent_list\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, list_reply.payload, "\"id\":\"spiderweb\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, list_reply.payload, "\"id\":\"bob\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, list_reply.payload, "\"capabilities\":[\"general\",\"plan\"]") != null);
-
-    try writeClientTextFrameMasked(
-        &client,
-        "{\"channel\":\"control\",\"type\":\"control.agent_get\",\"id\":\"agent-get\",\"payload\":{\"agent_id\":\"bob\"}}",
-    );
-    var get_reply = try readServerFrame(allocator, &client);
-    defer get_reply.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, get_reply.payload, "\"type\":\"control.agent_get\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_reply.payload, "\"id\":\"bob\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, get_reply.payload, "\"name\":\"Bob\"") != null);
-}
-
-test "server: control.agent_ensure creates missing agents and is idempotent" {
-    const allocator = std.testing.allocator;
-    const nonce = std.crypto.random.int(u64);
-    const root = try std.fmt.allocPrint(allocator, ".tmp-agent-ensure-{d}", .{nonce});
-    defer allocator.free(root);
-    defer std.fs.cwd().deleteTree(root) catch {};
-    try std.fs.cwd().makePath(root);
-
-    const agents_dir = try std.fs.path.join(allocator, &.{ root, "agents" });
-    defer allocator.free(agents_dir);
-    try std.fs.cwd().makePath(agents_dir);
-
-    const system_agent_dir = try std.fs.path.join(allocator, &.{ agents_dir, system_agent_id });
-    defer allocator.free(system_agent_dir);
-    try std.fs.cwd().makePath(system_agent_dir);
-    const system_agent_json_path = try std.fs.path.join(allocator, &.{ system_agent_dir, "agent.json" });
-    defer allocator.free(system_agent_json_path);
-    try std.fs.cwd().writeFile(.{
-        .sub_path = system_agent_json_path,
-        .data =
-        \\{
-        \\  "name": "Spiderweb",
-        \\  "description": "Workspace host control identity",
-        \\  "is_default": true,
-        \\  "capabilities": ["general","plan"]
-        \\}
-        ,
-    });
-
-    var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
-        .state_directory = "",
-        .state_db_filename = "",
-        .agents_dir = agents_dir,
-        .assets_dir = root,
-        .default_agent_id = system_agent_id,
-    }, null);
-    defer runtime_registry.deinit();
-    try setAuthTokensForTests(&runtime_registry, "admin-secret", "user-secret");
-
-    var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
-    defer listener.deinit();
-
-    var server_ctx = WsTestServerCtx{
-        .allocator = allocator,
-        .runtime_registry = &runtime_registry,
-        .listener = &listener,
-    };
-    defer server_ctx.deinit();
-
-    const server_thread = try std.Thread.spawn(.{}, runSingleWsConnection, .{&server_ctx});
-    defer server_thread.join();
-
-    var client = try std.net.tcpConnectToAddress(listener.listen_address);
-    defer client.close();
-    try performClientHandshakeWithBearerToken(allocator, &client, "/", "admin-secret");
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"ensure-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
-    var version_ack = try readServerFrame(allocator, &client);
-    defer version_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.connect\",\"id\":\"ensure-connect\"}");
-    var connect_ack = try readServerFrame(allocator, &client);
-    defer connect_ack.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-
-    try writeClientTextFrameMasked(
-        &client,
-        "{\"channel\":\"control\",\"type\":\"control.agent_ensure\",\"id\":\"ensure-create\",\"payload\":{\"agent_id\":\"child\"}}",
-    );
-    var ensure_created = try readServerFrame(allocator, &client);
-    defer ensure_created.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, ensure_created.payload, "\"type\":\"control.agent_ensure\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ensure_created.payload, "\"created\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ensure_created.payload, "\"id\":\"child\"") != null);
-
-    try writeClientTextFrameMasked(
-        &client,
-        "{\"channel\":\"control\",\"type\":\"control.agent_ensure\",\"id\":\"ensure-again\",\"payload\":{\"agent_id\":\"child\"}}",
-    );
-    var ensure_again = try readServerFrame(allocator, &client);
-    defer ensure_again.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, ensure_again.payload, "\"type\":\"control.agent_ensure\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ensure_again.payload, "\"created\":false") != null);
-
-    const hatch_path = try std.fs.path.join(allocator, &.{ agents_dir, "child", "HATCH.md" });
-    defer allocator.free(hatch_path);
-    const hatch = try std.fs.cwd().readFileAlloc(allocator, hatch_path, 4096);
-    defer allocator.free(hatch);
-    try std.testing.expect(std.mem.indexOf(u8, hatch, "HATCH.md") != null);
-}
-
 test "server: operator token gate protects control mutations" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
@@ -10234,9 +9716,10 @@ test "server: auth matrix gates admin endpoints and handshake tokens" {
         var connect_ack = try readServerFrame(allocator, &admin_client);
         defer connect_ack.deinit(allocator);
         try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"role\":\"admin\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"project_setup_required\":true") != null);
-        try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"project_setup_message\":\"Project setup required") != null);
+        try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"protocol\":\"spiderweb-control\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"workspace\":{") != null);
+        try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"role\":") == null);
+        try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"project_setup_required\":") == null);
 
         try writeClientTextFrameMasked(&admin_client, "{\"channel\":\"control\",\"type\":\"control.auth_status\",\"id\":\"admin-auth-status\"}");
         var auth_status = try readServerFrame(allocator, &admin_client);
@@ -10283,7 +9766,7 @@ test "server: auth matrix gates admin endpoints and handshake tokens" {
         var connect_ack = try readServerFrame(allocator, &user_client);
         defer connect_ack.deinit(allocator);
         try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"role\":\"user\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"role\":") == null);
 
         try writeClientTextFrameMasked(&user_client, "{\"channel\":\"control\",\"type\":\"control.metrics\",\"id\":\"user-metrics\"}");
         var forbidden_metrics = try readServerFrame(allocator, &user_client);
@@ -10359,7 +9842,7 @@ test "server: auth matrix gates admin endpoints and handshake tokens" {
     try std.testing.expect(server_ctx.err_name == null);
 }
 
-test "server: user connect advertises provisioning gate when no remembered non-system target exists" {
+test "server: user connect keeps a minimal payload when no remembered non-system target exists" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
         .state_directory = "",
@@ -10394,9 +9877,9 @@ test "server: user connect advertises provisioning gate when no remembered non-s
     var connect_ack = try readServerFrame(allocator, &user_client);
     defer connect_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"requires_session_attach\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"connect_gate\":{\"code\":\"provisioning_required\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"project_setup_required\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"requires_session_attach\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"connect_gate\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"project_setup_required\":") == null);
 
     const attach_primary = try std.fmt.allocPrint(
         allocator,
@@ -10454,7 +9937,7 @@ test "server: provisioning gate still allows workspace bootstrap control operati
     var connect_ack = try readServerFrame(allocator, &admin_client);
     defer connect_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"connect_gate\":{\"code\":\"provisioning_required\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"connect_gate\":") == null);
 
     try writeClientTextFrameMasked(&admin_client, "{\"channel\":\"control\",\"type\":\"control.workspace_create\",\"id\":\"bootstrap-create\",\"payload\":{\"name\":\"Bootstrap\",\"vision\":\"Bootstrap workspace\"}}");
     var create_ack = try readServerFrame(allocator, &admin_client);
@@ -10470,7 +9953,7 @@ test "server: provisioning gate still allows workspace bootstrap control operati
     try std.testing.expect(server_ctx.err_name == null);
 }
 
-test "server: user connect requires session_attach even when another project is active" {
+test "server: user connect stays minimal even when another project is active" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
         .state_directory = "",
@@ -10533,8 +10016,8 @@ test "server: user connect requires session_attach even when another project is 
     var connect_ack = try readServerFrame(allocator, &user_client);
     defer connect_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"requires_session_attach\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"connect_gate\":{\"code\":\"project_context_required\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"requires_session_attach\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"connect_gate\":") == null);
 
     try websocket_transport.writeFrame(&user_client, "", .close);
     var close_reply = try readServerFrame(allocator, &user_client);
@@ -10544,7 +10027,7 @@ test "server: user connect requires session_attach even when another project is 
     try std.testing.expect(server_ctx.err_name == null);
 }
 
-test "server: connect and session_status expose actor identity metadata" {
+test "server: connect and session_status omit actor identity metadata" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
         .state_directory = "",
@@ -10579,8 +10062,8 @@ test "server: connect and session_status expose actor identity metadata" {
     var connect_ack = try readServerFrame(allocator, &client);
     defer connect_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"actor_type\":\"user\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"actor_id\":\"user\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"actor_type\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"actor_id\":") == null);
     try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"workspace\":{") != null);
 
     try writeClientTextFrameMasked(
@@ -10590,8 +10073,8 @@ test "server: connect and session_status expose actor identity metadata" {
     var status_ack = try readServerFrame(allocator, &client);
     defer status_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, status_ack.payload, "\"type\":\"control.session_status\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, status_ack.payload, "\"actor_type\":\"user\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, status_ack.payload, "\"actor_id\":\"user\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_ack.payload, "\"actor_type\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, status_ack.payload, "\"actor_id\":") == null);
 
     try websocket_transport.writeFrame(&client, "", .close);
     var close_reply = try readServerFrame(allocator, &client);
@@ -10601,7 +10084,7 @@ test "server: connect and session_status expose actor identity metadata" {
     try std.testing.expect(server_ctx.err_name == null);
 }
 
-test "server: user session_attach forbids actor identity override" {
+test "server: session_attach ignores public actor identity fields" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
         .state_directory = "",
@@ -10647,24 +10130,11 @@ test "server: user session_attach forbids actor identity override" {
     );
     defer allocator.free(override_attach);
     try writeClientTextFrameMasked(&client, override_attach);
-    var override_error = try readServerFrame(allocator, &client);
-    defer override_error.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, override_error.payload, "\"type\":\"control.error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, override_error.payload, "\"code\":\"forbidden\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, override_error.payload, "cannot override actor identity") != null);
-
-    const valid_attach = try std.fmt.allocPrint(
-        allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"actor-guard-valid\",\"payload\":{{\"session_key\":\"main\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\"}}}}",
-        .{ runtime_registry.default_agent_id, remembered_project_id },
-    );
-    defer allocator.free(valid_attach);
-    try writeClientTextFrameMasked(&client, valid_attach);
     var attach_ack = try readServerFrame(allocator, &client);
     defer attach_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"type\":\"control.session_attach\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"actor_type\":\"user\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"actor_id\":\"user\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"actor_type\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"actor_id\":") == null);
     try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"workspace\":{") != null);
 
     try websocket_transport.writeFrame(&client, "", .close);
@@ -11428,6 +10898,13 @@ test "server: node fs route parser extracts node id" {
     try std.testing.expectEqualStrings("node_17", route_q);
     try std.testing.expect(parseNodeFsRoute("/fs/node/") == null);
     try std.testing.expect(parseNodeFsRoute("/fs/node/node:bad") == null);
+}
+
+test "server: buildInternalNodeFsUrl produces routed fs path" {
+    const allocator = std.testing.allocator;
+    const routed = try buildInternalNodeFsUrl(allocator, "0.0.0.0", 18790, "node-17");
+    defer allocator.free(routed);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18790/fs/node/node-17", routed);
 }
 
 test "server: rewriteAcheronTag rewrites top-level tag" {

@@ -29,7 +29,6 @@ pub const ConnectInfo = struct {
     agent_id: ?[]u8 = null,
     project_id: ?[]u8 = null,
     session_key: ?[]u8 = null,
-    requires_session_attach: bool = false,
     workspace_json: ?[]u8 = null,
     has_workspace_mounts: bool = false,
 
@@ -165,19 +164,6 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(payload_json);
 
         return parseConnectInfo(self.allocator, payload_json);
-    }
-
-    pub fn controlAgentEnsure(self: *NamespaceClient, agent_id: []const u8) !void {
-        const escaped_agent = try jsonEscape(self.allocator, agent_id);
-        defer self.allocator.free(escaped_agent);
-        const payload = try std.fmt.allocPrint(self.allocator, "{{\"agent_id\":\"{s}\"}}", .{escaped_agent});
-        defer self.allocator.free(payload);
-
-        const request_id = try self.nextControlRequestId();
-        defer self.allocator.free(request_id);
-        try self.writeControlRequest("control.agent_ensure", request_id, payload);
-        const response_payload = try readControlPayloadFor(self, request_id, "control.agent_ensure");
-        self.allocator.free(response_payload);
     }
 
     pub fn controlSessionAttach(self: *NamespaceClient, request: SessionAttachRequest) !SessionAttachInfo {
@@ -1634,7 +1620,6 @@ fn parseConnectInfo(allocator: std.mem.Allocator, payload_json: []const u8) !Con
     info.agent_id = try optionalOwnedString(allocator, parsed.value.object, "agent_id");
     info.project_id = try optionalOwnedString(allocator, parsed.value.object, "project_id");
     info.session_key = try optionalOwnedString(allocator, parsed.value.object, "session");
-    info.requires_session_attach = optionalBool(parsed.value.object, "requires_session_attach") orelse false;
     if (parsed.value.object.get("workspace")) |workspace_value| {
         info.has_workspace_mounts = workspaceValueHasMounts(workspace_value);
         info.workspace_json = try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(workspace_value, .{})});
@@ -1836,14 +1821,13 @@ test "namespace_client: parseConnectInfo preserves workspace payload and mount p
     const allocator = std.testing.allocator;
     var info = try parseConnectInfo(
         allocator,
-        "{\"agent_id\":\"agent-a\",\"project_id\":\"proj-a\",\"session\":\"sess-a\",\"requires_session_attach\":true,\"workspace\":{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}]}}",
+        "{\"agent_id\":\"agent-a\",\"project_id\":\"proj-a\",\"session\":\"sess-a\",\"workspace\":{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}]}}",
     );
     defer info.deinit(allocator);
 
     try std.testing.expectEqualStrings("agent-a", info.agent_id.?);
     try std.testing.expectEqualStrings("proj-a", info.project_id.?);
     try std.testing.expectEqualStrings("sess-a", info.session_key.?);
-    try std.testing.expect(info.requires_session_attach);
     try std.testing.expect(info.has_workspace_mounts);
     try std.testing.expect(info.workspace_json != null);
     try std.testing.expect(std.mem.indexOf(u8, info.workspace_json.?, "\"mounts\"") != null);

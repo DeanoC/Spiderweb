@@ -353,6 +353,7 @@ const NamespaceProviderContext = struct {
     mount_graph: MountGraphCache = .{},
     next_handle_id: u64 = 1,
     open_handles: std.AutoHashMapUnmanaged(u64, HandleState) = .{},
+    mutex: std.Thread.Mutex = .{},
 
     fn deinit(self: *NamespaceProviderContext, allocator: std.mem.Allocator) void {
         var it = self.open_handles.valueIterator();
@@ -562,13 +563,18 @@ fn namespaceProviderDeinit(ctx: *anyopaque, allocator: std.mem.Allocator) void {
 }
 
 fn namespaceProviderGetattr(ctx: *anyopaque, path: []const u8) ![]u8 {
-    const allocator = asCtx(ctx).client.allocator;
-    const node = try asCtx(ctx).lookupNode(allocator, path);
+    const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
+    const allocator = namespace_ctx.client.allocator;
+    const node = try namespace_ctx.lookupNode(allocator, path);
     return nodeAttrJson(allocator, node);
 }
 
 fn namespaceProviderReaddir(ctx: *anyopaque, path: []const u8, cookie: u64, max_entries: u32) ![]u8 {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
     const normalized_path = normalizeAbsolutePath(path);
     _ = try namespace_ctx.ensureDirectoryNode(allocator, normalized_path);
@@ -624,11 +630,16 @@ fn namespaceProviderReaddir(ctx: *anyopaque, path: []const u8, cookie: u64, max_
 
 fn namespaceProviderStatfs(ctx: *anyopaque, path: []const u8) ![]u8 {
     _ = path;
-    return asCtx(ctx).client.allocator.dupe(u8, synthetic_statfs_json);
+    const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
+    return namespace_ctx.client.allocator.dupe(u8, synthetic_statfs_json);
 }
 
 fn namespaceProviderOpen(ctx: *anyopaque, path: []const u8, flags: u32) !mount_provider.OpenFile {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
     const node = try namespace_ctx.lookupNode(allocator, path);
 
@@ -653,6 +664,8 @@ fn namespaceProviderOpen(ctx: *anyopaque, path: []const u8, flags: u32) !mount_p
 
 fn namespaceProviderRead(ctx: *anyopaque, file: mount_provider.OpenFile, off: u64, len: u32) ![]u8 {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
     const state = try namespace_ctx.getHandle(file);
 
@@ -669,6 +682,8 @@ fn namespaceProviderRead(ctx: *anyopaque, file: mount_provider.OpenFile, off: u6
 
 fn namespaceProviderRelease(ctx: *anyopaque, file: mount_provider.OpenFile) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
     var state = try namespace_ctx.takeHandle(file);
     defer state.deinit(allocator);
@@ -681,6 +696,8 @@ fn namespaceProviderRelease(ctx: *anyopaque, file: mount_provider.OpenFile) !voi
 
 fn namespaceProviderCreate(ctx: *anyopaque, path: []const u8, mode: u32, flags: u32) !mount_provider.OpenFile {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     const allocator = namespace_ctx.client.allocator;
     const normalized_path = normalizeAbsolutePath(path);
     const parent_path = parentPath(normalized_path);
@@ -710,6 +727,8 @@ fn namespaceProviderCreate(ctx: *anyopaque, path: []const u8, mode: u32, flags: 
 
 fn namespaceProviderWrite(ctx: *anyopaque, file: mount_provider.OpenFile, off: u64, data: []const u8) !u32 {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     const state = try namespace_ctx.getHandle(file);
     if (!state.writable) return error.ReadOnlyFilesystem;
 
@@ -739,6 +758,8 @@ fn namespaceProviderWrite(ctx: *anyopaque, file: mount_provider.OpenFile, off: u
 
 fn namespaceProviderTruncate(ctx: *anyopaque, path: []const u8, size: u64) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     const normalized_path = normalizeAbsolutePath(path);
     _ = try namespace_ctx.client.controlMountFileWriteWithOptions(
         normalized_path,
@@ -751,56 +772,78 @@ fn namespaceProviderTruncate(ctx: *anyopaque, path: []const u8, size: u64) !void
 
 fn namespaceProviderUnlink(ctx: *anyopaque, path: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     try namespace_ctx.client.controlMountPathUnlink(path);
     namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderMkdir(ctx: *anyopaque, path: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     try namespace_ctx.client.controlMountPathMkdir(path);
     namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderRmdir(ctx: *anyopaque, path: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     try namespace_ctx.client.controlMountPathRmdir(path);
     namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderRename(ctx: *anyopaque, old_path: []const u8, new_path: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     try namespace_ctx.client.controlMountPathRename(old_path, new_path);
     namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderSymlink(ctx: *anyopaque, target: []const u8, link_path: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     try namespace_ctx.client.controlMountPathSymlink(target, link_path);
     namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderSetxattr(ctx: *anyopaque, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     try namespace_ctx.client.controlMountPathSetxattr(path, name, value, flags);
     namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderGetxattr(ctx: *anyopaque, path: []const u8, name: []const u8) ![]u8 {
-    return asCtx(ctx).client.controlMountPathGetxattr(path, name);
+    const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
+    return namespace_ctx.client.controlMountPathGetxattr(path, name);
 }
 
 fn namespaceProviderListxattr(ctx: *anyopaque, path: []const u8) ![]u8 {
-    return asCtx(ctx).client.controlMountPathListxattr(path);
+    const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
+    return namespace_ctx.client.controlMountPathListxattr(path);
 }
 
 fn namespaceProviderRemovexattr(ctx: *anyopaque, path: []const u8, name: []const u8) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     try namespace_ctx.client.controlMountPathRemovexattr(path, name);
     namespace_ctx.mount_graph.markStale();
 }
 
 fn namespaceProviderLock(ctx: *anyopaque, file: mount_provider.OpenFile, mode: mount_provider.LockMode, wait: bool) !void {
     const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
     const state = try namespace_ctx.getHandle(file);
     const mode_name = switch (mode) {
         .shared => "shared",
@@ -812,7 +855,10 @@ fn namespaceProviderLock(ctx: *anyopaque, file: mount_provider.OpenFile, mode: m
 }
 
 fn namespaceProviderTryKeepAliveIfIdle(ctx: *anyopaque) !bool {
-    try asCtx(ctx).client.keepActiveSessionAlive();
+    const namespace_ctx = asCtx(ctx);
+    namespace_ctx.mutex.lock();
+    defer namespace_ctx.mutex.unlock();
+    try namespace_ctx.client.keepActiveSessionAlive();
     return true;
 }
 

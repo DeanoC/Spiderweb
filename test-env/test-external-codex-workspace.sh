@@ -994,7 +994,12 @@ Bootstrap rules:
 - If required services are missing, repair them through `./.spiderweb/services/mounts/control/bind.json` using the machine-readable bootstrap metadata.
 - Keep project writes inside the current directory `.` unless the user explicitly asks otherwise.
 - When creating or fixing a project file, rewrite the whole file in one pass instead of appending partial repair fragments.
-- If `game.py` fails compile or walkthrough validation, delete and recreate `game.py` from scratch before retrying.
+- If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
+- If `game.py` fails compile or walkthrough validation, delete and recreate `game.py` from scratch before retrying. If a regenerated `game.py` still fails compile, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
+- Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless the walkthrough or validator exits non-zero.
+- Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated input prompts such as `> `.
+- Treat `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json` as successful when it exits with code `0`.
+- Do not rerun either validation command through nested shell wrappers or alternate redirection forms unless the command itself failed.
 - Preserve existing workspace support files such as `./validate_game.py`.
 - Do not run broad scans such as `find`, `rg --files`, or recursive `ls` across `services/`, `projects/`, or `meta/`. Read only the exact listed files directly.
 - Do not climb out of this directory with `..` to discover Spiderweb paths. Use the local Spiderweb-managed `./.spiderweb/` projection instead.
@@ -1017,10 +1022,13 @@ Task source:
 - After the required reads above, begin implementation and validation immediately unless a required service is genuinely missing.
 - If the user asks for the standard text-adventure task, completion means:
   - write `game.py`, `game_manifest.json`, `walkthrough.txt`, and `README.md` in the current directory
+  - keep the lantern behind all seeded puzzle gates and do not leave alternate exits or shortcuts that bypass a required seeded puzzle
   - run `python3 -m py_compile game.py`
   - run `python3 game.py < walkthrough.txt`
   - run `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json`
   - if a validation step fails, fix the project files and rerun only the failed step
+  - if a file-write command times out or fails partway through, check exactly which target files landed and then rewrite only the missing or incomplete files cleanly
+  - a `0` exit code from the walkthrough or validator means the step succeeded, even if stdout contains prompts like `> `
   - do not stop after partial outputs; finish when all required files exist and validation succeeds
 
 Do not:

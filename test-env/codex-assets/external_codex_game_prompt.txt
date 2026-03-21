@@ -8,7 +8,12 @@ Rules:
 - Use only relative paths from the current directory. Spiderweb projects its bootstrap and service surface into `./.spiderweb/` inside this same mounted workspace, so do not climb out with `..`.
 - Write project files only in the current directory.
 - When creating or fixing a file, rewrite the whole file in one pass. If `game.py` needs a fix, replace it cleanly rather than appending repair fragments.
-- If `game.py` fails `python3 -m py_compile game.py` or `python3 game.py < walkthrough.txt`, delete `game.py` and recreate it from scratch before retrying.
+- If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
+- If `game.py` fails `python3 -m py_compile game.py` or `python3 game.py < walkthrough.txt`, delete `game.py` and recreate it from scratch before retrying. If a regenerated `game.py` still fails compile, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
+- Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless the walkthrough or validator exits non-zero.
+- Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated prompts such as `> `.
+- Treat `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json` as successful when it exits with code `0`.
+- Do not rerun either validation command through nested shell wrappers or alternate redirection forms unless the command itself failed.
 - Preserve `./validate_game.py`.
 - Use shell commands or small local scripts to create/edit files here. `apply_patch` is not available in this external Codex CLI run.
 
@@ -26,6 +31,7 @@ Gameplay requirements:
 - Use exactly the 10 locations from the workspace-visible shared data described in `./AGENTS.md` and listed in the manifest as `./.spiderweb/shared_data/world_seed.json`.
 - Use exactly the 10 items from the workspace-visible shared data described in `./AGENTS.md` and listed in the manifest as `./.spiderweb/shared_data/items_seed.json`.
 - Include at least the 3 puzzles from the workspace-visible shared data described in `./AGENTS.md` and listed in the manifest as `./.spiderweb/shared_data/puzzle_seed.json`.
+- Keep the lantern behind all seeded puzzle gates. Do not leave alternate exits or shortcuts that bypass a required seeded puzzle.
 - The walkthrough must complete the game from a fresh start.
 - The winning state must print this exact line:
   `VICTORY: Lantern of Nine Paths recovered`
@@ -51,7 +57,9 @@ Before you finish:
 2. Run `python3 game.py < walkthrough.txt`
 3. Run `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json`
 4. If any step fails, fix the project files and rerun only the failed step(s)
-5. In your final note, summarize which Spiderweb bootstrap actions you performed and which mounted paths you used
+5. If a file-write command times out or fails partway through, check exactly which target files landed and then rewrite only the missing or incomplete files cleanly
+6. A `0` exit code from the walkthrough or validator means the step succeeded, even if stdout includes prompts like `> `
+7. In your final note, summarize which Spiderweb bootstrap actions you performed and which mounted paths you used
 
 Important:
 - Do not keep reading extra Spiderweb metadata once bootstrap is complete.

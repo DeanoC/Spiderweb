@@ -113,7 +113,7 @@ run_linux_harness_via_orb() {
     cmd+=(bash test-env/test-external-codex-workspace.sh)
 
     log_info "Running Linux external Codex E2E in Orb"
-    OUTPUT_DIR="$output_dir" ORBENV="$orb_env" "${cmd[@]}"
+    OUTPUT_DIR="$output_dir" ORBENV="$orb_env" TRACE_BACKEND="${TRACE_BACKEND:-none}" "${cmd[@]}"
 }
 
 platform="$(uname -s)"

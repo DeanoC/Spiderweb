@@ -4349,9 +4349,11 @@ pub const Session = struct {
             \\3. Use `{s}/*` as the preferred service surface. Only use fallback roots from `agent_bootstrap.json` if a required service is missing.
             \\4. If `{s}` succeeds and `agent_bootstrap_quickref.json` says `all_required_services_present=true`, treat bootstrap as complete immediately and start implementation. Do not keep exploring or re-probing services after that point.
             \\5. Keep project writes inside the current directory `.` unless the user prompt explicitly says otherwise.
-            \\6. When creating or fixing project files, rewrite the whole target file in one pass. Do not append partial repair fragments to an existing file.
-            \\7. If `game.py` fails `py_compile` or the walkthrough run, delete and recreate `game.py` from scratch before retrying.
-            \\8. Do not run broad scans such as `find`, `rg --files`, or recursive `ls` across `services/`, `projects/`, or `meta/`. Read only the exact listed files directly.
+            \\6. When creating or fixing project files, rewrite the whole target file in one pass. Do not append partial repair fragments to an existing file. If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
+            \\7. If `game.py` fails `py_compile` or the walkthrough run, delete and recreate `game.py` from scratch before retrying. If a regenerated `game.py` still fails `py_compile`, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
+            \\8. Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless `python3 game.py < walkthrough.txt` or `python3 validate_game.py --workspace . --shared-data {s} --output game_validation.json` exits non-zero.
+            \\9. Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated input prompts such as `> `. Treat `python3 validate_game.py --workspace . --shared-data {s} --output game_validation.json` as successful when it exits with code `0`. Do not rerun either command through nested shell wrappers or alternate redirection forms unless the command itself failed.
+            \\10. Do not run broad scans such as `find`, `rg --files`, or recursive `ls` across `services/`, `projects/`, or `meta/`. Read only the exact listed files directly.
             \\
             \\## Namespace Paths
             \\- Current working directory: `.`
@@ -4370,10 +4372,13 @@ pub const Session = struct {
             \\After the required reads above, move directly into implementation and validation unless a required service is genuinely missing.
             \\If the user asks for the standard text-adventure task, completion means:
             \\- Write `game.py`, `game_manifest.json`, `walkthrough.txt`, and `README.md` in the current directory.
+            \\- Keep the lantern behind all seeded puzzle gates. Do not leave alternate exits or shortcuts that bypass a required seeded puzzle.
             \\- Run `python3 -m py_compile game.py`.
             \\- Run `python3 game.py < walkthrough.txt`.
             \\- Run `python3 validate_game.py --workspace . --shared-data {s} --output game_validation.json`.
             \\- If a validation step fails, fix the project files and rerun only the failed step.
+            \\- If a file-write command times out or fails partway through, check exactly which target files landed and then rewrite only the missing or incomplete files cleanly.
+            \\- A `0` exit code from the walkthrough or validator means the step succeeded; do not retry just because stdout includes prompts or because the game appears to wait for redirected input.
             \\- Do not stop after creating partial outputs. Finish when all required files exist and validation succeeds.
             \\
             \\## Future Missions
@@ -4392,6 +4397,8 @@ pub const Session = struct {
                 paths.puzzle_seed_path,
                 paths.service_root,
                 paths.ensure_home_path,
+                paths.shared_data_root,
+                paths.shared_data_root,
                 paths.shared_data_root,
                 paths.service_root,
                 paths.local_venoms_root,

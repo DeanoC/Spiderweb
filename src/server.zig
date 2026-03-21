@@ -3688,14 +3688,14 @@ const AgentRuntimeRegistry = struct {
                 control_plane_mod.ControlPlaneError.MountNotFound => continue,
                 else => {
                     std.log.warn(
-                        "failed pruning legacy system mount {s}: {s}",
+                        "failed pruning legacy host mount {s}: {s}",
                         .{ mount_path, @errorName(err) },
                     );
                     continue;
                 },
             };
             self.allocator.free(result);
-            std.log.info("pruned legacy system mount path: {s}", .{mount_path});
+            std.log.info("pruned legacy host mount path: {s}", .{mount_path});
         }
     }
 
@@ -8626,7 +8626,7 @@ test "server: auth matrix gates admin endpoints and handshake tokens" {
     try std.testing.expect(server_ctx.err_name == null);
 }
 
-test "server: user connect keeps a minimal payload when no remembered non-system target exists" {
+test "server: user connect keeps a minimal payload when no remembered non-host target exists" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
         .state_directory = "",

@@ -15,10 +15,10 @@ const host_project_status = "active";
 const host_project_vision = "Internal Spiderweb host state and integrations";
 const host_workspace_mount_path = "/nodes/local/fs";
 const host_project_mount_prefix = "/nodes/local/projects/" ++ host_project_id ++ "/";
-const default_host_project_export_name = "system-workspace";
-const host_internal_project_kind_name = "system_builtin";
+const default_host_project_export_name = "host-workspace";
+const host_internal_project_kind_name = "host_internal";
 const normal_project_kind_name = "normal";
-const host_internal_template_id = "system";
+const host_internal_template_id = "__spiderweb_host__";
 const default_project_template_id = "minimum";
 const default_host_actor_id = "spiderweb";
 const default_spider_web_root = "";
@@ -2750,7 +2750,7 @@ pub const ControlPlane = struct {
                         try requireProjectActionAccess(project, .read, agent_id, requested_project_token, is_admin);
                     }
                 } else if (requested_project_token) |project_token| {
-                    // Primary agent may bootstrap/update non-system projects without token, but when
+                    // The host actor may bootstrap/update non-host projects without token, but when
                     // an explicit token is supplied we still validate it to avoid silent mismatches.
                     try validateSecretToken(project_token, 256);
                     if (!projectTokenEnabled(project) or !secureTokenEql(project.mutation_token, project_token)) {
@@ -6406,7 +6406,7 @@ fn decodeBase64(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     return out;
 }
 
-test "acheron_control_plane: builtin system project is protected and hidden from listings" {
+test "acheron_control_plane: builtin host project is protected and hidden from listings" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -6414,7 +6414,7 @@ test "acheron_control_plane: builtin system project is protected and hidden from
     const projects_json = try plane.listProjects();
     defer allocator.free(projects_json);
     try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"project_id\":\"system\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"kind\":\"system_builtin\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"kind\":\"host_internal\"") == null);
 
     try std.testing.expectError(
         ControlPlaneError.ProjectProtected,
@@ -6506,7 +6506,7 @@ test "acheron_control_plane: builtin system project is protected and hidden from
     try std.testing.expect(std.mem.indexOf(u8, admin_status, expected_project_id) != null);
 }
 
-test "acheron_control_plane: builtin system mount can be bound from local node" {
+test "acheron_control_plane: builtin host mount can be bound from local node" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -6526,7 +6526,7 @@ test "acheron_control_plane: builtin system mount can be bound from local node" 
     try std.testing.expect(std.mem.indexOf(u8, status, "\"export_name\":\"system-root\"") != null);
 }
 
-test "acheron_control_plane: builtin system mounts support namespace topology" {
+test "acheron_control_plane: builtin host mounts support namespace topology" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -6563,7 +6563,7 @@ test "acheron_control_plane: builtin system mounts support namespace topology" {
     try std.testing.expect(std.mem.indexOf(u8, status, "\"mount_path\":\"/nodes/local/projects/system/fs/local::fs\"") != null);
 }
 
-test "acheron_control_plane: admin can set and remove builtin system mounts" {
+test "acheron_control_plane: admin can set and remove builtin host mounts" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -8150,7 +8150,7 @@ test "acheron_control_plane: projectUp requires project_token for existing non-b
     try std.testing.expect(std.mem.indexOf(u8, get_json, "\"status\":\"paused\"") != null);
 }
 
-test "acheron_control_plane: projectUp requires project_token for builtin system project activation" {
+test "acheron_control_plane: projectUp requires project_token for builtin host project activation" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -8204,7 +8204,7 @@ test "acheron_control_plane: projectUp requires project_token for builtin system
     try std.testing.expect(std.mem.indexOf(u8, ok_json, "\"activated\":true") != null);
 }
 
-test "acheron_control_plane: primary agent can upsert existing non-system project by name without token" {
+test "acheron_control_plane: host actor can upsert existing non-host project by name without token" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -8443,7 +8443,7 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     try std.testing.expectError(ControlPlaneError.TemplateNotFound, plane.getWorkspaceTemplate("{\"template_id\":\"unknown\"}"));
 }
 
-test "acheron_control_plane: builtin system project seeds mounts service bind" {
+test "acheron_control_plane: builtin host project seeds mounts service bind" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();

@@ -177,17 +177,13 @@ struct SpiderwebServiceStatusSnapshot: Decodable {
 
 struct SpiderwebAuthStatusSnapshot: Decodable {
     let path: String
-    let adminPresent: Bool
-    let userPresent: Bool
-    let adminToken: String?
-    let userToken: String?
+    let accessPresent: Bool
+    let accessToken: String?
 
     enum CodingKeys: String, CodingKey {
         case path
-        case adminPresent = "admin_present"
-        case userPresent = "user_present"
-        case adminToken = "admin_token"
-        case userToken = "user_token"
+        case accessPresent = "access_present"
+        case accessToken = "access_token"
     }
 }
 
@@ -438,7 +434,7 @@ final class SpiderwebAppController: ObservableObject {
 
         let authLine: String
         if let authStatus {
-            authLine = "auth access_present=\(authStatus.adminPresent)"
+            authLine = "auth access_present=\(authStatus.accessPresent)"
         } else {
             authLine = "auth unknown"
         }
@@ -574,7 +570,7 @@ final class SpiderwebAppController: ObservableObject {
         let tokenPrefix: String
         switch mount.authSource {
         case .localRuntime:
-            tokenPrefix = "SPIDERWEB_AUTH_TOKEN=\"$(spiderweb-config auth status --json --reveal | jq -r '.admin_token')\" \\\n"
+            tokenPrefix = "SPIDERWEB_AUTH_TOKEN=\"$(spiderweb-config auth status --json --reveal | jq -r '.access_token')\" \\\n"
         case .keychainSecret:
             tokenPrefix = "SPIDERWEB_AUTH_TOKEN='<stored-in-keychain>' \\\n"
         }
@@ -818,7 +814,7 @@ final class SpiderwebAppController: ObservableObject {
         lastError = nil
         Task.detached(priority: .userInitiated) {
             do {
-                guard let auth = Self.fetchAuthStatus(revealTokens: true), let adminToken = auth.adminToken else {
+                guard let auth = Self.fetchAuthStatus(revealTokens: true), let accessToken = auth.accessToken else {
                     throw SpiderwebAppError.message("Local Spiderweb auth tokens are not available yet.")
                 }
                 let payload = try Self.jsonString([
@@ -829,7 +825,7 @@ final class SpiderwebAppController: ObservableObject {
                 ])
                 let result = try Self.runCLI(
                     "spiderweb-control",
-                    arguments: ["--url", Self.localServerURL, "--auth-token", adminToken, "workspace_up", payload]
+                    arguments: ["--url", Self.localServerURL, "--auth-token", accessToken, "workspace_up", payload]
                 )
                 let response = try Self.extractControlPayloadObject(from: result.stdout)
                 let created = response["created"] as? Bool ?? false
@@ -922,7 +918,7 @@ final class SpiderwebAppController: ObservableObject {
         lastError = nil
         Task.detached(priority: .userInitiated) {
             do {
-                guard let auth = Self.fetchAuthStatus(revealTokens: true), let adminToken = auth.adminToken else {
+                guard let auth = Self.fetchAuthStatus(revealTokens: true), let accessToken = auth.accessToken else {
                     throw SpiderwebAppError.message("Local Spiderweb auth tokens are not available yet.")
                 }
                 let payload = try Self.jsonString([
@@ -930,7 +926,7 @@ final class SpiderwebAppController: ObservableObject {
                 ])
                 _ = try Self.runCLI(
                     "spiderweb-control",
-                    arguments: ["--url", Self.localServerURL, "--auth-token", adminToken, "workspace_delete", payload]
+                    arguments: ["--url", Self.localServerURL, "--auth-token", accessToken, "workspace_delete", payload]
                 )
 
                 var refreshedMounts = Self.loadSavedMounts()
@@ -1102,7 +1098,7 @@ final class SpiderwebAppController: ObservableObject {
                     if trimmedWorkspaceID == "system" {
                         throw SpiderwebAppError.message("That workspace is reserved. Create a normal workspace first.")
                     }
-                    guard let auth = revealedAuth, auth.adminToken != nil else {
+                    guard let auth = revealedAuth, auth.accessToken != nil else {
                         throw SpiderwebAppError.message("Local Spiderweb auth token is unavailable.")
                     }
                     let workspaces = Self.fetchLocalWorkspaces(using: auth)
@@ -1118,10 +1114,10 @@ final class SpiderwebAppController: ObservableObject {
                 var env: [String: String] = [:]
                 switch mount.authSource {
                 case .localRuntime:
-                    guard let adminToken = revealedAuth?.adminToken else {
+                    guard let accessToken = revealedAuth?.accessToken else {
                         throw SpiderwebAppError.message("Local Spiderweb auth token is unavailable.")
                     }
-                    env["SPIDERWEB_AUTH_TOKEN"] = adminToken
+                    env["SPIDERWEB_AUTH_TOKEN"] = accessToken
                 case .keychainSecret:
                     guard let token = Self.loadSecret(service: Self.remoteMountSecretService, account: mount.id) else {
                         throw SpiderwebAppError.message("No remote auth token is stored for this mount.")
@@ -1279,10 +1275,10 @@ final class SpiderwebAppController: ObservableObject {
     }
 
     private static func fetchLocalWorkspaces(using authStatus: SpiderwebAuthStatusSnapshot?) -> [SpiderwebWorkspaceSummary] {
-        guard let adminToken = authStatus?.adminToken else { return [] }
+        guard let accessToken = authStatus?.accessToken else { return [] }
         guard let result = try? runCLI(
             "spiderweb-control",
-            arguments: ["--url", localServerURL, "--auth-token", adminToken, "workspace_list"]
+            arguments: ["--url", localServerURL, "--auth-token", accessToken, "workspace_list"]
         ) else {
             return []
         }

@@ -609,10 +609,10 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
     if (!status.supported_os) return error.UnsupportedMacosVersion;
     const target_app_path = status.app_path;
     const source_app_path = blk: {
+        if (pathExists(target_app_path)) break :blk target_app_path;
         if (status.source_app_path) |value| {
             if (!std.mem.eql(u8, value, target_app_path)) break :blk value;
         }
-        if (pathExists(target_app_path)) break :blk target_app_path;
         if (status.source_app_path) |value| break :blk value;
         std.log.err("Could not find Spiderweb.app to register. Reinstall Spiderweb.app or build it from Xcode under platform/macos.", .{});
         return error.NativeFsExtensionNotInstalled;

@@ -13,9 +13,11 @@ pub const EndpointSpec = struct {
 pub const NamespaceBinding = struct {
     namespace_url: []const u8,
     auth_token: ?[]const u8 = null,
-    project_id: []const u8,
+    workspace_id: []const u8,
+    project_id: ?[]const u8 = null,
     agent_id: []const u8,
     session_key: []const u8,
+    workspace_token: ?[]const u8 = null,
     project_token: ?[]const u8 = null,
 };
 
@@ -73,18 +75,18 @@ pub const OwnedEndpointSpec = struct {
 pub const OwnedNamespaceBinding = struct {
     namespace_url: []u8,
     auth_token: ?[]u8 = null,
-    project_id: []u8,
+    workspace_id: []u8,
     agent_id: []u8,
     session_key: []u8,
-    project_token: ?[]u8 = null,
+    workspace_token: ?[]u8 = null,
 
     pub fn deinit(self: *OwnedNamespaceBinding, allocator: std.mem.Allocator) void {
         allocator.free(self.namespace_url);
         if (self.auth_token) |value| allocator.free(value);
-        allocator.free(self.project_id);
+        allocator.free(self.workspace_id);
         allocator.free(self.agent_id);
         allocator.free(self.session_key);
-        if (self.project_token) |value| allocator.free(value);
+        if (self.workspace_token) |value| allocator.free(value);
         self.* = undefined;
     }
 };
@@ -364,10 +366,10 @@ pub fn parseLaunchConfigOwned(allocator: std.mem.Allocator, json: []const u8) !O
         namespace = .{
             .namespace_url = try duplicateRequiredString(allocator, namespace_value.object.get("namespace_url")),
             .auth_token = try duplicateOptionalString(allocator, namespace_value.object.get("auth_token")),
-            .project_id = try duplicateRequiredString(allocator, namespace_value.object.get("project_id")),
+            .workspace_id = try duplicateRequiredStringByNames(allocator, namespace_value.object, &.{ "workspace_id", "project_id" }),
             .agent_id = try duplicateRequiredString(allocator, namespace_value.object.get("agent_id")),
             .session_key = try duplicateRequiredString(allocator, namespace_value.object.get("session_key")),
-            .project_token = try duplicateOptionalString(allocator, namespace_value.object.get("project_token")),
+            .workspace_token = try duplicateOptionalStringByNames(allocator, namespace_value.object, &.{ "workspace_token", "project_token" }),
         };
     }
 
@@ -526,11 +528,25 @@ fn duplicateRequiredString(allocator: std.mem.Allocator, value: ?std.json.Value)
     return allocator.dupe(u8, resolved.string);
 }
 
+fn duplicateRequiredStringByNames(allocator: std.mem.Allocator, object: std.json.ObjectMap, names: []const []const u8) ![]u8 {
+    for (names) |name| {
+        if (object.get(name)) |value| return duplicateRequiredString(allocator, value);
+    }
+    return error.InvalidResponse;
+}
+
 fn duplicateOptionalString(allocator: std.mem.Allocator, value: ?std.json.Value) !?[]u8 {
     const resolved = value orelse return null;
     if (resolved != .string) return error.InvalidResponse;
     const copied = try allocator.dupe(u8, resolved.string);
     return copied;
+}
+
+fn duplicateOptionalStringByNames(allocator: std.mem.Allocator, object: std.json.ObjectMap, names: []const []const u8) !?[]u8 {
+    for (names) |name| {
+        if (object.get(name)) |value| return duplicateOptionalString(allocator, value);
+    }
+    return null;
 }
 
 fn integerFieldToU64(value: ?std.json.Value) ?u64 {
@@ -568,7 +584,7 @@ test "native_mount_protocol: launch config roundtrips endpoint and namespace fie
         .namespace = .{
             .namespace_url = "ws://127.0.0.1:18790/",
             .auth_token = "sw-admin-123",
-            .project_id = "proj-1",
+            .workspace_id = "proj-1",
             .agent_id = "codex",
             .session_key = "session-1",
         },
@@ -583,7 +599,7 @@ test "native_mount_protocol: launch config roundtrips endpoint and namespace fie
     try std.testing.expect(parsed.namespace != null);
     try std.testing.expectEqualStrings("sw-shared-456", parsed.shared_auth_token.?);
     try std.testing.expectEqualStrings("/nodes/local/fs", parsed.endpoints[0].mount_path);
-    try std.testing.expectEqualStrings("proj-1", parsed.namespace.?.project_id);
+    try std.testing.expectEqualStrings("proj-1", parsed.namespace.?.workspace_id);
 }
 
 test "native_mount_protocol: parses write requests with base64 payload" {

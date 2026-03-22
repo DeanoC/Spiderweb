@@ -4,9 +4,9 @@ Rules:
 - Read `./AGENTS.md` first and follow it as mandatory workspace rules.
 - Then do the task below using this mounted workspace.
 - After the required reads listed in `AGENTS.md`, stop exploring and start implementation immediately unless a required service is genuinely missing.
-- Treat the current working directory as the mounted project write root.
+- Treat the current working directory as the mounted workspace write root.
 - Use only relative paths from the current directory.
-- Write project files only in the current directory.
+- Write workspace files only in the current directory.
 - Keep the task small and deterministic. This is a fast Spiderweb smoke test, not a game-building task.
 - Preserve `./validate_smoke.py`.
 
@@ -20,7 +20,7 @@ Required output files:
 
 Content requirements:
 - `smoke_result.json` must be valid JSON and include:
-  - `project_id`
+  - `workspace_id`
   - `workspace_root`
   - `service_root`
   - `shared_data_inputs`

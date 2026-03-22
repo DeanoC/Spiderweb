@@ -39,7 +39,7 @@ pub fn buildSessionAttachAckPayload(
     allocator: std.mem.Allocator,
     session_key: []const u8,
     agent_id: []const u8,
-    project_id: ?[]const u8,
+    workspace_id: ?[]const u8,
     workspace_json: []const u8,
     attach_json: []const u8,
 ) ![]u8 {
@@ -47,17 +47,17 @@ pub fn buildSessionAttachAckPayload(
     defer allocator.free(escaped_session);
     const escaped_agent = try unified.jsonEscape(allocator, agent_id);
     defer allocator.free(escaped_agent);
-    const project_json = if (project_id) |value| blk: {
+    const workspace_id_json = if (workspace_id) |value| blk: {
         const escaped = try unified.jsonEscape(allocator, value);
         defer allocator.free(escaped);
         break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped});
     } else try allocator.dupe(u8, "null");
-    defer allocator.free(project_json);
+    defer allocator.free(workspace_id_json);
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":{s},\"workspace\":{s},\"attach\":{s}}}",
-        .{ escaped_session, escaped_agent, project_json, workspace_json, attach_json },
+        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":{s},\"workspace\":{s},\"attach\":{s}}}",
+        .{ escaped_session, escaped_agent, workspace_id_json, workspace_json, attach_json },
     );
 }
 
@@ -65,7 +65,7 @@ pub fn buildSessionStatusPayload(
     allocator: std.mem.Allocator,
     session_key: []const u8,
     agent_id: []const u8,
-    project_id: ?[]const u8,
+    workspace_id: ?[]const u8,
     attach_json: []const u8,
     session_last_active_ms: i64,
     session_stale: bool,
@@ -76,20 +76,20 @@ pub fn buildSessionStatusPayload(
     defer allocator.free(escaped_session);
     const escaped_agent = try unified.jsonEscape(allocator, agent_id);
     defer allocator.free(escaped_agent);
-    const project_json = if (project_id) |value| blk: {
+    const workspace_id_json = if (workspace_id) |value| blk: {
         const escaped = try unified.jsonEscape(allocator, value);
         defer allocator.free(escaped);
         break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped});
     } else try allocator.dupe(u8, "null");
-    defer allocator.free(project_json);
+    defer allocator.free(workspace_id_json);
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":{s},\"attach\":{s},\"session_last_activity_ms\":{d},\"session_stale\":{},\"agent_last_heartbeat_ms\":{d},\"agent_stale\":{},\"recoverable\":true}}",
+        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":{s},\"attach\":{s},\"session_last_activity_ms\":{d},\"session_stale\":{},\"agent_last_heartbeat_ms\":{d},\"agent_stale\":{},\"recoverable\":true}}",
         .{
             escaped_session,
             escaped_agent,
-            project_json,
+            workspace_id_json,
             attach_json,
             session_last_active_ms,
             session_stale,
@@ -120,15 +120,15 @@ pub fn buildSessionListPayload(
         defer allocator.free(escaped_key);
         const escaped_agent = try unified.jsonEscape(allocator, entry.value_ptr.agent_id);
         defer allocator.free(escaped_agent);
-        const project_json = if (entry.value_ptr.project_id) |project_id| blk: {
-            const escaped_project = try unified.jsonEscape(allocator, project_id);
-            defer allocator.free(escaped_project);
-            break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_project});
+        const workspace_id_json = if (entry.value_ptr.project_id) |workspace_id| blk: {
+            const escaped_workspace = try unified.jsonEscape(allocator, workspace_id);
+            defer allocator.free(escaped_workspace);
+            break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_workspace});
         } else try allocator.dupe(u8, "null");
-        defer allocator.free(project_json);
+        defer allocator.free(workspace_id_json);
         try out.writer(allocator).print(
-            "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":{s}}}",
-            .{ escaped_key, escaped_agent, project_json },
+            "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":{s}}}",
+            .{ escaped_key, escaped_agent, workspace_id_json },
         );
     }
     try out.appendSlice(allocator, "]}");
@@ -172,8 +172,8 @@ fn appendSessionHistoryEntryJson(
     defer allocator.free(escaped_session);
     const escaped_agent = try unified.jsonEscape(allocator, entry.agent_id);
     defer allocator.free(escaped_agent);
-    const escaped_project = try unified.jsonEscape(allocator, entry.project_id);
-    defer allocator.free(escaped_project);
+    const escaped_workspace = try unified.jsonEscape(allocator, entry.project_id);
+    defer allocator.free(escaped_workspace);
     const summary_json = if (entry.summary) |value| blk: {
         const escaped_summary = try unified.jsonEscape(allocator, value);
         defer allocator.free(escaped_summary);
@@ -182,11 +182,11 @@ fn appendSessionHistoryEntryJson(
     defer allocator.free(summary_json);
 
     try out.writer(allocator).print(
-        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"last_active_ms\":{d},\"message_count\":{d},\"summary\":{s}}}",
+        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"last_active_ms\":{d},\"message_count\":{d},\"summary\":{s}}}",
         .{
             escaped_session,
             escaped_agent,
-            escaped_project,
+            escaped_workspace,
             entry.last_active_ms,
             entry.message_count,
             summary_json,

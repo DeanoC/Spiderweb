@@ -34,12 +34,12 @@ pub fn buildConnectAckPayload(
     is_admin: bool,
     control_protocol_version: []const u8,
 ) ![]u8 {
-    const project_json = if (binding.project_id) |project_id| blk: {
-        const escaped_project = try unified.jsonEscape(allocator, project_id);
-        defer allocator.free(escaped_project);
-        break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_project});
+    const workspace_id_json = if (binding.project_id) |workspace_id| blk: {
+        const escaped_workspace = try unified.jsonEscape(allocator, workspace_id);
+        defer allocator.free(escaped_workspace);
+        break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_workspace});
     } else try allocator.dupe(u8, "null");
-    defer allocator.free(project_json);
+    defer allocator.free(workspace_id_json);
 
     const workspace_json = try buildWorkspaceStatusPayloadForBinding(
         allocator,
@@ -52,10 +52,10 @@ pub fn buildConnectAckPayload(
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"agent_id\":\"{s}\",\"project_id\":{s},\"workspace\":{s},\"session\":\"{s}\",\"protocol\":\"{s}\"}}",
+        "{{\"agent_id\":\"{s}\",\"workspace_id\":{s},\"workspace\":{s},\"session\":\"{s}\",\"protocol\":\"{s}\"}}",
         .{
             binding.agent_id,
-            project_json,
+            workspace_id_json,
             workspace_json,
             active_session_key,
             control_protocol_version,
@@ -87,11 +87,11 @@ pub fn handleSessionAttachControl(
     const attach_agent_id = getRequiredStringField(payload.value.object, "agent_id") catch {
         return .{ .err = .{ .code = "missing_field", .message = "agent_id is required" } };
     };
-    const attach_project_id = getRequiredStringField(payload.value.object, "project_id") catch {
-        return .{ .err = .{ .code = "missing_field", .message = "project_id is required" } };
+    const attach_workspace_id = getRequiredStringField(payload.value.object, "workspace_id") catch {
+        return .{ .err = .{ .code = "missing_field", .message = "workspace_id is required" } };
     };
 
-    var attach_project_token = getOptionalStringField(payload.value.object, "project_token");
+    var attach_workspace_token = getOptionalStringField(payload.value.object, "workspace_token");
     const current_binding = session_bindings.get(active_session_key.*) orelse return error.InvalidState;
     var previous_active_binding = try server_session_bindings.cloneSessionBinding(allocator, current_binding);
     defer previous_active_binding.deinit(allocator);
@@ -102,16 +102,16 @@ pub fn handleSessionAttachControl(
     if (!isValidAgentId(attach_agent_id)) {
         return .{ .err = .{ .code = "invalid_payload", .message = "invalid agent_id" } };
     }
-    if (!isValidProjectId(attach_project_id)) {
-        return .{ .err = .{ .code = "invalid_payload", .message = "invalid project_id" } };
+    if (!isValidProjectId(attach_workspace_id)) {
+        return .{ .err = .{ .code = "invalid_payload", .message = "invalid workspace_id" } };
     }
 
     const existing_binding = session_bindings.get(session_key);
-    if (existing_binding != null and std.mem.eql(u8, existing_binding.?.agent_id, attach_agent_id) and attach_project_token == null) {
-        attach_project_token = existing_binding.?.project_token;
+    if (existing_binding != null and std.mem.eql(u8, existing_binding.?.agent_id, attach_agent_id) and attach_workspace_token == null) {
+        attach_workspace_token = existing_binding.?.project_token;
     }
 
-    const activate_payload = try server_workspace_status.buildProjectActivatePayload(allocator, attach_project_id, attach_project_token);
+    const activate_payload = try server_workspace_status.buildWorkspaceAccessPayload(allocator, attach_workspace_id, attach_workspace_token);
     defer allocator.free(activate_payload);
     _ = runtime_registry.control_plane.activateProjectWithRole(
         attach_agent_id,
@@ -134,8 +134,8 @@ pub fn handleSessionAttachControl(
         attach_agent_id,
         server_session_bindings.defaultActorTypeForRole(principal.role),
         server_session_bindings.defaultActorIdForPrincipal(principal),
-        attach_project_id,
-        attach_project_token,
+        attach_workspace_id,
+        attach_workspace_token,
     );
 
     allocator.free(active_session_key.*);

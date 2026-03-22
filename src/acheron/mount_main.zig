@@ -128,7 +128,7 @@ pub fn main() !void {
 
         const resolved_project_id = if (workspace_id) |project_id|
             try allocator.dupe(u8, project_id)
-        else if (connect_info.project_id) |project_id|
+        else if (connect_info.workspace_id) |project_id|
             try allocator.dupe(u8, project_id)
         else
             return error.ProjectRequired;
@@ -152,8 +152,8 @@ pub fn main() !void {
         var attach_info = try client.controlSessionAttach(.{
             .session_key = resolved_session_key,
             .agent_id = resolved_agent_id,
-            .project_id = resolved_project_id,
-            .project_token = workspace_token,
+            .workspace_id = resolved_project_id,
+            .workspace_token = workspace_token,
         });
         defer attach_info.deinit(allocator);
 
@@ -174,7 +174,7 @@ pub fn main() !void {
 
         const resolved_project_id = if (workspace_id) |project_id|
             try allocator.dupe(u8, project_id)
-        else if (connect_info.project_id) |project_id|
+        else if (connect_info.workspace_id) |project_id|
             try allocator.dupe(u8, project_id)
         else
             return error.ProjectRequired;
@@ -198,8 +198,8 @@ pub fn main() !void {
         var attach_info = try client.controlSessionAttach(.{
             .session_key = resolved_session_key,
             .agent_id = resolved_agent_id,
-            .project_id = resolved_project_id,
-            .project_token = workspace_token,
+            .workspace_id = resolved_project_id,
+            .workspace_token = workspace_token,
         });
         defer attach_info.deinit(allocator);
 
@@ -999,9 +999,11 @@ fn makeNativeNamespaceBinding(
     return .{
         .namespace_url = namespace_status.namespace_url orelse return error.NativeNamespaceBindingRequired,
         .auth_token = auth_token,
-        .project_id = namespace_status.project_id orelse return error.ProjectRequired,
+        .workspace_id = namespace_status.project_id orelse return error.ProjectRequired,
+        .project_id = namespace_status.project_id,
         .agent_id = namespace_status.agent_id orelse return error.InvalidResponse,
         .session_key = namespace_status.session_key orelse return error.InvalidResponse,
+        .workspace_token = workspace_token,
         .project_token = workspace_token,
     };
 }
@@ -1021,7 +1023,7 @@ fn buildNativeNamespaceStatusFromWorkspace(
 
     const resolved_project_id = if (workspace_id) |project_id|
         try allocator.dupe(u8, project_id)
-    else if (connect_info.project_id) |project_id|
+    else if (connect_info.workspace_id) |project_id|
         try allocator.dupe(u8, project_id)
     else
         return error.ProjectRequired;
@@ -1039,8 +1041,8 @@ fn buildNativeNamespaceStatusFromWorkspace(
     var attach_info = try client.controlSessionAttach(.{
         .session_key = resolved_session_key,
         .agent_id = resolved_agent_id,
-        .project_id = resolved_project_id,
-        .project_token = workspace_token,
+        .workspace_id = resolved_project_id,
+        .workspace_token = workspace_token,
     });
     defer attach_info.deinit(allocator);
 
@@ -1077,7 +1079,7 @@ fn buildNamespaceStatusJson(
     defer allocator.free(router_status);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"mode\":\"namespace\",\"namespace_url\":\"{s}\",\"project_id\":\"{s}\",\"project_name\":\"{s}\",\"agent_id\":\"{s}\",\"session_key\":\"{s}\",\"router\":{s}}}",
+        "{{\"mode\":\"namespace\",\"namespace_url\":\"{s}\",\"workspace_id\":\"{s}\",\"workspace_name\":\"{s}\",\"agent_id\":\"{s}\",\"session_key\":\"{s}\",\"router\":{s}}}",
         .{
             namespace_status.namespace_url orelse "",
             namespace_status.project_id orelse "",
@@ -1427,7 +1429,7 @@ fn fetchWorkspaceEndpointSpecs(
     if (!shouldFetchWorkspaceStatusFromControl(
         workspace_id,
         workspace_token,
-        connect_info.project_id,
+        connect_info.workspace_id,
         connect_info.has_workspace_mounts,
     )) {
         if (connect_info.workspace_json) |workspace_json| {
@@ -1439,7 +1441,7 @@ fn fetchWorkspaceEndpointSpecs(
         }
     }
 
-    const effective_project_id = workspace_id orelse connect_info.project_id;
+    const effective_project_id = workspace_id orelse connect_info.workspace_id;
     const payload_json = try client.controlWorkspaceStatus(effective_project_id, workspace_token);
     defer allocator.free(payload_json);
 
@@ -1993,7 +1995,7 @@ test "acheron_mount_main: live mac smoke covers terminal exec" {
     var attach_info = try client.controlSessionAttach(.{
         .session_key = session_key,
         .agent_id = agent_id,
-        .project_id = live.project_id,
+        .workspace_id = live.project_id,
     });
     defer attach_info.deinit(allocator);
     try client.attachNamespaceRoot(attach_info.session_key);

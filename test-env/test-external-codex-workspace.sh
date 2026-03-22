@@ -731,7 +731,7 @@ wait_for_node_join() {
 wait_for_workspace_mounts() {
     local reply
     for _ in $(seq 1 180); do
-        reply="$(control_call workspace_status "$(jq -cn --arg project_id "$PROJECT_ID" '{project_id: $project_id}')")" || {
+        reply="$(control_call workspace_status "$(jq -cn --arg workspace_id "$PROJECT_ID" '{workspace_id: $workspace_id}')")" || {
             sleep 0.2
             continue
         }

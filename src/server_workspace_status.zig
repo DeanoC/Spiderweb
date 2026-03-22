@@ -104,23 +104,23 @@ pub fn rewriteWorkspaceStatusFsUrls(
     return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(parsed.value, .{})});
 }
 
-pub fn buildProjectActivatePayload(
+pub fn buildWorkspaceAccessPayload(
     allocator: std.mem.Allocator,
-    project_id: []const u8,
-    project_token: ?[]const u8,
+    workspace_id: []const u8,
+    workspace_token: ?[]const u8,
 ) ![]u8 {
-    const escaped_project = try unified.jsonEscape(allocator, project_id);
-    defer allocator.free(escaped_project);
-    if (project_token) |token| {
+    const escaped_workspace = try unified.jsonEscape(allocator, workspace_id);
+    defer allocator.free(escaped_workspace);
+    if (workspace_token) |token| {
         const escaped_token = try unified.jsonEscape(allocator, token);
         defer allocator.free(escaped_token);
         return std.fmt.allocPrint(
             allocator,
             "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
-            .{ escaped_project, escaped_token },
+            .{ escaped_workspace, escaped_token },
         );
     }
-    return std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{escaped_project});
+    return std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{escaped_workspace});
 }
 
 pub fn buildWorkspaceStatusPayloadForBinding(
@@ -147,8 +147,8 @@ pub fn buildWorkspaceStatusPayloadForBinding(
         return rewriteWorkspaceStatusFsUrls(allocator, workspace_json, connection_workspace_url);
     }
 
-    const status_req = if (binding.project_id) |project_id|
-        try buildProjectActivatePayload(allocator, project_id, binding.project_token)
+    const status_req = if (binding.project_id) |workspace_id|
+        try buildWorkspaceAccessPayload(allocator, workspace_id, binding.project_token)
     else
         try allocator.dupe(u8, "{}");
     defer allocator.free(status_req);

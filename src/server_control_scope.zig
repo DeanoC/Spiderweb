@@ -28,23 +28,23 @@ pub fn extractNodeIdFromControlPayload(allocator: std.mem.Allocator, payload_jso
     return @as(?[]u8, copy);
 }
 
-pub fn extractProjectIdFromControlPayload(allocator: std.mem.Allocator, payload_json: []const u8) !?[]u8 {
+pub fn extractWorkspaceIdFromControlPayload(allocator: std.mem.Allocator, payload_json: []const u8) !?[]u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
     defer parsed.deinit();
     if (parsed.value != .object) return null;
-    const project_id = parsed.value.object.get("project_id") orelse return null;
-    if (project_id != .string or project_id.string.len == 0) return null;
-    const copy = try allocator.dupe(u8, project_id.string);
+    const workspace_id = parsed.value.object.get("workspace_id") orelse return null;
+    if (workspace_id != .string or workspace_id.string.len == 0) return null;
+    const copy = try allocator.dupe(u8, workspace_id.string);
     return @as(?[]u8, copy);
 }
 
-pub fn extractProjectTokenFromControlPayload(allocator: std.mem.Allocator, payload_json: []const u8) !?[]u8 {
+pub fn extractWorkspaceTokenFromControlPayload(allocator: std.mem.Allocator, payload_json: []const u8) !?[]u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
     defer parsed.deinit();
     if (parsed.value != .object) return null;
-    const project_token = parsed.value.object.get("project_token") orelse return null;
-    if (project_token != .string or project_token.string.len == 0) return null;
-    const copy = try allocator.dupe(u8, project_token.string);
+    const workspace_token = parsed.value.object.get("workspace_token") orelse return null;
+    if (workspace_token != .string or workspace_token.string.len == 0) return null;
+    const copy = try allocator.dupe(u8, workspace_token.string);
     return @as(?[]u8, copy);
 }
 

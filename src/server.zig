@@ -5360,12 +5360,12 @@ fn expectLegacyAcheronRejected(allocator: std.mem.Allocator, client: *std.net.St
 }
 
 const WorkspaceScopeSnapshot = struct {
-    project_id: []u8,
+    workspace_id: []u8,
     workspace_root: []u8,
     mount_paths: std.ArrayListUnmanaged([]u8) = .{},
 
     fn deinit(self: *WorkspaceScopeSnapshot, allocator: std.mem.Allocator) void {
-        allocator.free(self.project_id);
+        allocator.free(self.workspace_id);
         allocator.free(self.workspace_root);
         for (self.mount_paths.items) |path| allocator.free(path);
         self.mount_paths.deinit(allocator);
@@ -5384,8 +5384,8 @@ fn parseWorkspaceScopeSnapshotFromControlFrame(
     const payload = parsed.value.object.get("payload") orelse return error.TestExpectedResponse;
     if (payload != .object) return error.TestExpectedResponse;
 
-    const project_id_value = payload.object.get("project_id") orelse return error.TestExpectedResponse;
-    if (project_id_value != .string or project_id_value.string.len == 0) return error.TestExpectedResponse;
+    const workspace_id_value = payload.object.get("workspace_id") orelse return error.TestExpectedResponse;
+    if (workspace_id_value != .string or workspace_id_value.string.len == 0) return error.TestExpectedResponse;
 
     const workspace_value = payload.object.get("workspace") orelse return error.TestExpectedResponse;
     if (workspace_value != .object) return error.TestExpectedResponse;
@@ -5394,7 +5394,7 @@ fn parseWorkspaceScopeSnapshotFromControlFrame(
     if (workspace_root_value != .string or workspace_root_value.string.len == 0) return error.TestExpectedResponse;
 
     var snapshot = WorkspaceScopeSnapshot{
-        .project_id = try allocator.dupe(u8, project_id_value.string),
+        .workspace_id = try allocator.dupe(u8, workspace_id_value.string),
         .workspace_root = try allocator.dupe(u8, workspace_root_value.string),
     };
     errdefer snapshot.deinit(allocator);
@@ -5414,6 +5414,15 @@ fn parseWorkspaceScopeSnapshotFromControlFrame(
     }.lessThan);
 
     return snapshot;
+}
+
+fn extractInternalProjectIdForTests(allocator: std.mem.Allocator, payload_json: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.TestExpectedResult;
+    const project_id_value = parsed.value.object.get("project_id") orelse return error.TestExpectedResult;
+    if (project_id_value != .string or project_id_value.string.len == 0) return error.TestExpectedResult;
+    return allocator.dupe(u8, project_id_value.string);
 }
 
 fn expectWorkspaceScopeSnapshotsEqual(
@@ -5510,7 +5519,7 @@ test "server: workspace namespace stays project-scoped across user session agent
     );
     defer allocator.free(project_up);
 
-    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    const project_id = try extractInternalProjectIdForTests(allocator, project_up);
     defer allocator.free(project_id);
 
     try runtime_registry.auth_tokens.setRememberedTarget(.access, "alice", project_id);
@@ -5546,7 +5555,7 @@ test "server: workspace namespace stays project-scoped across user session agent
 
     const attach_alice = try std.fmt.allocPrint(
         allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"scope-attach-alice\",\"payload\":{{\"session_key\":\"scope-a\",\"agent_id\":\"alice\",\"project_id\":\"{s}\"}}}}",
+        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"scope-attach-alice\",\"payload\":{{\"session_key\":\"scope-a\",\"agent_id\":\"alice\",\"workspace_id\":\"{s}\"}}}}",
         .{project_id},
     );
     defer allocator.free(attach_alice);
@@ -5559,7 +5568,7 @@ test "server: workspace namespace stays project-scoped across user session agent
 
     const attach_bob = try std.fmt.allocPrint(
         allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"scope-attach-bob\",\"payload\":{{\"session_key\":\"scope-b\",\"agent_id\":\"bob\",\"project_id\":\"{s}\"}}}}",
+        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"scope-attach-bob\",\"payload\":{{\"session_key\":\"scope-b\",\"agent_id\":\"bob\",\"workspace_id\":\"{s}\"}}}}",
         .{project_id},
     );
     defer allocator.free(attach_bob);
@@ -5712,7 +5721,7 @@ test "server: base websocket supports namespace attach after session_attach" {
         "{\"name\":\"NamespaceAttach\",\"vision\":\"NamespaceAttach\"}",
     );
     defer allocator.free(project_created);
-    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_created)) orelse return error.TestExpectedResponse;
+    const project_id = try extractInternalProjectIdForTests(allocator, project_created);
     defer allocator.free(project_id);
 
     const mount_payload = try std.fmt.allocPrint(
@@ -5753,7 +5762,7 @@ test "server: base websocket supports namespace attach after session_attach" {
 
     const attach_payload = try std.fmt.allocPrint(
         allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"attach\",\"payload\":{{\"session_key\":\"main\",\"agent_id\":\"test-agent\",\"project_id\":\"{s}\"}}}}",
+        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"attach\",\"payload\":{{\"session_key\":\"main\",\"agent_id\":\"test-agent\",\"workspace_id\":\"{s}\"}}}}",
         .{project_id},
     );
     defer allocator.free(attach_payload);
@@ -5903,7 +5912,7 @@ test "server: auth matrix gates admin endpoints and handshake tokens" {
         defer forbidden_attach.deinit(allocator);
         try std.testing.expect(std.mem.indexOf(u8, forbidden_attach.payload, "\"type\":\"control.error\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, forbidden_attach.payload, "\"code\":\"missing_field\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, forbidden_attach.payload, "project_id is required") != null);
+        try std.testing.expect(std.mem.indexOf(u8, forbidden_attach.payload, "workspace_id is required") != null);
 
         try websocket_transport.writeFrame(&user_client, "", .close);
         var close_reply = try readServerFrame(allocator, &user_client);
@@ -5998,7 +6007,7 @@ test "server: user connect keeps a minimal payload when no remembered non-host t
     defer attach_forbidden.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, attach_forbidden.payload, "\"type\":\"control.error\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, attach_forbidden.payload, "\"code\":\"missing_field\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, attach_forbidden.payload, "project_id is required") != null);
+    try std.testing.expect(std.mem.indexOf(u8, attach_forbidden.payload, "workspace_id is required") != null);
 
     try websocket_transport.writeFrame(&user_client, "", .close);
     var close_reply = try readServerFrame(allocator, &user_client);
@@ -6074,7 +6083,7 @@ test "server: user connect stays minimal even when another project is active" {
         true,
     );
     defer allocator.free(project_up);
-    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    const project_id = try extractInternalProjectIdForTests(allocator, project_up);
     defer allocator.free(project_id);
 
     const activate_payload = try std.fmt.allocPrint(
@@ -6221,7 +6230,7 @@ test "server: session_attach ignores public actor identity fields" {
 
     const override_attach = try std.fmt.allocPrint(
         allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"actor-guard-override\",\"payload\":{{\"session_key\":\"main\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"actor_type\":\"agent\",\"actor_id\":\"intruder\"}}}}",
+        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"actor-guard-override\",\"payload\":{{\"session_key\":\"main\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"actor_type\":\"agent\",\"actor_id\":\"intruder\"}}}}",
         .{ runtime_registry.default_agent_id, remembered_project_id },
     );
     defer allocator.free(override_attach);
@@ -6283,7 +6292,7 @@ test "server: control.session_history and control.session_restore survive reconn
 
         const attach_payload = try std.fmt.allocPrint(
             allocator,
-            "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"history-attach\",\"payload\":{{\"session_key\":\"work-1\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\"}}}}",
+            "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"history-attach\",\"payload\":{{\"session_key\":\"work-1\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\"}}}}",
             .{ runtime_registry.default_agent_id, remembered_project_id },
         );
         defer allocator.free(attach_payload);
@@ -6783,21 +6792,21 @@ test "server: stripHttpRequestTargetQuery removes query string" {
     try std.testing.expectEqualStrings("/readyz", server_metrics_http.stripHttpRequestTargetQuery("/readyz"));
 }
 
-test "server: extract project payload helpers parse id and token" {
+test "server: extract workspace payload helpers parse id and token" {
     const allocator = std.testing.allocator;
-    const payload = "{\"project_id\":\"proj-7\",\"project_token\":\"proj-token-7\"}";
+    const payload = "{\"workspace_id\":\"proj-7\",\"workspace_token\":\"proj-token-7\"}";
 
-    const project_id = try server_control_scope.extractProjectIdFromControlPayload(allocator, payload);
-    defer if (project_id) |value| allocator.free(value);
-    try std.testing.expect(project_id != null);
-    try std.testing.expectEqualStrings("proj-7", project_id.?);
+    const workspace_id = try server_control_scope.extractWorkspaceIdFromControlPayload(allocator, payload);
+    defer if (workspace_id) |value| allocator.free(value);
+    try std.testing.expect(workspace_id != null);
+    try std.testing.expectEqualStrings("proj-7", workspace_id.?);
 
-    const project_token = try server_control_scope.extractProjectTokenFromControlPayload(allocator, payload);
-    defer if (project_token) |value| allocator.free(value);
-    try std.testing.expect(project_token != null);
-    try std.testing.expectEqualStrings("proj-token-7", project_token.?);
+    const workspace_token = try server_control_scope.extractWorkspaceTokenFromControlPayload(allocator, payload);
+    defer if (workspace_token) |value| allocator.free(value);
+    try std.testing.expect(workspace_token != null);
+    try std.testing.expectEqualStrings("proj-token-7", workspace_token.?);
 
-    const token_missing = try server_control_scope.extractProjectTokenFromControlPayload(allocator, "{\"project_id\":\"proj-7\"}");
+    const token_missing = try server_control_scope.extractWorkspaceTokenFromControlPayload(allocator, "{\"workspace_id\":\"proj-7\"}");
     try std.testing.expect(token_missing == null);
 }
 
@@ -6833,14 +6842,13 @@ test "server: user node service visibility is project mounted-node scoped" {
         "{\"name\":\"ScopedProject\",\"vision\":\"ScopedProject\",\"access_policy\":{\"actions\":{\"observe\":\"open\"}}}",
     );
     defer allocator.free(project_created);
-    const project_id = try server_control_scope.extractProjectIdFromControlPayload(allocator, project_created);
-    defer if (project_id) |value| allocator.free(value);
-    try std.testing.expect(project_id != null);
+    const project_id = try extractInternalProjectIdForTests(allocator, project_created);
+    defer allocator.free(project_id);
 
     const mount_payload = try std.fmt.allocPrint(
         allocator,
         "{{\"project_id\":\"{s}\",\"mount_path\":\"/nodes/node-a/fs\",\"node_id\":\"{s}\",\"export_name\":\"fs\"}}",
-        .{ project_id.?, node_registration.node_id },
+        .{ project_id, node_registration.node_id },
     );
     defer allocator.free(mount_payload);
     const mount_result = try runtime_registry.control_plane.setProjectMountWithRole(mount_payload, false);
@@ -7117,7 +7125,7 @@ test "server: mount attach and mount file read control operations are supported 
         true,
     );
     defer allocator.free(project_up);
-    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    const project_id = try extractInternalProjectIdForTests(allocator, project_up);
     defer allocator.free(project_id);
 
     var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
@@ -7149,7 +7157,7 @@ test "server: mount attach and mount file read control operations are supported 
 
     const attach_payload = try std.fmt.allocPrint(
         allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"mount-attach-session\",\"payload\":{{\"session_key\":\"fskit\",\"agent_id\":\"mount-agent\",\"project_id\":\"{s}\"}}}}",
+        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"mount-attach-session\",\"payload\":{{\"session_key\":\"fskit\",\"agent_id\":\"mount-agent\",\"workspace_id\":\"{s}\"}}}}",
         .{project_id},
     );
     defer allocator.free(attach_payload);
@@ -7216,7 +7224,7 @@ test "server: mount file read can read projected workspace managed files after s
         true,
     );
     defer allocator.free(project_up);
-    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    const project_id = try extractInternalProjectIdForTests(allocator, project_up);
     defer allocator.free(project_id);
 
     var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
@@ -7248,7 +7256,7 @@ test "server: mount file read can read projected workspace managed files after s
 
     const attach_payload = try std.fmt.allocPrint(
         allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"projected-attach-session\",\"payload\":{{\"session_key\":\"fskit\",\"agent_id\":\"mount-agent\",\"project_id\":\"{s}\"}}}}",
+        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"projected-attach-session\",\"payload\":{{\"session_key\":\"fskit\",\"agent_id\":\"mount-agent\",\"workspace_id\":\"{s}\"}}}}",
         .{project_id},
     );
     defer allocator.free(attach_payload);

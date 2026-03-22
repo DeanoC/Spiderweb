@@ -137,18 +137,18 @@ struct SpiderwebMountRequest: Codable {
         struct Namespace: Codable {
             let namespaceURL: String
             let authToken: String?
-            let projectID: String
+            let workspaceID: String
             let agentID: String
             let sessionKey: String
-            let projectToken: String?
+            let workspaceToken: String?
 
             private enum CodingKeys: String, CodingKey {
                 case namespaceURL = "namespace_url"
                 case authToken = "auth_token"
-                case projectID = "project_id"
+                case workspaceID = "workspace_id"
                 case agentID = "agent_id"
                 case sessionKey = "session_key"
-                case projectToken = "project_token"
+                case workspaceToken = "workspace_token"
             }
         }
 
@@ -814,10 +814,10 @@ actor SpiderwebNamespaceSession {
         var attachPayload: [String: Any] = [
             "session_key": namespace.sessionKey,
             "agent_id": namespace.agentID,
-            "project_id": namespace.projectID,
+            "workspace_id": namespace.workspaceID,
         ]
-        if let projectToken = namespace.projectToken, !projectToken.isEmpty {
-            attachPayload["project_token"] = projectToken
+        if let workspaceToken = namespace.workspaceToken, !workspaceToken.isEmpty {
+            attachPayload["workspace_token"] = workspaceToken
         }
         _ = try await sendControlRequest(
             type: "control.session_attach",

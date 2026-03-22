@@ -27,14 +27,14 @@ pub const NamespaceStat = struct {
 
 pub const ConnectInfo = struct {
     agent_id: ?[]u8 = null,
-    project_id: ?[]u8 = null,
+    workspace_id: ?[]u8 = null,
     session_key: ?[]u8 = null,
     workspace_json: ?[]u8 = null,
     has_workspace_mounts: bool = false,
 
     pub fn deinit(self: *ConnectInfo, allocator: std.mem.Allocator) void {
         if (self.agent_id) |value| allocator.free(value);
-        if (self.project_id) |value| allocator.free(value);
+        if (self.workspace_id) |value| allocator.free(value);
         if (self.session_key) |value| allocator.free(value);
         if (self.workspace_json) |value| allocator.free(value);
         self.* = undefined;
@@ -44,19 +44,19 @@ pub const ConnectInfo = struct {
 pub const SessionAttachRequest = struct {
     session_key: []const u8,
     agent_id: []const u8,
-    project_id: []const u8,
-    project_token: ?[]const u8 = null,
+    workspace_id: []const u8,
+    workspace_token: ?[]const u8 = null,
 };
 
 pub const SessionAttachInfo = struct {
     session_key: []u8,
     agent_id: []u8,
-    project_id: []u8,
+    workspace_id: []u8,
 
     pub fn deinit(self: *SessionAttachInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_key);
         allocator.free(self.agent_id);
-        allocator.free(self.project_id);
+        allocator.free(self.workspace_id);
         self.* = undefined;
     }
 };
@@ -171,21 +171,21 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(escaped_session);
         const escaped_agent = try jsonEscape(self.allocator, request.agent_id);
         defer self.allocator.free(escaped_agent);
-        const escaped_project = try jsonEscape(self.allocator, request.project_id);
-        defer self.allocator.free(escaped_project);
+        const escaped_workspace = try jsonEscape(self.allocator, request.workspace_id);
+        defer self.allocator.free(escaped_workspace);
 
-        const payload = if (request.project_token) |token| blk: {
+        const payload = if (request.workspace_token) |token| blk: {
             const escaped_token = try jsonEscape(self.allocator, token);
             defer self.allocator.free(escaped_token);
             break :blk try std.fmt.allocPrint(
                 self.allocator,
-                "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
-                .{ escaped_session, escaped_agent, escaped_project, escaped_token },
+                "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
+                .{ escaped_session, escaped_agent, escaped_workspace, escaped_token },
             );
         } else try std.fmt.allocPrint(
             self.allocator,
-            "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\"}}",
-            .{ escaped_session, escaped_agent, escaped_project },
+            "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\"}}",
+            .{ escaped_session, escaped_agent, escaped_workspace },
         );
         defer self.allocator.free(payload);
 
@@ -201,34 +201,34 @@ pub const NamespaceClient = struct {
 
         const session_key = getRequiredString(parsed.value.object, "session_key") orelse return error.InvalidResponse;
         const agent_id = getRequiredString(parsed.value.object, "agent_id") orelse return error.InvalidResponse;
-        const project_id = getRequiredString(parsed.value.object, "project_id") orelse return error.InvalidResponse;
+        const workspace_id = getRequiredString(parsed.value.object, "workspace_id") orelse return error.InvalidResponse;
         try self.setActiveSessionKey(session_key);
-        try self.setActiveSessionBinding(request.agent_id, request.project_id, request.project_token);
+        try self.setActiveSessionBinding(request.agent_id, request.workspace_id, request.workspace_token);
 
         return .{
             .session_key = try self.allocator.dupe(u8, session_key),
             .agent_id = try self.allocator.dupe(u8, agent_id),
-            .project_id = try self.allocator.dupe(u8, project_id),
+            .workspace_id = try self.allocator.dupe(u8, workspace_id),
         };
     }
 
-    pub fn controlWorkspaceStatus(self: *NamespaceClient, project_id: ?[]const u8, project_token: ?[]const u8) ![]u8 {
-        const payload = if (project_id) |selected_project| blk: {
-            const escaped_project = try jsonEscape(self.allocator, selected_project);
-            defer self.allocator.free(escaped_project);
-            if (project_token) |token| {
+    pub fn controlWorkspaceStatus(self: *NamespaceClient, workspace_id: ?[]const u8, workspace_token: ?[]const u8) ![]u8 {
+        const payload = if (workspace_id) |selected_workspace| blk: {
+            const escaped_workspace = try jsonEscape(self.allocator, selected_workspace);
+            defer self.allocator.free(escaped_workspace);
+            if (workspace_token) |token| {
                 const escaped_token = try jsonEscape(self.allocator, token);
                 defer self.allocator.free(escaped_token);
                 break :blk try std.fmt.allocPrint(
                     self.allocator,
-                    "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
-                    .{ escaped_project, escaped_token },
+                    "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
+                    .{ escaped_workspace, escaped_token },
                 );
             }
             break :blk try std.fmt.allocPrint(
                 self.allocator,
-                "{{\"project_id\":\"{s}\"}}",
-                .{escaped_project},
+                "{{\"workspace_id\":\"{s}\"}}",
+                .{escaped_workspace},
             );
         } else try self.allocator.dupe(u8, "{}");
         defer self.allocator.free(payload);
@@ -1146,8 +1146,8 @@ pub const NamespaceClient = struct {
         var attach_info = try self.controlSessionAttach(.{
             .session_key = session_key,
             .agent_id = agent_id,
-            .project_id = project_id,
-            .project_token = self.active_project_token,
+            .workspace_id = project_id,
+            .workspace_token = self.active_project_token,
         });
         defer attach_info.deinit(self.allocator);
     }
@@ -1618,7 +1618,7 @@ fn parseConnectInfo(allocator: std.mem.Allocator, payload_json: []const u8) !Con
     var info = ConnectInfo{};
     errdefer info.deinit(allocator);
     info.agent_id = try optionalOwnedString(allocator, parsed.value.object, "agent_id");
-    info.project_id = try optionalOwnedString(allocator, parsed.value.object, "project_id");
+    info.workspace_id = try optionalOwnedString(allocator, parsed.value.object, "workspace_id");
     info.session_key = try optionalOwnedString(allocator, parsed.value.object, "session");
     if (parsed.value.object.get("workspace")) |workspace_value| {
         info.has_workspace_mounts = workspaceValueHasMounts(workspace_value);
@@ -1821,12 +1821,12 @@ test "namespace_client: parseConnectInfo preserves workspace payload and mount p
     const allocator = std.testing.allocator;
     var info = try parseConnectInfo(
         allocator,
-        "{\"agent_id\":\"agent-a\",\"project_id\":\"proj-a\",\"session\":\"sess-a\",\"workspace\":{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}]}}",
+        "{\"agent_id\":\"agent-a\",\"workspace_id\":\"proj-a\",\"session\":\"sess-a\",\"workspace\":{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}]}}",
     );
     defer info.deinit(allocator);
 
     try std.testing.expectEqualStrings("agent-a", info.agent_id.?);
-    try std.testing.expectEqualStrings("proj-a", info.project_id.?);
+    try std.testing.expectEqualStrings("proj-a", info.workspace_id.?);
     try std.testing.expectEqualStrings("sess-a", info.session_key.?);
     try std.testing.expect(info.has_workspace_mounts);
     try std.testing.expect(info.workspace_json != null);

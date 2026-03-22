@@ -27,6 +27,7 @@ const session_workspace_contract = @import("session_workspace_contract.zig");
 const session_service_discovery = @import("session_service_discovery.zig");
 const session_project_status = @import("session_project_status.zig");
 const session_node_venoms = @import("session_node_venoms.zig");
+const session_worker_venoms = @import("session_worker_venoms.zig");
 
 var direct_builtin_shell_exec_mutex: std.Thread.Mutex = .{};
 
@@ -2833,7 +2834,7 @@ pub const Session = struct {
         doomed.deinit(self.allocator);
     }
 
-    fn ensureWorkerFile(
+    pub fn ensureWorkerFile(
         self: *Session,
         parent_id: u32,
         name: []const u8,
@@ -3415,25 +3416,15 @@ pub const Session = struct {
     }
 
     fn seedBuiltinPackageMetadata(self: *Session, venom_dir_id: u32, venom_id: []const u8) !void {
-        const spec = venom_packages.findBuiltinPackage(venom_id) orelse return;
-        const package_json = try venom_packages.renderPackageMetadataJson(self.allocator, spec);
-        defer self.allocator.free(package_json);
-        _ = try self.addFile(venom_dir_id, "PACKAGE.json", package_json, false, .none);
+        return session_worker_venoms.seedBuiltinPackageMetadata(self, venom_dir_id, venom_id);
     }
 
     fn cloneWorkerVenomPackage(self: *Session, venom_id: []const u8) !?venom_package.VenomPackage {
-        if (self.control_plane) |control_plane| {
-            return control_plane.cloneVenomPackage(self.allocator, venom_id);
-        }
-        return venom_packages.cloneBuiltinPackage(self.allocator, venom_id);
+        return session_worker_venoms.cloneWorkerVenomPackage(self, venom_id);
     }
 
     fn seedPackageMetadata(self: *Session, venom_dir_id: u32, package: venom_package.VenomPackage) !void {
-        if (self.lookupChild(venom_dir_id, "PACKAGE.json") != null) return;
-        var package_json = std.ArrayListUnmanaged(u8){};
-        defer package_json.deinit(self.allocator);
-        try venom_package.appendPackageJson(self.allocator, &package_json, package);
-        _ = try self.addFile(venom_dir_id, "PACKAGE.json", package_json.items, false, .none);
+        return session_worker_venoms.seedPackageMetadata(self, venom_dir_id, package);
     }
 
     fn seedGenericWorkerLoopbackVenomNamespaceAt(
@@ -3444,69 +3435,22 @@ pub const Session = struct {
         agent_id: []const u8,
         package: venom_package.VenomPackage,
     ) !void {
-        const escaped_base_path = try unified.jsonEscape(self.allocator, base_path);
-        defer self.allocator.free(escaped_base_path);
-        const shape_json = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"kind\":\"venom\",\"venom_id\":\"{s}\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,RUNTIME.json,PERMISSIONS.json,PACKAGE.json,STATUS.json,status.json,result.json,control/*}}\"}}",
-            .{ package.venom_id, escaped_base_path },
+        return session_worker_venoms.seedGenericWorkerLoopbackVenomNamespaceAt(
+            self,
+            venom_dir_id,
+            base_path,
+            worker_id,
+            agent_id,
+            package,
         );
-        defer self.allocator.free(shape_json);
-
-        const readme = package.help_md orelse "Worker-owned loopback venom projected for an attached external worker.\n";
-        try self.ensureWorkerFile(venom_dir_id, "README.md", readme, false, .none);
-        try self.ensureWorkerFile(venom_dir_id, "SCHEMA.json", shape_json, false, .none);
-        try self.ensureWorkerFile(venom_dir_id, "CAPS.json", package.capabilities_json, false, .none);
-        try self.ensureWorkerFile(venom_dir_id, "OPS.json", package.ops_json, false, .none);
-        try self.ensureWorkerFile(venom_dir_id, "RUNTIME.json", package.runtime_json, false, .none);
-        try self.ensureWorkerFile(venom_dir_id, "PERMISSIONS.json", package.permissions_json, false, .none);
-        try self.seedPackageMetadata(venom_dir_id, package);
-
-        const status_json = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"venom_id\":\"{s}\",\"state\":\"worker_loopback\",\"has_invoke\":true,\"owner\":\"worker\",\"worker_id\":\"{s}\",\"agent_id\":\"{s}\"}}",
-            .{ package.venom_id, worker_id, agent_id },
-        );
-        defer self.allocator.free(status_json);
-        try self.ensureWorkerFile(venom_dir_id, "STATUS.json", status_json, false, .none);
-        try self.ensureWorkerFile(venom_dir_id, "status.json", "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}", true, .none);
-        try self.ensureWorkerFile(venom_dir_id, "result.json", "{\"ok\":false,\"result\":null,\"error\":null}", true, .none);
-
-        const control_dir = if (self.lookupChild(venom_dir_id, "control")) |existing|
-            existing
-        else
-            try self.addDir(venom_dir_id, "control", false);
-        try self.ensureWorkerFile(control_dir, "README.md", "External worker watches and writes this loopback venom namespace directly.\n", false, .none);
-        try self.seedWorkerControlFilesFromOpsJson(control_dir, package.ops_json);
     }
 
     fn seedWorkerControlFilesFromOpsJson(self: *Session, control_dir: u32, ops_json: []const u8) !void {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, ops_json, .{}) catch return;
-        defer parsed.deinit();
-        if (parsed.value != .object) return;
-        if (parsed.value.object.get("invoke")) |invoke_value| {
-            if (invoke_value == .string and invoke_value.string.len > 0) {
-                try self.ensureWorkerControlFileFromPath(control_dir, invoke_value.string);
-            }
-        }
-        if (parsed.value.object.get("paths")) |paths_value| {
-            if (paths_value != .object) return;
-            var it = paths_value.object.iterator();
-            while (it.next()) |entry| {
-                if (entry.value_ptr.* != .string or entry.value_ptr.string.len == 0) continue;
-                try self.ensureWorkerControlFileFromPath(control_dir, entry.value_ptr.string);
-            }
-        }
+        return session_worker_venoms.seedWorkerControlFilesFromOpsJson(self, control_dir, ops_json);
     }
 
     fn ensureWorkerControlFileFromPath(self: *Session, control_dir: u32, raw_path: []const u8) !void {
-        var relative = raw_path;
-        if (std.mem.startsWith(u8, relative, "control/")) {
-            relative = relative["control/".len..];
-        }
-        const name = std.fs.path.basename(relative);
-        if (name.len == 0) return;
-        try self.ensureWorkerFile(control_dir, name, "", true, .none);
+        return session_worker_venoms.ensureWorkerControlFileFromPath(self, control_dir, raw_path);
     }
 
     fn seedActiveScopedVenomBindings(

@@ -21,7 +21,6 @@ const server_session_controls = @import("server_session_controls.zig");
 const server_session_observer_controls = @import("server_session_observer_controls.zig");
 const server_runtime_workers = @import("server_runtime_workers.zig");
 const server_session_bindings = @import("server_session_bindings.zig");
-const server_session_payloads = @import("server_session_payloads.zig");
 const server_workspace_status = @import("server_workspace_status.zig");
 const fs_protocol = @import("spiderweb_fs").fs_protocol;
 const spiderweb_node = @import("spiderweb_node");
@@ -4810,96 +4809,6 @@ fn optionalStringsEqual(left: ?[]const u8, right: ?[]const u8) bool {
     return std.mem.eql(u8, left.?, right.?);
 }
 
-fn buildWorkspaceStatusPayloadForBinding(
-    allocator: std.mem.Allocator,
-    runtime_registry: *AgentRuntimeRegistry,
-    binding: SessionBinding,
-    connection_workspace_url: ?[]const u8,
-    is_admin: bool,
-) ![]u8 {
-    return server_workspace_status.buildWorkspaceStatusPayloadForBinding(
-        allocator,
-        &runtime_registry.control_plane,
-        host_actor_id,
-        host_project_id,
-        binding,
-        connection_workspace_url,
-        is_admin,
-    );
-}
-
-fn buildSessionAttachStateJson(allocator: std.mem.Allocator, state: SessionAttachStateSnapshot) ![]u8 {
-    return server_session_payloads.buildSessionAttachStateJson(
-        allocator,
-        sessionAttachStateName(state.state),
-        state,
-    );
-}
-
-fn buildSessionAttachAckPayload(
-    allocator: std.mem.Allocator,
-    session_key: []const u8,
-    agent_id: []const u8,
-    project_id: ?[]const u8,
-    workspace_json: []const u8,
-    attach_json: []const u8,
-) ![]u8 {
-    return server_session_payloads.buildSessionAttachAckPayload(
-        allocator,
-        session_key,
-        agent_id,
-        project_id,
-        workspace_json,
-        attach_json,
-    );
-}
-
-fn buildSessionStatusPayload(
-    allocator: std.mem.Allocator,
-    session_key: []const u8,
-    agent_id: []const u8,
-    project_id: ?[]const u8,
-    attach_json: []const u8,
-    session_last_active_ms: i64,
-    session_stale: bool,
-    agent_last_heartbeat_ms: i64,
-    agent_stale: bool,
-) ![]u8 {
-    return server_session_payloads.buildSessionStatusPayload(
-        allocator,
-        session_key,
-        agent_id,
-        project_id,
-        attach_json,
-        session_last_active_ms,
-        session_stale,
-        agent_last_heartbeat_ms,
-        agent_stale,
-    );
-}
-
-fn buildSessionListPayload(
-    allocator: std.mem.Allocator,
-    map: *const std.StringHashMapUnmanaged(SessionBinding),
-    active_session_key: []const u8,
-) ![]u8 {
-    return server_session_payloads.buildSessionListPayload(allocator, map, active_session_key);
-}
-
-fn buildSessionRestorePayload(
-    allocator: std.mem.Allocator,
-    maybe_entry: ?SessionHistoryEntry,
-) ![]u8 {
-    return server_session_payloads.buildSessionRestorePayload(allocator, maybe_entry);
-}
-
-fn buildSessionHistoryPayload(
-    allocator: std.mem.Allocator,
-    history: []const SessionHistoryEntry,
-) ![]u8 {
-    return server_session_payloads.buildSessionHistoryPayload(allocator, history);
-}
-
 fn validateControlVersionPayload(allocator: std.mem.Allocator, payload_json: ?[]const u8) !void {
     return server_protocol_validation.validateControlVersionPayload(
         allocator,
@@ -5012,28 +4921,6 @@ fn isWorkspaceTopologyMutation(control_type: unified.ControlType) bool {
         => true,
         else => false,
     };
-}
-
-fn appendAvailabilitySnapshotJson(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    snapshot: control_plane_mod.ControlPlane.AvailabilitySnapshot,
-) !void {
-    try out.appendSlice(allocator, "{\"nodes\":{\"online\":");
-    try out.writer(allocator).print("{d}", .{snapshot.nodes_online});
-    try out.appendSlice(allocator, ",\"total\":");
-    try out.writer(allocator).print("{d}", .{snapshot.nodes_total});
-    try out.appendSlice(allocator, "},\"mounts\":{\"online\":");
-    try out.writer(allocator).print("{d}", .{snapshot.mounts_online});
-    try out.appendSlice(allocator, ",\"degraded\":");
-    try out.writer(allocator).print("{d}", .{snapshot.mounts_degraded});
-    try out.appendSlice(allocator, ",\"missing\":");
-    try out.writer(allocator).print("{d}", .{snapshot.mounts_missing});
-    try out.appendSlice(allocator, ",\"total\":");
-    try out.writer(allocator).print("{d}", .{snapshot.mounts_total});
-    try out.appendSlice(allocator, "},\"project_mount_digest\":");
-    try out.writer(allocator).print("{d}", .{snapshot.project_mount_digest});
-    try out.appendSlice(allocator, "}");
 }
 
 fn buildControlErrorWithCorrelation(

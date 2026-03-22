@@ -599,7 +599,7 @@ def main() -> int:
             project_bound_services,
             namespace_visible_services,
             "Codex touched host home/config paths even though /services/home was bound.",
-            "Codex touched host home/config paths and home was only namespace-visible, not project-bound under /services.",
+            "Codex touched host home/config paths and home was only namespace-visible, not workspace-bound under /services.",
             "Codex touched host home/config paths and no home surface was visible in the namespace.",
         )
         add_gap(candidate_gaps, seen_gap_ids, "codex_home", reason, home_state_paths, service_state, "blocked_until_agent_runtime_support")
@@ -610,7 +610,7 @@ def main() -> int:
             project_bound_services,
             namespace_visible_services,
             "Codex executed host shell/coreutils commands even though /services/terminal was bound.",
-            "Codex executed host shell/coreutils commands and terminal was only namespace-visible, not project-bound under /services.",
+            "Codex executed host shell/coreutils commands and terminal was only namespace-visible, not workspace-bound under /services.",
             "Codex executed host shell/coreutils commands and no terminal surface was visible in the namespace.",
         )
         add_gap(candidate_gaps, seen_gap_ids, "terminal_runtime", reason, terminal_runtime_commands, service_state, "blocked_until_agent_runtime_support")
@@ -622,7 +622,7 @@ def main() -> int:
             project_bound_services,
             namespace_visible_services,
             "Codex used host-local git commands or metadata even though /services/git was bound.",
-            "Codex used host-local git commands or metadata and git was only namespace-visible, not project-bound under /services.",
+            "Codex used host-local git commands or metadata and git was only namespace-visible, not workspace-bound under /services.",
             "Codex used host-local git commands or metadata and no git surface was visible in the namespace.",
         )
         add_gap(candidate_gaps, seen_gap_ids, "git_runtime", reason, git_observations, service_state, "blocked_until_agent_runtime_support")
@@ -633,7 +633,7 @@ def main() -> int:
             project_bound_services,
             namespace_visible_services,
             "Codex read repo content from the host checkout even though /services/search_code was bound.",
-            "Codex read repo content from the host checkout and search_code was only namespace-visible, not project-bound under /services.",
+            "Codex read repo content from the host checkout and search_code was only namespace-visible, not workspace-bound under /services.",
             "Codex read repo content from the host checkout and no search_code surface was visible in the namespace.",
         )
         add_gap(candidate_gaps, seen_gap_ids, "search_code_bridge", reason, search_code_paths, service_state, "workspace_or_launch_isolation_fixable")

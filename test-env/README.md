@@ -97,7 +97,7 @@ Mounted namespace paths used by the harness:
 - remote shared seed data: `/shared_data`
 - workspace metadata: `/projects/<workspace_id>/meta/*`
 - namespace metadata: `/meta/*`
-- generic project services: `/services/*`
+- generic workspace services: `/services/*`
 
 Run the Linux harness directly from the repo root:
 
@@ -236,7 +236,7 @@ Usage report result semantics:
 - `workspace_bootstrap_ok`: true only when the attached agent read the bootstrap metadata and performed the required in-workspace bootstrap actions
 - `machine_independence_ok`: true only when no host-runtime gaps were observed
 - `workspace_bound_services`: services bound under `/services/*` for the mounted workspace
-- `namespace_visible_services`: services visible somewhere in the namespace, even if not project-bound under `/services/*`
+- `namespace_visible_services`: services visible somewhere in the namespace, even if not workspace-bound under `/services/*`
 - `external_prereqs_observed`: declared external prerequisites observed during the run, such as the operator-installed Codex runtime
 - `candidate_venom_gaps`: inferred local-runtime gaps such as `codex_home`, `terminal_runtime`, `git_runtime`, and `search_code_bridge`
 

@@ -17,6 +17,7 @@ const server_local_node_supervisor = @import("server_local_node_supervisor.zig")
 const server_metrics_http = @import("server_metrics_http.zig");
 const server_namespace_sessions = @import("server_namespace_sessions.zig");
 const server_session_controls = @import("server_session_controls.zig");
+const server_session_observer_controls = @import("server_session_observer_controls.zig");
 const server_runtime_workers = @import("server_runtime_workers.zig");
 const server_session_bindings = @import("server_session_bindings.zig");
 const server_session_payloads = @import("server_session_payloads.zig");
@@ -1580,7 +1581,7 @@ const AuthTokenStore = struct {
         };
     }
 
-    fn sessionHistoryOwned(
+    pub fn sessionHistoryOwned(
         self: *AuthTokenStore,
         role: ConnectionRole,
         agent_id_filter: ?[]const u8,
@@ -1615,7 +1616,7 @@ const AuthTokenStore = struct {
         return out;
     }
 
-    fn latestSessionOwned(
+    pub fn latestSessionOwned(
         self: *AuthTokenStore,
         role: ConnectionRole,
         agent_id_filter: ?[]const u8,
@@ -1634,7 +1635,7 @@ const AuthTokenStore = struct {
         return entry;
     }
 
-    fn sessionLastActiveMs(self: *const AuthTokenStore, role: ConnectionRole, session_key: []const u8) ?i64 {
+    pub fn sessionLastActiveMs(self: *const AuthTokenStore, role: ConnectionRole, session_key: []const u8) ?i64 {
         _ = role;
         const mutex = @constCast(&self.mutex);
         mutex.lock();
@@ -2155,7 +2156,7 @@ const AgentRuntimeRegistry = struct {
         return self.auth_tokens.authenticate(authorization_header);
     }
 
-    fn authStatusJson(self: *AgentRuntimeRegistry) ![]u8 {
+    pub fn authStatusJson(self: *AgentRuntimeRegistry) ![]u8 {
         return self.auth_tokens.statusJson();
     }
 
@@ -2946,7 +2947,7 @@ const AgentRuntimeRegistry = struct {
         };
     }
 
-    fn touchRuntimeAttachState(self: *AgentRuntimeRegistry, agent_id: []const u8, project_id: ?[]const u8) void {
+    pub fn touchRuntimeAttachState(self: *AgentRuntimeRegistry, agent_id: []const u8, project_id: ?[]const u8) void {
         const binding_key = self.runtimeBindingKey(agent_id, project_id) catch return;
         defer self.allocator.free(binding_key);
         if (project_id) |value| {
@@ -3292,7 +3293,7 @@ const AgentRuntimeRegistry = struct {
         );
     }
 
-    fn appendSecurityAuditAndDebug(
+    pub fn appendSecurityAuditAndDebug(
         self: *AgentRuntimeRegistry,
         agent_id: []const u8,
         control_type: unified.ControlType,
@@ -3834,38 +3835,37 @@ fn handleWebSocketConnection(
                                 continue;
                             },
                             .auth_status => {
-                                if (principal.role != .access) {
-                                    const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                    runtime_registry.appendSecurityAuditAndDebug(
-                                        active_binding.agent_id,
-                                        .auth_status,
-                                        principal.role,
-                                        parsed.correlation_id orelse parsed.id,
-                                        "auth_status_forbidden",
-                                        false,
-                                        "forbidden",
-                                        "operation requires access token",
-                                    );
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "forbidden",
-                                        "operation requires access token",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                const payload = try runtime_registry.authStatusJson();
-                                defer allocator.free(payload);
-                                const response = try unified.buildControlAck(
+                                const auth_status = try server_session_observer_controls.handleAuthStatusControl(
                                     allocator,
-                                    .auth_status,
-                                    parsed.id,
-                                    payload,
+                                    runtime_registry,
+                                    &session_bindings,
+                                    active_session_key,
+                                    principal,
+                                    parsed.correlation_id orelse parsed.id,
                                 );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                switch (auth_status) {
+                                    .ack => |payload| {
+                                        defer allocator.free(payload);
+                                        const response = try unified.buildControlAck(
+                                            allocator,
+                                            .auth_status,
+                                            parsed.id,
+                                            payload,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
+                                    .err => |err_payload| {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            err_payload.code,
+                                            err_payload.message,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
+                                }
                                 continue;
                             },
                             .auth_rotate => {
@@ -3995,90 +3995,37 @@ fn handleWebSocketConnection(
                                 continue;
                             },
                             .session_status => {
-                                var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
-                                defer payload.deinit();
-                                if (payload.value != .object) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "session_status payload must be an object",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const payload_session_key = getOptionalStringField(payload.value.object, "session_key");
-                                const session_key = if (payload_session_key) |value| value else active_session_key;
-                                const heartbeat = getOptionalBoolField(payload.value.object, "heartbeat") orelse false;
-                                const binding = session_bindings.get(session_key) orelse {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "not_found",
-                                        "session_key not found",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-
-                                if (heartbeat) {
-                                    runtime_registry.rememberPrincipalSession(
-                                        principal,
-                                        session_key,
-                                        binding.agent_id,
-                                        binding.project_id,
-                                    );
-                                    runtime_registry.touchRuntimeAttachState(binding.agent_id, binding.project_id);
-                                }
-
-                                var attach_state = runtime_registry.ensureRuntimeWarmup(
-                                    binding.agent_id,
-                                    binding.project_id,
-                                    binding.project_token,
-                                    false,
-                                ) catch |warm_err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "execution_failed",
-                                        @errorName(warm_err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                defer attach_state.deinit(allocator);
-
-                                const attach_json = try buildSessionAttachStateJson(allocator, attach_state);
-                                defer allocator.free(attach_json);
-                                const now_ms = std.time.milliTimestamp();
-                                const session_last_active_ms = runtime_registry.auth_tokens.sessionLastActiveMs(principal.role, session_key) orelse 0;
-                                const session_stale = session_last_active_ms > 0 and (now_ms - session_last_active_ms) > session_heartbeat_ttl_ms;
-                                const agent_last_heartbeat_ms = attach_state.updated_at_ms;
-                                const agent_stale = agent_last_heartbeat_ms > 0 and (now_ms - agent_last_heartbeat_ms) > agent_heartbeat_ttl_ms;
-                                const payload_json = try buildSessionStatusPayload(
+                                const session_status = try server_session_observer_controls.handleSessionStatusControl(
                                     allocator,
-                                    session_key,
-                                    binding.agent_id,
-                                    binding.project_id,
-                                    attach_json,
-                                    session_last_active_ms,
-                                    session_stale,
-                                    agent_last_heartbeat_ms,
-                                    agent_stale,
+                                    runtime_registry,
+                                    &session_bindings,
+                                    active_session_key,
+                                    principal,
+                                    parsed.payload_json,
                                 );
-                                defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(
-                                    allocator,
-                                    .session_status,
-                                    parsed.id,
-                                    payload_json,
-                                );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                switch (session_status) {
+                                    .ack => |payload_json| {
+                                        defer allocator.free(payload_json);
+                                        const response = try unified.buildControlAck(
+                                            allocator,
+                                            .session_status,
+                                            parsed.id,
+                                            payload_json,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
+                                    .err => |err_payload| {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            err_payload.code,
+                                            err_payload.message,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
+                                }
                                 continue;
                             },
                             .mount_attach => {
@@ -4568,7 +4515,11 @@ fn handleWebSocketConnection(
                                 continue;
                             },
                             .session_list => {
-                                const payload_json = try buildSessionListPayload(allocator, &session_bindings, active_session_key);
+                                const payload_json = try server_session_observer_controls.handleSessionListControl(
+                                    allocator,
+                                    &session_bindings,
+                                    active_session_key,
+                                );
                                 defer allocator.free(payload_json);
                                 const response = try unified.buildControlAck(
                                     allocator,
@@ -4581,86 +4532,67 @@ fn handleWebSocketConnection(
                                 continue;
                             },
                             .session_restore => {
-                                var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
-                                defer payload.deinit();
-                                if (payload.value != .object) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "session_restore payload must be an object",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                const agent_filter = getOptionalStringField(payload.value.object, "agent_id");
-                                var restored = try runtime_registry.auth_tokens.latestSessionOwned(principal.role, agent_filter);
-                                defer if (restored) |*entry| entry.deinit(allocator);
-
-                                const payload_json = try buildSessionRestorePayload(allocator, restored);
-                                defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(
+                                const session_restore = try server_session_observer_controls.handleSessionRestoreControl(
                                     allocator,
-                                    .session_restore,
-                                    parsed.id,
-                                    payload_json,
+                                    runtime_registry,
+                                    principal,
+                                    parsed.payload_json,
                                 );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                continue;
-                            },
-                            .session_history => {
-                                var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
-                                defer payload.deinit();
-                                if (payload.value != .object) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "session_history payload must be an object",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                const agent_filter = getOptionalStringField(payload.value.object, "agent_id");
-                                const limit = blk: {
-                                    const value = payload.value.object.get("limit") orelse break :blk @as(usize, 10);
-                                    if (value != .integer or value.integer < 0) {
-                                        const response = try unified.buildControlError(
+                                switch (session_restore) {
+                                    .ack => |payload_json| {
+                                        defer allocator.free(payload_json);
+                                        const response = try unified.buildControlAck(
                                             allocator,
+                                            .session_restore,
                                             parsed.id,
-                                            "invalid_payload",
-                                            "limit must be a non-negative integer",
+                                            payload_json,
                                         );
                                         defer allocator.free(response);
                                         try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                        continue;
-                                    }
-                                    if (value.integer > 100) break :blk @as(usize, 100);
-                                    break :blk @as(usize, @intCast(value.integer));
-                                };
-                                var history = try runtime_registry.auth_tokens.sessionHistoryOwned(
-                                    principal.role,
-                                    agent_filter,
-                                    limit,
-                                );
-                                defer {
-                                    for (history.items) |*entry| entry.deinit(allocator);
-                                    history.deinit(allocator);
+                                    },
+                                    .err => |err_payload| {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            err_payload.code,
+                                            err_payload.message,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
                                 }
-
-                                const payload_json = try buildSessionHistoryPayload(allocator, history.items);
-                                defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(
+                                continue;
+                            },
+                            .session_history => {
+                                const session_history = try server_session_observer_controls.handleSessionHistoryControl(
                                     allocator,
-                                    .session_history,
-                                    parsed.id,
-                                    payload_json,
+                                    runtime_registry,
+                                    principal,
+                                    parsed.payload_json,
                                 );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                switch (session_history) {
+                                    .ack => |payload_json| {
+                                        defer allocator.free(payload_json);
+                                        const response = try unified.buildControlAck(
+                                            allocator,
+                                            .session_history,
+                                            parsed.id,
+                                            payload_json,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
+                                    .err => |err_payload| {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            err_payload.code,
+                                            err_payload.message,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
+                                }
                                 continue;
                             },
                             .session_close => {

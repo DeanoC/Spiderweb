@@ -25,6 +25,7 @@ const venom_packages = @import("../venom_packages.zig");
 const venom_package = @import("../venom_package.zig");
 const session_workspace_contract = @import("session_workspace_contract.zig");
 const session_service_discovery = @import("session_service_discovery.zig");
+const session_project_status = @import("session_project_status.zig");
 
 var direct_builtin_shell_exec_mutex: std.Thread.Mutex = .{};
 
@@ -3133,108 +3134,15 @@ pub const Session = struct {
     }
 
     fn buildProjectTopologyJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-        const escaped_project = try unified.jsonEscape(self.allocator, policy.project_id);
-        defer self.allocator.free(escaped_project);
-        const escaped_agent = try unified.jsonEscape(self.allocator, self.agent_id);
-        defer self.allocator.free(escaped_agent);
-
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.writer(self.allocator).print(
-            "{{\"project_id\":\"{s}\",\"agent_id\":\"{s}\",\"nodes\":[",
-            .{ escaped_project, escaped_agent },
-        );
-        for (policy.nodes.items, 0..) |node, idx| {
-            if (idx != 0) try out.append(self.allocator, ',');
-            const escaped_node_id = try unified.jsonEscape(self.allocator, node.id);
-            defer self.allocator.free(escaped_node_id);
-            try out.writer(self.allocator).print(
-                "{{\"id\":\"{s}\",\"resources\":{{\"fs\":{s},\"camera\":{s},\"screen\":{s},\"user\":{s}}},\"terminals\":[",
-                .{
-                    escaped_node_id,
-                    if (node.resources.fs) "true" else "false",
-                    if (node.resources.camera) "true" else "false",
-                    if (node.resources.screen) "true" else "false",
-                    if (node.resources.user) "true" else "false",
-                },
-            );
-            for (node.terminals.items, 0..) |terminal_id, term_idx| {
-                if (term_idx != 0) try out.append(self.allocator, ',');
-                const escaped_terminal = try unified.jsonEscape(self.allocator, terminal_id);
-                defer self.allocator.free(escaped_terminal);
-                try out.writer(self.allocator).print("\"{s}\"", .{escaped_terminal});
-            }
-            try out.appendSlice(self.allocator, "]}");
-        }
-        try out.appendSlice(self.allocator, "],\"project_links\":[");
-        for (policy.project_links.items, 0..) |link, idx| {
-            if (idx != 0) try out.append(self.allocator, ',');
-            const target = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/{s}", .{ link.node_id, link.resource });
-            defer self.allocator.free(target);
-            const escaped_name = try unified.jsonEscape(self.allocator, link.name);
-            defer self.allocator.free(escaped_name);
-            const escaped_node_id = try unified.jsonEscape(self.allocator, link.node_id);
-            defer self.allocator.free(escaped_node_id);
-            const escaped_resource = try unified.jsonEscape(self.allocator, link.resource);
-            defer self.allocator.free(escaped_resource);
-            const escaped_target = try unified.jsonEscape(self.allocator, target);
-            defer self.allocator.free(escaped_target);
-            try out.writer(self.allocator).print(
-                "{{\"name\":\"{s}\",\"node_id\":\"{s}\",\"resource\":\"{s}\",\"target\":\"{s}\"}}",
-                .{ escaped_name, escaped_node_id, escaped_resource, escaped_target },
-            );
-        }
-        try out.appendSlice(self.allocator, "]}");
-        return out.toOwnedSlice(self.allocator);
+        return session_project_status.buildProjectTopologyJson(self, policy);
     }
 
     fn buildFallbackProjectNodesJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.appendSlice(self.allocator, "[");
-        for (policy.nodes.items, 0..) |node, idx| {
-            if (idx != 0) try out.append(self.allocator, ',');
-            const escaped_node_id = try unified.jsonEscape(self.allocator, node.id);
-            defer self.allocator.free(escaped_node_id);
-            try out.writer(self.allocator).print(
-                "{{\"node_id\":\"{s}\",\"state\":\"unknown\",\"mounts\":0}}",
-                .{escaped_node_id},
-            );
-        }
-        try out.appendSlice(self.allocator, "]");
-        return out.toOwnedSlice(self.allocator);
+        return session_project_status.buildFallbackProjectNodesJson(self, policy);
     }
 
     fn buildProjectAgentsJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.appendSlice(self.allocator, "[");
-        const escaped_self_name = try unified.jsonEscape(self.allocator, self.agent_id);
-        defer self.allocator.free(escaped_self_name);
-        const self_target = try std.fmt.allocPrint(self.allocator, "/agents/{s}", .{self.agent_id});
-        defer self.allocator.free(self_target);
-        const escaped_self_target = try unified.jsonEscape(self.allocator, self_target);
-        defer self.allocator.free(escaped_self_target);
-        try out.writer(self.allocator).print(
-            "{{\"name\":\"{s}\",\"target\":\"{s}\",\"kind\":\"active\"}}",
-            .{ escaped_self_name, escaped_self_target },
-        );
-        for (policy.visible_agents.items) |agent_name| {
-            if (std.mem.eql(u8, agent_name, "self")) continue;
-            if (std.mem.eql(u8, agent_name, self.agent_id)) continue;
-            const escaped_agent_name = try unified.jsonEscape(self.allocator, agent_name);
-            defer self.allocator.free(escaped_agent_name);
-            const target = try std.fmt.allocPrint(self.allocator, "/agents/{s}", .{agent_name});
-            defer self.allocator.free(target);
-            const escaped_target = try unified.jsonEscape(self.allocator, target);
-            defer self.allocator.free(escaped_target);
-            try out.writer(self.allocator).print(
-                ",{{\"name\":\"{s}\",\"target\":\"{s}\",\"kind\":\"visible\"}}",
-                .{ escaped_agent_name, escaped_target },
-            );
-        }
-        try out.appendSlice(self.allocator, "]");
-        return out.toOwnedSlice(self.allocator);
+        return session_project_status.buildProjectAgentsJson(self, policy);
     }
 
     fn buildProjectContractsJson(self: *Session, project_id: []const u8) ![]u8 {
@@ -3265,18 +3173,13 @@ pub const Session = struct {
         project_nodes_from_workspace: bool,
         nodes_meta_from_workspace: bool,
     ) ![]u8 {
-        const escaped_project_id = try unified.jsonEscape(self.allocator, project_id);
-        defer self.allocator.free(escaped_project_id);
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"project_id\":\"{s}\",\"workspace_status\":\"{s}\",\"project_fs\":\"{s}\",\"project_nodes\":\"{s}\",\"nodes_meta\":\"{s}\",\"project_binds\":\"control_plane\",\"mounted_services\":\"namespace_projection\"}}",
-            .{
-                escaped_project_id,
-                if (has_workspace_status) "control_plane" else "policy",
-                if (fs_from_workspace) "workspace_mounts" else "policy_links",
-                if (project_nodes_from_workspace) "workspace_mounts" else "policy_nodes",
-                if (nodes_meta_from_workspace) "workspace_mounts" else "policy_nodes",
-            },
+        return session_project_status.buildProjectSourcesJson(
+            self,
+            project_id,
+            has_workspace_status,
+            fs_from_workspace,
+            project_nodes_from_workspace,
+            nodes_meta_from_workspace,
         );
     }
 
@@ -3288,505 +3191,58 @@ pub const Session = struct {
         loaded_live_nodes: bool,
         nodes_meta_from_workspace: bool,
     ) ![]u8 {
-        const escaped_project_id = try unified.jsonEscape(self.allocator, policy.project_id);
-        defer self.allocator.free(escaped_project_id);
-
-        var policy_agent_links: usize = 1;
-        for (policy.visible_agents.items) |agent_name| {
-            if (std.mem.eql(u8, agent_name, "self")) continue;
-            if (std.mem.eql(u8, agent_name, self.agent_id)) continue;
-            policy_agent_links += 1;
-        }
-
-        var workspace_mount_links: usize = 0;
-        var workspace_node_links: usize = 0;
-        var reconcile_state: []const u8 = "unknown";
-        var reconcile_state_owned: ?[]u8 = null;
-        defer if (reconcile_state_owned) |owned| self.allocator.free(owned);
-        var queue_depth: i64 = 0;
-        var health_state: []const u8 = "unknown";
-
-        if (workspace_status_json) |status_json| {
-            var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, status_json, .{}) catch null;
-            if (parsed) |*status_parsed| {
-                defer status_parsed.deinit();
-                if (status_parsed.value == .object) {
-                    if (status_parsed.value.object.get("reconcile_state")) |value| {
-                        if (value == .string and value.string.len > 0) {
-                            reconcile_state_owned = try self.allocator.dupe(u8, value.string);
-                            reconcile_state = reconcile_state_owned.?;
-                        }
-                    }
-                    if (status_parsed.value.object.get("queue_depth")) |value| {
-                        if (value == .integer and value.integer >= 0) queue_depth = value.integer;
-                    }
-
-                    var missing: i64 = 0;
-                    var degraded: i64 = 0;
-                    var drift_count: i64 = 0;
-                    if (status_parsed.value.object.get("availability")) |availability_value| {
-                        if (availability_value == .object) {
-                            if (availability_value.object.get("missing")) |value| {
-                                if (value == .integer and value.integer >= 0) missing = value.integer;
-                            }
-                            if (availability_value.object.get("degraded")) |value| {
-                                if (value == .integer and value.integer >= 0) degraded = value.integer;
-                            }
-                        }
-                    }
-                    if (status_parsed.value.object.get("drift")) |drift_value| {
-                        if (drift_value == .object) {
-                            if (drift_value.object.get("count")) |value| {
-                                if (value == .integer and value.integer >= 0) drift_count = value.integer;
-                            }
-                        }
-                    }
-
-                    if (status_parsed.value.object.get("mounts")) |mounts_value| {
-                        if (mounts_value == .array) {
-                            workspace_mount_links = mounts_value.array.items.len;
-                            var nodes_seen = std.StringHashMapUnmanaged(void){};
-                            defer nodes_seen.deinit(self.allocator);
-                            for (mounts_value.array.items) |mount_value| {
-                                if (mount_value != .object) continue;
-                                const node_id_value = mount_value.object.get("node_id") orelse continue;
-                                if (node_id_value != .string or node_id_value.string.len == 0) continue;
-                                if (!nodes_seen.contains(node_id_value.string)) {
-                                    try nodes_seen.put(self.allocator, node_id_value.string, {});
-                                }
-                            }
-                            workspace_node_links = nodes_seen.count();
-                        }
-                    }
-
-                    health_state = if (missing > 0)
-                        "missing"
-                    else if (degraded > 0 or drift_count > 0 or queue_depth > 0 or std.mem.eql(u8, reconcile_state, "degraded"))
-                        "degraded"
-                    else if (std.mem.eql(u8, reconcile_state, "unknown"))
-                        "unknown"
-                    else
-                        "healthy";
-                }
-            }
-        }
-
-        const source_workspace_status = if (workspace_status_json != null) "control_plane" else "policy";
-        const source_project_fs = if (loaded_live_mounts) "workspace_mounts" else "policy_links";
-        const source_project_nodes = if (loaded_live_nodes) "workspace_mounts" else "policy_nodes";
-        const source_nodes_meta = if (nodes_meta_from_workspace) "workspace_mounts" else "policy_nodes";
-        const project_mount_links = if (loaded_live_mounts and workspace_mount_links > 0) workspace_mount_links else policy.project_links.items.len;
-        const project_node_links = if (loaded_live_nodes and workspace_node_links > 0) workspace_node_links else policy.nodes.items.len;
-
-        const escaped_health_state = try unified.jsonEscape(self.allocator, health_state);
-        defer self.allocator.free(escaped_health_state);
-        const escaped_reconcile_state = try unified.jsonEscape(self.allocator, reconcile_state);
-        defer self.allocator.free(escaped_reconcile_state);
-
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"project_id\":\"{s}\",\"sources\":{{\"workspace_status\":\"{s}\",\"project_fs\":\"{s}\",\"project_nodes\":\"{s}\",\"nodes_meta\":\"{s}\"}},\"counts\":{{\"policy_nodes\":{d},\"policy_links\":{d},\"visible_agents\":{d},\"project_agent_links\":{d},\"project_node_links\":{d},\"project_mount_links\":{d}}},\"health\":{{\"state\":\"{s}\",\"reconcile_state\":\"{s}\",\"queue_depth\":{d}}}}}",
-            .{
-                escaped_project_id,
-                source_workspace_status,
-                source_project_fs,
-                source_project_nodes,
-                source_nodes_meta,
-                policy.nodes.items.len,
-                policy.project_links.items.len,
-                policy.visible_agents.items.len,
-                policy_agent_links,
-                project_node_links,
-                project_mount_links,
-                escaped_health_state,
-                escaped_reconcile_state,
-                queue_depth,
-            },
+        return session_project_status.buildProjectSummaryJson(
+            self,
+            policy,
+            workspace_status_json,
+            loaded_live_mounts,
+            loaded_live_nodes,
+            nodes_meta_from_workspace,
         );
     }
 
     fn extractWorkspaceAlerts(self: *Session, workspace_status_json: []const u8) !?[]u8 {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-
-        var missing: i64 = 0;
-        var degraded: i64 = 0;
-        var drift_count: i64 = 0;
-        var queue_depth: i64 = 0;
-        var reconcile_state: []const u8 = "unknown";
-
-        if (parsed.value.object.get("availability")) |availability_value| {
-            if (availability_value == .object) {
-                if (availability_value.object.get("missing")) |value| {
-                    if (value == .integer and value.integer >= 0) missing = value.integer;
-                }
-                if (availability_value.object.get("degraded")) |value| {
-                    if (value == .integer and value.integer >= 0) degraded = value.integer;
-                }
-            }
-        }
-        if (parsed.value.object.get("drift")) |drift_value| {
-            if (drift_value == .object) {
-                if (drift_value.object.get("count")) |value| {
-                    if (value == .integer and value.integer >= 0) drift_count = value.integer;
-                }
-            }
-        }
-        if (parsed.value.object.get("queue_depth")) |value| {
-            if (value == .integer and value.integer >= 0) queue_depth = value.integer;
-        }
-        if (parsed.value.object.get("reconcile_state")) |value| {
-            if (value == .string and value.string.len > 0) reconcile_state = value.string;
-        }
-
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.appendSlice(self.allocator, "[");
-        var first = true;
-
-        if (missing > 0) {
-            if (!first) try out.append(self.allocator, ',');
-            first = false;
-            try out.writer(self.allocator).print(
-                "{{\"id\":\"missing_mounts\",\"severity\":\"error\",\"count\":{d},\"message\":\"missing mounts detected\"}}",
-                .{missing},
-            );
-        }
-        if (degraded > 0) {
-            if (!first) try out.append(self.allocator, ',');
-            first = false;
-            try out.writer(self.allocator).print(
-                "{{\"id\":\"degraded_mounts\",\"severity\":\"warning\",\"count\":{d},\"message\":\"degraded mounts detected\"}}",
-                .{degraded},
-            );
-        }
-        if (drift_count > 0) {
-            if (!first) try out.append(self.allocator, ',');
-            first = false;
-            try out.writer(self.allocator).print(
-                "{{\"id\":\"workspace_drift\",\"severity\":\"warning\",\"count\":{d},\"message\":\"workspace drift detected\"}}",
-                .{drift_count},
-            );
-        }
-        if (std.mem.eql(u8, reconcile_state, "degraded")) {
-            if (!first) try out.append(self.allocator, ',');
-            first = false;
-            try out.appendSlice(self.allocator, "{\"id\":\"reconcile_degraded\",\"severity\":\"warning\",\"message\":\"reconcile state degraded\"}");
-        }
-        if (queue_depth > 0) {
-            if (!first) try out.append(self.allocator, ',');
-            first = false;
-            try out.writer(self.allocator).print(
-                "{{\"id\":\"reconcile_queue\",\"severity\":\"info\",\"count\":{d},\"message\":\"reconcile queue pending\"}}",
-                .{queue_depth},
-            );
-        }
-
-        try out.appendSlice(self.allocator, "]");
-        const rendered = try out.toOwnedSlice(self.allocator);
-        return rendered;
+        return session_project_status.extractWorkspaceAlerts(self, workspace_status_json);
     }
 
     fn loadProjectWorkspaceStatus(self: *Session, project_id: []const u8) !?[]u8 {
-        const plane = self.control_plane orelse return null;
-        const escaped_project_id = try unified.jsonEscape(self.allocator, project_id);
-        defer self.allocator.free(escaped_project_id);
-        const request_json = if (self.project_token) |token| blk: {
-            const escaped_token = try unified.jsonEscape(self.allocator, token);
-            defer self.allocator.free(escaped_token);
-            break :blk try std.fmt.allocPrint(
-                self.allocator,
-                "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
-                .{ escaped_project_id, escaped_token },
-            );
-        } else try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"project_id\":\"{s}\"}}",
-            .{escaped_project_id},
-        );
-        defer self.allocator.free(request_json);
-
-        if (plane.workspaceStatusWithRole(self.agent_id, request_json, self.is_admin) catch null) |status_json| {
-            if (try self.workspaceStatusMatchesProject(status_json, project_id)) {
-                return status_json;
-            }
-            self.allocator.free(status_json);
-        }
-
-        if (plane.workspaceStatusWithRole(self.agent_id, null, self.is_admin) catch null) |status_json| {
-            if (try self.workspaceStatusMatchesProject(status_json, project_id)) {
-                return status_json;
-            }
-            self.allocator.free(status_json);
-        }
-
-        return null;
-    }
-
-    fn workspaceStatusMatchesProject(
-        self: *Session,
-        workspace_status_json: []const u8,
-        expected_project_id: []const u8,
-    ) !bool {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return false;
-        defer parsed.deinit();
-        if (parsed.value != .object) return false;
-        const project_id_value = parsed.value.object.get("project_id") orelse return false;
-        if (project_id_value != .string) return false;
-        return std.mem.eql(u8, project_id_value.string, expected_project_id);
+        return session_project_status.loadProjectWorkspaceStatus(self, project_id);
     }
 
     fn extractWorkspaceAvailability(self: *Session, workspace_status_json: []const u8) !?[]u8 {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-        const availability_value = parsed.value.object.get("availability") orelse return null;
-        if (availability_value != .object) return null;
-        const rendered = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(availability_value, .{})});
-        return rendered;
+        return session_project_status.extractWorkspaceAvailability(self, workspace_status_json);
     }
 
     fn extractWorkspaceNodes(self: *Session, workspace_status_json: []const u8) !?[]u8 {
-        const NodeSummary = struct {
-            node_id: []const u8,
-            state_rank: u8,
-            mounts: u32,
-        };
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-        const mounts_value = parsed.value.object.get("mounts") orelse return null;
-        if (mounts_value != .array) return null;
-
-        var summaries = std.ArrayListUnmanaged(NodeSummary){};
-        defer summaries.deinit(self.allocator);
-        for (mounts_value.array.items) |mount_value| {
-            if (mount_value != .object) continue;
-            const node_id_value = mount_value.object.get("node_id") orelse continue;
-            if (node_id_value != .string or node_id_value.string.len == 0) continue;
-            const state = if (mount_value.object.get("state")) |value|
-                if (value == .string) value.string else "unknown"
-            else
-                "unknown";
-            const rank = mountStateRank(state);
-
-            var merged = false;
-            for (summaries.items) |*entry| {
-                if (!std.mem.eql(u8, entry.node_id, node_id_value.string)) continue;
-                entry.mounts +%= 1;
-                if (rank > entry.state_rank) entry.state_rank = rank;
-                merged = true;
-                break;
-            }
-            if (!merged) {
-                try summaries.append(self.allocator, .{
-                    .node_id = node_id_value.string,
-                    .state_rank = rank,
-                    .mounts = 1,
-                });
-            }
-        }
-
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.appendSlice(self.allocator, "[");
-        for (summaries.items, 0..) |entry, idx| {
-            if (idx != 0) try out.append(self.allocator, ',');
-            const escaped_node_id = try unified.jsonEscape(self.allocator, entry.node_id);
-            defer self.allocator.free(escaped_node_id);
-            const state = mountStateNameFromRank(entry.state_rank);
-            try out.writer(self.allocator).print(
-                "{{\"node_id\":\"{s}\",\"state\":\"{s}\",\"mounts\":{d}}}",
-                .{ escaped_node_id, state, entry.mounts },
-            );
-        }
-        try out.appendSlice(self.allocator, "]");
-        const rendered = try out.toOwnedSlice(self.allocator);
-        return rendered;
-    }
-
-    fn mountStateRank(state: []const u8) u8 {
-        if (std.mem.eql(u8, state, "missing")) return 3;
-        if (std.mem.eql(u8, state, "degraded")) return 2;
-        if (std.mem.eql(u8, state, "online")) return 1;
-        return 0;
-    }
-
-    fn mountStateNameFromRank(rank: u8) []const u8 {
-        return switch (rank) {
-            3 => "missing",
-            2 => "degraded",
-            1 => "online",
-            else => "unknown",
-        };
+        return session_project_status.extractWorkspaceNodes(self, workspace_status_json);
     }
 
     fn extractWorkspaceMounts(self: *Session, workspace_status_json: []const u8) !?[]u8 {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-        const mounts_value = parsed.value.object.get("mounts") orelse return null;
-        if (mounts_value != .array) return null;
-        const rendered = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(mounts_value, .{})});
-        return rendered;
+        return session_project_status.extractWorkspaceMounts(self, workspace_status_json);
     }
 
     fn extractWorkspaceDesiredMounts(self: *Session, workspace_status_json: []const u8) !?[]u8 {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-        const mounts_value = parsed.value.object.get("desired_mounts") orelse return null;
-        if (mounts_value != .array) return null;
-        const rendered = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(mounts_value, .{})});
-        return rendered;
+        return session_project_status.extractWorkspaceDesiredMounts(self, workspace_status_json);
     }
 
     fn extractWorkspaceActualMounts(self: *Session, workspace_status_json: []const u8) !?[]u8 {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-        const mounts_value = parsed.value.object.get("actual_mounts") orelse return null;
-        if (mounts_value != .array) return null;
-        const rendered = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(mounts_value, .{})});
-        return rendered;
+        return session_project_status.extractWorkspaceActualMounts(self, workspace_status_json);
     }
 
     fn extractWorkspaceDrift(self: *Session, workspace_status_json: []const u8) !?[]u8 {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-        const drift_value = parsed.value.object.get("drift") orelse return null;
-        if (drift_value != .object) return null;
-        const rendered = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(drift_value, .{})});
-        return rendered;
+        return session_project_status.extractWorkspaceDrift(self, workspace_status_json);
     }
 
     fn extractWorkspaceReconcile(self: *Session, workspace_status_json: []const u8) !?[]u8 {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-
-        const reconcile_state = blk: {
-            if (parsed.value.object.get("reconcile_state")) |value| {
-                if (value == .string and value.string.len > 0) break :blk value.string;
-            }
-            break :blk "unknown";
-        };
-        const last_reconcile_ms: i64 = blk: {
-            if (parsed.value.object.get("last_reconcile_ms")) |value| {
-                if (value == .integer) break :blk value.integer;
-            }
-            break :blk 0;
-        };
-        const last_success_ms: i64 = blk: {
-            if (parsed.value.object.get("last_success_ms")) |value| {
-                if (value == .integer) break :blk value.integer;
-            }
-            break :blk 0;
-        };
-        const queue_depth: i64 = blk: {
-            if (parsed.value.object.get("queue_depth")) |value| {
-                if (value == .integer and value.integer >= 0) break :blk value.integer;
-            }
-            break :blk 0;
-        };
-        const last_error_json = if (parsed.value.object.get("last_error")) |value|
-            try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(value, .{})})
-        else
-            try self.allocator.dupe(u8, "null");
-        defer self.allocator.free(last_error_json);
-        const escaped_state = try unified.jsonEscape(self.allocator, reconcile_state);
-        defer self.allocator.free(escaped_state);
-
-        const rendered = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"reconcile_state\":\"{s}\",\"last_reconcile_ms\":{d},\"last_success_ms\":{d},\"last_error\":{s},\"queue_depth\":{d}}}",
-            .{ escaped_state, last_reconcile_ms, last_success_ms, last_error_json, queue_depth },
-        );
-        return rendered;
+        return session_project_status.extractWorkspaceReconcile(self, workspace_status_json);
     }
 
     fn extractWorkspaceHealth(self: *Session, workspace_status_json: []const u8) !?[]u8 {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, workspace_status_json, .{}) catch return null;
-        defer parsed.deinit();
-        if (parsed.value != .object) return null;
-
-        var mounts_total: i64 = 0;
-        var online: i64 = 0;
-        var degraded: i64 = 0;
-        var missing: i64 = 0;
-        if (parsed.value.object.get("availability")) |availability_value| {
-            if (availability_value == .object) {
-                if (availability_value.object.get("mounts_total")) |value| {
-                    if (value == .integer and value.integer >= 0) mounts_total = value.integer;
-                }
-                if (availability_value.object.get("online")) |value| {
-                    if (value == .integer and value.integer >= 0) online = value.integer;
-                }
-                if (availability_value.object.get("degraded")) |value| {
-                    if (value == .integer and value.integer >= 0) degraded = value.integer;
-                }
-                if (availability_value.object.get("missing")) |value| {
-                    if (value == .integer and value.integer >= 0) missing = value.integer;
-                }
-            }
-        }
-
-        var drift_count: i64 = 0;
-        if (parsed.value.object.get("drift")) |drift_value| {
-            if (drift_value == .object) {
-                if (drift_value.object.get("count")) |value| {
-                    if (value == .integer and value.integer >= 0) drift_count = value.integer;
-                }
-            }
-        }
-
-        const reconcile_state = blk: {
-            if (parsed.value.object.get("reconcile_state")) |value| {
-                if (value == .string and value.string.len > 0) break :blk value.string;
-            }
-            break :blk "unknown";
-        };
-        const queue_depth: i64 = blk: {
-            if (parsed.value.object.get("queue_depth")) |value| {
-                if (value == .integer and value.integer >= 0) break :blk value.integer;
-            }
-            break :blk 0;
-        };
-        const state = blk: {
-            if (missing > 0) break :blk "missing";
-            if (degraded > 0 or drift_count > 0 or queue_depth > 0 or std.mem.eql(u8, reconcile_state, "degraded")) {
-                break :blk "degraded";
-            }
-            if (std.mem.eql(u8, reconcile_state, "unknown")) break :blk "unknown";
-            break :blk "healthy";
-        };
-
-        const escaped_state = try unified.jsonEscape(self.allocator, state);
-        defer self.allocator.free(escaped_state);
-        const escaped_reconcile_state = try unified.jsonEscape(self.allocator, reconcile_state);
-        defer self.allocator.free(escaped_reconcile_state);
-
-        const rendered = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"state\":\"{s}\",\"availability\":{{\"mounts_total\":{d},\"online\":{d},\"degraded\":{d},\"missing\":{d}}},\"drift_count\":{d},\"reconcile_state\":\"{s}\",\"queue_depth\":{d}}}",
-            .{ escaped_state, mounts_total, online, degraded, missing, drift_count, escaped_reconcile_state, queue_depth },
-        );
-        return rendered;
+        return session_project_status.extractWorkspaceHealth(self, workspace_status_json);
     }
 
     fn buildFallbackWorkspaceStatusJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-        const escaped_agent = try unified.jsonEscape(self.allocator, self.agent_id);
-        defer self.allocator.free(escaped_agent);
-        const escaped_project = try unified.jsonEscape(self.allocator, policy.project_id);
-        defer self.allocator.free(escaped_project);
-
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"template_id\":null,\"source\":\"policy\",\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"unknown\",\"last_reconcile_ms\":0,\"last_success_ms\":0,\"last_error\":null,\"queue_depth\":0}}",
-            .{ escaped_agent, escaped_project },
-        );
+        return session_project_status.buildFallbackWorkspaceStatusJson(self, policy);
     }
 
     const NodeResourceView = struct {

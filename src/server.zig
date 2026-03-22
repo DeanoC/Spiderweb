@@ -16,6 +16,7 @@ const server_mount_controls = @import("server_mount_controls.zig");
 const server_local_node_supervisor = @import("server_local_node_supervisor.zig");
 const server_metrics_http = @import("server_metrics_http.zig");
 const server_namespace_sessions = @import("server_namespace_sessions.zig");
+const server_session_controls = @import("server_session_controls.zig");
 const server_runtime_workers = @import("server_runtime_workers.zig");
 const server_session_bindings = @import("server_session_bindings.zig");
 const server_session_payloads = @import("server_session_payloads.zig");
@@ -88,6 +89,7 @@ const handleMountAttachControl = server_mount_controls.handleMountAttachControl;
 const handleMountFileReadControl = server_mount_controls.handleMountFileReadControl;
 const handleMountFileWriteControl = server_mount_controls.handleMountFileWriteControl;
 const handleMountPathControl = server_mount_controls.handleMountPathControl;
+const buildConnectAckPayload = server_session_controls.buildConnectAckPayload;
 
 fn createFileNoTruncate(path: []const u8) !std.fs.File {
     if (std.fs.path.isAbsolute(path)) {
@@ -2221,7 +2223,7 @@ const AgentRuntimeRegistry = struct {
         return true;
     }
 
-    fn rotateAuthToken(self: *AgentRuntimeRegistry, role: ConnectionRole) ![]u8 {
+    pub fn rotateAuthToken(self: *AgentRuntimeRegistry, role: ConnectionRole) ![]u8 {
         return self.auth_tokens.rotateRoleToken(role);
     }
 
@@ -2400,7 +2402,7 @@ const AgentRuntimeRegistry = struct {
         return false;
     }
 
-    fn publishVenomPresenceForBinding(
+    pub fn publishVenomPresenceForBinding(
         self: *AgentRuntimeRegistry,
         role: ConnectionRole,
         binding: SessionBinding,
@@ -2488,7 +2490,7 @@ const AgentRuntimeRegistry = struct {
         };
     }
 
-    fn rememberPrincipalSession(
+    pub fn rememberPrincipalSession(
         self: *AgentRuntimeRegistry,
         principal: ConnectionPrincipal,
         session_key: []const u8,
@@ -3185,7 +3187,7 @@ const AgentRuntimeRegistry = struct {
         );
     }
 
-    fn ensureRuntimeWarmup(
+    pub fn ensureRuntimeWarmup(
         self: *AgentRuntimeRegistry,
         agent_id: []const u8,
         project_id: ?[]const u8,
@@ -3757,30 +3759,14 @@ fn handleWebSocketConnection(
                             },
                             .connect => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                const project_json = if (active_binding.project_id) |project_id| blk: {
-                                    const escaped_project = try unified.jsonEscape(allocator, project_id);
-                                    defer allocator.free(escaped_project);
-                                    break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_project});
-                                } else try allocator.dupe(u8, "null");
-                                defer allocator.free(project_json);
-                                const workspace_json = try buildWorkspaceStatusPayloadForBinding(
+                                const payload = try buildConnectAckPayload(
                                     allocator,
                                     runtime_registry,
                                     active_binding,
+                                    active_session_key,
                                     connection_workspace_url,
                                     principal.role == .access,
-                                );
-                                defer allocator.free(workspace_json);
-                                const payload = try std.fmt.allocPrint(
-                                    allocator,
-                                    "{{\"agent_id\":\"{s}\",\"project_id\":{s},\"workspace\":{s},\"session\":\"{s}\",\"protocol\":\"{s}\"}}",
-                                    .{
-                                        active_binding.agent_id,
-                                        project_json,
-                                        workspace_json,
-                                        active_session_key,
-                                        control_protocol_version,
-                                    },
+                                    control_protocol_version,
                                 );
                                 defer allocator.free(payload);
                                 const response = try unified.buildControlAck(
@@ -3971,211 +3957,40 @@ fn handleWebSocketConnection(
                                 continue;
                             },
                             .session_attach => {
-                                var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
-                                defer payload.deinit();
-                                if (payload.value != .object) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "session_attach payload must be an object",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const session_key = getRequiredStringField(payload.value.object, "session_key") catch {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "missing_field",
-                                        "session_key is required",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                const attach_agent_id = getRequiredStringField(payload.value.object, "agent_id") catch {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "missing_field",
-                                        "agent_id is required",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                const attach_project_id = getRequiredStringField(payload.value.object, "project_id") catch {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "missing_field",
-                                        "project_id is required",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                var attach_project_token = getOptionalStringField(payload.value.object, "project_token");
-                                const current_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                var previous_active_binding = try server_session_bindings.cloneSessionBinding(allocator, current_binding);
-                                defer previous_active_binding.deinit(allocator);
-                                if (!server_session_bindings.isValidSessionKey(session_key)) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "invalid session_key",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                if (!AgentRuntimeRegistry.isValidAgentId(attach_agent_id)) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "invalid agent_id",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                if (!AgentRuntimeRegistry.isValidProjectId(attach_project_id)) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "invalid project_id",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                const existing_binding = session_bindings.get(session_key);
-                                if (existing_binding != null and std.mem.eql(u8, existing_binding.?.agent_id, attach_agent_id) and attach_project_token == null) {
-                                    attach_project_token = existing_binding.?.project_token;
-                                }
-
-                                const rebind_requested = if (existing_binding) |binding|
-                                    !std.mem.eql(u8, binding.agent_id, attach_agent_id) or
-                                        !optionalStringsEqual(binding.project_id, attach_project_id)
-                                else
-                                    false;
-
-                                _ = rebind_requested;
-
-                                const activate_payload = try server_workspace_status.buildProjectActivatePayload(allocator, attach_project_id, attach_project_token);
-                                defer allocator.free(activate_payload);
-                                _ = runtime_registry.control_plane.activateProjectWithRole(
-                                    attach_agent_id,
-                                    activate_payload,
-                                    principal.role == .access,
-                                ) catch |activate_err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        controlPlaneErrorCode(activate_err),
-                                        @errorName(activate_err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-
-                                const previous_session_key = try allocator.dupe(u8, active_session_key);
-                                defer allocator.free(previous_session_key);
-                                try server_session_bindings.upsertSessionBinding(
-                                    allocator,
-                                    &session_bindings,
-                                    session_key,
-                                    attach_agent_id,
-                                    server_session_bindings.defaultActorTypeForRole(principal.role),
-                                    server_session_bindings.defaultActorIdForPrincipal(principal),
-                                    attach_project_id,
-                                    attach_project_token,
-                                );
-                                allocator.free(active_session_key);
-                                active_session_key = try allocator.dupe(u8, session_key);
-
-                                const active_binding = session_bindings.get(session_key) orelse return error.InvalidState;
-                                var attach_state = runtime_registry.ensureRuntimeWarmup(
-                                    active_binding.agent_id,
-                                    active_binding.project_id,
-                                    active_binding.project_token,
-                                    true,
-                                ) catch |warm_err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "execution_failed",
-                                        @errorName(warm_err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                // Keep session_attach responsive even when runtime warmup is in-flight.
-                                // Clients can poll control.session_status for warmup progression.
-                                defer attach_state.deinit(allocator);
-                                const attach_json = try buildSessionAttachStateJson(allocator, attach_state);
-                                defer allocator.free(attach_json);
-                                const workspace_json = try buildWorkspaceStatusPayloadForBinding(
+                                const session_attach = try server_session_controls.handleSessionAttachControl(
                                     allocator,
                                     runtime_registry,
-                                    active_binding,
-                                    connection_workspace_url,
-                                    principal.role == .access,
-                                );
-                                defer allocator.free(workspace_json);
-                                const ack_payload = try buildSessionAttachAckPayload(
-                                    allocator,
-                                    session_key,
-                                    active_binding.agent_id,
-                                    active_binding.project_id,
-                                    workspace_json,
-                                    attach_json,
-                                );
-                                defer allocator.free(ack_payload);
-
-                                const response = try unified.buildControlAck(
-                                    allocator,
-                                    .session_attach,
-                                    parsed.id,
-                                    ack_payload,
-                                );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                resetNamespaceSession(&namespace_session);
-                                runtime_registry.rememberPrincipalSession(
+                                    &session_bindings,
+                                    &active_session_key,
+                                    &namespace_session,
                                     principal,
-                                    session_key,
-                                    active_binding.agent_id,
-                                    active_binding.project_id,
+                                    connection_venom_id,
+                                    control_service_attached,
+                                    connection_workspace_url,
+                                    parsed.payload_json,
                                 );
-                                if (control_service_attached) {
-                                    const runtime_binding_changed = !std.mem.eql(u8, previous_active_binding.agent_id, active_binding.agent_id) or
-                                        !optionalStringsEqual(previous_active_binding.project_id, active_binding.project_id);
-                                    if (runtime_binding_changed) {
-                                        runtime_registry.publishVenomPresenceForBinding(
-                                            principal.role,
-                                            previous_active_binding,
-                                            previous_session_key,
-                                            connection_venom_id,
-                                            false,
+                                switch (session_attach) {
+                                    .ack => |ack_payload| {
+                                        defer allocator.free(ack_payload);
+                                        const response = try unified.buildControlAck(
+                                            allocator,
+                                            .session_attach,
+                                            parsed.id,
+                                            ack_payload,
                                         );
-                                    }
-                                    runtime_registry.publishVenomPresenceForBinding(
-                                        principal.role,
-                                        active_binding,
-                                        session_key,
-                                        connection_venom_id,
-                                        true,
-                                    );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
+                                    .err => |err_payload| {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            err_payload.code,
+                                            err_payload.message,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
                                 }
                                 continue;
                             },
@@ -4715,118 +4530,40 @@ fn handleWebSocketConnection(
                                 continue;
                             },
                             .session_resume => {
-                                var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
-                                defer payload.deinit();
-                                if (payload.value != .object) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "session_resume payload must be an object",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                const session_key = getRequiredStringField(payload.value.object, "session_key") catch {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "missing_field",
-                                        "session_key is required",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                const binding = session_bindings.get(session_key) orelse {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "not_found",
-                                        "session_key not found",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-
-                                const previous_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                const previous_session_key = try allocator.dupe(u8, active_session_key);
-                                defer allocator.free(previous_session_key);
-                                allocator.free(active_session_key);
-                                active_session_key = try allocator.dupe(u8, session_key);
-                                var attach_state = runtime_registry.ensureRuntimeWarmup(
-                                    binding.agent_id,
-                                    binding.project_id,
-                                    binding.project_token,
-                                    true,
-                                ) catch |warm_err| {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "execution_failed",
-                                        @errorName(warm_err),
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                defer attach_state.deinit(allocator);
-                                const attach_json = try buildSessionAttachStateJson(allocator, attach_state);
-                                defer allocator.free(attach_json);
-                                const workspace_json = try buildWorkspaceStatusPayloadForBinding(
+                                const session_resume = try server_session_controls.handleSessionResumeControl(
                                     allocator,
                                     runtime_registry,
-                                    binding,
-                                    connection_workspace_url,
-                                    principal.role == .access,
-                                );
-                                defer allocator.free(workspace_json);
-                                const ack_payload = try buildSessionAttachAckPayload(
-                                    allocator,
-                                    session_key,
-                                    binding.agent_id,
-                                    binding.project_id,
-                                    workspace_json,
-                                    attach_json,
-                                );
-                                defer allocator.free(ack_payload);
-
-                                const response = try unified.buildControlAck(
-                                    allocator,
-                                    .session_resume,
-                                    parsed.id,
-                                    ack_payload,
-                                );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                resetNamespaceSession(&namespace_session);
-                                runtime_registry.rememberPrincipalSession(
+                                    &session_bindings,
+                                    &active_session_key,
+                                    &namespace_session,
                                     principal,
-                                    session_key,
-                                    binding.agent_id,
-                                    binding.project_id,
+                                    connection_venom_id,
+                                    control_service_attached,
+                                    connection_workspace_url,
+                                    parsed.payload_json,
                                 );
-                                if (control_service_attached) {
-                                    const runtime_binding_changed = !std.mem.eql(u8, previous_binding.agent_id, binding.agent_id) or
-                                        !optionalStringsEqual(previous_binding.project_id, binding.project_id);
-                                    if (runtime_binding_changed) {
-                                        runtime_registry.publishVenomPresenceForBinding(
-                                            principal.role,
-                                            previous_binding,
-                                            previous_session_key,
-                                            connection_venom_id,
-                                            false,
+                                switch (session_resume) {
+                                    .ack => |ack_payload| {
+                                        defer allocator.free(ack_payload);
+                                        const response = try unified.buildControlAck(
+                                            allocator,
+                                            .session_resume,
+                                            parsed.id,
+                                            ack_payload,
                                         );
-                                    }
-                                    runtime_registry.publishVenomPresenceForBinding(
-                                        principal.role,
-                                        binding,
-                                        session_key,
-                                        connection_venom_id,
-                                        true,
-                                    );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
+                                    .err => |err_payload| {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            err_payload.code,
+                                            err_payload.message,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
                                 }
                                 continue;
                             },
@@ -4927,108 +4664,40 @@ fn handleWebSocketConnection(
                                 continue;
                             },
                             .session_close => {
-                                var payload = try parseControlPayloadObject(allocator, parsed.payload_json);
-                                defer payload.deinit();
-                                if (payload.value != .object) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "invalid_payload",
-                                        "session_close payload must be an object",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                const session_key = getRequiredStringField(payload.value.object, "session_key") catch {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "missing_field",
-                                        "session_key is required",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                };
-                                if (std.mem.eql(u8, session_key, "main")) {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "forbidden",
-                                        "main session cannot be closed",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-                                var previous_active_binding: ?SessionBinding = null;
-                                defer if (previous_active_binding) |*value| value.deinit(allocator);
-                                var previous_active_session_key: ?[]u8 = null;
-                                defer if (previous_active_session_key) |value| allocator.free(value);
-                                if (control_service_attached and std.mem.eql(u8, active_session_key, session_key)) {
-                                    const active_binding_before_close = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                    previous_active_binding = try server_session_bindings.cloneSessionBinding(allocator, active_binding_before_close);
-                                    previous_active_session_key = try allocator.dupe(u8, active_session_key);
-                                }
-                                if (session_bindings.fetchRemove(session_key)) |removed| {
-                                    allocator.free(removed.key);
-                                    var binding = removed.value;
-                                    binding.deinit(allocator);
-                                } else {
-                                    const response = try unified.buildControlError(
-                                        allocator,
-                                        parsed.id,
-                                        "not_found",
-                                        "session_key not found",
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                    continue;
-                                }
-
-                                if (std.mem.eql(u8, active_session_key, session_key)) {
-                                    allocator.free(active_session_key);
-                                    active_session_key = try allocator.dupe(u8, "main");
-                                }
-                                if (control_service_attached and previous_active_binding != null and previous_active_session_key != null) {
-                                    const main_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                    const old_binding = previous_active_binding.?;
-                                    const runtime_binding_changed = !std.mem.eql(u8, old_binding.agent_id, main_binding.agent_id) or
-                                        !optionalStringsEqual(old_binding.project_id, main_binding.project_id);
-                                    if (runtime_binding_changed) {
-                                        runtime_registry.publishVenomPresenceForBinding(
-                                            principal.role,
-                                            old_binding,
-                                            previous_active_session_key.?,
-                                            connection_venom_id,
-                                            false,
+                                const session_close = try server_session_controls.handleSessionCloseControl(
+                                    allocator,
+                                    runtime_registry,
+                                    &session_bindings,
+                                    &active_session_key,
+                                    &namespace_session,
+                                    principal,
+                                    connection_venom_id,
+                                    control_service_attached,
+                                    parsed.payload_json,
+                                );
+                                switch (session_close) {
+                                    .ack => |ack_payload| {
+                                        defer allocator.free(ack_payload);
+                                        const response = try unified.buildControlAck(
+                                            allocator,
+                                            .session_close,
+                                            parsed.id,
+                                            ack_payload,
                                         );
-                                    }
-                                    runtime_registry.publishVenomPresenceForBinding(
-                                        principal.role,
-                                        main_binding,
-                                        active_session_key,
-                                        connection_venom_id,
-                                        true,
-                                    );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
+                                    .err => |err_payload| {
+                                        const response = try unified.buildControlError(
+                                            allocator,
+                                            parsed.id,
+                                            err_payload.code,
+                                            err_payload.message,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                    },
                                 }
-
-                                const payload_json = try std.fmt.allocPrint(
-                                    allocator,
-                                    "{{\"session_key\":\"{s}\",\"closed\":true,\"active_session\":\"{s}\"}}",
-                                    .{ session_key, active_session_key },
-                                );
-                                defer allocator.free(payload_json);
-                                const response = try unified.buildControlAck(
-                                    allocator,
-                                    .session_close,
-                                    parsed.id,
-                                    payload_json,
-                                );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                resetNamespaceSession(&namespace_session);
                                 continue;
                             },
                             .node_invite_create,

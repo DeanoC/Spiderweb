@@ -10,6 +10,7 @@ const acheron_session_mod = @import("acheron/session.zig");
 const server_protocol_validation = @import("server_protocol_validation.zig");
 const server_control_scope = @import("server_control_scope.zig");
 const server_audit_records = @import("server_audit_records.zig");
+const server_mount_graph_io = @import("server_mount_graph_io.zig");
 const server_local_node_supervisor = @import("server_local_node_supervisor.zig");
 const server_metrics_http = @import("server_metrics_http.zig");
 const server_runtime_workers = @import("server_runtime_workers.zig");
@@ -5512,74 +5513,6 @@ fn decodeStandardBase64Owned(allocator: std.mem.Allocator, encoded: []const u8) 
     return decoded;
 }
 
-fn materializeMountGraphWriteData(
-    allocator: std.mem.Allocator,
-    existing: ?[]const u8,
-    offset: u64,
-    data: []const u8,
-    truncate_to_size: ?u64,
-) ![]u8 {
-    const base = if (truncate_to_size) |requested_size| blk: {
-        const target_size = std.math.cast(usize, requested_size) orelse return error.InvalidOffset;
-        if (target_size > max_mount_graph_materialized_file_bytes) return error.WriteTooLarge;
-
-        const current = existing orelse return error.FileNotFound;
-        var truncated = try allocator.alloc(u8, target_size);
-        errdefer allocator.free(truncated);
-        if (target_size > 0) {
-            @memset(truncated, 0);
-            const copy_len = @min(current.len, target_size);
-            if (copy_len > 0) @memcpy(truncated[0..copy_len], current[0..copy_len]);
-        }
-        break :blk truncated;
-    } else try allocator.dupe(u8, existing orelse "");
-    errdefer allocator.free(base);
-
-    if (base.len > max_mount_graph_materialized_file_bytes) return error.WriteTooLarge;
-    if (data.len == 0) return base;
-
-    const range = try validateMountGraphWriteRange(offset, data.len);
-    if (range.write_end <= base.len) {
-        @memcpy(base[range.base_offset..range.write_end], data);
-        return base;
-    }
-
-    const merged_len = range.write_end;
-    var merged = try allocator.alloc(u8, merged_len);
-    errdefer allocator.free(merged);
-    @memset(merged, 0);
-    if (base.len > 0) {
-        @memcpy(merged[0..base.len], base);
-    }
-    @memcpy(merged[range.base_offset..range.write_end], data);
-    allocator.free(base);
-    return merged;
-}
-
-fn validateMountGraphWriteRange(offset: u64, data_len: usize) !struct {
-    base_offset: usize,
-    write_end: usize,
-} {
-    const base_offset = std.math.cast(usize, offset) orelse return error.InvalidOffset;
-    const write_end = std.math.add(usize, base_offset, data_len) catch return error.InvalidOffset;
-    if (write_end > max_mount_graph_materialized_file_bytes) return error.WriteTooLarge;
-    return .{
-        .base_offset = base_offset,
-        .write_end = write_end,
-    };
-}
-
-fn mountGraphWriteResponseCount(request_bytes: usize) !u32 {
-    return std.math.cast(u32, request_bytes) orelse error.InvalidPayload;
-}
-
-fn encodeStandardBase64Owned(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
-    const encoded_len = std.base64.standard.Encoder.calcSize(data.len);
-    const encoded = try allocator.alloc(u8, encoded_len);
-    _ = std.base64.standard.Encoder.encode(encoded, data);
-    return encoded;
-}
-
 fn handleMountAttachControl(
     allocator: std.mem.Allocator,
     runtime_registry: *AgentRuntimeRegistry,
@@ -5639,9 +5572,10 @@ fn handleMountFileReadControl(
     const absolute_path = try getRequiredStringField(payload.value.object, "path");
     const offset = getOptionalU64Field(payload.value.object, "offset") orelse 0;
     const requested_length_field = getOptionalU32Field(payload.value.object, "length");
-    const requested_length = clampMountGraphReadLength(
+    const requested_length = server_mount_graph_io.clampReadLength(
         offset,
         requested_length_field,
+        max_mount_graph_materialized_file_bytes,
     ) catch |err| switch (err) {
         error.InvalidOffset => return err,
     };
@@ -5658,37 +5592,24 @@ fn handleMountFileReadControl(
     const chunk = try session.readMountGraphFile(absolute_path, offset, requested_length);
     defer allocator.free(chunk);
 
-    const encoded = try encodeStandardBase64Owned(allocator, chunk);
+    const encoded = try server_mount_graph_io.encodeStandardBase64Owned(allocator, chunk);
     defer allocator.free(encoded);
     const escaped_path = try unified.jsonEscape(allocator, absolute_path);
     defer allocator.free(escaped_path);
-    const count = try mountGraphWriteResponseCount(chunk.len);
-    const eof = mountGraphReadIsEof(offset, requested_length_field, requested_length, chunk.len);
+    const count = try server_mount_graph_io.writeResponseCount(chunk.len);
+    const eof = server_mount_graph_io.readIsEof(
+        offset,
+        requested_length_field,
+        requested_length,
+        chunk.len,
+        max_mount_graph_materialized_file_bytes,
+    );
 
     return std.fmt.allocPrint(
         allocator,
         "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d},\"eof\":{},\"data_b64\":\"{s}\"}}",
         .{ escaped_path, offset, count, eof, encoded },
     );
-}
-
-fn clampMountGraphReadLength(offset: u64, requested_length: ?u32) !u32 {
-    const materialized_limit_u64: u64 = max_mount_graph_materialized_file_bytes;
-    if (offset > materialized_limit_u64) return error.InvalidOffset;
-
-    const base_offset = std.math.cast(usize, offset) orelse return error.InvalidOffset;
-    const remaining = max_mount_graph_materialized_file_bytes - base_offset;
-    const max_length = std.math.cast(u32, remaining) orelse return error.InvalidOffset;
-    return if (requested_length) |value| @min(value, max_length) else max_length;
-}
-
-fn mountGraphReadIsEof(offset: u64, requested_length_field: ?u32, requested_length: u32, chunk_len: usize) bool {
-    if (chunk_len < requested_length) return true;
-    if (requested_length != 0) return false;
-
-    const materialized_limit_u64: u64 = max_mount_graph_materialized_file_bytes;
-    const requested_some_bytes = requested_length_field == null or requested_length_field.? > 0;
-    return offset == materialized_limit_u64 and requested_some_bytes;
 }
 
 fn handleMountFileWriteControl(
@@ -5723,13 +5644,20 @@ fn handleMountFileWriteControl(
     );
     const existing = try session.tryReadInternalPath(absolute_path);
     defer if (existing) |value| allocator.free(value);
-    const merged = try materializeMountGraphWriteData(allocator, existing, offset, decoded, truncate_to_size);
+    const merged = try server_mount_graph_io.materializeWriteData(
+        allocator,
+        existing,
+        offset,
+        decoded,
+        truncate_to_size,
+        max_mount_graph_materialized_file_bytes,
+    );
     defer allocator.free(merged);
 
     if (existing == null and try session.tryWriteLocalFsBackedMountFile(absolute_path, merged)) {
         const escaped_path = try unified.jsonEscape(allocator, absolute_path);
         defer allocator.free(escaped_path);
-        const count = try mountGraphWriteResponseCount(decoded.len);
+        const count = try server_mount_graph_io.writeResponseCount(decoded.len);
         return std.fmt.allocPrint(
             allocator,
             "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d}}}",
@@ -5740,7 +5668,7 @@ fn handleMountFileWriteControl(
     if (try session.tryWriteBoundVenomProxyMountFile(absolute_path, merged)) {
         const escaped_path = try unified.jsonEscape(allocator, absolute_path);
         defer allocator.free(escaped_path);
-        const count = try mountGraphWriteResponseCount(decoded.len);
+        const count = try server_mount_graph_io.writeResponseCount(decoded.len);
         return std.fmt.allocPrint(
             allocator,
             "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d}}}",
@@ -5752,7 +5680,7 @@ fn handleMountFileWriteControl(
 
     const escaped_path = try unified.jsonEscape(allocator, absolute_path);
     defer allocator.free(escaped_path);
-    const count = try mountGraphWriteResponseCount(decoded.len);
+    const count = try server_mount_graph_io.writeResponseCount(decoded.len);
     return std.fmt.allocPrint(
         allocator,
         "{{\"path\":\"{s}\",\"offset\":{d},\"n\":{d}}}",
@@ -5876,7 +5804,7 @@ fn handleMountPathControl(
             defer allocator.free(escaped_path);
             const escaped_name = try unified.jsonEscape(allocator, name);
             defer allocator.free(escaped_name);
-            const encoded = try encodeStandardBase64Owned(allocator, value);
+            const encoded = try server_mount_graph_io.encodeStandardBase64Owned(allocator, value);
             defer allocator.free(encoded);
             return std.fmt.allocPrint(
                 allocator,
@@ -8478,21 +8406,42 @@ test "server: invalid configured default agent falls back to built-in default" {
 
 test "server: materializeMountGraphWriteData preserves suffix on offset zero partial writes" {
     const allocator = std.testing.allocator;
-    const merged = try materializeMountGraphWriteData(allocator, "abcdef", 0, "xy", null);
+    const merged = try server_mount_graph_io.materializeWriteData(
+        allocator,
+        "abcdef",
+        0,
+        "xy",
+        null,
+        max_mount_graph_materialized_file_bytes,
+    );
     defer allocator.free(merged);
     try std.testing.expectEqualStrings("xycdef", merged);
 }
 
 test "server: materializeMountGraphWriteData preserves suffix on middle writes" {
     const allocator = std.testing.allocator;
-    const merged = try materializeMountGraphWriteData(allocator, "abcdef", 2, "XY", null);
+    const merged = try server_mount_graph_io.materializeWriteData(
+        allocator,
+        "abcdef",
+        2,
+        "XY",
+        null,
+        max_mount_graph_materialized_file_bytes,
+    );
     defer allocator.free(merged);
     try std.testing.expectEqualStrings("abXYef", merged);
 }
 
 test "server: materializeMountGraphWriteData truncates existing content before rewrite" {
     const allocator = std.testing.allocator;
-    const merged = try materializeMountGraphWriteData(allocator, "abcdef", 0, "", 3);
+    const merged = try server_mount_graph_io.materializeWriteData(
+        allocator,
+        "abcdef",
+        0,
+        "",
+        3,
+        max_mount_graph_materialized_file_bytes,
+    );
     defer allocator.free(merged);
     try std.testing.expectEqualStrings("abc", merged);
 }
@@ -8501,7 +8450,14 @@ test "server: materializeMountGraphWriteData rejects truncate on missing files" 
     const allocator = std.testing.allocator;
     try std.testing.expectError(
         error.FileNotFound,
-        materializeMountGraphWriteData(allocator, null, 0, "", 0),
+        server_mount_graph_io.materializeWriteData(
+            allocator,
+            null,
+            0,
+            "",
+            0,
+            max_mount_graph_materialized_file_bytes,
+        ),
     );
 }
 
@@ -8509,12 +8465,19 @@ test "server: materializeMountGraphWriteData rejects oversized materialized writ
     const allocator = std.testing.allocator;
     try std.testing.expectError(
         error.WriteTooLarge,
-        materializeMountGraphWriteData(allocator, "", max_mount_graph_materialized_file_bytes, "x", null),
+        server_mount_graph_io.materializeWriteData(
+            allocator,
+            "",
+            max_mount_graph_materialized_file_bytes,
+            "x",
+            null,
+            max_mount_graph_materialized_file_bytes,
+        ),
     );
 }
 
 test "server: mountGraphWriteResponseCount reports request byte length" {
-    try std.testing.expectEqual(@as(u32, 2), try mountGraphWriteResponseCount(2));
+    try std.testing.expectEqual(@as(u32, 2), try server_mount_graph_io.writeResponseCount(2));
 }
 
 test "server: getRequiredStringFieldAllowEmpty accepts empty payload strings" {
@@ -8543,23 +8506,54 @@ test "server: mountGraphErrorCode emits errno-compatible tokens" {
 
 test "server: clampMountGraphReadLength rejects offsets beyond materialization limit" {
     const limit = max_mount_graph_materialized_file_bytes;
-    try std.testing.expectError(error.InvalidOffset, clampMountGraphReadLength(limit + 1, null));
+    try std.testing.expectError(
+        error.InvalidOffset,
+        server_mount_graph_io.clampReadLength(limit + 1, null, max_mount_graph_materialized_file_bytes),
+    );
 }
 
 test "server: clampMountGraphReadLength clamps explicit length to remaining bytes" {
     const near_end = max_mount_graph_materialized_file_bytes - 16;
-    try std.testing.expectEqual(@as(u32, 16), try clampMountGraphReadLength(near_end, 1024));
-    try std.testing.expectEqual(@as(u32, 0), try clampMountGraphReadLength(max_mount_graph_materialized_file_bytes, 1024));
+    try std.testing.expectEqual(
+        @as(u32, 16),
+        try server_mount_graph_io.clampReadLength(near_end, 1024, max_mount_graph_materialized_file_bytes),
+    );
+    try std.testing.expectEqual(
+        @as(u32, 0),
+        try server_mount_graph_io.clampReadLength(
+            max_mount_graph_materialized_file_bytes,
+            1024,
+            max_mount_graph_materialized_file_bytes,
+        ),
+    );
 }
 
 test "server: mountGraphReadIsEof reports eof when clamp reaches materialization boundary" {
     const limit = max_mount_graph_materialized_file_bytes;
-    try std.testing.expect(mountGraphReadIsEof(limit, null, 0, 0));
-    try std.testing.expect(mountGraphReadIsEof(limit, 1024, 0, 0));
+    try std.testing.expect(server_mount_graph_io.readIsEof(
+        limit,
+        null,
+        0,
+        0,
+        max_mount_graph_materialized_file_bytes,
+    ));
+    try std.testing.expect(server_mount_graph_io.readIsEof(
+        limit,
+        1024,
+        0,
+        0,
+        max_mount_graph_materialized_file_bytes,
+    ));
 }
 
 test "server: mountGraphReadIsEof preserves zero-length request semantics away from boundary" {
-    try std.testing.expect(!mountGraphReadIsEof(0, 0, 0, 0));
+    try std.testing.expect(!server_mount_graph_io.readIsEof(
+        0,
+        0,
+        0,
+        0,
+        max_mount_graph_materialized_file_bytes,
+    ));
 }
 
 test "server: mount attach and mount file read control operations are supported after session attach" {

@@ -419,14 +419,14 @@ pub const ControlPlane = struct {
     node_lease_refresh_total: u64 = 0,
     nodes_ensured_total: u64 = 0,
     node_deletes_total: u64 = 0,
-    project_creates_total: u64 = 0,
-    project_updates_total: u64 = 0,
-    project_deletes_total: u64 = 0,
+    workspace_creates_total: u64 = 0,
+    workspace_updates_total: u64 = 0,
+    workspace_deletes_total: u64 = 0,
     mount_sets_total: u64 = 0,
     mount_removes_total: u64 = 0,
-    project_token_rotates_total: u64 = 0,
-    project_token_revokes_total: u64 = 0,
-    project_activations_total: u64 = 0,
+    workspace_token_rotates_total: u64 = 0,
+    workspace_token_revokes_total: u64 = 0,
+    workspace_activations_total: u64 = 0,
     lease_reap_nodes_total: u64 = 0,
 
     reconcile_state: ReconcileState = .pending,
@@ -916,14 +916,14 @@ pub const ControlPlane = struct {
         self.node_lease_refresh_total = 0;
         self.nodes_ensured_total = 0;
         self.node_deletes_total = 0;
-        self.project_creates_total = 0;
-        self.project_updates_total = 0;
-        self.project_deletes_total = 0;
+        self.workspace_creates_total = 0;
+        self.workspace_updates_total = 0;
+        self.workspace_deletes_total = 0;
         self.mount_sets_total = 0;
         self.mount_removes_total = 0;
-        self.project_token_rotates_total = 0;
-        self.project_token_revokes_total = 0;
-        self.project_activations_total = 0;
+        self.workspace_token_rotates_total = 0;
+        self.workspace_token_revokes_total = 0;
+        self.workspace_activations_total = 0;
         self.lease_reap_nodes_total = 0;
         self.next_pending_join_id = 1;
 
@@ -1839,7 +1839,7 @@ pub const ControlPlane = struct {
             self.requestReconcileLocked(now);
             _ = try self.runReconcileCycleLocked(now, false);
         }
-        self.project_creates_total +%= 1;
+        self.workspace_creates_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
         return renderProjectPayload(self.allocator, stored_project.*, true);
@@ -1889,7 +1889,7 @@ pub const ControlPlane = struct {
             project.access_policy = parsed_policy;
         }
         project.updated_at_ms = std.time.milliTimestamp();
-        self.project_updates_total +%= 1;
+        self.workspace_updates_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
         return renderProjectPayload(self.allocator, project.*, false);
@@ -1925,7 +1925,7 @@ pub const ControlPlane = struct {
                 entry.value_ptr.* = try self.allocator.dupe(u8, "");
             }
         }
-        self.project_deletes_total +%= 1;
+        self.workspace_deletes_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
         const escaped = try jsonEscape(self.allocator, workspace_id);
@@ -2444,7 +2444,7 @@ pub const ControlPlane = struct {
         project.mutation_token = try makeToken(self.allocator, "proj");
         project.token_locked = true;
         project.updated_at_ms = std.time.milliTimestamp();
-        self.project_token_rotates_total +%= 1;
+        self.workspace_token_rotates_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
         const escaped_project = try jsonEscape(self.allocator, workspace_id);
@@ -2478,7 +2478,7 @@ pub const ControlPlane = struct {
 
         project.token_locked = false;
         project.updated_at_ms = std.time.milliTimestamp();
-        self.project_token_revokes_total +%= 1;
+        self.workspace_token_revokes_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
         const escaped_project = try jsonEscape(self.allocator, workspace_id);
@@ -2502,7 +2502,7 @@ pub const ControlPlane = struct {
         try self.ensureBuiltinHostProjectLocked(now_ms);
         const project = try getHostProjectPtrLocked(self);
 
-        self.project_activations_total +%= 1;
+        self.workspace_activations_total +%= 1;
         if (project.mounts.items.len == 0 and self.spider_web_root.len > 0) {
             std.log.info("host project active without mount; waiting for local node registration (root={s})", .{self.spider_web_root});
         }
@@ -2543,7 +2543,7 @@ pub const ControlPlane = struct {
         }
 
         try upsertActiveProjectBindingLocked(self, agent_id, workspace_id);
-        self.project_activations_total +%= 1;
+        self.workspace_activations_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
         return buildWorkspaceActivationPayload(self.allocator, agent_id, workspace_id);
@@ -2643,7 +2643,7 @@ pub const ControlPlane = struct {
         if (try ensureProjectTemplateBindsLocked(self, workspace)) binds_replaced = true;
 
         workspace.updated_at_ms = now_ms;
-        if (!created) self.project_updates_total +%= 1;
+        if (!created) self.workspace_updates_total +%= 1;
         if (mounts_replaced) self.mount_sets_total +%= 1;
 
         if (activate) {
@@ -2654,7 +2654,7 @@ pub const ControlPlane = struct {
                 return ControlPlaneError.ProjectAssignmentForbidden;
             }
             try upsertActiveProjectBindingLocked(self, agent_id, workspace.id);
-            self.project_activations_total +%= 1;
+            self.workspace_activations_total +%= 1;
         }
 
         self.requestReconcileLocked(now_ms);
@@ -2848,7 +2848,7 @@ fn resolveWorkspaceUpTargetLocked(
     }
 
     try self.projects.put(self.allocator, workspace.id, workspace);
-    self.project_creates_total +%= 1;
+    self.workspace_creates_total +%= 1;
     return .{
         .workspace = self.projects.getPtr(project_id).?,
         .created = true,
@@ -3659,12 +3659,12 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 self.lease_reap_nodes_total,
                 snapshot.workspaces_total,
                 snapshot.active_workspace_bindings,
-                self.project_creates_total,
-                self.project_updates_total,
-                self.project_deletes_total,
-                self.project_token_rotates_total,
-                self.project_token_revokes_total,
-                self.project_activations_total,
+                self.workspace_creates_total,
+                self.workspace_updates_total,
+                self.workspace_deletes_total,
+                self.workspace_token_rotates_total,
+                self.workspace_token_revokes_total,
+                self.workspace_activations_total,
                 snapshot.mounts_total,
                 self.mount_sets_total,
                 self.mount_removes_total,
@@ -3738,12 +3738,12 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 self.lease_reap_nodes_total,
                 snapshot.workspaces_total,
                 snapshot.active_workspace_bindings,
-                self.project_creates_total,
-                self.project_updates_total,
-                self.project_deletes_total,
-                self.project_token_rotates_total,
-                self.project_token_revokes_total,
-                self.project_activations_total,
+                self.workspace_creates_total,
+                self.workspace_updates_total,
+                self.workspace_deletes_total,
+                self.workspace_token_rotates_total,
+                self.workspace_token_revokes_total,
+                self.workspace_activations_total,
                 snapshot.mounts_total,
                 self.mount_sets_total,
                 self.mount_removes_total,
@@ -4600,7 +4600,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         errdefer out.deinit(self.allocator);
 
         try out.writer(self.allocator).print(
-            "{{\"schema\":1,\"next\":{{\"invite_id\":{d},\"node_id\":{d},\"pending_join_id\":{d},\"project_id\":{d}}},\"metrics\":{{\"invites_created_total\":{d},\"invites_redeemed_total\":{d},\"node_joins_total\":{d},\"node_lease_refresh_total\":{d},\"nodes_ensured_total\":{d},\"node_deletes_total\":{d},\"project_creates_total\":{d},\"project_updates_total\":{d},\"project_deletes_total\":{d},\"project_token_rotates_total\":{d},\"project_token_revokes_total\":{d},\"mount_sets_total\":{d},\"mount_removes_total\":{d},\"project_activations_total\":{d},\"lease_reap_nodes_total\":{d}}},\"invites\":[",
+            "{{\"schema\":1,\"next\":{{\"invite_id\":{d},\"node_id\":{d},\"pending_join_id\":{d},\"project_id\":{d}}},\"metrics\":{{\"invites_created_total\":{d},\"invites_redeemed_total\":{d},\"node_joins_total\":{d},\"node_lease_refresh_total\":{d},\"nodes_ensured_total\":{d},\"node_deletes_total\":{d},\"workspace_creates_total\":{d},\"workspace_updates_total\":{d},\"workspace_deletes_total\":{d},\"workspace_token_rotates_total\":{d},\"workspace_token_revokes_total\":{d},\"mount_sets_total\":{d},\"mount_removes_total\":{d},\"workspace_activations_total\":{d},\"lease_reap_nodes_total\":{d}}},\"invites\":[",
             .{
                 self.next_invite_id,
                 self.next_node_id,
@@ -4612,14 +4612,14 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 self.node_lease_refresh_total,
                 self.nodes_ensured_total,
                 self.node_deletes_total,
-                self.project_creates_total,
-                self.project_updates_total,
-                self.project_deletes_total,
-                self.project_token_rotates_total,
-                self.project_token_revokes_total,
+                self.workspace_creates_total,
+                self.workspace_updates_total,
+                self.workspace_deletes_total,
+                self.workspace_token_rotates_total,
+                self.workspace_token_revokes_total,
                 self.mount_sets_total,
                 self.mount_removes_total,
-                self.project_activations_total,
+                self.workspace_activations_total,
                 self.lease_reap_nodes_total,
             },
         );
@@ -4862,14 +4862,14 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             self.node_lease_refresh_total = try getOptionalU64(metrics_val.object, "node_lease_refresh_total", 0);
             self.nodes_ensured_total = try getOptionalU64(metrics_val.object, "nodes_ensured_total", 0);
             self.node_deletes_total = try getOptionalU64(metrics_val.object, "node_deletes_total", 0);
-            self.project_creates_total = try getOptionalU64(metrics_val.object, "project_creates_total", 0);
-            self.project_updates_total = try getOptionalU64(metrics_val.object, "project_updates_total", 0);
-            self.project_deletes_total = try getOptionalU64(metrics_val.object, "project_deletes_total", 0);
-            self.project_token_rotates_total = try getOptionalU64(metrics_val.object, "project_token_rotates_total", 0);
-            self.project_token_revokes_total = try getOptionalU64(metrics_val.object, "project_token_revokes_total", 0);
+            self.workspace_creates_total = try getOptionalU64ByNames(metrics_val.object, &.{ "workspace_creates_total", "project_creates_total" }, 0);
+            self.workspace_updates_total = try getOptionalU64ByNames(metrics_val.object, &.{ "workspace_updates_total", "project_updates_total" }, 0);
+            self.workspace_deletes_total = try getOptionalU64ByNames(metrics_val.object, &.{ "workspace_deletes_total", "project_deletes_total" }, 0);
+            self.workspace_token_rotates_total = try getOptionalU64ByNames(metrics_val.object, &.{ "workspace_token_rotates_total", "project_token_rotates_total" }, 0);
+            self.workspace_token_revokes_total = try getOptionalU64ByNames(metrics_val.object, &.{ "workspace_token_revokes_total", "project_token_revokes_total" }, 0);
             self.mount_sets_total = try getOptionalU64(metrics_val.object, "mount_sets_total", 0);
             self.mount_removes_total = try getOptionalU64(metrics_val.object, "mount_removes_total", 0);
-            self.project_activations_total = try getOptionalU64(metrics_val.object, "project_activations_total", 0);
+            self.workspace_activations_total = try getOptionalU64ByNames(metrics_val.object, &.{ "workspace_activations_total", "project_activations_total" }, 0);
             self.lease_reap_nodes_total = try getOptionalU64(metrics_val.object, "lease_reap_nodes_total", 0);
         }
 
@@ -5293,6 +5293,15 @@ fn getOptionalU64(obj: std.json.ObjectMap, name: []const u8, default_value: u64)
     const value = obj.get(name) orelse return default_value;
     if (value != .integer or value.integer < 0) return error.InvalidSnapshot;
     return @intCast(value.integer);
+}
+
+fn getOptionalU64ByNames(obj: std.json.ObjectMap, names: []const []const u8, default_value: u64) !u64 {
+    for (names) |name| {
+        if (obj.get(name) != null) {
+            return getOptionalU64(obj, name, default_value);
+        }
+    }
+    return default_value;
 }
 
 fn dupeRequiredString(

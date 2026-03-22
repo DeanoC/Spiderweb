@@ -2495,11 +2495,6 @@ pub const ControlPlane = struct {
     }
 
     pub fn activateHostWorkspace(self: *ControlPlane) ![]u8 {
-        return self.activateHostWorkspaceWithRole(false);
-    }
-
-    pub fn activateHostWorkspaceWithRole(self: *ControlPlane, is_admin: bool) ![]u8 {
-        _ = is_admin;
         self.mutex.lock();
         defer self.mutex.unlock();
         const now_ms = std.time.milliTimestamp();
@@ -2512,19 +2507,7 @@ pub const ControlPlane = struct {
             std.log.info("host project active without mount; waiting for local node registration (root={s})", .{self.spider_web_root});
         }
 
-        const workspace_root = "/";
-        const escaped_agent = try jsonEscape(self.allocator, self.host_actor_id);
-        defer self.allocator.free(escaped_agent);
-        const escaped_project = try jsonEscape(self.allocator, host_project_id);
-        defer self.allocator.free(escaped_project);
-        const escaped_root = try jsonEscape(self.allocator, workspace_root);
-        defer self.allocator.free(escaped_root);
-
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
-            .{ escaped_agent, escaped_project, escaped_root },
-        );
+        return buildWorkspaceActivationPayload(self.allocator, self.host_actor_id, host_project_id);
     }
 
     pub fn activateProjectWithRole(
@@ -2563,21 +2546,7 @@ pub const ControlPlane = struct {
         self.project_activations_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
-        const workspace_root = "/";
-        const escaped_agent = try jsonEscape(self.allocator, agent_id);
-        defer self.allocator.free(escaped_agent);
-        const escaped_project = try jsonEscape(self.allocator, project_id);
-        defer self.allocator.free(escaped_project);
-        const escaped_template_id = try jsonEscape(self.allocator, project.template_id);
-        defer self.allocator.free(escaped_template_id);
-        const escaped_root = try jsonEscape(self.allocator, workspace_root);
-        defer self.allocator.free(escaped_root);
-
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
-            .{ escaped_agent, escaped_project, escaped_root },
-        );
+        return buildWorkspaceActivationPayload(self.allocator, agent_id, project_id);
     }
 
     pub fn requestReconcile(self: *ControlPlane) void {
@@ -3055,13 +3024,32 @@ pub const ControlPlane = struct {
         );
     }
 
-    fn requestReconcileLocked(self: *ControlPlane, now_ms: i64) void {
-        self.reconcile_requested_at_ms = now_ms;
-        if (self.reconcile_state == .idle) self.reconcile_state = .pending;
-    }
+fn requestReconcileLocked(self: *ControlPlane, now_ms: i64) void {
+    self.reconcile_requested_at_ms = now_ms;
+    if (self.reconcile_state == .idle) self.reconcile_state = .pending;
+}
 
-    fn clearReconcileFailureListLocked(self: *ControlPlane) void {
-        for (self.reconcile_last_failed_ops.items) |value| self.allocator.free(value);
+fn buildWorkspaceActivationPayload(
+    allocator: std.mem.Allocator,
+    agent_id: []const u8,
+    project_id: []const u8,
+) ![]u8 {
+    const escaped_agent = try jsonEscape(allocator, agent_id);
+    defer allocator.free(escaped_agent);
+    const escaped_project = try jsonEscape(allocator, project_id);
+    defer allocator.free(escaped_project);
+    const escaped_root = try jsonEscape(allocator, "/");
+    defer allocator.free(escaped_root);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
+        .{ escaped_agent, escaped_project, escaped_root },
+    );
+}
+
+fn clearReconcileFailureListLocked(self: *ControlPlane) void {
+    for (self.reconcile_last_failed_ops.items) |value| self.allocator.free(value);
         self.reconcile_last_failed_ops.clearRetainingCapacity();
     }
 

@@ -4052,7 +4052,7 @@ pub const Session = struct {
             router.close(created) catch {};
         }
 
-        try router.truncate(proxy.remote_path, data.len);
+        try router.truncate(proxy.remote_path, 0);
         if (data.len != 0) {
             const open_file = router.open(proxy.remote_path, 2) catch |err| return switch (err) {
                 error.OperationNotSupported => false,
@@ -4062,6 +4062,7 @@ pub const Session = struct {
             const written = try router.write(open_file, 0, data);
             if (written != data.len) return error.InvalidPayload;
         }
+        try router.truncate(proxy.remote_path, data.len);
         self.markMountGraphParentStale(absolute_path);
         if (!std.mem.eql(u8, resolved_path, absolute_path)) self.markMountGraphParentStale(resolved_path);
         return true;

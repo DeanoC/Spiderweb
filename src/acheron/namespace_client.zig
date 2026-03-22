@@ -101,8 +101,8 @@ pub const NamespaceClient = struct {
     namespace_attached: bool = false,
     active_session_key: ?[]u8 = null,
     active_agent_id: ?[]u8 = null,
-    active_project_id: ?[]u8 = null,
-    active_project_token: ?[]u8 = null,
+    active_workspace_id: ?[]u8 = null,
+    active_workspace_token: ?[]u8 = null,
     next_handle_id: u64 = 1,
     open_handles: std.AutoHashMapUnmanaged(u64, OpenHandleState) = .{},
 
@@ -147,8 +147,8 @@ pub const NamespaceClient = struct {
         self.open_handles.deinit(self.allocator);
         if (self.active_session_key) |value| self.allocator.free(value);
         if (self.active_agent_id) |value| self.allocator.free(value);
-        if (self.active_project_id) |value| self.allocator.free(value);
-        if (self.active_project_token) |value| self.allocator.free(value);
+        if (self.active_workspace_id) |value| self.allocator.free(value);
+        if (self.active_workspace_token) |value| self.allocator.free(value);
         if (self.auth_token) |value| self.allocator.free(value);
         self.allocator.free(self.namespace_url);
         self.stream.close();
@@ -961,15 +961,15 @@ pub const NamespaceClient = struct {
     fn setActiveSessionBinding(
         self: *NamespaceClient,
         agent_id: []const u8,
-        project_id: []const u8,
-        project_token: ?[]const u8,
+        workspace_id: []const u8,
+        workspace_token: ?[]const u8,
     ) !void {
         if (self.active_agent_id) |value| self.allocator.free(value);
-        if (self.active_project_id) |value| self.allocator.free(value);
-        if (self.active_project_token) |value| self.allocator.free(value);
+        if (self.active_workspace_id) |value| self.allocator.free(value);
+        if (self.active_workspace_token) |value| self.allocator.free(value);
         self.active_agent_id = try self.allocator.dupe(u8, agent_id);
-        self.active_project_id = try self.allocator.dupe(u8, project_id);
-        self.active_project_token = if (project_token) |token| try self.allocator.dupe(u8, token) else null;
+        self.active_workspace_id = try self.allocator.dupe(u8, workspace_id);
+        self.active_workspace_token = if (workspace_token) |token| try self.allocator.dupe(u8, token) else null;
     }
 
     fn nextControlRequestId(self: *NamespaceClient) ![]u8 {
@@ -1117,7 +1117,7 @@ pub const NamespaceClient = struct {
 
     fn reconnectControlSession(self: *NamespaceClient, session_key: []const u8) anyerror!void {
         const agent_id = self.active_agent_id orelse return error.InvalidState;
-        const project_id = self.active_project_id orelse return error.InvalidState;
+        const workspace_id = self.active_workspace_id orelse return error.InvalidState;
         const previous_stream = self.stream;
 
         const parsed = try parseWsUrlWithDefaultPath(self.namespace_url, "/");
@@ -1146,8 +1146,8 @@ pub const NamespaceClient = struct {
         var attach_info = try self.controlSessionAttach(.{
             .session_key = session_key,
             .agent_id = agent_id,
-            .workspace_id = project_id,
-            .workspace_token = self.active_project_token,
+            .workspace_id = workspace_id,
+            .workspace_token = self.active_workspace_token,
         });
         defer attach_info.deinit(self.allocator);
     }

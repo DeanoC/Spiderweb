@@ -3355,7 +3355,7 @@ pub const Session = struct {
         return session_project_status.buildFallbackWorkspaceStatusJson(self, policy);
     }
 
-    fn workspaceAllowsAction(self: *Session, action: control_plane_mod.ProjectAction) bool {
+    fn workspaceAllowsAction(self: *Session, action: control_plane_mod.WorkspaceAction) bool {
         const plane = self.control_plane orelse return true;
         const workspace_id = self.workspace_id orelse return true;
         return plane.workspaceAllowsAction(workspace_id, self.agent_id, action, self.workspace_token, self.is_admin);

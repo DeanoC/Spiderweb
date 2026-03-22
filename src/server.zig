@@ -2590,7 +2590,7 @@ const AgentRuntimeRegistry = struct {
     }
 
     fn ensureActiveRuntimeResidency(self: *AgentRuntimeRegistry, retry_on_error: bool) !void {
-        const bindings = try self.control_plane.snapshotActiveProjectBindings(self.allocator, true);
+        const bindings = try self.control_plane.snapshotActiveWorkspaceBindings(self.allocator, true);
         defer {
             for (bindings) |*binding| binding.deinit(self.allocator);
             self.allocator.free(bindings);
@@ -5022,7 +5022,7 @@ fn seedRememberedTargetForTests(
     const allocator = runtime_registry.allocator;
     const project_up = try runtime_registry.control_plane.projectUp(
         agent_id,
-        "{\"name\":\"Access Seed Project\",\"vision\":\"Access Seed Project\",\"activate\":true}",
+        "{\"name\":\"Access Seed Workspace\",\"vision\":\"Access Seed Workspace\",\"activate\":true}",
     );
     defer allocator.free(project_up);
 
@@ -5515,7 +5515,7 @@ test "server: workspace namespace stays project-scoped across user session agent
 
     const project_up = try runtime_registry.control_plane.projectUpWithRole(
         host_actor_id,
-        "{\"name\":\"Scope Test\",\"vision\":\"Project-scoped namespace\",\"activate\":false}",
+        "{\"name\":\"Scope Test\",\"vision\":\"Workspace-scoped namespace\",\"activate\":false}",
         true,
     );
     defer allocator.free(project_up);

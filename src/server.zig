@@ -10,6 +10,7 @@ const acheron_session_mod = @import("acheron/session.zig");
 const server_protocol_validation = @import("server_protocol_validation.zig");
 const server_control_scope = @import("server_control_scope.zig");
 const server_audit_records = @import("server_audit_records.zig");
+const server_control_payloads = @import("server_control_payloads.zig");
 const server_mount_graph_io = @import("server_mount_graph_io.zig");
 const server_local_node_supervisor = @import("server_local_node_supervisor.zig");
 const server_metrics_http = @import("server_metrics_http.zig");
@@ -67,6 +68,16 @@ fn openFileReadWrite(path: []const u8) !std.fs.File {
     }
     return std.fs.cwd().openFile(path, .{ .mode = .read_write });
 }
+
+const parseControlPayloadObject = server_control_payloads.parseControlPayloadObject;
+const getRequiredStringField = server_control_payloads.getRequiredStringField;
+const getRequiredStringFieldAllowEmpty = server_control_payloads.getRequiredStringFieldAllowEmpty;
+const getOptionalStringField = server_control_payloads.getOptionalStringField;
+const getOptionalBoolField = server_control_payloads.getOptionalBoolField;
+const getOptionalU64Field = server_control_payloads.getOptionalU64Field;
+const getOptionalU32Field = server_control_payloads.getOptionalU32Field;
+const getOptionalI64Field = server_control_payloads.getOptionalI64Field;
+const decodeStandardBase64Owned = server_control_payloads.decodeStandardBase64Owned;
 
 fn createFileNoTruncate(path: []const u8) !std.fs.File {
     if (std.fs.path.isAbsolute(path)) {
@@ -5323,66 +5334,6 @@ fn initNamespaceSessionForBinding(
             .is_admin = is_admin,
         },
     );
-}
-
-fn parseControlPayloadObject(allocator: std.mem.Allocator, payload_json: ?[]const u8) !std.json.Parsed(std.json.Value) {
-    return std.json.parseFromSlice(std.json.Value, allocator, payload_json orelse "{}", .{});
-}
-
-fn getRequiredStringField(obj: std.json.ObjectMap, field: []const u8) ![]const u8 {
-    const value = obj.get(field) orelse return error.MissingField;
-    if (value != .string or value.string.len == 0) return error.InvalidPayload;
-    return value.string;
-}
-
-fn getRequiredStringFieldAllowEmpty(obj: std.json.ObjectMap, field: []const u8) ![]const u8 {
-    const value = obj.get(field) orelse return error.MissingField;
-    if (value != .string) return error.InvalidPayload;
-    return value.string;
-}
-
-fn getOptionalStringField(obj: std.json.ObjectMap, field: []const u8) ?[]const u8 {
-    const value = obj.get(field) orelse return null;
-    if (value != .string or value.string.len == 0) return null;
-    return value.string;
-}
-
-fn getOptionalBoolField(obj: std.json.ObjectMap, field: []const u8) ?bool {
-    const value = obj.get(field) orelse return null;
-    if (value != .bool) return null;
-    return value.bool;
-}
-
-fn getOptionalU64Field(obj: std.json.ObjectMap, field: []const u8) ?u64 {
-    const value = obj.get(field) orelse return null;
-    return switch (value) {
-        .integer => if (value.integer >= 0) @intCast(value.integer) else null,
-        else => null,
-    };
-}
-
-fn getOptionalU32Field(obj: std.json.ObjectMap, field: []const u8) ?u32 {
-    const value = obj.get(field) orelse return null;
-    return switch (value) {
-        .integer => if (value.integer >= 0 and value.integer <= std.math.maxInt(u32)) @intCast(value.integer) else null,
-        else => null,
-    };
-}
-
-fn getOptionalI64Field(obj: std.json.ObjectMap, field: []const u8) ?i64 {
-    const value = obj.get(field) orelse return null;
-    return switch (value) {
-        .integer => if (value.integer >= std.math.minInt(i64) and value.integer <= std.math.maxInt(i64)) @intCast(value.integer) else null,
-        else => null,
-    };
-}
-
-fn decodeStandardBase64Owned(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
-    const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(encoded);
-    const decoded = try allocator.alloc(u8, decoded_len);
-    errdefer allocator.free(decoded);
-    try std.base64.standard.Decoder.decode(decoded, encoded);
-    return decoded;
 }
 
 fn handleMountAttachControl(

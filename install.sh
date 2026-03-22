@@ -276,10 +276,19 @@ print_auth_tokens_summary() {
     token_file="$(resolve_auth_tokens_file "$config_cmd")"
 
     if [[ -n "$token_file" ]]; then
+        local access_token
         local admin_token
         local user_token
+        access_token="$(jq -r '.access_token // empty' "$token_file" 2>/dev/null || true)"
         admin_token="$(jq -r '.admin_token // empty' "$token_file" 2>/dev/null || true)"
         user_token="$(jq -r '.user_token // empty' "$token_file" 2>/dev/null || true)"
+        if [[ -n "$access_token" ]]; then
+            echo ""
+            log_success "Auth token (save this now):"
+            echo "  access: $access_token"
+            echo "  path:   $token_file"
+            return
+        fi
         if [[ -n "$admin_token" && -n "$user_token" ]]; then
             echo ""
             log_success "Auth tokens (save these now):"
@@ -376,12 +385,18 @@ sync_zss_auth_tokens() {
         return 0
     fi
 
+    local access_token
     local admin_token
     local user_token
+    access_token="$(jq -r '.access_token // empty' "$token_file" 2>/dev/null || true)"
     admin_token="$(jq -r '.admin_token // empty' "$token_file" 2>/dev/null || true)"
     user_token="$(jq -r '.user_token // empty' "$token_file" 2>/dev/null || true)"
+    if [[ -n "$access_token" ]]; then
+        admin_token="$access_token"
+        user_token="$access_token"
+    fi
     if [[ -z "$admin_token" || -z "$user_token" ]]; then
-        log_warn "Skipping zss auth sync: auth token file is missing admin/user tokens."
+        log_warn "Skipping zss auth sync: auth token file is missing usable auth tokens."
         return 0
     fi
 

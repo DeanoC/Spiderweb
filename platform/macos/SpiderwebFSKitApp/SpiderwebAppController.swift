@@ -588,17 +588,32 @@ final class SpiderwebAppController: ObservableObject {
         copyToClipboard(mountCommand(for: mount))
     }
 
-    private static func suggestedWorkspaceMountpoint(for workspace: SpiderwebWorkspaceSummary) -> String {
-        let fallback = workspace.id.trimmingCharacters(in: .whitespacesAndNewlines)
-        let raw = workspace.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let source = raw.isEmpty ? fallback : raw
-        let collapsed = source.unicodeScalars.map { scalar -> String in
+    private static func sanitizedMountComponent(_ source: String) -> String {
+        source.unicodeScalars.map { scalar -> String in
             CharacterSet.alphanumerics.contains(scalar) ? String(scalar) : "-"
         }
         .joined()
         .replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
         .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        let component = collapsed.isEmpty ? fallback : collapsed
+    }
+
+    private static func suggestedWorkspaceMountpoint(for workspace: SpiderwebWorkspaceSummary) -> String {
+        let fallback = workspace.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = workspace.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nameComponent = sanitizedMountComponent(raw)
+        let idComponent = sanitizedMountComponent(fallback)
+        let baseComponent = if nameComponent.isEmpty {
+            idComponent
+        } else {
+            nameComponent
+        }
+        let uniquenessSuffix = String((idComponent.isEmpty ? fallback : idComponent).suffix(8))
+        let component: String
+        if nameComponent.isEmpty || uniquenessSuffix.isEmpty || baseComponent.hasSuffix("-\(uniquenessSuffix)") {
+            component = baseComponent.isEmpty ? "workspace" : baseComponent
+        } else {
+            component = "\(baseComponent)-\(uniquenessSuffix)"
+        }
         return "\(NSHomeDirectory())/Spiderweb/\(component)"
     }
 

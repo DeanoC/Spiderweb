@@ -14,7 +14,7 @@ pub fn buildWorkspaceBindsArrayJson(session: anytype) ![]u8 {
     errdefer out.deinit(session.allocator);
     try out.append(session.allocator, '[');
     var first = true;
-    for (session.project_binds.items) |bind| {
+    for (session.workspace_binds.items) |bind| {
         if (bind.kind != .workspace) continue;
         if (!first) try out.append(session.allocator, ',');
         first = false;
@@ -37,7 +37,7 @@ pub fn buildMountedServicesJson(session: anytype) ![]u8 {
     try out.append(session.allocator, '[');
     var first = true;
 
-    for (session.project_binds.items) |bind| {
+    for (session.workspace_binds.items) |bind| {
         if (bind.kind != .workspace) continue;
         if (!first) try out.append(session.allocator, ',');
         first = false;

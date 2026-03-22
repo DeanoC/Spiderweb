@@ -10,10 +10,10 @@ pub fn refreshScopedVenomIndexes(session: anytype) !void {
         try refreshVenomsIndexFile(session, session.active_agent_venoms_index_id, prefix, session.agent_id);
     }
 
-    if (session.active_project_venoms_index_id != 0 and session.active_namespace_project_id != null) {
-        const prefix = try std.fmt.allocPrint(session.allocator, "/projects/{s}/venoms/", .{session.active_namespace_project_id.?});
+    if (session.active_workspace_venoms_index_id != 0 and session.active_namespace_workspace_id != null) {
+        const prefix = try std.fmt.allocPrint(session.allocator, "/projects/{s}/venoms/", .{session.active_namespace_workspace_id.?});
         defer session.allocator.free(prefix);
-        try refreshVenomsIndexFile(session, session.active_project_venoms_index_id, prefix, session.active_namespace_project_id.?);
+        try refreshVenomsIndexFile(session, session.active_workspace_venoms_index_id, prefix, session.active_namespace_workspace_id.?);
     }
 }
 

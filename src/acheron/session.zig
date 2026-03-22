@@ -420,7 +420,7 @@ pub const Session = struct {
     actor_type: []u8,
     actor_id: []u8,
     project_id: ?[]u8 = null,
-    active_namespace_project_id: ?[]u8 = null,
+    active_namespace_workspace_id: ?[]u8 = null,
     project_token: ?[]u8 = null,
     namespace_mount_url: ?[]u8 = null,
     namespace_session_key: ?[]u8 = null,
@@ -445,7 +445,7 @@ pub const Session = struct {
     nodes_root_id: u32 = 0,
     agent_venoms_index_id: u32 = 0,
     active_agent_venoms_index_id: u32 = 0,
-    active_project_venoms_index_id: u32 = 0,
+    active_workspace_venoms_index_id: u32 = 0,
     node_venom_events_log_id: u32 = 0,
     event_next_id: u32 = 0,
     terminal_status_id: u32 = 0,
@@ -484,7 +484,7 @@ pub const Session = struct {
     next_terminal_session_seq: u64 = 1,
     worker_presence: std.StringHashMapUnmanaged(WorkerPresence) = .{},
     local_fs_lock_files: std.StringHashMapUnmanaged(LocalFsLockEntry) = .{},
-    project_binds: std.ArrayListUnmanaged(PathBind) = .{},
+    workspace_binds: std.ArrayListUnmanaged(PathBind) = .{},
     scoped_venom_bindings: std.ArrayListUnmanaged(ScopedVenomBinding) = .{},
     node_aliases: std.AutoHashMapUnmanaged(u32, u32) = .{},
     workspace_mount_fs_auth_tokens: std.StringHashMapUnmanaged([]u8) = .{},
@@ -630,7 +630,7 @@ pub const Session = struct {
         self.allocator.free(self.actor_type);
         self.allocator.free(self.actor_id);
         if (self.project_id) |value| self.allocator.free(value);
-        if (self.active_namespace_project_id) |value| self.allocator.free(value);
+        if (self.active_namespace_workspace_id) |value| self.allocator.free(value);
         if (self.project_token) |value| self.allocator.free(value);
         if (self.namespace_mount_url) |value| self.allocator.free(value);
         if (self.namespace_session_key) |value| self.allocator.free(value);
@@ -842,8 +842,8 @@ pub const Session = struct {
                 self.root_id,
                 project_id_json,
                 if (services_visible) ",\"services\"" else "",
-                if (self.project_binds.items.len > 0) "true" else "false",
-                self.project_binds.items.len,
+                if (self.workspace_binds.items.len > 0) "true" else "false",
+                self.workspace_binds.items.len,
             },
         );
         defer self.allocator.free(payload);
@@ -1323,8 +1323,8 @@ pub const Session = struct {
             return err;
         };
         defer policy.deinit(self.allocator);
-        if (self.active_namespace_project_id) |value| self.allocator.free(value);
-        self.active_namespace_project_id = try self.allocator.dupe(u8, policy.workspace_id);
+        if (self.active_namespace_workspace_id) |value| self.allocator.free(value);
+        self.active_namespace_workspace_id = try self.allocator.dupe(u8, policy.workspace_id);
         self.root_id = try self.addDir(null, "/", false);
         const nodes_root = try self.addDir(self.root_id, "nodes", false);
         self.nodes_root_id = nodes_root;
@@ -1465,7 +1465,7 @@ pub const Session = struct {
             "{\"discover\":true,\"invoke_via_paths\":true}",
             "Workspace-scoped Venom bindings plus raw node Venom discovery.",
         );
-        self.active_project_venoms_index_id = try self.addFile(
+        self.active_workspace_venoms_index_id = try self.addFile(
             workspace_venoms_dir,
             "VENOMS.json",
             "[]",
@@ -1812,10 +1812,10 @@ pub const Session = struct {
     pub fn refreshWorkspaceServiceDiscoveryFiles(self: *Session) !void {
         const meta_root = self.lookupChild(self.root_id, "meta") orelse return;
         const projects_root = self.lookupChild(self.root_id, "projects") orelse return;
-        const active_project_id = self.active_namespace_project_id orelse self.project_id orelse return;
-        const project_dir = self.lookupChild(projects_root, active_project_id) orelse return;
+        const active_workspace_id = self.active_namespace_workspace_id orelse self.project_id orelse return;
+        const project_dir = self.lookupChild(projects_root, active_workspace_id) orelse return;
         const workspace_meta_dir = self.lookupChild(project_dir, "meta") orelse return;
-        return self.addWorkspaceServiceDiscoveryFiles(meta_root, workspace_meta_dir, active_project_id);
+        return self.addWorkspaceServiceDiscoveryFiles(meta_root, workspace_meta_dir, active_workspace_id);
     }
 
     fn buildVenomPackagesJson(self: *Session) ![]u8 {
@@ -1827,7 +1827,7 @@ pub const Session = struct {
     }
 
     pub fn hasProjectBindPath(self: *Session, bind_path: []const u8) bool {
-        for (self.project_binds.items) |bind| {
+        for (self.workspace_binds.items) |bind| {
             if (bind.kind != .workspace) continue;
             if (std.mem.eql(u8, bind.bind_path, bind_path)) return true;
         }
@@ -2010,7 +2010,7 @@ pub const Session = struct {
     }
 
     fn appendProjectBind(self: *Session, kind: PathBindKind, bind_path: []const u8, target_path: []const u8) !void {
-        for (self.project_binds.items) |*existing| {
+        for (self.workspace_binds.items) |*existing| {
             if (!std.mem.eql(u8, existing.bind_path, bind_path)) continue;
             if (existing.kind == kind and std.mem.eql(u8, existing.target_path, target_path)) return;
             self.allocator.free(existing.target_path);
@@ -2019,7 +2019,7 @@ pub const Session = struct {
             return;
         }
 
-        try self.project_binds.append(self.allocator, .{
+        try self.workspace_binds.append(self.allocator, .{
             .kind = kind,
             .bind_path = try self.allocator.dupe(u8, bind_path),
             .target_path = try self.allocator.dupe(u8, target_path),
@@ -2027,17 +2027,17 @@ pub const Session = struct {
     }
 
     fn appendManagedWorkspaceEntrypointBinds(self: *Session) !void {
-        const project_id = self.active_namespace_project_id orelse self.project_id orelse return;
+        const workspace_id = self.active_namespace_workspace_id orelse self.project_id orelse return;
 
-        const quickref_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{project_id});
+        const quickref_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{workspace_id});
         defer self.allocator.free(quickref_target);
-        const bootstrap_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{project_id});
+        const bootstrap_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{workspace_id});
         defer self.allocator.free(bootstrap_target);
-        const workspace_status_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/workspace_status.json", .{project_id});
+        const workspace_status_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/workspace_status.json", .{workspace_id});
         defer self.allocator.free(workspace_status_target);
-        const mounted_services_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/mounted_services.json", .{project_id});
+        const mounted_services_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/mounted_services.json", .{workspace_id});
         defer self.allocator.free(mounted_services_target);
-        const venom_packages_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/venom_packages.json", .{project_id});
+        const venom_packages_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/venom_packages.json", .{workspace_id});
         defer self.allocator.free(venom_packages_target);
 
         const managed_bind_specs = [_]struct { bind_path: []const u8, target_path: []const u8 }{
@@ -2059,7 +2059,7 @@ pub const Session = struct {
     }
 
     fn materializeProjectBindPrefixDirectories(self: *Session) !void {
-        for (self.project_binds.items) |bind| {
+        for (self.workspace_binds.items) |bind| {
             try self.materializeBindPrefixDirectories(bind.bind_path);
         }
     }
@@ -3680,7 +3680,7 @@ pub const Session = struct {
             try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ parent_path, name });
         defer self.allocator.free(child_path);
 
-        if (self.project_binds.items.len > 0) {
+        if (self.workspace_binds.items.len > 0) {
             const resolved_path = try self.resolveBoundPath(child_path);
             defer if (resolved_path) |value| self.allocator.free(value);
             if (resolved_path) |value| {
@@ -3691,7 +3691,7 @@ pub const Session = struct {
         }
 
         if (self.lookupChild(parent_id, name)) |child| return child;
-        if (self.project_binds.items.len == 0) return null;
+        if (self.workspace_binds.items.len == 0) return null;
 
         const projected_parent_path = try self.resolveProjectedPathForBoundTarget(parent_path);
         defer if (projected_parent_path) |value| self.allocator.free(value);
@@ -3722,7 +3722,7 @@ pub const Session = struct {
     }
 
     fn resolveBoundPath(self: *Session, path: []const u8) !?[]u8 {
-        if (self.project_binds.items.len == 0) return null;
+        if (self.workspace_binds.items.len == 0) return null;
 
         var current_path = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(current_path);
@@ -3749,10 +3749,10 @@ pub const Session = struct {
     }
 
     fn resolveProjectedPathForBoundTarget(self: *Session, path: []const u8) !?[]u8 {
-        if (self.project_binds.items.len == 0) return null;
+        if (self.workspace_binds.items.len == 0) return null;
 
         var selected: ?PathBind = null;
-        for (self.project_binds.items) |bind| {
+        for (self.workspace_binds.items) |bind| {
             if (!pathMatchesPrefixBoundary(path, bind.target_path)) continue;
             if (selected == null or bind.target_path.len > selected.?.target_path.len) selected = bind;
         }
@@ -3767,9 +3767,9 @@ pub const Session = struct {
     }
 
     fn resolveBoundPathOnce(self: *Session, path: []const u8) !?[]u8 {
-        if (self.project_binds.items.len == 0) return null;
+        if (self.workspace_binds.items.len == 0) return null;
         var selected: ?PathBind = null;
-        for (self.project_binds.items) |bind| {
+        for (self.workspace_binds.items) |bind| {
             if (!pathMatchesPrefixBoundary(path, bind.bind_path)) continue;
             if (selected == null or bind.bind_path.len > selected.?.bind_path.len) selected = bind;
         }
@@ -3883,11 +3883,11 @@ pub const Session = struct {
             try seen.put(self.allocator, name, {});
         }
 
-        if (self.project_binds.items.len > 0) {
+        if (self.workspace_binds.items.len > 0) {
             const dir_path = try self.nodeAbsolutePath(node_id);
             defer self.allocator.free(dir_path);
 
-            for (self.project_binds.items) |bind| {
+            for (self.workspace_binds.items) |bind| {
                 const child_name = immediateBoundChildName(dir_path, bind.bind_path) orelse continue;
                 if (seen.contains(child_name)) continue;
                 if (!first) try out.append(self.allocator, '\n');
@@ -3900,7 +3900,7 @@ pub const Session = struct {
             defer if (projected_dir_path) |value| self.allocator.free(value);
             if (projected_dir_path) |value| {
                 if (!std.mem.eql(u8, value, dir_path)) {
-                    for (self.project_binds.items) |bind| {
+                    for (self.workspace_binds.items) |bind| {
                         const child_name = immediateBoundChildName(value, bind.bind_path) orelse continue;
                         if (seen.contains(child_name)) continue;
                         if (!first) try out.append(self.allocator, '\n');
@@ -4116,7 +4116,7 @@ pub const Session = struct {
             return .{
                 .venom_id = "fs",
                 .remote_path = try self.allocator.dupe(u8, value.remote_path),
-                .project_id = self.active_namespace_project_id orelse self.project_id,
+                .project_id = self.active_namespace_workspace_id orelse self.project_id,
                 .provider_node_id = value.node_id,
                 .provider_export_name = null,
             };
@@ -4180,7 +4180,7 @@ pub const Session = struct {
         return .{
             .venom_id = "fs",
             .remote_path = remote_path,
-            .project_id = self.active_namespace_project_id orelse self.project_id,
+            .project_id = self.active_namespace_workspace_id orelse self.project_id,
             .provider_node_id = proxy_match.node_id,
             .provider_export_name = proxy_match.export_name,
         };
@@ -4234,7 +4234,7 @@ pub const Session = struct {
     fn boundVenomRouterForProxy(self: *Session, proxy: BoundVenomProxyPath, route_mode: BoundVenomRouteMode) !?acheron_router.Router {
         if (proxy.provider_node_id) |node_id| {
             if (proxy.provider_export_name == null) {
-                const scoped_project_id = proxy.project_id orelse self.active_namespace_project_id orelse self.project_id;
+                const scoped_project_id = proxy.project_id orelse self.active_namespace_workspace_id orelse self.project_id;
                 if (scoped_project_id != null and !self.isBoundVenomNodeAllowed(scoped_project_id, proxy.agent_id, node_id)) {
                     return null;
                 }
@@ -6356,8 +6356,8 @@ pub const Session = struct {
             try seen_names.put(self.allocator, entry.key_ptr.*, {});
         }
 
-        if (self.project_binds.items.len > 0) {
-            for (self.project_binds.items) |bind| {
+        if (self.workspace_binds.items.len > 0) {
+            for (self.workspace_binds.items) |bind| {
                 const child_name = immediateBoundChildName(projected_parent_path, bind.bind_path) orelse continue;
                 if (seen_names.contains(child_name)) continue;
                 try child_names.append(self.allocator, child_name);
@@ -6365,7 +6365,7 @@ pub const Session = struct {
             }
 
             if (!std.mem.eql(u8, source_absolute_path, projected_parent_path)) {
-                for (self.project_binds.items) |bind| {
+                for (self.workspace_binds.items) |bind| {
                     const child_name = immediateBoundChildName(source_absolute_path, bind.bind_path) orelse continue;
                     if (seen_names.contains(child_name)) continue;
                     try child_names.append(self.allocator, child_name);
@@ -7273,9 +7273,9 @@ pub const Session = struct {
     }
 
     fn clearProjectBinds(self: *Session) void {
-        for (self.project_binds.items) |*bind| bind.deinit(self.allocator);
-        self.project_binds.deinit(self.allocator);
-        self.project_binds = .{};
+        for (self.workspace_binds.items) |*bind| bind.deinit(self.allocator);
+        self.workspace_binds.deinit(self.allocator);
+        self.workspace_binds = .{};
     }
 
     fn clearWorkspaceMountFsAuthTokens(self: *Session) void {
@@ -7696,7 +7696,7 @@ fn parseEntityScopedVenomAliasPrefix(
 }
 
 fn parseServiceScopedVenomAliasPrefix(self: *Session, path: []const u8) ?ParsedServiceScopedVenomAlias {
-    const project_id = self.active_namespace_project_id orelse self.project_id orelse return null;
+    const project_id = self.active_namespace_workspace_id orelse self.project_id orelse return null;
     const parsed = parseScopedVenomAliasPrefix(path, "/services/") orelse
         parseScopedVenomAliasPrefix(path, workspace_managed_services_absolute_prefix) orelse
         return null;
@@ -8630,7 +8630,7 @@ test "acheron_session: workspace mount aliases project live mounts into the name
     defer allocator.free(binds_json);
     try std.testing.expect(std.mem.indexOf(u8, binds_json, "\"bind_path\":\"/shared_data\"") == null);
     var found_workspace_mount = false;
-    for (session.project_binds.items) |bind| {
+    for (session.workspace_binds.items) |bind| {
         if (bind.kind != .workspace_mount) continue;
         if (!std.mem.eql(u8, bind.bind_path, "/shared_data")) continue;
         found_workspace_mount = true;
@@ -8975,7 +8975,7 @@ test "acheron_session: workspace mount aliases still apply when the namespace pa
     try session.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
 
     var found_workspace_mount = false;
-    for (session.project_binds.items) |bind| {
+    for (session.workspace_binds.items) |bind| {
         if (bind.kind != .workspace_mount) continue;
         if (!std.mem.eql(u8, bind.bind_path, "/nodes/local/fs")) continue;
         found_workspace_mount = true;

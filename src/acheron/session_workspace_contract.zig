@@ -33,7 +33,7 @@ pub const bootstrap_required_services = [_]BootstrapRequiredService{
 
 const BootstrapContractPaths = struct {
     protocol_path: []const u8,
-    project_meta_dir: []const u8,
+    workspace_meta_dir: []const u8,
     quickref_path: []const u8,
     bootstrap_path: []const u8,
     workspace_status_path: []const u8,
@@ -54,7 +54,7 @@ const BootstrapContractPaths = struct {
         _ = project_id;
         return .{
             .protocol_path = try workspaceManagedPath(allocator, "protocol.json"),
-            .project_meta_dir = try workspaceManagedPath(allocator, null),
+            .workspace_meta_dir = try workspaceManagedPath(allocator, null),
             .quickref_path = try workspaceManagedPath(allocator, "agent_bootstrap_quickref.json"),
             .bootstrap_path = try workspaceManagedPath(allocator, "agent_bootstrap.json"),
             .workspace_status_path = try workspaceManagedPath(allocator, "workspace_status.json"),
@@ -75,7 +75,7 @@ const BootstrapContractPaths = struct {
 
     fn deinit(self: BootstrapContractPaths, allocator: std.mem.Allocator) void {
         allocator.free(self.protocol_path);
-        allocator.free(self.project_meta_dir);
+        allocator.free(self.workspace_meta_dir);
         allocator.free(self.quickref_path);
         allocator.free(self.bootstrap_path);
         allocator.free(self.workspace_status_path);
@@ -106,7 +106,7 @@ pub fn buildProjectContractsJson(session: anytype, project_id: []const u8) ![]u8
     const agent_bootstrap_quickref = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{project_id});
     defer session.allocator.free(agent_bootstrap_quickref);
 
-    const project_metadata_files = [_][]const u8{
+    const workspace_metadata_files = [_][]const u8{
         "topology.json",
         "nodes.json",
         "agents.json",
@@ -136,13 +136,13 @@ pub fn buildProjectContractsJson(session: anytype, project_id: []const u8) ![]u8
     var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
     try jw.beginObject();
     try jw.objectField("version");
-    try jw.write("acheron-namespace-project-contract-v2");
-    try jw.objectField("project_id");
+    try jw.write("acheron-namespace-workspace-contract");
+    try jw.objectField("workspace_id");
     try jw.write(project_id);
     try jw.objectField("top_level_roots");
     try jw.write(.{ "/nodes", "/agents", "/global", "/services" });
-    try jw.objectField("project_metadata_files");
-    try jw.write(project_metadata_files);
+    try jw.objectField("workspace_metadata_files");
+    try jw.write(workspace_metadata_files);
     try jw.objectField("links");
     try jw.beginObject();
     try jw.objectField("nodes_root");
@@ -191,7 +191,7 @@ pub fn buildProjectPathsJson(session: anytype, policy: workspace_policy.Workspac
 
     var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
     try jw.beginObject();
-    try jw.objectField("project_id");
+    try jw.objectField("workspace_id");
     try jw.write(policy.project_id);
     try jw.objectField("nodes_root");
     try jw.write("/nodes");
@@ -259,11 +259,11 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, project_id: []const u8,
     try jw.beginObject();
     try jw.objectField("version");
     try jw.write("spiderweb-agent-bootstrap-quickref-v1");
-    try jw.objectField("project_id");
+    try jw.objectField("workspace_id");
     try jw.write(project_id);
     try jw.objectField("agent_id");
     try jw.write(agent_id);
-    try jw.objectField("project_write_root");
+    try jw.objectField("workspace_write_root");
     try jw.write(".");
     try jw.objectField("shared_data_root");
     try jw.write(paths.shared_data_root);
@@ -282,8 +282,8 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, project_id: []const u8,
     try jw.beginObject();
     try jw.objectField("protocol");
     try jw.write(paths.protocol_path);
-    try jw.objectField("project_meta_dir");
-    try jw.write(paths.project_meta_dir);
+    try jw.objectField("workspace_meta_dir");
+    try jw.write(paths.workspace_meta_dir);
     try jw.objectField("quickref");
     try jw.write(paths.quickref_path);
     try jw.objectField("bootstrap");
@@ -298,7 +298,7 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, project_id: []const u8,
     try jw.write(paths.shared_data_root);
     try jw.objectField("service_root");
     try jw.write(paths.service_root);
-    try jw.objectField("project_write_root");
+    try jw.objectField("workspace_write_root");
     try jw.write(".");
     try jw.endObject();
 
@@ -372,11 +372,11 @@ pub fn buildAgentBootstrapJson(session: anytype, project_id: []const u8, agent_i
     try jw.beginObject();
     try jw.objectField("version");
     try jw.write("spiderweb-agent-bootstrap-v1");
-    try jw.objectField("project_id");
+    try jw.objectField("workspace_id");
     try jw.write(project_id);
     try jw.objectField("agent_id");
     try jw.write(agent_id);
-    try jw.objectField("project_write_root");
+    try jw.objectField("workspace_write_root");
     try jw.write(".");
     try jw.objectField("shared_data_root");
     try jw.write(paths.shared_data_root);
@@ -409,7 +409,7 @@ pub fn buildAgentBootstrapJson(session: anytype, project_id: []const u8, agent_i
     try jw.write(paths.shared_data_root);
     try jw.objectField("service_root");
     try jw.write(paths.service_root);
-    try jw.objectField("project_write_root");
+    try jw.objectField("workspace_write_root");
     try jw.write(".");
     try jw.endObject();
 
@@ -440,7 +440,7 @@ pub fn buildAgentBootstrapJson(session: anytype, project_id: []const u8, agent_i
     try jw.beginObject();
     try jw.objectField("agent_id");
     try jw.write(agent_id);
-    try jw.objectField("project_id");
+    try jw.objectField("workspace_id");
     try jw.write(project_id);
     try jw.endObject();
     try jw.objectField("required");
@@ -479,9 +479,9 @@ pub fn buildAgentBootstrapJson(session: anytype, project_id: []const u8, agent_i
 
     try jw.objectField("persistence");
     try jw.beginObject();
-    try jw.objectField("shared_project_binds");
+    try jw.objectField("shared_workspace_binds");
     try jw.write("persistent");
-    try jw.objectField("shared_project_mounts");
+    try jw.objectField("shared_workspace_mounts");
     try jw.write("persistent");
     try jw.objectField("agent_home");
     try jw.write("durable_per_agent");

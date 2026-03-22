@@ -99,7 +99,7 @@ const workspace_agents_managed_begin = session_workspace_contract.workspace_agen
 const workspace_agents_managed_end = session_workspace_contract.workspace_agents_managed_end;
 const worker_reap_grace_ms: i64 = 60_000;
 const acheron_protocol_json =
-    "{\"channel\":\"acheron\",\"version\":\"acheron-1\",\"layout\":\"acheron-namespace-project-contract-v2\",\"ops\":[\"t_version\",\"t_attach\",\"t_walk\",\"t_open\",\"t_read\",\"t_write\",\"t_stat\",\"t_clunk\",\"t_flush\"]}";
+    "{\"channel\":\"acheron\",\"version\":\"acheron-1\",\"layout\":\"acheron-namespace-workspace-contract\",\"ops\":[\"t_version\",\"t_attach\",\"t_walk\",\"t_open\",\"t_read\",\"t_write\",\"t_stat\",\"t_clunk\",\"t_flush\"]}";
 
 const bootstrap_required_services = session_workspace_contract.bootstrap_required_services;
 
@@ -1537,7 +1537,7 @@ pub const Session = struct {
         defer self.allocator.free(escaped_project);
         const view_json = try std.fmt.allocPrint(
             self.allocator,
-            "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"nodes\":{d},\"visible_agents\":{d},\"project_links\":{d}}}",
+            "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"nodes\":{d},\"visible_agents\":{d},\"workspace_links\":{d}}}",
             .{
                 escaped_agent,
                 escaped_project,
@@ -8494,7 +8494,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     const quickref_json = try session.tryReadInternalPath(quickref_path);
     defer if (quickref_json) |value| allocator.free(value);
     try std.testing.expect(quickref_json != null);
-    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"project_write_root\":\".\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"workspace_write_root\":\".\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"service_root\":\"./.spiderweb/services\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"./AGENTS.md\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"protocol\":\"./.spiderweb/protocol.json\"") != null);
@@ -9137,7 +9137,7 @@ test "acheron_session: mount graph snapshots resolve projected workspace mount r
     const remote_export_dir = session.resolveAbsolutePathNoBinds(remote_export_path) orelse return error.MissingNode;
     _ = try session.addFile(remote_export_dir, "world_seed.json", "{\"world\":\"ok\"}\n", false, .none);
 
-    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(workspace_req);
     const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
     defer allocator.free(workspace_json);
@@ -9313,7 +9313,7 @@ test "acheron_session: mount graph snapshots honor workspace bind overrides for 
     const remote_export_dir = session.resolveAbsolutePathNoBinds(remote_export_path) orelse return error.MissingNode;
     _ = try session.addFile(remote_export_dir, "remote.txt", "remote\n", false, .none);
 
-    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(workspace_req);
     const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
     defer allocator.free(workspace_json);
@@ -9417,7 +9417,7 @@ test "acheron_session: projected workspace .spiderweb snapshot keeps protocol fi
     );
     defer session.deinit();
 
-    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(workspace_req);
     const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
     defer allocator.free(workspace_json);
@@ -9510,7 +9510,7 @@ test "acheron_session: projected managed .spiderweb survives broader workspace m
     );
     defer session.deinit();
 
-    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(workspace_req);
     const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
     defer allocator.free(workspace_json);
@@ -9611,7 +9611,7 @@ test "acheron_session: projected managed services keep bind-only children under 
     );
     defer session.deinit();
 
-    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(workspace_req);
     const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
     defer allocator.free(workspace_json);
@@ -10115,7 +10115,7 @@ test "acheron_session: projected workspace managed files remain readable through
     const shared_export_dir = session.resolveAbsolutePathNoBinds(shared_export_path) orelse return error.MissingNode;
     _ = try session.addFile(shared_export_dir, "world_seed.json", "{\"world\":\"ok\"}\n", false, .none);
 
-    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(workspace_req);
     const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
     defer allocator.free(workspace_json);
@@ -10239,7 +10239,7 @@ test "acheron_session: projected managed shared_data snapshot preserves proxy at
     world_seed_node.reported_mode = 0o100644;
     world_seed_node.reported_size = 15;
 
-    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(workspace_req);
     const workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
     defer allocator.free(workspace_json);
@@ -10900,7 +10900,7 @@ test "acheron_session: protocol json advertises the expected namespace ops" {
 
     try std.testing.expectEqualStrings("acheron", parsed.value.object.get("channel").?.string);
     try std.testing.expectEqualStrings("acheron-1", parsed.value.object.get("version").?.string);
-    try std.testing.expectEqualStrings("acheron-namespace-project-contract-v2", parsed.value.object.get("layout").?.string);
+    try std.testing.expectEqualStrings("acheron-namespace-workspace-contract", parsed.value.object.get("layout").?.string);
 
     const ops = parsed.value.object.get("ops").?.array.items;
     const expected_ops = [_][]const u8{

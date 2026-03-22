@@ -11,7 +11,7 @@ pub fn buildProjectTopologyJson(session: anytype, policy: workspace_policy.Works
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(session.allocator);
     try out.writer(session.allocator).print(
-        "{{\"project_id\":\"{s}\",\"agent_id\":\"{s}\",\"nodes\":[",
+        "{{\"workspace_id\":\"{s}\",\"agent_id\":\"{s}\",\"nodes\":[",
         .{ escaped_project, escaped_agent },
     );
     for (policy.nodes.items, 0..) |node, idx| {
@@ -36,7 +36,7 @@ pub fn buildProjectTopologyJson(session: anytype, policy: workspace_policy.Works
         }
         try out.appendSlice(session.allocator, "]}");
     }
-    try out.appendSlice(session.allocator, "],\"project_links\":[");
+    try out.appendSlice(session.allocator, "],\"workspace_links\":[");
     for (policy.project_links.items, 0..) |link, idx| {
         if (idx != 0) try out.append(session.allocator, ',');
         const target = try std.fmt.allocPrint(session.allocator, "/nodes/{s}/{s}", .{ link.node_id, link.resource });
@@ -119,7 +119,7 @@ pub fn buildProjectSourcesJson(
     defer session.allocator.free(escaped_project_id);
     return std.fmt.allocPrint(
         session.allocator,
-        "{{\"project_id\":\"{s}\",\"workspace_status\":\"{s}\",\"project_fs\":\"{s}\",\"project_nodes\":\"{s}\",\"nodes_meta\":\"{s}\",\"project_binds\":\"control_plane\",\"mounted_services\":\"namespace_projection\"}}",
+        "{{\"workspace_id\":\"{s}\",\"workspace_status\":\"{s}\",\"workspace_fs\":\"{s}\",\"workspace_nodes\":\"{s}\",\"nodes_meta\":\"{s}\",\"workspace_binds\":\"control_plane\",\"mounted_services\":\"namespace_projection\"}}",
         .{
             escaped_project_id,
             if (has_workspace_status) "control_plane" else "policy",
@@ -222,11 +222,11 @@ pub fn buildProjectSummaryJson(
     }
 
     const source_workspace_status = if (workspace_status_json != null) "control_plane" else "policy";
-    const source_project_fs = if (loaded_live_mounts) "workspace_mounts" else "policy_links";
-    const source_project_nodes = if (loaded_live_nodes) "workspace_mounts" else "policy_nodes";
+    const source_workspace_fs = if (loaded_live_mounts) "workspace_mounts" else "policy_links";
+    const source_workspace_nodes = if (loaded_live_nodes) "workspace_mounts" else "policy_nodes";
     const source_nodes_meta = if (nodes_meta_from_workspace) "workspace_mounts" else "policy_nodes";
-    const project_mount_links = if (loaded_live_mounts and workspace_mount_links > 0) workspace_mount_links else policy.project_links.items.len;
-    const project_node_links = if (loaded_live_nodes and workspace_node_links > 0) workspace_node_links else policy.nodes.items.len;
+    const effective_workspace_mount_links = if (loaded_live_mounts and workspace_mount_links > 0) workspace_mount_links else policy.project_links.items.len;
+    const effective_workspace_node_links = if (loaded_live_nodes and workspace_node_links > 0) workspace_node_links else policy.nodes.items.len;
 
     const escaped_health_state = try unified.jsonEscape(session.allocator, health_state);
     defer session.allocator.free(escaped_health_state);
@@ -235,19 +235,19 @@ pub fn buildProjectSummaryJson(
 
     return std.fmt.allocPrint(
         session.allocator,
-        "{{\"project_id\":\"{s}\",\"sources\":{{\"workspace_status\":\"{s}\",\"project_fs\":\"{s}\",\"project_nodes\":\"{s}\",\"nodes_meta\":\"{s}\"}},\"counts\":{{\"policy_nodes\":{d},\"policy_links\":{d},\"visible_agents\":{d},\"project_agent_links\":{d},\"project_node_links\":{d},\"project_mount_links\":{d}}},\"health\":{{\"state\":\"{s}\",\"reconcile_state\":\"{s}\",\"queue_depth\":{d}}}}}",
+        "{{\"workspace_id\":\"{s}\",\"sources\":{{\"workspace_status\":\"{s}\",\"workspace_fs\":\"{s}\",\"workspace_nodes\":\"{s}\",\"nodes_meta\":\"{s}\"}},\"counts\":{{\"policy_nodes\":{d},\"policy_links\":{d},\"visible_agents\":{d},\"workspace_agent_links\":{d},\"workspace_node_links\":{d},\"workspace_mount_links\":{d}}},\"health\":{{\"state\":\"{s}\",\"reconcile_state\":\"{s}\",\"queue_depth\":{d}}}}}",
         .{
             escaped_project_id,
             source_workspace_status,
-            source_project_fs,
-            source_project_nodes,
+            source_workspace_fs,
+            source_workspace_nodes,
             source_nodes_meta,
             policy.nodes.items.len,
             policy.project_links.items.len,
             policy.visible_agents.items.len,
             policy_agent_links,
-            project_node_links,
-            project_mount_links,
+            effective_workspace_node_links,
+            effective_workspace_mount_links,
             escaped_health_state,
             escaped_reconcile_state,
             queue_depth,
@@ -382,9 +382,9 @@ fn workspaceStatusMatchesProject(
     var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, workspace_status_json, .{}) catch return false;
     defer parsed.deinit();
     if (parsed.value != .object) return false;
-    const project_id_value = parsed.value.object.get("workspace_id") orelse return false;
-    if (project_id_value != .string) return false;
-    return std.mem.eql(u8, project_id_value.string, expected_project_id);
+    const workspace_id_value = parsed.value.object.get("workspace_id") orelse return false;
+    if (workspace_id_value != .string) return false;
+    return std.mem.eql(u8, workspace_id_value.string, expected_project_id);
 }
 
 pub fn extractWorkspaceAvailability(session: anytype, workspace_status_json: []const u8) !?[]u8 {
@@ -634,7 +634,7 @@ pub fn buildFallbackWorkspaceStatusJson(session: anytype, policy: workspace_poli
 
     return std.fmt.allocPrint(
         session.allocator,
-        "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"template_id\":null,\"source\":\"policy\",\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"unknown\",\"last_reconcile_ms\":0,\"last_success_ms\":0,\"last_error\":null,\"queue_depth\":0}}",
+        "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"template_id\":null,\"source\":\"policy\",\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"unknown\",\"last_reconcile_ms\":0,\"last_success_ms\":0,\"last_error\":null,\"queue_depth\":0}}",
         .{ escaped_agent, escaped_project },
     );
 }

@@ -72,6 +72,32 @@ normalize_bool() {
     esac
 }
 
+spiderweb_build_prefix_dir() {
+    if [[ -n "${SPIDERWEB_ZIG_PREFIX:-}" ]]; then
+        printf '%s' "$SPIDERWEB_ZIG_PREFIX"
+    else
+        printf '%s' "zig-out"
+    fi
+}
+
+spiderweb_build_bin_dir() {
+    printf '%s/bin' "$(spiderweb_build_prefix_dir)"
+}
+
+run_spiderweb_zig_build() {
+    local -a cmd=(zig build -Doptimize=ReleaseSafe)
+    if [[ -n "${SPIDERWEB_ZIG_PREFIX:-}" ]]; then
+        cmd+=(--prefix "$SPIDERWEB_ZIG_PREFIX")
+    fi
+    if [[ -n "${SPIDERWEB_ZIG_LOCAL_CACHE_DIR:-}" ]]; then
+        cmd+=(--cache-dir "$SPIDERWEB_ZIG_LOCAL_CACHE_DIR")
+    fi
+    if [[ -n "${SPIDERWEB_ZIG_GLOBAL_CACHE_DIR:-}" ]]; then
+        cmd+=(--global-cache-dir "$SPIDERWEB_ZIG_GLOBAL_CACHE_DIR")
+    fi
+    "${cmd[@]}"
+}
+
 is_env_set() {
     local name="$1"
     [[ -n "${!name+x}" ]]
@@ -250,10 +276,19 @@ print_auth_tokens_summary() {
     token_file="$(resolve_auth_tokens_file "$config_cmd")"
 
     if [[ -n "$token_file" ]]; then
+        local access_token
         local admin_token
         local user_token
+        access_token="$(jq -r '.access_token // empty' "$token_file" 2>/dev/null || true)"
         admin_token="$(jq -r '.admin_token // empty' "$token_file" 2>/dev/null || true)"
         user_token="$(jq -r '.user_token // empty' "$token_file" 2>/dev/null || true)"
+        if [[ -n "$access_token" ]]; then
+            echo ""
+            log_success "Auth token (save this now):"
+            echo "  access: $access_token"
+            echo "  path:   $token_file"
+            return
+        fi
         if [[ -n "$admin_token" && -n "$user_token" ]]; then
             echo ""
             log_success "Auth tokens (save these now):"
@@ -286,12 +321,12 @@ collect_auth_token_candidates() {
     local config_cmd="${1:-}"
     local -n out_ref="$2"
     out_ref=()
-    out_ref+=("${REPO_DIR}/.spiderweb-ltm/auth_tokens.json")
+    out_ref+=("${REPO_DIR}/.spiderweb-state/auth_tokens.json")
 
     local config_file="${HOME}/.config/spiderweb/config.json"
     if [[ -f "$config_file" ]]; then
         local ltm_dir
-        ltm_dir="$(jq -r '.runtime.ltm_directory // empty' "$config_file" 2>/dev/null || true)"
+        ltm_dir="$(jq -r '.runtime.state_directory // empty' "$config_file" 2>/dev/null || true)"
         if [[ -n "$ltm_dir" ]]; then
             if [[ "$ltm_dir" == /* ]]; then
                 out_ref+=("${ltm_dir}/auth_tokens.json")
@@ -350,12 +385,18 @@ sync_zss_auth_tokens() {
         return 0
     fi
 
+    local access_token
     local admin_token
     local user_token
+    access_token="$(jq -r '.access_token // empty' "$token_file" 2>/dev/null || true)"
     admin_token="$(jq -r '.admin_token // empty' "$token_file" 2>/dev/null || true)"
     user_token="$(jq -r '.user_token // empty' "$token_file" 2>/dev/null || true)"
+    if [[ -n "$access_token" ]]; then
+        admin_token="$access_token"
+        user_token="$access_token"
+    fi
     if [[ -z "$admin_token" || -z "$user_token" ]]; then
-        log_warn "Skipping zss auth sync: auth token file is missing admin/user tokens."
+        log_warn "Skipping zss auth sync: auth token file is missing usable auth tokens."
         return 0
     fi
 
@@ -617,12 +658,15 @@ install_spiderweb_from_source() {
     cd "$REPO_DIR"
 
     log_info "Building Spiderweb..."
-    zig build -Doptimize=ReleaseSafe
+    run_spiderweb_zig_build
+
+    local build_bin_dir
+    build_bin_dir="$(spiderweb_build_bin_dir)"
 
     log_info "Installing binaries..."
     for bin in "${SPIDERWEB_BINARIES[@]}"; do
-        if [[ ! -x "zig-out/bin/${bin}" ]]; then
-            echo "Error: expected build artifact missing: zig-out/bin/${bin}"
+        if [[ ! -x "${build_bin_dir}/${bin}" ]]; then
+            echo "Error: expected build artifact missing: ${build_bin_dir}/${bin}"
             exit 1
         fi
     done
@@ -630,7 +674,7 @@ install_spiderweb_from_source() {
     local copy_without_sudo=true
     local bin
     for bin in "${SPIDERWEB_BINARIES[@]}"; do
-        if ! cp "zig-out/bin/${bin}" "$INSTALL_DIR/" 2>/dev/null; then
+        if ! cp "${build_bin_dir}/${bin}" "$INSTALL_DIR/" 2>/dev/null; then
             copy_without_sudo=false
             break
         fi
@@ -638,7 +682,7 @@ install_spiderweb_from_source() {
     if [[ "$copy_without_sudo" != "true" ]]; then
         log_info "Need elevated permissions to update binary..."
         for bin in "${SPIDERWEB_BINARIES[@]}"; do
-            sudo cp "zig-out/bin/${bin}" "$INSTALL_DIR/"
+            sudo cp "${build_bin_dir}/${bin}" "$INSTALL_DIR/"
         done
     fi
 

@@ -278,7 +278,7 @@ const GitDriverContext = struct {
         return std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ workspace_world_prefix, normalized_relative });
     }
 
-    pub fn resolveMissionContractHostPath(self: *GitDriverContext, absolute_path: []const u8) ![]u8 {
+    pub fn resolveWorkspaceHostPath(self: *GitDriverContext, absolute_path: []const u8) ![]u8 {
         if (!pathMatchesPrefixBoundary(absolute_path, workspace_world_prefix)) return error.InvalidPayload;
         if (std.mem.eql(u8, absolute_path, workspace_world_prefix)) {
             return self.allocator.dupe(u8, self.export_root);

@@ -67,7 +67,7 @@ pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) 
     defer self.allocator.free(escaped_base_path);
     const shape_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"kind\":\"venom\",\"venom_id\":\"terminal-v2\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,RUNTIME.json,PERMISSIONS.json,STATUS.json,status.json,result.json,sessions.json,current.json,control/*}}\"}}",
+        "{{\"kind\":\"venom\",\"venom_id\":\"terminal\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,RUNTIME.json,PERMISSIONS.json,STATUS.json,status.json,result.json,sessions.json,current.json,control/*}}\"}}",
         .{escaped_base_path},
     );
     defer self.allocator.free(shape_json);
@@ -106,7 +106,7 @@ pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) 
     );
     const runtime_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"type\":\"runtime_tool\",\"tool\":\"shell_exec\",\"session_model\":\"terminal-v2\",\"namespace_mode\":\"{s}\",\"path_model\":\"{s}\"}}",
+        "{{\"type\":\"runtime_tool\",\"tool\":\"shell_exec\",\"session_model\":\"terminal\",\"namespace_mode\":\"{s}\",\"path_model\":\"{s}\"}}",
         .{ namespace_mode, path_model },
     );
     defer self.allocator.free(runtime_json);
@@ -126,7 +126,7 @@ pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) 
     );
     const status_descriptor_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"venom_id\":\"terminal-v2\",\"state\":\"namespace\",\"has_invoke\":true,\"interactive\":{s},\"sessionized\":{s},\"pty\":{s},\"namespace_mode\":\"{s}\",\"path_model\":\"{s}\"}}",
+        "{{\"venom_id\":\"terminal\",\"state\":\"namespace\",\"has_invoke\":true,\"interactive\":{s},\"sessionized\":{s},\"pty\":{s},\"namespace_mode\":\"{s}\",\"path_model\":\"{s}\"}}",
         .{
             if (supports_interactive_sessions) "true" else "false",
             if (supports_interactive_sessions) "true" else "false",
@@ -195,14 +195,14 @@ pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) 
         false,
         .none,
     );
-    _ = try self.addFile(control_dir, "invoke.json", "", true, .terminal_v2_invoke);
-    _ = try self.addFile(control_dir, "create.json", "", true, .terminal_v2_create);
-    _ = try self.addFile(control_dir, "resume.json", "", true, .terminal_v2_resume);
-    _ = try self.addFile(control_dir, "close.json", "", true, .terminal_v2_close);
-    _ = try self.addFile(control_dir, "write.json", "", true, .terminal_v2_write);
-    _ = try self.addFile(control_dir, "read.json", "", true, .terminal_v2_read);
-    _ = try self.addFile(control_dir, "resize.json", "", true, .terminal_v2_resize);
-    _ = try self.addFile(control_dir, "exec.json", "", true, .terminal_v2_exec);
+    _ = try self.addFile(control_dir, "invoke.json", "", true, .terminal_invoke);
+    _ = try self.addFile(control_dir, "create.json", "", true, .terminal_create);
+    _ = try self.addFile(control_dir, "resume.json", "", true, .terminal_resume);
+    _ = try self.addFile(control_dir, "close.json", "", true, .terminal_close);
+    _ = try self.addFile(control_dir, "write.json", "", true, .terminal_write);
+    _ = try self.addFile(control_dir, "read.json", "", true, .terminal_read);
+    _ = try self.addFile(control_dir, "resize.json", "", true, .terminal_resize);
+    _ = try self.addFile(control_dir, "exec.json", "", true, .terminal_exec);
 }
 
 pub fn handleInvokeWrite(self: anytype, invoke_node_id: u32, raw_input: []const u8) !usize {
@@ -966,7 +966,7 @@ fn buildResultEnvelope(
         defer self.allocator.free(escaped);
         break :blk try std.fmt.allocPrint(
             self.allocator,
-            "{{\"code\":\"terminal_v2\",\"message\":\"{s}\"}}",
+            "{{\"code\":\"terminal\",\"message\":\"{s}\"}}",
             .{escaped},
         );
     } else try self.allocator.dupe(u8, "null");

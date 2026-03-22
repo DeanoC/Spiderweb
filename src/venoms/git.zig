@@ -241,7 +241,7 @@ fn executeSyncCheckoutOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
     const timeout_ms = (try jsonObjectOptionalU64(args_obj, "timeout_ms")) orelse 120_000;
     const pr_number = try jsonObjectOptionalU64(args_obj, "pr_number");
 
-    const checkout_host_path = try self.resolveMissionContractHostPath(checkout_path);
+    const checkout_host_path = try self.resolveWorkspaceHostPath(checkout_path);
     defer self.allocator.free(checkout_host_path);
     const parent = std.fs.path.dirname(checkout_host_path) orelse return error.InvalidPayload;
     try ensurePathExists(parent);
@@ -385,7 +385,7 @@ fn executeStatusOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
     );
     defer self.allocator.free(checkout_path);
     const timeout_ms = (try jsonObjectOptionalU64(args_obj, "timeout_ms")) orelse 30_000;
-    const checkout_host_path = try self.resolveMissionContractHostPath(checkout_path);
+    const checkout_host_path = try self.resolveWorkspaceHostPath(checkout_path);
     defer self.allocator.free(checkout_host_path);
 
     const head_sha = runGitCaptureStdout(self, checkout_host_path, &.{ "rev-parse", "HEAD" }, timeout_ms) catch |err| switch (err) {
@@ -436,7 +436,7 @@ fn executeDiffRangeOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
         extractOptionalStringByNames(args_obj, &[_][]const u8{"checkout_path"}) orelse return error.InvalidPayload,
     );
     defer self.allocator.free(checkout_path);
-    const checkout_host_path = try self.resolveMissionContractHostPath(checkout_path);
+    const checkout_host_path = try self.resolveWorkspaceHostPath(checkout_path);
     defer self.allocator.free(checkout_host_path);
     const timeout_ms = (try jsonObjectOptionalU64(args_obj, "timeout_ms")) orelse 30_000;
 

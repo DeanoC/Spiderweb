@@ -3,7 +3,7 @@ pub const acheron_protocol = @import("protocol.zig");
 const acheron_client = @import("client.zig");
 const fs_cache = @import("spiderweb_fs_cache");
 const fs_source_policy = @import("spiderweb_fs_source_policy");
-const acheron_node_protocol_version = "unified-v2-fs";
+const acheron_node_protocol_version = "spiderweb-fs";
 const acheron_node_proto_id: i64 = 2;
 const synthetic_statfs_json =
     "{\"bsize\":65536,\"frsize\":65536,\"blocks\":1,\"bfree\":1,\"bavail\":1,\"files\":1048576,\"ffree\":1048575,\"favail\":1048575,\"namemax\":4096}";
@@ -2313,7 +2313,7 @@ test "acheron_router: virtual directory listing reflects mount prefixes" {
     const now = std.time.milliTimestamp();
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "n1"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/project/src"),
         .root_node_id = 10,
@@ -2325,7 +2325,7 @@ test "acheron_router: virtual directory listing reflects mount prefixes" {
     });
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "n2"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65534/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65534/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/docs"),
         .root_node_id = 20,
@@ -2354,7 +2354,7 @@ test "acheron_router: virtual directories handle trailing slashes" {
     const now = std.time.milliTimestamp();
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "agent-home"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/agents/spider-monkey/home"),
         .root_node_id = 10,
@@ -2366,7 +2366,7 @@ test "acheron_router: virtual directories handle trailing slashes" {
     });
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "meta-node"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65534/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65534/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/projects/system/meta"),
         .root_node_id = 20,
@@ -2401,7 +2401,7 @@ test "acheron_router: root path is not virtual when an endpoint is mounted at sl
     const now = std.time.milliTimestamp();
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "root-node"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/"),
         .root_node_id = 42,
@@ -2425,7 +2425,7 @@ test "acheron_router: root path uses synthetic statfs only when it is virtual" {
     const now = std.time.milliTimestamp();
     try root_router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "root-node"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/"),
         .root_node_id = 42,
@@ -2443,7 +2443,7 @@ test "acheron_router: root path uses synthetic statfs only when it is virtual" {
 
     try virtual_root_router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "project-node"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65534/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65534/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/projects/demo"),
         .root_node_id = 7,
@@ -2465,7 +2465,7 @@ test "acheron_router: resolvePath honors explicit mount_path overlays" {
     const now = std.time.milliTimestamp();
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "src-node"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/project/src"),
         .root_node_id = 10,
@@ -2494,7 +2494,7 @@ test "acheron_router: lookupChild treats missing entry as negative when full rea
     const now = std.time.milliTimestamp();
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "root-node"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/"),
         .root_node_id = 1,
@@ -2518,7 +2518,7 @@ test "acheron_router: resolvePath allows advanced ops before source metadata hyd
     const now = std.time.milliTimestamp();
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "fresh"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/a"),
         .root_node_id = 10,
@@ -2749,7 +2749,7 @@ test "acheron_router: invalidation plus endpoint failure falls back to sibling a
     const now = std.time.milliTimestamp();
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "a"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/a"),
         .root_node_id = 10,
@@ -2762,7 +2762,7 @@ test "acheron_router: invalidation plus endpoint failure falls back to sibling a
     });
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "a"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65534/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65534/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/a"),
         .root_node_id = 20,
@@ -2811,7 +2811,7 @@ test "acheron_router: replaceEndpoints swaps mount topology and clears caches" {
     const now = std.time.milliTimestamp();
     try router.endpoints.append(allocator, .{
         .name = try allocator.dupe(u8, "a"),
-        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/v2/fs"),
+        .url = try allocator.dupe(u8, "ws://127.0.0.1:65535/fs"),
         .export_name = null,
         .mount_path = try allocator.dupe(u8, "/a"),
         .root_node_id = 10,
@@ -2831,7 +2831,7 @@ test "acheron_router: replaceEndpoints swaps mount topology and clears caches" {
     try std.testing.expect(router.dir_prime_cache.isFresh(.{ .endpoint_index = 0, .node_id = 10 }, now));
 
     try router.replaceEndpoints(&[_]EndpointConfig{
-        .{ .name = "b", .url = "ws://127.0.0.1:65534/v2/fs", .mount_path = "/b" },
+        .{ .name = "b", .url = "ws://127.0.0.1:65534/fs", .mount_path = "/b" },
     });
 
     try std.testing.expectEqual(@as(usize, 1), router.endpointCount());

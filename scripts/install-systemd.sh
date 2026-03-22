@@ -163,8 +163,8 @@ install_config() {
   },
   "runtime": {
     "spider_web_root": "$SPIDER_WEB_ROOT",
-    "ltm_directory": "$DATA_DIR/.spiderweb-ltm",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$DATA_DIR/.spiderweb-state",
+    "state_db_filename": "runtime-state.db",
     "sandbox_mounts_root": "$DATA_DIR/mounts",
     "sandbox_rootfs_base_ref": "debian:bookworm-slim",
     "sandbox_rootfs_store_root": "$DATA_DIR/rootfs/base",

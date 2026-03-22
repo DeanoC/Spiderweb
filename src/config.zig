@@ -104,8 +104,8 @@ pub const RuntimeConfig = struct {
     max_run_steps: usize = 1024,
     default_agent_id: []const u8 = "",
     spider_web_root: []const u8 = "",
-    ltm_directory: []const u8 = ".spiderweb-ltm",
-    ltm_filename: []const u8 = "runtime-memory.db",
+    state_directory: []const u8 = ".spiderweb-state",
+    state_db_filename: []const u8 = "runtime-state.db",
     assets_dir: []const u8 = "templates",
     agents_dir: []const u8 = "agents",
     sandbox_mounts_root: []const u8 = "/var/lib/spiderweb/mounts",
@@ -137,8 +137,8 @@ pub const RuntimeConfig = struct {
             .max_run_steps = self.max_run_steps,
             .default_agent_id = try allocator.dupe(u8, self.default_agent_id),
             .spider_web_root = try allocator.dupe(u8, self.spider_web_root),
-            .ltm_directory = try allocator.dupe(u8, self.ltm_directory),
-            .ltm_filename = try allocator.dupe(u8, self.ltm_filename),
+            .state_directory = try allocator.dupe(u8, self.state_directory),
+            .state_db_filename = try allocator.dupe(u8, self.state_db_filename),
             .assets_dir = try allocator.dupe(u8, self.assets_dir),
             .agents_dir = try allocator.dupe(u8, self.agents_dir),
             .sandbox_mounts_root = try allocator.dupe(u8, self.sandbox_mounts_root),
@@ -162,8 +162,8 @@ pub const RuntimeConfig = struct {
     pub fn deinit(self: *RuntimeConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.default_agent_id);
         allocator.free(self.spider_web_root);
-        allocator.free(self.ltm_directory);
-        allocator.free(self.ltm_filename);
+        allocator.free(self.state_directory);
+        allocator.free(self.state_db_filename);
         allocator.free(self.assets_dir);
         allocator.free(self.agents_dir);
         allocator.free(self.sandbox_mounts_root);
@@ -211,8 +211,8 @@ const default_config =
     \\    "max_run_steps": 1024,
     \\    "default_agent_id": "",
     \\    "spider_web_root": "",
-    \\    "ltm_directory": ".spiderweb-ltm",
-    \\    "ltm_filename": "runtime-memory.db",
+    \\    "state_directory": ".spiderweb-state",
+    \\    "state_db_filename": "runtime-state.db",
     \\    "assets_dir": "templates",
     \\    "agents_dir": "agents"
     \\    ,
@@ -358,8 +358,8 @@ pub fn init(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
             .max_run_steps = 1024,
             .default_agent_id = try allocator.dupe(u8, ""),
             .spider_web_root = try allocator.dupe(u8, ""),
-            .ltm_directory = try allocator.dupe(u8, ".spiderweb-ltm"),
-            .ltm_filename = try allocator.dupe(u8, "runtime-memory.db"),
+            .state_directory = try allocator.dupe(u8, ".spiderweb-state"),
+            .state_db_filename = try allocator.dupe(u8, "runtime-state.db"),
             .assets_dir = try allocator.dupe(u8, "templates"),
             .agents_dir = try allocator.dupe(u8, "agents"),
             .sandbox_mounts_root = try allocator.dupe(u8, sandbox_defaults.mounts_root),
@@ -590,16 +590,16 @@ pub fn load(self: *Config) !void {
                     self.runtime.spider_web_root = try self.allocator.dupe(u8, value.string);
                 }
             }
-            if (runtime_val.object.get("ltm_directory")) |value| {
+            if (runtime_val.object.get("state_directory")) |value| {
                 if (value == .string) {
-                    self.allocator.free(self.runtime.ltm_directory);
-                    self.runtime.ltm_directory = try self.allocator.dupe(u8, value.string);
+                    self.allocator.free(self.runtime.state_directory);
+                    self.runtime.state_directory = try self.allocator.dupe(u8, value.string);
                 }
             }
-            if (runtime_val.object.get("ltm_filename")) |value| {
+            if (runtime_val.object.get("state_db_filename")) |value| {
                 if (value == .string) {
-                    self.allocator.free(self.runtime.ltm_filename);
-                    self.runtime.ltm_filename = try self.allocator.dupe(u8, value.string);
+                    self.allocator.free(self.runtime.state_db_filename);
+                    self.runtime.state_db_filename = try self.allocator.dupe(u8, value.string);
                 }
             }
             if (runtime_val.object.get("assets_dir")) |value| {
@@ -1006,9 +1006,9 @@ pub fn save(self: Config) !void {
     try file.writeAll(default_agent_line);
     const spider_web_root_line = try std.fmt.bufPrint(&buf, "    \"spider_web_root\": \"{s}\",\n", .{self.runtime.spider_web_root});
     try file.writeAll(spider_web_root_line);
-    const ltm_dir_line = try std.fmt.bufPrint(&buf, "    \"ltm_directory\": \"{s}\",\n", .{self.runtime.ltm_directory});
+    const ltm_dir_line = try std.fmt.bufPrint(&buf, "    \"state_directory\": \"{s}\",\n", .{self.runtime.state_directory});
     try file.writeAll(ltm_dir_line);
-    const ltm_file_line = try std.fmt.bufPrint(&buf, "    \"ltm_filename\": \"{s}\",\n", .{self.runtime.ltm_filename});
+    const ltm_file_line = try std.fmt.bufPrint(&buf, "    \"state_db_filename\": \"{s}\",\n", .{self.runtime.state_db_filename});
     try file.writeAll(ltm_file_line);
     const assets_dir_line = try std.fmt.bufPrint(&buf, "    \"assets_dir\": \"{s}\",\n", .{self.runtime.assets_dir});
     try file.writeAll(assets_dir_line);
@@ -1145,7 +1145,7 @@ test "Config defaults" {
     try std.testing.expectEqual(@as(usize, 1024), config.runtime.max_run_steps);
     try std.testing.expectEqualStrings("", config.runtime.default_agent_id);
     try std.testing.expectEqualStrings("", config.runtime.spider_web_root);
-    try std.testing.expectEqualStrings(".spiderweb-ltm", config.runtime.ltm_directory);
+    try std.testing.expectEqualStrings(".spiderweb-state", config.runtime.state_directory);
     try std.testing.expect(config.runtime.local_node.enabled);
     try std.testing.expectEqualStrings("spiderweb-local-node", config.runtime.local_node.binary);
     try std.testing.expectEqualStrings("external-agent-core", config.runtime.local_node.profile);

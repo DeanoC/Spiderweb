@@ -1,6 +1,6 @@
 # Spiderweb Test Environment Makefile
 
-.PHONY: help build up down shell test wipe logs status test-embed-multi-service test-external-codex-workspace test-external-codex-workspace-orb test-external-codex-workspace-macos test-external-codex-repeatability test-external-codex-cli-matrix package-external-codex-repro test-distributed-workspace test-distributed-workspace-bootstrap test-distributed-workspace-drift test-distributed-workspace-matrix test-distributed-workspace-encrypted test-distributed-workspace-operator-token test-distributed-soak-chaos test-unified-v2-protocol
+.PHONY: help build up down shell test wipe logs status test-embed-multi-service test-external-codex-workspace test-external-codex-workspace-light test-external-codex-workspace-orb test-external-codex-workspace-orb-light test-external-codex-workspace-macos test-external-codex-workspace-macos-light test-external-codex-repeatability test-external-codex-cli-matrix package-external-codex-repro test-distributed-workspace test-distributed-workspace-bootstrap test-distributed-workspace-drift test-distributed-workspace-matrix test-distributed-workspace-encrypted test-distributed-workspace-operator-token test-distributed-soak-chaos test-spiderweb-control-protocol
 
 help: ## Show this help message
 	@echo "Spiderweb Test Environment"
@@ -56,6 +56,13 @@ test-external-codex-workspace: ## Run external Codex workspace end-to-end harnes
 	fi
 	@bash ./test-external-codex-workspace.sh
 
+test-external-codex-workspace-light: ## Run lightweight external Codex workspace smoke harness
+	@if [ ! -f ./test-external-codex-workspace-light.sh ]; then \
+		echo "Missing ./test-external-codex-workspace-light.sh."; \
+		exit 1; \
+	fi
+	@bash ./test-external-codex-workspace-light.sh
+
 test-external-codex-workspace-orb: ## Run external Codex workspace harness in Orb on macOS
 	@if [ ! -f ./test-external-codex-workspace-orb.sh ]; then \
 		echo "Missing ./test-external-codex-workspace-orb.sh. Add the Orb wrapper to test-env/ first."; \
@@ -63,12 +70,26 @@ test-external-codex-workspace-orb: ## Run external Codex workspace harness in Or
 	fi
 	@bash ./test-external-codex-workspace-orb.sh
 
+test-external-codex-workspace-orb-light: ## Run lightweight external Codex workspace smoke harness in Orb on macOS
+	@if [ ! -f ./test-external-codex-workspace-orb-light.sh ]; then \
+		echo "Missing ./test-external-codex-workspace-orb-light.sh."; \
+		exit 1; \
+	fi
+	@bash ./test-external-codex-workspace-orb-light.sh
+
 test-external-codex-workspace-macos: ## Run native macOS external Codex workspace harness
 	@if [ ! -f ./test-external-codex-workspace-macos.sh ]; then \
 		echo "Missing ./test-external-codex-workspace-macos.sh. Add the native macOS harness to test-env/ first."; \
 		exit 1; \
 	fi
 	@bash ./test-external-codex-workspace-macos.sh
+
+test-external-codex-workspace-macos-light: ## Run lightweight native macOS external Codex workspace smoke harness
+	@if [ ! -f ./test-external-codex-workspace-macos-light.sh ]; then \
+		echo "Missing ./test-external-codex-workspace-macos-light.sh."; \
+		exit 1; \
+	fi
+	@bash ./test-external-codex-workspace-macos-light.sh
 
 test-external-codex-repeatability: ## Run the external Codex harness multiple times and summarize reliability/bootstrap stability
 	@if [ ! -f ./test-external-codex-repeatability.sh ]; then \
@@ -94,7 +115,7 @@ package-external-codex-repro: ## Build a ready-to-share Codex stall repro bundle
 test-distributed-workspace: ## Run distributed workspace failover integration test
 	@bash ./test-distributed-workspace.sh
 
-test-distributed-workspace-bootstrap: ## Run distributed workspace project_up bootstrap scenario
+test-distributed-workspace-bootstrap: ## Run distributed workspace workspace_up bootstrap scenario
 	@bash ./test-distributed-workspace-bootstrap.sh
 
 test-distributed-workspace-drift: ## Run distributed workspace drift/reconcile scenario
@@ -112,5 +133,5 @@ test-distributed-workspace-operator-token: ## Run distributed workspace test wit
 test-distributed-soak-chaos: ## Run long-running distributed workspace soak/chaos suite
 	@bash ./test-distributed-soak-chaos.sh
 
-test-unified-v2-protocol: ## Run unified v2 protocol negotiation/auth validation suite
-	@bash ./test-unified-v2-protocol.sh
+test-spiderweb-control-protocol: ## Run unified v2 protocol negotiation/auth validation suite
+	@bash ./test-spiderweb-control-protocol.sh

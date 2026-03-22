@@ -8,12 +8,10 @@ const first_run = @import("first_run.zig");
 const auth_tokens_filename = "auth_tokens.json";
 
 const AuthStatusSnapshot = struct {
-    admin_token: []u8,
-    user_token: []u8,
+    access_token: []u8,
 
     fn deinit(self: *AuthStatusSnapshot, allocator: std.mem.Allocator) void {
-        allocator.free(self.admin_token);
-        allocator.free(self.user_token);
+        allocator.free(self.access_token);
         self.* = undefined;
     }
 };
@@ -31,10 +29,8 @@ const NativeFsStatusSnapshot = struct {
 
 const AuthStatusJson = struct {
     path: []const u8,
-    admin_present: bool,
-    user_present: bool,
-    admin_token: ?[]const u8 = null,
-    user_token: ?[]const u8 = null,
+    access_present: bool,
+    access_token: ?[]const u8 = null,
 };
 
 const ServiceStatusJson = struct {
@@ -119,7 +115,7 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
     if (std.mem.eql(u8, subcommand, "path")) {
         var config = try Config.init(allocator, null);
         defer config.deinit();
-        const path = try resolveAuthTokensPath(allocator, config.runtime.ltm_directory, config.runtime.spider_web_root, config.config_path);
+        const path = try resolveAuthTokensPath(allocator, config.runtime.state_directory, config.runtime.spider_web_root, config.config_path);
         defer allocator.free(path);
         const out = try std.fmt.allocPrint(allocator, "{s}\n", .{path});
         defer allocator.free(out);
@@ -145,7 +141,7 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
         var config = try Config.init(allocator, null);
         defer config.deinit();
-        const path = try resolveAuthTokensPath(allocator, config.runtime.ltm_directory, config.runtime.spider_web_root, config.config_path);
+        const path = try resolveAuthTokensPath(allocator, config.runtime.state_directory, config.runtime.spider_web_root, config.config_path);
         defer allocator.free(path);
 
         var snapshot = try loadAuthStatusSnapshot(allocator, path);
@@ -154,10 +150,8 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
         if (json_output) {
             const payload = try std.json.Stringify.valueAlloc(allocator, AuthStatusJson{
                 .path = path,
-                .admin_present = snapshot.admin_token.len > 0,
-                .user_present = snapshot.user_token.len > 0,
-                .admin_token = if (reveal_tokens) snapshot.admin_token else null,
-                .user_token = if (reveal_tokens) snapshot.user_token else null,
+                .access_present = snapshot.access_token.len > 0,
+                .access_token = if (reveal_tokens) snapshot.access_token else null,
             }, .{});
             defer allocator.free(payload);
             try std.fs.File.stdout().writeAll(payload);
@@ -165,25 +159,18 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
             return;
         }
 
-        const admin_display_owned = if (reveal_tokens)
+        const access_display_owned = if (reveal_tokens)
             null
         else
-            try maskTokenForDisplay(allocator, snapshot.admin_token);
-        defer if (admin_display_owned) |value| allocator.free(value);
+            try maskTokenForDisplay(allocator, snapshot.access_token);
+        defer if (access_display_owned) |value| allocator.free(value);
 
-        const user_display_owned = if (reveal_tokens)
-            null
-        else
-            try maskTokenForDisplay(allocator, snapshot.user_token);
-        defer if (user_display_owned) |value| allocator.free(value);
-
-        const admin_display = if (admin_display_owned) |value| value else snapshot.admin_token;
-        const user_display = if (user_display_owned) |value| value else snapshot.user_token;
+        const access_display = if (access_display_owned) |value| value else snapshot.access_token;
 
         const out = try std.fmt.allocPrint(
             allocator,
-            "Auth status\n  admin_token: {s}\n  user_token:  {s}\n  path:        {s}\n",
-            .{ admin_display, user_display, path },
+            "Auth status\n  access_token: {s}\n  path:         {s}\n",
+            .{ access_display, path },
         );
         defer allocator.free(out);
         try std.fs.File.stdout().writeAll(out);
@@ -211,18 +198,15 @@ fn handleAuthCommand(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
         var config = try Config.init(allocator, null);
         defer config.deinit();
-        const path = try resolveAuthTokensPath(allocator, config.runtime.ltm_directory, config.runtime.spider_web_root, config.config_path);
+        const path = try resolveAuthTokensPath(allocator, config.runtime.state_directory, config.runtime.spider_web_root, config.config_path);
         defer allocator.free(path);
-        const admin_token = try makeOpaqueToken(allocator, "sw-admin");
-        defer allocator.free(admin_token);
-        const user_token = try makeOpaqueToken(allocator, "sw-user");
-        defer allocator.free(user_token);
-        try persistAuthTokens(allocator, path, admin_token, user_token);
+        const access_token = try makeOpaqueToken(allocator, "sw-access");
+        defer allocator.free(access_token);
+        try persistAuthTokens(allocator, path, access_token);
 
         std.log.warn("Emergency auth token reset completed.", .{});
         std.log.warn("  path:  {s}", .{path});
-        std.log.warn("  admin: {s}", .{admin_token});
-        std.log.warn("  user:  {s}", .{user_token});
+        std.log.warn("  access: {s}", .{access_token});
         std.log.warn("Restart spiderweb to apply new tokens for subsequent connections.", .{});
         return;
     }
@@ -243,8 +227,8 @@ fn handleConfigCommand(allocator: std.mem.Allocator, args: []const []const u8) !
             config.server.bind,
             config.server.port,
             config.runtime.spider_web_root,
-            config.runtime.ltm_directory,
-            config.runtime.ltm_filename,
+            config.runtime.state_directory,
+            config.runtime.state_db_filename,
             config.log.level,
         });
         try stdout_file.writeAll(msg);
@@ -625,10 +609,10 @@ fn installFsExtension(allocator: std.mem.Allocator) !void {
     if (!status.supported_os) return error.UnsupportedMacosVersion;
     const target_app_path = status.app_path;
     const source_app_path = blk: {
+        if (pathExists(target_app_path)) break :blk target_app_path;
         if (status.source_app_path) |value| {
             if (!std.mem.eql(u8, value, target_app_path)) break :blk value;
         }
-        if (pathExists(target_app_path)) break :blk target_app_path;
         if (status.source_app_path) |value| break :blk value;
         std.log.err("Could not find Spiderweb.app to register. Reinstall Spiderweb.app or build it from Xcode under platform/macos.", .{});
         return error.NativeFsExtensionNotInstalled;
@@ -1437,7 +1421,7 @@ fn defaultServiceWorkingDirectory(allocator: std.mem.Allocator) ![]u8 {
 fn defaultServiceRuntimeStorageDirectory(allocator: std.mem.Allocator) ![]u8 {
     const working_dir = try defaultServiceWorkingDirectory(allocator);
     defer allocator.free(working_dir);
-    return std.fs.path.join(allocator, &.{ working_dir, ".spiderweb-ltm" });
+    return std.fs.path.join(allocator, &.{ working_dir, ".spiderweb-state" });
 }
 
 fn defaultLocalWorkspaceRoot(allocator: std.mem.Allocator) ![]u8 {
@@ -1483,13 +1467,13 @@ fn ensureDefaultRuntimeStorageConfig(allocator: std.mem.Allocator) !void {
     var config = try Config.init(allocator, null);
     defer config.deinit();
 
-    const current = std.mem.trim(u8, config.runtime.ltm_directory, " \t\r\n");
+    const current = std.mem.trim(u8, config.runtime.state_directory, " \t\r\n");
     if (current.len > 0 and std.fs.path.isAbsolute(current)) {
         try makePathAny(current);
         return;
     }
 
-    if (current.len > 0 and !std.mem.eql(u8, current, ".spiderweb-ltm")) {
+    if (current.len > 0 and !std.mem.eql(u8, current, ".spiderweb-state")) {
         return;
     }
 
@@ -1497,8 +1481,8 @@ fn ensureDefaultRuntimeStorageConfig(allocator: std.mem.Allocator) !void {
     defer allocator.free(default_storage);
     try makePathAny(default_storage);
 
-    config.allocator.free(config.runtime.ltm_directory);
-    config.runtime.ltm_directory = try allocator.dupe(u8, default_storage);
+    config.allocator.free(config.runtime.state_directory);
+    config.runtime.state_directory = try allocator.dupe(u8, default_storage);
     try config.save();
 }
 
@@ -1590,11 +1574,11 @@ fn trimmedCommandText(text: []const u8) []const u8 {
 
 fn resolveAuthTokensPath(
     allocator: std.mem.Allocator,
-    ltm_directory: []const u8,
+    state_directory: []const u8,
     spider_web_root: []const u8,
     config_path: []const u8,
 ) ![]u8 {
-    const storage_dir = try resolveRuntimeStorageDirectory(allocator, ltm_directory, spider_web_root, config_path);
+    const storage_dir = try resolveRuntimeStorageDirectory(allocator, state_directory, spider_web_root, config_path);
     defer allocator.free(storage_dir);
     try makePathAny(storage_dir);
     return std.fs.path.join(allocator, &.{ storage_dir, auth_tokens_filename });
@@ -1602,21 +1586,21 @@ fn resolveAuthTokensPath(
 
 fn resolveRuntimeStorageDirectory(
     allocator: std.mem.Allocator,
-    ltm_directory: []const u8,
+    state_directory: []const u8,
     spider_web_root: []const u8,
     config_path: []const u8,
 ) ![]u8 {
-    const runtime_base = try resolveRuntimeBaseDirectory(allocator, ltm_directory, spider_web_root, config_path);
+    const runtime_base = try resolveRuntimeBaseDirectory(allocator, state_directory, spider_web_root, config_path);
     defer allocator.free(runtime_base);
-    return resolveRuntimeStorageDirectoryWithBase(allocator, ltm_directory, runtime_base);
+    return resolveRuntimeStorageDirectoryWithBase(allocator, state_directory, runtime_base);
 }
 
 fn resolveRuntimeStorageDirectoryWithBase(
     allocator: std.mem.Allocator,
-    ltm_directory: []const u8,
+    state_directory: []const u8,
     runtime_base: []const u8,
 ) ![]u8 {
-    const base_dir = std.mem.trim(u8, ltm_directory, " \t\r\n");
+    const base_dir = std.mem.trim(u8, state_directory, " \t\r\n");
     if (std.fs.path.isAbsolute(base_dir)) return allocator.dupe(u8, base_dir);
     if (base_dir.len == 0) return allocator.dupe(u8, runtime_base);
     return std.fs.path.join(allocator, &.{ runtime_base, base_dir });
@@ -1624,7 +1608,7 @@ fn resolveRuntimeStorageDirectoryWithBase(
 
 fn resolveRuntimeBaseDirectory(
     allocator: std.mem.Allocator,
-    ltm_directory: []const u8,
+    state_directory: []const u8,
     spider_web_root: []const u8,
     config_path: []const u8,
 ) ![]u8 {
@@ -1638,7 +1622,7 @@ fn resolveRuntimeBaseDirectory(
     }
 
     if (try detectServiceWorkingDirectory(allocator)) |service_dir| {
-        if (try currentDirectoryOwnsRuntimeStorage(allocator, ltm_directory)) {
+        if (try currentDirectoryOwnsRuntimeStorage(allocator, state_directory)) {
             defer allocator.free(service_dir);
             return currentShellWorkingDirectory(allocator);
         }
@@ -1651,12 +1635,12 @@ fn resolveRuntimeBaseDirectory(
     return currentShellWorkingDirectory(allocator);
 }
 
-fn currentDirectoryOwnsRuntimeStorage(allocator: std.mem.Allocator, ltm_directory: []const u8) !bool {
+fn currentDirectoryOwnsRuntimeStorage(allocator: std.mem.Allocator, state_directory: []const u8) !bool {
     const cwd = try currentShellWorkingDirectory(allocator);
     defer allocator.free(cwd);
     if (cwd.len == 0 or std.mem.eql(u8, cwd, "/")) return false;
 
-    const storage_dir = try resolveRuntimeStorageDirectoryWithBase(allocator, ltm_directory, cwd);
+    const storage_dir = try resolveRuntimeStorageDirectoryWithBase(allocator, state_directory, cwd);
     defer allocator.free(storage_dir);
 
     const auth_tokens_path = try std.fs.path.join(allocator, &.{ storage_dir, auth_tokens_filename });
@@ -1961,34 +1945,28 @@ fn loadAuthStatusSnapshot(allocator: std.mem.Allocator, path: []const u8) !AuthS
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidResponse;
 
-    const admin_val = parsed.value.object.get("admin_token") orelse return error.InvalidResponse;
-    if (admin_val != .string or admin_val.string.len == 0) return error.InvalidResponse;
-    const user_val = parsed.value.object.get("user_token") orelse return error.InvalidResponse;
-    if (user_val != .string or user_val.string.len == 0) return error.InvalidResponse;
+    const access_val = parsed.value.object.get("access_token") orelse return error.InvalidResponse;
+    if (access_val != .string or access_val.string.len == 0) return error.InvalidResponse;
 
     return .{
-        .admin_token = try allocator.dupe(u8, admin_val.string),
-        .user_token = try allocator.dupe(u8, user_val.string),
+        .access_token = try allocator.dupe(u8, access_val.string),
     };
 }
 
 fn persistAuthTokens(
     allocator: std.mem.Allocator,
     path: []const u8,
-    admin_token: []const u8,
-    user_token: []const u8,
+    access_token: []const u8,
 ) !void {
     const Persisted = struct {
-        schema: u32 = 1,
-        admin_token: []const u8,
-        user_token: []const u8,
+        schema: u32 = 4,
+        access_token: []const u8,
         updated_at_ms: i64,
     };
 
     const payload = Persisted{
-        .schema = 1,
-        .admin_token = admin_token,
-        .user_token = user_token,
+        .schema = 4,
+        .access_token = access_token,
         .updated_at_ms = std.time.milliTimestamp(),
     };
     const bytes = try std.json.Stringify.valueAlloc(allocator, payload, .{
@@ -2015,8 +1993,8 @@ fn printAuthUsage() !void {
         \\  spiderweb-config auth status [--reveal]
         \\  spiderweb-config auth reset --yes
         \\
-        \\`auth reset --yes` regenerates BOTH admin and user tokens in auth_tokens.json.
-        \\Use only for emergency recovery (for example lost admin token).
+        \\`auth reset --yes` regenerates the saved auth tokens in auth_tokens.json.
+        \\Use only for emergency recovery (for example when local access breaks).
         \\
     ;
     try std.fs.File.stdout().writeAll(usage);
@@ -2074,9 +2052,9 @@ test "config_cli: resolve runtime storage directory keeps absolute ltm path" {
 
 test "config_cli: resolve runtime storage directory joins relative ltm path with runtime base" {
     const allocator = std.testing.allocator;
-    const resolved = try resolveRuntimeStorageDirectoryWithBase(allocator, ".spiderweb-ltm", "/srv/spiderweb");
+    const resolved = try resolveRuntimeStorageDirectoryWithBase(allocator, ".spiderweb-state", "/srv/spiderweb");
     defer allocator.free(resolved);
-    const expected = try std.fs.path.join(allocator, &.{ "/srv/spiderweb", ".spiderweb-ltm" });
+    const expected = try std.fs.path.join(allocator, &.{ "/srv/spiderweb", ".spiderweb-state" });
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, resolved);
 }

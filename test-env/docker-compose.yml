@@ -21,7 +21,7 @@ services:
       # Mount local source for development testing
       - ../:/home/spiderweb/ziggy-spiderweb-src:ro
       # Named volume for LTM persistence (optional - remove for true wipe)
-      - spiderweb-ltm:/home/spiderweb/.spiderweb-ltm
+      - spiderweb-ltm:/home/spiderweb/.spiderweb-state
     
     # Environment variables for automated testing
     environment:

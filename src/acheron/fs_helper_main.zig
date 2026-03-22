@@ -51,12 +51,11 @@ pub fn main() !void {
     const provider = if (config.namespace) |namespace_binding| blk: {
         var client = try namespace_client.NamespaceClient.connect(allocator, namespace_binding.namespace_url, namespace_binding.auth_token);
         errdefer client.deinit();
-        try client.controlAgentEnsure(namespace_binding.agent_id);
         var attach_info = try client.controlSessionAttach(.{
             .session_key = namespace_binding.session_key,
             .agent_id = namespace_binding.agent_id,
-            .project_id = namespace_binding.project_id,
-            .project_token = namespace_binding.project_token,
+            .workspace_id = namespace_binding.workspace_id,
+            .workspace_token = namespace_binding.workspace_token,
         });
         defer attach_info.deinit(allocator);
         namespace_client_instance = client;

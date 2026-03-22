@@ -205,13 +205,13 @@ fn parseOp(raw: []const u8) ?Op {
 }
 
 fn resolveProjectScope(args_obj: std.json.ObjectMap) !MountProjectScope {
-    const project_id_raw = extractOptionalStringByNames(args_obj, &[_][]const u8{"project_id"}) orelse
+    const project_id_raw = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_id"}) orelse
         return error.InvalidPayload;
     const project_id = std.mem.trim(u8, project_id_raw, " \t\r\n");
     if (project_id.len == 0) return error.InvalidPayload;
     return .{
         .project_id = project_id,
-        .project_token = extractOptionalStringByNames(args_obj, &[_][]const u8{"project_token"}),
+        .project_token = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_token"}),
     };
 }
 
@@ -277,11 +277,11 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             const payload = try buildProjectScopedMountPayload(self, scope.project_id, scope.project_token, node_id, export_name, mount_path);
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
-            const result = plane.setProjectMountWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectProtected,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+            const result = plane.setWorkspaceMountWithRole(payload, self.is_admin) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceProtected,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -289,7 +289,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
                 else => return err,
             };
             defer self.allocator.free(result);
-            try self.refreshProjectBindsFromControlPlane();
+            try self.refreshWorkspaceBindsFromControlPlane();
             return buildSuccessResultJson(self, op, result);
         },
         .unmount => {
@@ -299,11 +299,11 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             const payload = try buildProjectScopedUnmountPayload(self, scope.project_id, scope.project_token, mount_path, node_id, export_name);
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
-            const result = plane.removeProjectMountWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectProtected,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+            const result = plane.removeWorkspaceMountWithRole(payload, self.is_admin) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceProtected,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -320,11 +320,11 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             const payload = try buildProjectScopedBindPayload(self, scope.project_id, scope.project_token, bind_path, target_path);
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
-            const result = plane.setProjectBindWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectProtected,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+            const result = plane.setWorkspaceBindWithRole(payload, self.is_admin) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceProtected,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -333,7 +333,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
                 else => return err,
             };
             defer self.allocator.free(result);
-            try self.refreshProjectBindsFromControlPlane();
+            try self.refreshWorkspaceBindsFromControlPlane();
             return buildSuccessResultJson(self, op, result);
         },
         .unbind => {
@@ -341,11 +341,11 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             const payload = try buildProjectScopedUnbindPayload(self, scope.project_id, scope.project_token, bind_path);
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
-            const result = plane.removeProjectBindWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectProtected,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+            const result = plane.removeWorkspaceBindWithRole(payload, self.is_admin) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceProtected,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -354,12 +354,12 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
                 else => return err,
             };
             defer self.allocator.free(result);
-            try self.refreshProjectBindsFromControlPlane();
+            try self.refreshWorkspaceBindsFromControlPlane();
             return buildSuccessResultJson(self, op, result);
         },
         .mkdir => {
             const plane = self.control_plane orelse return error.InvalidPayload;
-            if (!plane.projectAllowsAction(scope.project_id, self.agent_id, .mount, scope.project_token, self.is_admin)) {
+            if (!plane.workspaceAllowsAction(scope.project_id, self.agent_id, .mount, scope.project_token, self.is_admin)) {
                 return error.AccessDenied;
             }
             const path = extractOptionalStringByNames(args_obj, &[_][]const u8{ "path", "folder", "relative_path" }) orelse return error.InvalidPayload;
@@ -400,10 +400,10 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             const payload = try buildProjectScopedResolvePayload(self, scope.project_id, scope.project_token, path);
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
-            const result = plane.resolveProjectPathWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+            const result = plane.resolveWorkspacePathWithRole(payload, self.is_admin) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -435,12 +435,12 @@ fn buildProjectScopedMountPayload(
     const token_fragment = if (project_token) |token| blk: {
         const escaped_token = try unified.jsonEscape(self.allocator, token);
         defer self.allocator.free(escaped_token);
-        break :blk try std.fmt.allocPrint(self.allocator, "\"project_token\":\"{s}\",", .{escaped_token});
+        break :blk try std.fmt.allocPrint(self.allocator, "\"workspace_token\":\"{s}\",", .{escaped_token});
     } else try self.allocator.dupe(u8, "");
     defer self.allocator.free(token_fragment);
     return std.fmt.allocPrint(
         self.allocator,
-        "{{\"project_id\":\"{s}\",{s}\"node_id\":\"{s}\",\"export_name\":\"{s}\",\"mount_path\":\"{s}\"}}",
+        "{{\"workspace_id\":\"{s}\",{s}\"node_id\":\"{s}\",\"export_name\":\"{s}\",\"mount_path\":\"{s}\"}}",
         .{ escaped_project, token_fragment, escaped_node, escaped_export, escaped_path },
     );
 }
@@ -455,12 +455,12 @@ fn buildProjectScopedBindPayload(self: anytype, project_id: []const u8, project_
     const token_fragment = if (project_token) |token| blk: {
         const escaped_token = try unified.jsonEscape(self.allocator, token);
         defer self.allocator.free(escaped_token);
-        break :blk try std.fmt.allocPrint(self.allocator, "\"project_token\":\"{s}\",", .{escaped_token});
+        break :blk try std.fmt.allocPrint(self.allocator, "\"workspace_token\":\"{s}\",", .{escaped_token});
     } else try self.allocator.dupe(u8, "");
     defer self.allocator.free(token_fragment);
     return std.fmt.allocPrint(
         self.allocator,
-        "{{\"project_id\":\"{s}\",{s}\"bind_path\":\"{s}\",\"target_path\":\"{s}\"}}",
+        "{{\"workspace_id\":\"{s}\",{s}\"bind_path\":\"{s}\",\"target_path\":\"{s}\"}}",
         .{ escaped_project, token_fragment, escaped_bind, escaped_target },
     );
 }
@@ -473,12 +473,12 @@ fn buildProjectScopedUnbindPayload(self: anytype, project_id: []const u8, projec
     const token_fragment = if (project_token) |token| blk: {
         const escaped_token = try unified.jsonEscape(self.allocator, token);
         defer self.allocator.free(escaped_token);
-        break :blk try std.fmt.allocPrint(self.allocator, "\"project_token\":\"{s}\",", .{escaped_token});
+        break :blk try std.fmt.allocPrint(self.allocator, "\"workspace_token\":\"{s}\",", .{escaped_token});
     } else try self.allocator.dupe(u8, "");
     defer self.allocator.free(token_fragment);
     return std.fmt.allocPrint(
         self.allocator,
-        "{{\"project_id\":\"{s}\",{s}\"bind_path\":\"{s}\"}}",
+        "{{\"workspace_id\":\"{s}\",{s}\"bind_path\":\"{s}\"}}",
         .{ escaped_project, token_fragment, escaped_bind },
     );
 }
@@ -491,12 +491,12 @@ fn buildProjectScopedResolvePayload(self: anytype, project_id: []const u8, proje
     const token_fragment = if (project_token) |token| blk: {
         const escaped_token = try unified.jsonEscape(self.allocator, token);
         defer self.allocator.free(escaped_token);
-        break :blk try std.fmt.allocPrint(self.allocator, "\"project_token\":\"{s}\",", .{escaped_token});
+        break :blk try std.fmt.allocPrint(self.allocator, "\"workspace_token\":\"{s}\",", .{escaped_token});
     } else try self.allocator.dupe(u8, "");
     defer self.allocator.free(token_fragment);
     return std.fmt.allocPrint(
         self.allocator,
-        "{{\"project_id\":\"{s}\",{s}\"path\":\"{s}\"}}",
+        "{{\"workspace_id\":\"{s}\",{s}\"path\":\"{s}\"}}",
         .{ escaped_project, token_fragment, escaped_path },
     );
 }
@@ -516,7 +516,7 @@ fn buildProjectScopedUnmountPayload(
     const token_fragment = if (project_token) |token| blk: {
         const escaped_token = try unified.jsonEscape(self.allocator, token);
         defer self.allocator.free(escaped_token);
-        break :blk try std.fmt.allocPrint(self.allocator, "\"project_token\":\"{s}\",", .{escaped_token});
+        break :blk try std.fmt.allocPrint(self.allocator, "\"workspace_token\":\"{s}\",", .{escaped_token});
     } else try self.allocator.dupe(u8, "");
     defer self.allocator.free(token_fragment);
     const node_fragment = if (node_id) |value| blk: {
@@ -533,7 +533,7 @@ fn buildProjectScopedUnmountPayload(
     defer self.allocator.free(export_fragment);
     return std.fmt.allocPrint(
         self.allocator,
-        "{{\"project_id\":\"{s}\",{s}\"mount_path\":\"{s}\"{s}{s}}}",
+        "{{\"workspace_id\":\"{s}\",{s}\"mount_path\":\"{s}\"{s}{s}}}",
         .{ escaped_project, token_fragment, escaped_mount, node_fragment, export_fragment },
     );
 }
@@ -587,9 +587,9 @@ fn statusToolName(op: Op) []const u8 {
 }
 
 fn buildListResultJson(self: anytype, project_id_override: ?[]const u8, project_token_override: ?[]const u8) ![]u8 {
-    const plane = self.control_plane orelse return buildSuccessResultJson(self, .list, "{\"project_id\":null,\"mounts\":[],\"binds\":[]}");
-    const project_id = project_id_override orelse self.project_id orelse return buildSuccessResultJson(self, .list, "{\"project_id\":null,\"mounts\":[],\"binds\":[]}");
-    const project_token = if (project_token_override) |value| value else self.project_token;
+    const plane = self.control_plane orelse return buildSuccessResultJson(self, .list, "{\"workspace_id\":null,\"mounts\":[],\"binds\":[]}");
+    const project_id = project_id_override orelse self.workspace_id orelse return buildSuccessResultJson(self, .list, "{\"workspace_id\":null,\"mounts\":[],\"binds\":[]}");
+    const project_token = if (project_token_override) |value| value else self.workspace_token;
     const escaped_project = try unified.jsonEscape(self.allocator, project_id);
     defer self.allocator.free(escaped_project);
     const payload = if (project_token) |token| blk: {
@@ -597,24 +597,24 @@ fn buildListResultJson(self: anytype, project_id_override: ?[]const u8, project_
         defer self.allocator.free(escaped_token);
         break :blk try std.fmt.allocPrint(
             self.allocator,
-            "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
+            "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
             .{ escaped_project, escaped_token },
         );
-    } else try std.fmt.allocPrint(self.allocator, "{{\"project_id\":\"{s}\"}}", .{escaped_project});
+    } else try std.fmt.allocPrint(self.allocator, "{{\"workspace_id\":\"{s}\"}}", .{escaped_project});
     defer self.allocator.free(payload);
 
-    const mounts_json = plane.listProjectMountsWithRole(payload, self.is_admin) catch |err| switch (err) {
-        control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-        control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-        control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+    const mounts_json = plane.listWorkspaceMountsWithRole(payload, self.is_admin) catch |err| switch (err) {
+        control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+        control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+        control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
         => return error.AccessDenied,
         else => return err,
     };
     defer self.allocator.free(mounts_json);
-    const binds_json = plane.listProjectBindsWithRole(payload, self.is_admin) catch |err| switch (err) {
-        control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-        control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-        control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+    const binds_json = plane.listWorkspaceBindsWithRole(payload, self.is_admin) catch |err| switch (err) {
+        control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+        control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+        control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
         => return error.AccessDenied,
         else => return err,
     };
@@ -626,7 +626,7 @@ fn buildListResultJson(self: anytype, project_id_override: ?[]const u8, project_
     defer self.allocator.free(binds_array);
     const result_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"project_id\":\"{s}\",\"mounts\":{s},\"binds\":{s}}}",
+        "{{\"workspace_id\":\"{s}\",\"mounts\":{s},\"binds\":{s}}}",
         .{ escaped_project, mounts_array, binds_array },
     );
     defer self.allocator.free(result_json);

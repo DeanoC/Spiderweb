@@ -11,9 +11,9 @@ It is responsible for:
 - client/protocol helpers used by the Acheron surface
 
 It is not the authoritative node runtime implementation.
-That lives in `deps/spider-protocol/src/spiderweb_node/`.
+That lives in `../SpiderNode/src/spiderweb_node/`.
 
-If a change is about generic node hosting, namespace drivers, or shared runtime behavior, prefer updating the shared protocol runtime instead of growing this folder.
+If a change is about generic node hosting, namespace drivers, or shared runtime behavior, prefer updating SpiderNode instead of growing this folder.
 
 `spiderweb-fs-mount` has one mounted-filesystem model.
 
@@ -28,7 +28,7 @@ path results from that namespace view. Do not invent alternate path-resolution
 rules per backend.
 Session-side workspace mount proxies follow the same rule: if Spiderweb is
 proxying a workspace-mounted node export, it should route back through
-Spiderweb's routed `/v2/fs/node/<node_id>` authority with the mount auth token
+Spiderweb's routed `/fs/node/<node_id>` authority with the mount auth token
 instead of depending on a separate raw node `fs_url` path.
 
 Direct endpoint routing still exists as a standalone protocol utility, but it is

@@ -38,6 +38,7 @@ pub const Provider = struct {
         rmdir: *const fn (ctx: *anyopaque, path: []const u8) anyerror!void,
         rename: *const fn (ctx: *anyopaque, old_path: []const u8, new_path: []const u8) anyerror!void,
         symlink: *const fn (ctx: *anyopaque, target: []const u8, link_path: []const u8) anyerror!void,
+        setattr: *const fn (ctx: *anyopaque, path: []const u8, mode: ?u32, uid: ?u32, gid: ?u32, flags: ?u32, at_ns: ?i64, mt_ns: ?i64) anyerror!void,
         setxattr: *const fn (ctx: *anyopaque, path: []const u8, name: []const u8, value: []const u8, flags: u32) anyerror!void,
         getxattr: *const fn (ctx: *anyopaque, path: []const u8, name: []const u8) anyerror![]u8,
         listxattr: *const fn (ctx: *anyopaque, path: []const u8) anyerror![]u8,
@@ -108,6 +109,10 @@ pub const Provider = struct {
         try self.vtable.symlink(self.ctx, target, link_path);
     }
 
+    pub fn setattr(self: *Provider, path: []const u8, mode: ?u32, uid: ?u32, gid: ?u32, flags: ?u32, at_ns: ?i64, mt_ns: ?i64) !void {
+        try self.vtable.setattr(self.ctx, path, mode, uid, gid, flags, at_ns, mt_ns);
+    }
+
     pub fn setxattr(self: *Provider, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
         try self.vtable.setxattr(self.ctx, path, name, value, flags);
     }
@@ -169,6 +174,7 @@ const router_provider_vtable: Provider.VTable = .{
     .rmdir = routerProviderRmdir,
     .rename = routerProviderRename,
     .symlink = routerProviderSymlink,
+    .setattr = routerProviderSetattr,
     .setxattr = routerProviderSetxattr,
     .getxattr = routerProviderGetxattr,
     .listxattr = routerProviderListxattr,
@@ -239,6 +245,27 @@ fn routerProviderRename(ctx: *anyopaque, old_path: []const u8, new_path: []const
 
 fn routerProviderSymlink(ctx: *anyopaque, target: []const u8, link_path: []const u8) !void {
     try asRouterCtx(ctx).router.symlink(target, link_path);
+}
+
+fn routerProviderSetattr(
+    ctx: *anyopaque,
+    path: []const u8,
+    mode: ?u32,
+    uid: ?u32,
+    gid: ?u32,
+    flags: ?u32,
+    at_ns: ?i64,
+    mt_ns: ?i64,
+) !void {
+    _ = ctx;
+    _ = path;
+    _ = mode;
+    _ = uid;
+    _ = gid;
+    _ = flags;
+    _ = at_ns;
+    _ = mt_ns;
+    return error.OperationNotSupported;
 }
 
 fn routerProviderSetxattr(ctx: *anyopaque, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {

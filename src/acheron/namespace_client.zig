@@ -27,15 +27,14 @@ pub const NamespaceStat = struct {
 
 pub const ConnectInfo = struct {
     agent_id: ?[]u8 = null,
-    project_id: ?[]u8 = null,
+    workspace_id: ?[]u8 = null,
     session_key: ?[]u8 = null,
-    requires_session_attach: bool = false,
     workspace_json: ?[]u8 = null,
     has_workspace_mounts: bool = false,
 
     pub fn deinit(self: *ConnectInfo, allocator: std.mem.Allocator) void {
         if (self.agent_id) |value| allocator.free(value);
-        if (self.project_id) |value| allocator.free(value);
+        if (self.workspace_id) |value| allocator.free(value);
         if (self.session_key) |value| allocator.free(value);
         if (self.workspace_json) |value| allocator.free(value);
         self.* = undefined;
@@ -45,19 +44,19 @@ pub const ConnectInfo = struct {
 pub const SessionAttachRequest = struct {
     session_key: []const u8,
     agent_id: []const u8,
-    project_id: []const u8,
-    project_token: ?[]const u8 = null,
+    workspace_id: []const u8,
+    workspace_token: ?[]const u8 = null,
 };
 
 pub const SessionAttachInfo = struct {
     session_key: []u8,
     agent_id: []u8,
-    project_id: []u8,
+    workspace_id: []u8,
 
     pub fn deinit(self: *SessionAttachInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_key);
         allocator.free(self.agent_id);
-        allocator.free(self.project_id);
+        allocator.free(self.workspace_id);
         self.* = undefined;
     }
 };
@@ -102,8 +101,8 @@ pub const NamespaceClient = struct {
     namespace_attached: bool = false,
     active_session_key: ?[]u8 = null,
     active_agent_id: ?[]u8 = null,
-    active_project_id: ?[]u8 = null,
-    active_project_token: ?[]u8 = null,
+    active_workspace_id: ?[]u8 = null,
+    active_workspace_token: ?[]u8 = null,
     next_handle_id: u64 = 1,
     open_handles: std.AutoHashMapUnmanaged(u64, OpenHandleState) = .{},
 
@@ -148,8 +147,8 @@ pub const NamespaceClient = struct {
         self.open_handles.deinit(self.allocator);
         if (self.active_session_key) |value| self.allocator.free(value);
         if (self.active_agent_id) |value| self.allocator.free(value);
-        if (self.active_project_id) |value| self.allocator.free(value);
-        if (self.active_project_token) |value| self.allocator.free(value);
+        if (self.active_workspace_id) |value| self.allocator.free(value);
+        if (self.active_workspace_token) |value| self.allocator.free(value);
         if (self.auth_token) |value| self.allocator.free(value);
         self.allocator.free(self.namespace_url);
         self.stream.close();
@@ -167,39 +166,26 @@ pub const NamespaceClient = struct {
         return parseConnectInfo(self.allocator, payload_json);
     }
 
-    pub fn controlAgentEnsure(self: *NamespaceClient, agent_id: []const u8) !void {
-        const escaped_agent = try jsonEscape(self.allocator, agent_id);
-        defer self.allocator.free(escaped_agent);
-        const payload = try std.fmt.allocPrint(self.allocator, "{{\"agent_id\":\"{s}\"}}", .{escaped_agent});
-        defer self.allocator.free(payload);
-
-        const request_id = try self.nextControlRequestId();
-        defer self.allocator.free(request_id);
-        try self.writeControlRequest("control.agent_ensure", request_id, payload);
-        const response_payload = try readControlPayloadFor(self, request_id, "control.agent_ensure");
-        self.allocator.free(response_payload);
-    }
-
     pub fn controlSessionAttach(self: *NamespaceClient, request: SessionAttachRequest) !SessionAttachInfo {
         const escaped_session = try jsonEscape(self.allocator, request.session_key);
         defer self.allocator.free(escaped_session);
         const escaped_agent = try jsonEscape(self.allocator, request.agent_id);
         defer self.allocator.free(escaped_agent);
-        const escaped_project = try jsonEscape(self.allocator, request.project_id);
-        defer self.allocator.free(escaped_project);
+        const escaped_workspace = try jsonEscape(self.allocator, request.workspace_id);
+        defer self.allocator.free(escaped_workspace);
 
-        const payload = if (request.project_token) |token| blk: {
+        const payload = if (request.workspace_token) |token| blk: {
             const escaped_token = try jsonEscape(self.allocator, token);
             defer self.allocator.free(escaped_token);
             break :blk try std.fmt.allocPrint(
                 self.allocator,
-                "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
-                .{ escaped_session, escaped_agent, escaped_project, escaped_token },
+                "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
+                .{ escaped_session, escaped_agent, escaped_workspace, escaped_token },
             );
         } else try std.fmt.allocPrint(
             self.allocator,
-            "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\"}}",
-            .{ escaped_session, escaped_agent, escaped_project },
+            "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\"}}",
+            .{ escaped_session, escaped_agent, escaped_workspace },
         );
         defer self.allocator.free(payload);
 
@@ -215,34 +201,34 @@ pub const NamespaceClient = struct {
 
         const session_key = getRequiredString(parsed.value.object, "session_key") orelse return error.InvalidResponse;
         const agent_id = getRequiredString(parsed.value.object, "agent_id") orelse return error.InvalidResponse;
-        const project_id = getRequiredString(parsed.value.object, "project_id") orelse return error.InvalidResponse;
+        const workspace_id = getRequiredString(parsed.value.object, "workspace_id") orelse return error.InvalidResponse;
         try self.setActiveSessionKey(session_key);
-        try self.setActiveSessionBinding(request.agent_id, request.project_id, request.project_token);
+        try self.setActiveSessionBinding(request.agent_id, request.workspace_id, request.workspace_token);
 
         return .{
             .session_key = try self.allocator.dupe(u8, session_key),
             .agent_id = try self.allocator.dupe(u8, agent_id),
-            .project_id = try self.allocator.dupe(u8, project_id),
+            .workspace_id = try self.allocator.dupe(u8, workspace_id),
         };
     }
 
-    pub fn controlWorkspaceStatus(self: *NamespaceClient, project_id: ?[]const u8, project_token: ?[]const u8) ![]u8 {
-        const payload = if (project_id) |selected_project| blk: {
-            const escaped_project = try jsonEscape(self.allocator, selected_project);
-            defer self.allocator.free(escaped_project);
-            if (project_token) |token| {
+    pub fn controlWorkspaceStatus(self: *NamespaceClient, workspace_id: ?[]const u8, workspace_token: ?[]const u8) ![]u8 {
+        const payload = if (workspace_id) |selected_workspace| blk: {
+            const escaped_workspace = try jsonEscape(self.allocator, selected_workspace);
+            defer self.allocator.free(escaped_workspace);
+            if (workspace_token) |token| {
                 const escaped_token = try jsonEscape(self.allocator, token);
                 defer self.allocator.free(escaped_token);
                 break :blk try std.fmt.allocPrint(
                     self.allocator,
-                    "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
-                    .{ escaped_project, escaped_token },
+                    "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
+                    .{ escaped_workspace, escaped_token },
                 );
             }
             break :blk try std.fmt.allocPrint(
                 self.allocator,
-                "{{\"project_id\":\"{s}\"}}",
-                .{escaped_project},
+                "{{\"workspace_id\":\"{s}\"}}",
+                .{escaped_workspace},
             );
         } else try self.allocator.dupe(u8, "{}");
         defer self.allocator.free(payload);
@@ -265,8 +251,8 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(payload);
 
         return self.controlRequestPayloadWithReconnect(
-            "control.mount_attach_v2",
-            "control.mount_attach_v2",
+            "control.mount_attach",
+            "control.mount_attach",
             payload,
         );
     }
@@ -283,8 +269,8 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(payload);
 
         return self.controlRequestPayloadWithReconnect(
-            "control.mount_file_read_v2",
-            "control.mount_file_read_v2",
+            "control.mount_file_read",
+            "control.mount_file_read",
             payload,
         );
     }
@@ -299,8 +285,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         return self.controlRequestPayloadWithReconnect(
-            "control.mount_path_readlink_v2",
-            "control.mount_path_readlink_v2",
+            "control.mount_path_readlink",
+            "control.mount_path_readlink",
             payload,
         );
     }
@@ -311,8 +297,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_mkdir_v2",
-            "control.mount_path_mkdir_v2",
+            "control.mount_path_mkdir",
+            "control.mount_path_mkdir",
             payload,
         );
         self.allocator.free(response);
@@ -324,8 +310,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_unlink_v2",
-            "control.mount_path_unlink_v2",
+            "control.mount_path_unlink",
+            "control.mount_path_unlink",
             payload,
         );
         self.allocator.free(response);
@@ -337,8 +323,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_rmdir_v2",
-            "control.mount_path_rmdir_v2",
+            "control.mount_path_rmdir",
+            "control.mount_path_rmdir",
             payload,
         );
         self.allocator.free(response);
@@ -356,8 +342,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_rename_v2",
-            "control.mount_path_rename_v2",
+            "control.mount_path_rename",
+            "control.mount_path_rename",
             payload,
         );
         self.allocator.free(response);
@@ -375,8 +361,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_symlink_v2",
-            "control.mount_path_symlink_v2",
+            "control.mount_path_symlink",
+            "control.mount_path_symlink",
             payload,
         );
         self.allocator.free(response);
@@ -396,8 +382,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_setxattr_v2",
-            "control.mount_path_setxattr_v2",
+            "control.mount_path_setxattr",
+            "control.mount_path_setxattr",
             payload,
         );
         self.allocator.free(response);
@@ -415,8 +401,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_getxattr_v2",
-            "control.mount_path_getxattr_v2",
+            "control.mount_path_getxattr",
+            "control.mount_path_getxattr",
             payload,
         );
         defer self.allocator.free(response);
@@ -429,8 +415,8 @@ pub const NamespaceClient = struct {
         const payload = try std.fmt.allocPrint(self.allocator, "{{\"path\":\"{s}\"}}", .{escaped_path});
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_listxattr_v2",
-            "control.mount_path_listxattr_v2",
+            "control.mount_path_listxattr",
+            "control.mount_path_listxattr",
             payload,
         );
         defer self.allocator.free(response);
@@ -449,8 +435,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_removexattr_v2",
-            "control.mount_path_removexattr_v2",
+            "control.mount_path_removexattr",
+            "control.mount_path_removexattr",
             payload,
         );
         self.allocator.free(response);
@@ -468,8 +454,8 @@ pub const NamespaceClient = struct {
         );
         defer self.allocator.free(payload);
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_lock_v2",
-            "control.mount_path_lock_v2",
+            "control.mount_path_lock",
+            "control.mount_path_lock",
             payload,
         );
         self.allocator.free(response);
@@ -508,8 +494,8 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(payload);
 
         const response = try self.controlRequestPayloadWithReconnect(
-            "control.mount_path_setattr_v2",
-            "control.mount_path_setattr_v2",
+            "control.mount_path_setattr",
+            "control.mount_path_setattr",
             payload,
         );
         self.allocator.free(response);
@@ -542,8 +528,8 @@ pub const NamespaceClient = struct {
         defer self.allocator.free(payload);
 
         const payload_json = try self.controlRequestPayloadWithReconnect(
-            "control.mount_file_write_v2",
-            "control.mount_file_write_v2",
+            "control.mount_file_write",
+            "control.mount_file_write",
             payload,
         );
         defer self.allocator.free(payload_json);
@@ -899,7 +885,7 @@ pub const NamespaceClient = struct {
     fn negotiateControlVersion(self: *NamespaceClient) !void {
         const request_id = try self.nextControlRequestId();
         defer self.allocator.free(request_id);
-        try self.writeControlRequest("control.version", request_id, "{\"protocol\":\"unified-v2\"}");
+        try self.writeControlRequest("control.version", request_id, "{\"protocol\":\"spiderweb-control\"}");
         const payload_json = try readControlPayloadFor(self, request_id, "control.version_ack");
         self.allocator.free(payload_json);
     }
@@ -975,15 +961,15 @@ pub const NamespaceClient = struct {
     fn setActiveSessionBinding(
         self: *NamespaceClient,
         agent_id: []const u8,
-        project_id: []const u8,
-        project_token: ?[]const u8,
+        workspace_id: []const u8,
+        workspace_token: ?[]const u8,
     ) !void {
         if (self.active_agent_id) |value| self.allocator.free(value);
-        if (self.active_project_id) |value| self.allocator.free(value);
-        if (self.active_project_token) |value| self.allocator.free(value);
+        if (self.active_workspace_id) |value| self.allocator.free(value);
+        if (self.active_workspace_token) |value| self.allocator.free(value);
         self.active_agent_id = try self.allocator.dupe(u8, agent_id);
-        self.active_project_id = try self.allocator.dupe(u8, project_id);
-        self.active_project_token = if (project_token) |token| try self.allocator.dupe(u8, token) else null;
+        self.active_workspace_id = try self.allocator.dupe(u8, workspace_id);
+        self.active_workspace_token = if (workspace_token) |token| try self.allocator.dupe(u8, token) else null;
     }
 
     fn nextControlRequestId(self: *NamespaceClient) ![]u8 {
@@ -1131,7 +1117,7 @@ pub const NamespaceClient = struct {
 
     fn reconnectControlSession(self: *NamespaceClient, session_key: []const u8) anyerror!void {
         const agent_id = self.active_agent_id orelse return error.InvalidState;
-        const project_id = self.active_project_id orelse return error.InvalidState;
+        const workspace_id = self.active_workspace_id orelse return error.InvalidState;
         const previous_stream = self.stream;
 
         const parsed = try parseWsUrlWithDefaultPath(self.namespace_url, "/");
@@ -1160,8 +1146,8 @@ pub const NamespaceClient = struct {
         var attach_info = try self.controlSessionAttach(.{
             .session_key = session_key,
             .agent_id = agent_id,
-            .project_id = project_id,
-            .project_token = self.active_project_token,
+            .workspace_id = workspace_id,
+            .workspace_token = self.active_workspace_token,
         });
         defer attach_info.deinit(self.allocator);
     }
@@ -1632,9 +1618,8 @@ fn parseConnectInfo(allocator: std.mem.Allocator, payload_json: []const u8) !Con
     var info = ConnectInfo{};
     errdefer info.deinit(allocator);
     info.agent_id = try optionalOwnedString(allocator, parsed.value.object, "agent_id");
-    info.project_id = try optionalOwnedString(allocator, parsed.value.object, "project_id");
+    info.workspace_id = try optionalOwnedString(allocator, parsed.value.object, "workspace_id");
     info.session_key = try optionalOwnedString(allocator, parsed.value.object, "session");
-    info.requires_session_attach = optionalBool(parsed.value.object, "requires_session_attach") orelse false;
     if (parsed.value.object.get("workspace")) |workspace_value| {
         info.has_workspace_mounts = workspaceValueHasMounts(workspace_value);
         info.workspace_json = try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(workspace_value, .{})});
@@ -1664,7 +1649,13 @@ fn readControlPayloadFor(self: *NamespaceClient, expected_id: []const u8, expect
 
         const msg_type = getRequiredString(parsed.value.object, "type") orelse continue;
         if (std.mem.eql(u8, msg_type, "control.error")) return mapControlError(parsed.value.object);
-        if (!std.mem.eql(u8, msg_type, expected_type)) return error.UnexpectedControlResponse;
+        if (!std.mem.eql(u8, msg_type, expected_type)) {
+            std.log.warn(
+                "unexpected control response type id={s} expected={s} actual={s}",
+                .{ expected_id, expected_type, msg_type },
+            );
+            return error.UnexpectedControlResponse;
+        }
 
         const payload = parsed.value.object.get("payload") orelse return self.allocator.dupe(u8, "{}");
         return std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(payload, .{})});
@@ -1730,8 +1721,8 @@ fn mapAcheronError(root: std.json.ObjectMap) anyerror {
 
 fn mapRemoteErrorCode(code: []const u8) anyerror {
     if (std.mem.eql(u8, code, "forbidden") or std.mem.eql(u8, code, "access_denied")) return error.PermissionDenied;
-    if (std.mem.eql(u8, code, "agent_not_found") or std.mem.eql(u8, code, "project_not_found")) return error.FileNotFound;
-    if (std.mem.eql(u8, code, "project_context_required")) return error.ProjectRequired;
+    if (std.mem.eql(u8, code, "agent_not_found") or std.mem.eql(u8, code, "workspace_not_found")) return error.FileNotFound;
+    if (std.mem.eql(u8, code, "workspace_context_required")) return error.WorkspaceRequired;
     if (std.mem.eql(u8, code, "missing_field")) return error.MissingField;
     if (std.mem.eql(u8, code, "invalid_payload") or std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;
     if (std.mem.eql(u8, code, "einval")) return error.InvalidPayload;
@@ -1750,7 +1741,7 @@ fn mapRemoteErrorCode(code: []const u8) anyerror {
     if (std.mem.eql(u8, code, "unsupported")) return error.OperationNotSupported;
     if (std.mem.eql(u8, code, "runtime_warming")) return error.RuntimeWarming;
     if (std.mem.eql(u8, code, "runtime_unavailable")) return error.RuntimeUnavailable;
-    if (std.mem.eql(u8, code, "project_mounts_missing")) return error.ProjectMountsMissing;
+    if (std.mem.eql(u8, code, "workspace_mounts_missing")) return error.WorkspaceMountsMissing;
     if (std.mem.eql(u8, code, "sandbox_mount_unavailable")) return error.SandboxMountUnavailable;
     if (std.mem.eql(u8, code, "sandbox_invalid_config")) return error.InvalidSandboxConfig;
     if (std.mem.eql(u8, code, "runtime_resource_exhausted")) return error.ProcessFdQuotaExceeded;
@@ -1836,14 +1827,13 @@ test "namespace_client: parseConnectInfo preserves workspace payload and mount p
     const allocator = std.testing.allocator;
     var info = try parseConnectInfo(
         allocator,
-        "{\"agent_id\":\"agent-a\",\"project_id\":\"proj-a\",\"session\":\"sess-a\",\"requires_session_attach\":true,\"workspace\":{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}]}}",
+        "{\"agent_id\":\"agent-a\",\"workspace_id\":\"proj-a\",\"session\":\"sess-a\",\"workspace\":{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}]}}",
     );
     defer info.deinit(allocator);
 
     try std.testing.expectEqualStrings("agent-a", info.agent_id.?);
-    try std.testing.expectEqualStrings("proj-a", info.project_id.?);
+    try std.testing.expectEqualStrings("proj-a", info.workspace_id.?);
     try std.testing.expectEqualStrings("sess-a", info.session_key.?);
-    try std.testing.expect(info.requires_session_attach);
     try std.testing.expect(info.has_workspace_mounts);
     try std.testing.expect(info.workspace_json != null);
     try std.testing.expect(std.mem.indexOf(u8, info.workspace_json.?, "\"mounts\"") != null);

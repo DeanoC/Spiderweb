@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const LtmIndexVersion = 1;
+pub const RuntimeStateIndexVersion = 1;
 
 const INDEX_FILENAME = "archive-index.ndjson";
 

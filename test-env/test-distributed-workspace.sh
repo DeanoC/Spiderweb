@@ -117,8 +117,8 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<EOF
   },
   "runtime": {
     "default_agent_id": "default",
-    "ltm_directory": "$LTM_DIR",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$LTM_DIR",
+    "state_db_filename": "runtime-state.db",
     "spider_web_root": "$SPIDER_WEB_ROOT"
   }
 }
@@ -164,7 +164,7 @@ import sys
 
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-token = str(data.get("admin_token") or "").strip()
+token = str(data.get("access_token") or "").strip()
 if token:
     print(token)
 PY
@@ -294,7 +294,7 @@ try:
         "channel": "control",
         "type": "control.version",
         "id": "ready-version",
-        "payload": {"protocol": "unified-v2"},
+        "payload": {"protocol": "spiderweb-control"},
     }, separators=(",", ":")))
     msg = read_text(sock)
     if msg.get("type") != "control.version_ack":
@@ -442,7 +442,7 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"handshake failed: {status.decode('utf-8', 'replace')}")
 
-    version = call(sock, "version", {"protocol": "unified-v2"}, "gate-version")
+    version = call(sock, "version", {"protocol": "spiderweb-control"}, "gate-version")
     if version.get("type") != "control.version_ack":
         raise RuntimeError(f"expected version_ack, got {json.dumps(version)}")
 
@@ -452,7 +452,7 @@ try:
 
     missing = call(
         sock,
-        "project_create",
+        "workspace_create",
         {"name": "Gate Missing", "vision": "operator gate check"},
         "gate-missing",
     )
@@ -461,7 +461,7 @@ try:
 
     wrong = call(
         sock,
-        "project_create",
+        "workspace_create",
         {
             "name": "Gate Wrong",
             "vision": "operator gate check",
@@ -477,7 +477,7 @@ try:
 
     ok = call(
         sock,
-        "project_create",
+        "workspace_create",
         {
             "name": "Gate Allowed",
             "vision": "operator gate check",
@@ -485,28 +485,28 @@ try:
         },
         "gate-good",
     )
-    if ok.get("type") != "control.project_create":
+    if ok.get("type") != "control.workspace_create":
         raise RuntimeError(f"correct token was rejected: {json.dumps(ok)}")
     payload = ok.get("payload") or {}
-    project_id = payload.get("project_id")
-    project_token = payload.get("project_token") or ""
-    if not project_id:
-        raise RuntimeError(f"project_create payload missing project_id: {json.dumps(ok)}")
+    workspace_id = payload.get("workspace_id")
+    workspace_token = payload.get("workspace_token") or ""
+    if not workspace_id:
+        raise RuntimeError(f"workspace_create payload missing workspace_id: {json.dumps(ok)}")
 
     delete_payload = {
-        "project_id": project_id,
+        "workspace_id": workspace_id,
         "operator_token": operator_token,
     }
-    if project_token:
-        delete_payload["project_token"] = project_token
+    if workspace_token:
+        delete_payload["workspace_token"] = workspace_token
 
     deleted = call(
         sock,
-        "project_delete",
+        "workspace_delete",
         delete_payload,
         "gate-delete",
     )
-    if deleted.get("type") != "control.project_delete":
+    if deleted.get("type") != "control.workspace_delete":
         raise RuntimeError(f"cleanup delete failed: {json.dumps(deleted)}")
 finally:
     try:
@@ -594,7 +594,7 @@ PY
     log_pass "metrics endpoint is ready"
 fi
 
-log_info "Starting node A at ws://$BIND_ADDR:$NODE1_PORT/v2/fs ..."
+log_info "Starting node A at ws://$BIND_ADDR:$NODE1_PORT/fs ..."
 "$FS_NODE_BIN" \
     --bind "$BIND_ADDR" \
     --port "$NODE1_PORT" \
@@ -602,7 +602,7 @@ log_info "Starting node A at ws://$BIND_ADDR:$NODE1_PORT/v2/fs ..."
     > "$NODE1_LOG" 2>&1 &
 NODE1_PID="$!"
 
-log_info "Starting node B at ws://$BIND_ADDR:$NODE2_PORT/v2/fs ..."
+log_info "Starting node B at ws://$BIND_ADDR:$NODE2_PORT/fs ..."
 "$FS_NODE_BIN" \
     --bind "$BIND_ADDR" \
     --port "$NODE2_PORT" \
@@ -612,7 +612,7 @@ NODE2_PID="$!"
 
 wait_for_node_ready() {
     local port="$1"
-    local endpoint="tmp=ws://$BIND_ADDR:$port/v2/fs#work"
+    local endpoint="tmp=ws://$BIND_ADDR:$port/fs#work"
     for _ in $(seq 1 120); do
         if "$FS_MOUNT_BIN" --endpoint "$endpoint" readdir /tmp >/dev/null 2>&1; then
             return 0
@@ -641,7 +641,7 @@ CONTROL_WORKFLOW_ERR="$TEST_TMP_DIR/control-workflow.err"
 log_info "Running control workflow (invite/join/project/mount/activate)..."
 control_workflow_ok=0
 for _ in $(seq 1 20); do
-if python3 - "$BIND_ADDR" "$SPIDERWEB_PORT" "ws://$BIND_ADDR:$NODE1_PORT/v2/fs" "ws://$BIND_ADDR:$NODE2_PORT/v2/fs" "$CONTROL_SUMMARY" <<'PY' 2>"$CONTROL_WORKFLOW_ERR"
+if python3 - "$BIND_ADDR" "$SPIDERWEB_PORT" "ws://$BIND_ADDR:$NODE1_PORT/fs" "ws://$BIND_ADDR:$NODE2_PORT/fs" "$CONTROL_SUMMARY" <<'PY' 2>"$CONTROL_WORKFLOW_ERR"
 import base64
 import json
 import os
@@ -722,14 +722,14 @@ def call(sock, op, payload, request_id):
     protected_ops = {
         "node_invite_create",
         "node_delete",
-        "project_create",
-        "project_update",
-        "project_delete",
-        "project_activate",
-        "project_mount_set",
-        "project_mount_remove",
-        "project_token_rotate",
-        "project_token_revoke",
+        "workspace_create",
+        "workspace_update",
+        "workspace_delete",
+        "workspace_activate",
+        "workspace_mount_set",
+        "workspace_mount_remove",
+        "workspace_token_rotate",
+        "workspace_token_revoke",
     }
     if payload is not None:
         msg["payload"] = dict(payload)
@@ -775,7 +775,7 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"handshake failed: {status.decode('utf-8', 'replace')}")
 
-    call(sock, "version", {"protocol": "unified-v2"}, "version-1")
+    call(sock, "version", {"protocol": "spiderweb-control"}, "version-1")
     call(sock, "connect", {}, "connect-1")
 
     invite_a = call(sock, "node_invite_create", {}, "inv-a")
@@ -792,33 +792,33 @@ try:
         "fs_url": node2_url,
     }, "join-b")
 
-    project = call(sock, "project_create", {
+    project = call(sock, "workspace_create", {
         "name": "Distributed Workspace",
         "vision": "multi-node fs mount graph",
     }, "project-create")
-    project_id = project["project_id"]
-    project_token = project.get("project_token") or ""
+    workspace_id = project["workspace_id"]
+    workspace_token = project.get("workspace_token") or ""
 
-    def with_project_scope(payload):
+    def with_workspace_scope(payload):
         scoped = dict(payload)
-        if project_token:
-            scoped["project_token"] = project_token
+        if workspace_token:
+            scoped["workspace_token"] = workspace_token
         return scoped
 
-    call(sock, "project_mount_set", with_project_scope({
-        "project_id": project_id,
+    call(sock, "workspace_mount_set", with_workspace_scope({
+        "workspace_id": workspace_id,
         "node_id": node_a["node_id"],
         "export_name": "work",
         "mount_path": "/src",
     }), "mount-a")
-    call(sock, "project_mount_set", with_project_scope({
-        "project_id": project_id,
+    call(sock, "workspace_mount_set", with_workspace_scope({
+        "workspace_id": workspace_id,
         "node_id": node_b["node_id"],
         "export_name": "work",
         "mount_path": "/src",
     }), "mount-b")
-    call(sock, "project_activate", with_project_scope({
-        "project_id": project_id,
+    call(sock, "workspace_activate", with_workspace_scope({
+        "workspace_id": workspace_id,
     }), "activate")
     status_payload = call(sock, "workspace_status", {}, "workspace-status")
 
@@ -836,8 +836,8 @@ try:
 
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump({
-            "project_id": project_id,
-            "project_token": project_token,
+            "workspace_id": workspace_id,
+            "workspace_token": workspace_token,
             "node_a_id": node_a["node_id"],
             "node_b_id": node_b["node_id"],
             "mounts": mounts,
@@ -877,7 +877,7 @@ import json
 import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-print(data["project_id"])
+print(data["workspace_id"])
 PY
 )"
 PROJECT_TOKEN="$(python3 - "$CONTROL_SUMMARY" <<'PY'
@@ -885,7 +885,7 @@ import json
 import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-print(data.get("project_token", ""))
+print(data.get("workspace_token", ""))
 PY
 )"
 NODE_A_ID="$(python3 - "$CONTROL_SUMMARY" <<'PY'
@@ -937,7 +937,7 @@ import sys
 
 host = sys.argv[1]
 port = int(sys.argv[2])
-expected_project_id = sys.argv[3]
+expected_workspace_id = sys.argv[3]
 
 def read_exact(sock, n):
     out = bytearray()
@@ -1002,14 +1002,14 @@ def call(sock, op, payload, request_id):
     protected_ops = {
         "node_invite_create",
         "node_delete",
-        "project_create",
-        "project_update",
-        "project_delete",
-        "project_activate",
-        "project_mount_set",
-        "project_mount_remove",
-        "project_token_rotate",
-        "project_token_revoke",
+        "workspace_create",
+        "workspace_update",
+        "workspace_delete",
+        "workspace_activate",
+        "workspace_mount_set",
+        "workspace_mount_remove",
+        "workspace_token_rotate",
+        "workspace_token_revoke",
     }
     if payload is not None:
         msg["payload"] = dict(payload)
@@ -1051,11 +1051,11 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"bad handshake: {status!r}")
 
-    call(sock, "version", {"protocol": "unified-v2"}, "restart-version")
+    call(sock, "version", {"protocol": "spiderweb-control"}, "restart-version")
     call(sock, "connect", {}, "restart-connect")
     workspace = call(sock, "workspace_status", {}, "restart-status")
-    if workspace.get("project_id") != expected_project_id:
-        raise RuntimeError(f"project mismatch after restart: {workspace}")
+    if workspace.get("workspace_id") != expected_workspace_id:
+        raise RuntimeError(f"workspace mismatch after restart: {workspace}")
     mounts = [m for m in workspace.get("mounts", []) if m.get("mount_path") == "/src"]
     desired_mounts = [m for m in workspace.get("desired_mounts", []) if m.get("mount_path") == "/src"]
     if len(desired_mounts) < 2:
@@ -1138,16 +1138,16 @@ import sys
 
 host = sys.argv[1]
 port = int(sys.argv[2])
-project_id = sys.argv[3]
-project_token = sys.argv[4]
+workspace_id = sys.argv[3]
+workspace_token = sys.argv[4]
 node_a = sys.argv[5]
 node_b = sys.argv[6]
 status_path = sys.argv[7]
 
-def with_project_scope(payload):
+def with_workspace_scope(payload):
     scoped = dict(payload)
-    if project_token:
-        scoped["project_token"] = project_token
+    if workspace_token:
+        scoped["workspace_token"] = workspace_token
     return scoped
 
 def read_exact(sock, n):
@@ -1213,14 +1213,14 @@ def call(sock, op, payload, request_id):
     protected_ops = {
         "node_invite_create",
         "node_delete",
-        "project_create",
-        "project_update",
-        "project_delete",
-        "project_activate",
-        "project_mount_set",
-        "project_mount_remove",
-        "project_token_rotate",
-        "project_token_revoke",
+        "workspace_create",
+        "workspace_update",
+        "workspace_delete",
+        "workspace_activate",
+        "workspace_mount_set",
+        "workspace_mount_remove",
+        "workspace_token_rotate",
+        "workspace_token_revoke",
     }
     if payload is not None:
         msg["payload"] = dict(payload)
@@ -1262,12 +1262,12 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"bad handshake: {status!r}")
 
-    call(sock, "version", {"protocol": "unified-v2"}, "version-live")
+    call(sock, "version", {"protocol": "spiderweb-control"}, "version-live")
     call(sock, "connect", {}, "connect-live")
-    call(sock, "project_mount_remove", with_project_scope({"project_id": project_id, "mount_path": "/src"}), "rm-src")
-    call(sock, "project_mount_set", with_project_scope({"project_id": project_id, "node_id": node_a, "export_name": "work", "mount_path": "/live"}), "add-live-a")
-    call(sock, "project_mount_set", with_project_scope({"project_id": project_id, "node_id": node_b, "export_name": "work", "mount_path": "/live"}), "add-live-b")
-    call(sock, "project_activate", with_project_scope({"project_id": project_id}), "activate-live")
+    call(sock, "workspace_mount_remove", with_workspace_scope({"workspace_id": workspace_id, "mount_path": "/src"}), "rm-src")
+    call(sock, "workspace_mount_set", with_workspace_scope({"workspace_id": workspace_id, "node_id": node_a, "export_name": "work", "mount_path": "/live"}), "add-live-a")
+    call(sock, "workspace_mount_set", with_workspace_scope({"workspace_id": workspace_id, "node_id": node_b, "export_name": "work", "mount_path": "/live"}), "add-live-b")
+    call(sock, "workspace_activate", with_workspace_scope({"workspace_id": workspace_id}), "activate-live")
     workspace = call(sock, "workspace_status", {}, "status-live")
     with open(status_path, "w", encoding="utf-8") as f:
         json.dump(workspace, f)
@@ -1412,17 +1412,17 @@ import sys
 
 host = sys.argv[1]
 port = int(sys.argv[2])
-project_id = sys.argv[3]
-project_token = sys.argv[4]
+workspace_id = sys.argv[3]
+workspace_token = sys.argv[4]
 node_host = sys.argv[5]
 node_port = int(sys.argv[6])
 node_label = sys.argv[7]
-node_url = f"ws://{node_host}:{node_port}/v2/fs"
+node_url = f"ws://{node_host}:{node_port}/fs"
 
-def with_project_scope(payload):
+def with_workspace_scope(payload):
     scoped = dict(payload)
-    if project_token:
-        scoped["project_token"] = project_token
+    if workspace_token:
+        scoped["workspace_token"] = workspace_token
     return scoped
 
 def read_exact(sock, n):
@@ -1488,14 +1488,14 @@ def call(sock, op, payload, request_id):
     protected_ops = {
         "node_invite_create",
         "node_delete",
-        "project_create",
-        "project_update",
-        "project_delete",
-        "project_activate",
-        "project_mount_set",
-        "project_mount_remove",
-        "project_token_rotate",
-        "project_token_revoke",
+        "workspace_create",
+        "workspace_update",
+        "workspace_delete",
+        "workspace_activate",
+        "workspace_mount_set",
+        "workspace_mount_remove",
+        "workspace_token_rotate",
+        "workspace_token_revoke",
     }
     if payload is not None:
         msg["payload"] = dict(payload)
@@ -1537,7 +1537,7 @@ try:
     if b"101" not in status:
         raise RuntimeError(f"bad handshake: {status!r}")
 
-    call(sock, "version", {"protocol": "unified-v2"}, "rejoin-version")
+    call(sock, "version", {"protocol": "spiderweb-control"}, "rejoin-version")
     call(sock, "connect", {}, "rejoin-connect")
     invite = call(sock, "node_invite_create", {}, "rejoin-invite")
     joined = call(sock, "node_join", {
@@ -1545,8 +1545,8 @@ try:
         "node_name": f"node-{node_label.lower()}-rejoin",
         "fs_url": node_url,
     }, "rejoin-join")
-    call(sock, "project_mount_set", with_project_scope({
-        "project_id": project_id,
+    call(sock, "workspace_mount_set", with_workspace_scope({
+        "workspace_id": workspace_id,
         "node_id": joined["node_id"],
         "export_name": "work",
         "mount_path": "/live",

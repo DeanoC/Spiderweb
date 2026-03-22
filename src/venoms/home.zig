@@ -81,12 +81,14 @@ pub fn seedNamespaceAt(self: anytype, home_dir: u32, base_path: []const u8) !voi
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Write {\"agent_id\":\"...\"} to ensure.json to provision /home/<agent_id> as a durable bind into the mounted workspace.\n",
+        "Write the JSON payload in ensure.json to provision /home/<agent_id> as a durable bind into the mounted workspace.\n",
         false,
         .none,
     );
     _ = try self.addFile(control_dir, "invoke.json", "", true, .home_invoke);
-    _ = try self.addFile(control_dir, "ensure.json", "", true, .home_ensure);
+    const ensure_template = try buildEnsureTemplateJson(self);
+    defer self.allocator.free(ensure_template);
+    _ = try self.addFile(control_dir, "ensure.json", ensure_template, true, .home_ensure);
 }
 
 pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_input: []const u8) !usize {
@@ -167,8 +169,8 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
     _ = op;
     const agent_id = extractOptionalStringByNames(args_obj, &[_][]const u8{"agent_id"}) orelse self.agent_id;
     if (!isValidIdentifier(agent_id)) return error.InvalidPayload;
-    const project_id = extractOptionalStringByNames(args_obj, &[_][]const u8{"project_id"}) orelse self.project_id orelse return error.InvalidPayload;
-    const project_token = extractOptionalStringByNames(args_obj, &[_][]const u8{"project_token"}) orelse self.project_token;
+    const project_id = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_id"}) orelse self.workspace_id orelse return error.InvalidPayload;
+    const project_token = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_token"}) orelse self.workspace_token;
 
     const bind_path = if (extractOptionalStringByNames(args_obj, &[_][]const u8{ "bind_path", "home_path" })) |value| blk: {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
@@ -188,22 +190,35 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
     defer self.allocator.free(payload);
 
     const plane = self.control_plane orelse return error.InvalidPayload;
-    _ = plane.setProjectBindWithRole(payload, self.is_admin) catch |err| switch (err) {
-        control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-        control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-        control_plane_mod.ControlPlaneError.ProjectProtected,
-        control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+    _ = plane.setWorkspaceBindWithRole(payload, self.is_admin) catch |err| switch (err) {
+        control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+        control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+        control_plane_mod.ControlPlaneError.WorkspaceProtected,
+        control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
         => return error.AccessDenied,
         control_plane_mod.ControlPlaneError.MissingField,
         control_plane_mod.ControlPlaneError.InvalidPayload,
-        control_plane_mod.ControlPlaneError.ProjectNotFound,
+        control_plane_mod.ControlPlaneError.WorkspaceNotFound,
         control_plane_mod.ControlPlaneError.BindConflict,
         => return error.InvalidPayload,
         else => return err,
     };
 
-    try self.refreshProjectBindsFromControlPlane();
+    try self.refreshWorkspaceBindsFromControlPlane();
     return buildEnsureResultJson(self, agent_id, project_id, bind_path, target_path);
+}
+
+fn buildEnsureTemplateJson(self: anytype) ![]u8 {
+    const escaped_agent_id = try unified.jsonEscape(self.allocator, self.agent_id);
+    defer self.allocator.free(escaped_agent_id);
+    const project_id = self.workspace_id orelse "";
+    const escaped_project_id = try unified.jsonEscape(self.allocator, project_id);
+    defer self.allocator.free(escaped_project_id);
+    return std.fmt.allocPrint(
+        self.allocator,
+        "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\"}}",
+        .{ escaped_agent_id, escaped_project_id },
+    );
 }
 
 fn buildScopedBindPayload(
@@ -222,12 +237,12 @@ fn buildScopedBindPayload(
     const token_fragment = if (project_token) |token| blk: {
         const escaped = try unified.jsonEscape(allocator, token);
         defer allocator.free(escaped);
-        break :blk try std.fmt.allocPrint(allocator, ",\"project_token\":\"{s}\"", .{escaped});
+        break :blk try std.fmt.allocPrint(allocator, ",\"workspace_token\":\"{s}\"", .{escaped});
     } else try allocator.dupe(u8, "");
     defer allocator.free(token_fragment);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"project_id\":\"{s}\"{s},\"bind_path\":\"{s}\",\"target_path\":\"{s}\"}}",
+        "{{\"workspace_id\":\"{s}\"{s},\"bind_path\":\"{s}\",\"target_path\":\"{s}\"}}",
         .{ escaped_project_id, token_fragment, escaped_bind_path, escaped_target_path },
     );
 }
@@ -263,7 +278,7 @@ fn buildEnsureResultJson(
 
     const payload = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"ok\":true,\"operation\":\"ensure\",\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"home_path\":\"{s}\",\"target_path\":\"{s}\",\"recommended_paths\":{{\"state\":\"{s}\",\"cache\":\"{s}\",\"binds\":\"{s}\"}}}}",
+        "{{\"ok\":true,\"operation\":\"ensure\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"home_path\":\"{s}\",\"target_path\":\"{s}\",\"recommended_paths\":{{\"state\":\"{s}\",\"cache\":\"{s}\",\"binds\":\"{s}\"}}}}",
         .{ escaped_agent_id, escaped_project_id, escaped_bind_path, escaped_target_path, escaped_state_path, escaped_cache_path, escaped_binds_path },
     );
     defer self.allocator.free(payload);

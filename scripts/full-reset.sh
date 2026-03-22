@@ -27,7 +27,7 @@ USER_PATHS=(
     "$TARGET_HOME/.config/systemd/user/default.target.wants/spiderweb.service"
     "$TARGET_HOME/.config/spiderweb"
     "$TARGET_HOME/.cache/ziggy-spiderweb"
-    "$TARGET_HOME/.spiderweb-ltm"
+    "$TARGET_HOME/.spiderweb-state"
     "$TARGET_HOME/.local/share/ziggy-spiderweb"
     "$TARGET_HOME/.local/share/ziggy-starspider"
     "$TARGET_HOME/.config/ziggystarclaw"

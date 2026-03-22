@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Distributed workspace drift scenario:
 # - start spiderweb + one node
-# - bootstrap project_up with an intentionally unusual export
+# - bootstrap workspace_up with an intentionally unusual export
 # - assert workspace drift metadata is present and well-formed
 
 set -euo pipefail
@@ -131,7 +131,7 @@ import sys
 
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-print(str(data.get("admin_token") or "").strip())
+print(str(data.get("access_token") or "").strip())
 PY
             )"
             if [[ -n "${SPIDERWEB_AUTH_TOKEN:-}" ]]; then
@@ -148,7 +148,7 @@ PY
 
 wait_for_node_ready() {
     local port="$1"
-    local endpoint="tmp=ws://$BIND_ADDR:$port/v2/fs#work"
+    local endpoint="tmp=ws://$BIND_ADDR:$port/fs#work"
     for _ in $(seq 1 120); do
         if run_with_timeout "$FS_CHECK_TIMEOUT_SEC" "$FS_MOUNT_BIN" --endpoint "$endpoint" readdir /tmp >/dev/null 2>&1; then
             return 0
@@ -175,8 +175,8 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<EOF
   },
   "runtime": {
     "default_agent_id": "default",
-    "ltm_directory": "$LTM_DIR",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$LTM_DIR",
+    "state_db_filename": "runtime-state.db",
     "spider_web_root": "$SPIDER_WEB_ROOT"
   }
 }
@@ -214,18 +214,18 @@ log_pass "node endpoint is ready"
 
 INVITE="$(control_call node_invite_create)"
 INVITE_TOKEN="$(json_query "$INVITE" "payload.invite_token")"
-JOIN_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-drift","fs_url":"ws://%s:%s/v2/fs"}' "$INVITE_TOKEN" "$BIND_ADDR" "$NODE1_PORT")"
+JOIN_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-drift","fs_url":"ws://%s:%s/fs"}' "$INVITE_TOKEN" "$BIND_ADDR" "$NODE1_PORT")"
 JOIN_RESP="$(control_call node_join "$JOIN_PAYLOAD")"
 NODE_ID="$(json_query "$JOIN_RESP" "payload.node_id")"
 
 PROJECT_NAME="Drift Matrix $(date +%s)"
 # Use export_name=missing to exercise desired/actual drift metadata paths.
 PROJECT_UP_PAYLOAD="$(printf '{"name":"%s","vision":"%s","activate":true,"desired_mounts":[{"mount_path":"/broken","node_id":"%s","export_name":"missing"}]}' "$PROJECT_NAME" "$PROJECT_NAME" "$NODE_ID")"
-PROJECT_UP_RESP="$(control_call project_up "$PROJECT_UP_PAYLOAD")"
-PROJECT_ID="$(json_query "$PROJECT_UP_RESP" "payload.project_id")"
+PROJECT_UP_RESP="$(control_call workspace_up "$PROJECT_UP_PAYLOAD")"
+PROJECT_ID="$(json_query "$PROJECT_UP_RESP" "payload.workspace_id")"
 
 if [[ -z "$PROJECT_ID" ]]; then
-    log_fail "project_up response missing project id"
+    log_fail "workspace_up response missing workspace id"
     echo "$PROJECT_UP_RESP"
     exit 1
 fi
@@ -235,7 +235,7 @@ RECONCILE_STATE="$(json_query "$PROJECT_UP_RESP" "payload.workspace.reconcile_st
 LAST_ERROR="$(json_query "$PROJECT_UP_RESP" "payload.workspace.last_error")"
 STATUS_RESP=""
 for _ in $(seq 1 5); do
-    if ! STATUS_RESP="$(run_with_timeout 3 "$CONTROL_BIN" "${CONTROL_ARGS[@]}" workspace_status "$(printf '{"project_id":"%s"}' "$PROJECT_ID")" 2>/dev/null)"; then
+    if ! STATUS_RESP="$(run_with_timeout 3 "$CONTROL_BIN" "${CONTROL_ARGS[@]}" workspace_status "$(printf '{"workspace_id":"%s"}' "$PROJECT_ID")" 2>/dev/null)"; then
         sleep 0.25
         continue
     fi

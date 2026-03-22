@@ -104,7 +104,7 @@ pub fn main() !void {
         .{
             .request_id = "control-cli-version",
             .msg_type = "control.version",
-            .payload_json = "{\"protocol\":\"unified-v2\"}",
+            .payload_json = "{\"protocol\":\"spiderweb-control\"}",
         },
     );
     const version_reply = try readControlReplyForId(allocator, &stream, "control-cli-version");
@@ -205,16 +205,7 @@ fn isOperatorTokenProtectedMutation(op_type: []const u8) bool {
         std.mem.eql(u8, op_type, "control.workspace_mount_set") or
         std.mem.eql(u8, op_type, "control.workspace_mount_remove") or
         std.mem.eql(u8, op_type, "control.workspace_token_rotate") or
-        std.mem.eql(u8, op_type, "control.workspace_token_revoke") or
-        std.mem.eql(u8, op_type, "control.project_create") or
-        std.mem.eql(u8, op_type, "control.project_update") or
-        std.mem.eql(u8, op_type, "control.project_delete") or
-        std.mem.eql(u8, op_type, "control.project_activate") or
-        std.mem.eql(u8, op_type, "control.project_up") or
-        std.mem.eql(u8, op_type, "control.project_mount_set") or
-        std.mem.eql(u8, op_type, "control.project_mount_remove") or
-        std.mem.eql(u8, op_type, "control.project_token_rotate") or
-        std.mem.eql(u8, op_type, "control.project_token_revoke");
+        std.mem.eql(u8, op_type, "control.workspace_token_revoke");
 }
 
 test "control_cli: operator token mutation whitelist includes workspace bind mutations" {
@@ -222,8 +213,8 @@ test "control_cli: operator token mutation whitelist includes workspace bind mut
     try std.testing.expect(isOperatorTokenProtectedMutation("control.workspace_bind_set"));
     try std.testing.expect(isOperatorTokenProtectedMutation("control.workspace_bind_remove"));
     try std.testing.expect(isOperatorTokenProtectedMutation("control.workspace_up"));
-    try std.testing.expect(isOperatorTokenProtectedMutation("control.project_activate"));
-    try std.testing.expect(isOperatorTokenProtectedMutation("control.project_up"));
+    try std.testing.expect(isOperatorTokenProtectedMutation("control.workspace_activate"));
+    try std.testing.expect(isOperatorTokenProtectedMutation("control.workspace_up"));
     try std.testing.expect(isOperatorTokenProtectedMutation("control.node_join_approve"));
     try std.testing.expect(!isOperatorTokenProtectedMutation("control.workspace_status"));
 }

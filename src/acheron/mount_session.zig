@@ -153,6 +153,12 @@ pub const MountSession = struct {
         try self.provider.symlink(target, link_path);
     }
 
+    pub fn setattr(self: *MountSession, path: []const u8, mode: ?u32, uid: ?u32, gid: ?u32, flags: ?u32, at_ns: ?i64, mt_ns: ?i64) !void {
+        self.provider_mutex.lock();
+        defer self.provider_mutex.unlock();
+        try self.provider.setattr(path, mode, uid, gid, flags, at_ns, mt_ns);
+    }
+
     pub fn setxattr(self: *MountSession, path: []const u8, name: []const u8, value: []const u8, flags: u32) !void {
         self.provider_mutex.lock();
         defer self.provider_mutex.unlock();

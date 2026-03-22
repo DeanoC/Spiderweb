@@ -571,10 +571,10 @@ struct ContentView: View {
                 SecretValueRow(
                     title: "Access token",
                     detail: "Use this token when another Mac, tool, or saved remote mount needs to connect to this Spiderweb service.",
-                    value: revealLocalTokens ? (auth.adminToken ?? "") : maskedToken(auth.adminToken),
+                    value: revealLocalTokens ? (auth.accessToken ?? "") : maskedToken(auth.accessToken),
                     copyLabel: "Copy Access Token",
                     copyAction: {
-                        if let token = auth.adminToken {
+                        if let token = auth.accessToken {
                             controller.copyToClipboard(token)
                         }
                     }

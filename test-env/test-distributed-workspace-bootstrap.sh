@@ -2,7 +2,7 @@
 # Distributed workspace bootstrap scenario:
 # - start spiderweb + two nodes
 # - join nodes through control-plane
-# - run control.project_up with desired mounts
+# - run control.workspace_up with desired mounts
 # - verify workspace desired/actual/drift shape
 
 set -euo pipefail
@@ -134,7 +134,7 @@ import sys
 
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-print(str(data.get("admin_token") or "").strip())
+print(str(data.get("access_token") or "").strip())
 PY
             )"
             if [[ -n "${SPIDERWEB_AUTH_TOKEN:-}" ]]; then
@@ -151,7 +151,7 @@ PY
 
 wait_for_node_ready() {
     local port="$1"
-    local endpoint="tmp=ws://$BIND_ADDR:$port/v2/fs#work"
+    local endpoint="tmp=ws://$BIND_ADDR:$port/fs#work"
     for _ in $(seq 1 120); do
         if run_with_timeout "$FS_CHECK_TIMEOUT_SEC" "$FS_MOUNT_BIN" --endpoint "$endpoint" readdir /tmp >/dev/null 2>&1; then
             return 0
@@ -180,8 +180,8 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<EOF
   },
   "runtime": {
     "default_agent_id": "default",
-    "ltm_directory": "$LTM_DIR",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$LTM_DIR",
+    "state_db_filename": "runtime-state.db",
     "spider_web_root": "$SPIDER_WEB_ROOT"
   }
 }
@@ -228,22 +228,22 @@ log_pass "node endpoints are ready"
 
 INVITE_A="$(control_call node_invite_create)"
 INVITE_A_TOKEN="$(json_query "$INVITE_A" "payload.invite_token")"
-JOIN_A_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-a","fs_url":"ws://%s:%s/v2/fs"}' "$INVITE_A_TOKEN" "$BIND_ADDR" "$NODE1_PORT")"
+JOIN_A_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-a","fs_url":"ws://%s:%s/fs"}' "$INVITE_A_TOKEN" "$BIND_ADDR" "$NODE1_PORT")"
 JOIN_A="$(control_call node_join "$JOIN_A_PAYLOAD")"
 NODE_A_ID="$(json_query "$JOIN_A" "payload.node_id")"
 
 INVITE_B="$(control_call node_invite_create)"
 INVITE_B_TOKEN="$(json_query "$INVITE_B" "payload.invite_token")"
-JOIN_B_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-b","fs_url":"ws://%s:%s/v2/fs"}' "$INVITE_B_TOKEN" "$BIND_ADDR" "$NODE2_PORT")"
+JOIN_B_PAYLOAD="$(printf '{"invite_token":"%s","node_name":"node-b","fs_url":"ws://%s:%s/fs"}' "$INVITE_B_TOKEN" "$BIND_ADDR" "$NODE2_PORT")"
 JOIN_B="$(control_call node_join "$JOIN_B_PAYLOAD")"
 NODE_B_ID="$(json_query "$JOIN_B" "payload.node_id")"
 
 PROJECT_NAME="Bootstrap Matrix $(date +%s)"
 PROJECT_UP_PAYLOAD="$(printf '{"name":"%s","vision":"%s","activate":true,"desired_mounts":[{"mount_path":"/nodes/local/fs","node_id":"%s","export_name":"work"},{"mount_path":"/nodes/local/fs","node_id":"%s","export_name":"work"}]}' "$PROJECT_NAME" "$PROJECT_NAME" "$NODE_A_ID" "$NODE_B_ID")"
-PROJECT_UP_RESP="$(control_call project_up "$PROJECT_UP_PAYLOAD")"
+PROJECT_UP_RESP="$(control_call workspace_up "$PROJECT_UP_PAYLOAD")"
 
-PROJECT_ID="$(json_query "$PROJECT_UP_RESP" "payload.project_id")"
-PROJECT_TOKEN="$(json_query "$PROJECT_UP_RESP" "payload.project_token")"
+PROJECT_ID="$(json_query "$PROJECT_UP_RESP" "payload.workspace_id")"
+PROJECT_TOKEN="$(json_query "$PROJECT_UP_RESP" "payload.workspace_token")"
 CREATED="$(json_query "$PROJECT_UP_RESP" "payload.created")"
 ACTIVATED="$(json_query "$PROJECT_UP_RESP" "payload.activated")"
 WORKSPACE_MOUNTS_JSON="$(json_query "$PROJECT_UP_RESP" "payload.workspace.mounts")"
@@ -251,17 +251,17 @@ WORKSPACE_DESIRED_JSON="$(json_query "$PROJECT_UP_RESP" "payload.workspace.desir
 WORKSPACE_ACTUAL_JSON="$(json_query "$PROJECT_UP_RESP" "payload.workspace.actual_mounts")"
 
 if [[ -z "$PROJECT_ID" ]]; then
-    log_fail "project_up response missing project id"
+    log_fail "workspace_up response missing workspace id"
     echo "$PROJECT_UP_RESP"
     exit 1
 fi
 if [[ "$CREATED" != "true" && "$CREATED" != "false" ]]; then
-    log_fail "project_up response missing created flag"
+    log_fail "workspace_up response missing created flag"
     echo "$PROJECT_UP_RESP"
     exit 1
 fi
 if [[ "$ACTIVATED" != "true" ]]; then
-    log_fail "project_up did not activate project"
+    log_fail "workspace_up did not activate workspace"
     echo "$PROJECT_UP_RESP"
     exit 1
 fi
@@ -282,16 +282,16 @@ PY
 STATUS_PROJECT_ID=""
 STATUS_DRIFT_COUNT=""
 STATUS_RESP=""
-if STATUS_RESP="$(run_with_timeout 3 "$CONTROL_BIN" "${CONTROL_ARGS[@]}" workspace_status "$(printf '{"project_id":"%s"}' "$PROJECT_ID")" 2>/dev/null)"; then
-    STATUS_PROJECT_ID="$(json_query "$STATUS_RESP" "payload.project_id")"
+if STATUS_RESP="$(run_with_timeout 3 "$CONTROL_BIN" "${CONTROL_ARGS[@]}" workspace_status "$(printf '{"workspace_id":"%s"}' "$PROJECT_ID")" 2>/dev/null)"; then
+    STATUS_PROJECT_ID="$(json_query "$STATUS_RESP" "payload.workspace_id")"
     STATUS_DRIFT_COUNT="$(json_query "$STATUS_RESP" "payload.drift.count")"
 else
-    log_info "workspace_status timed out after project_up; validating from project_up payload"
+    log_info "workspace_status timed out after workspace_up; validating from workspace_up payload"
     STATUS_PROJECT_ID="$PROJECT_ID"
     STATUS_DRIFT_COUNT="$(json_query "$PROJECT_UP_RESP" "payload.workspace.drift.count")"
 fi
 if [[ "$STATUS_PROJECT_ID" != "$PROJECT_ID" ]]; then
-    log_fail "workspace_status project mismatch"
+    log_fail "workspace_status workspace mismatch"
     echo "$STATUS_RESP"
     exit 1
 fi
@@ -301,4 +301,4 @@ if [[ -z "$STATUS_DRIFT_COUNT" ]]; then
     exit 1
 fi
 
-log_pass "bootstrap scenario validated project_up + workspace desired/actual/drift payload"
+log_pass "bootstrap scenario validated workspace_up + workspace desired/actual/drift payload"

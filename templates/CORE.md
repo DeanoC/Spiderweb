@@ -106,7 +106,7 @@ For `file_*` tool args, prefer workspace-relative paths (for example `global/...
 - Each Venom entry includes:
   - `node_id`, `venom_id`, `venom_path`, `invoke_path`, `has_invoke`, `scope`.
 - Scope selection:
-  - `project_namespace`: project-shared capabilities (`/global/*`)
+  - `project_namespace`: workspace-shared capabilities (`/global/*`)
   - `node`: node/device capabilities (`/nodes/<node_id>/venoms/*`)
   - `global_namespace`: shared global docs/capabilities (`/global/*`)
 - Before invoking:
@@ -124,7 +124,7 @@ For `file_*` tool args, prefer workspace-relative paths (for example `global/...
   - `/global/library/topics/terminal-workflows.md`
   - `/global/library/topics/memory-management.md`
   - `/global/library/topics/memory-workflows.md`
-  - `/global/library/topics/project-mounts-and-binds.md`
+  - `/global/library/topics/workspace-mounts-and-binds.md`
   - `/global/library/topics/agent-management-and-sub-brains.md`
   - `/global/library/Index.md`
 

@@ -36,7 +36,7 @@ RUN chmod +x /tmp/install.sh
 # Create required directories
 RUN mkdir -p /home/spiderweb/.local/bin \
     /home/spiderweb/.config/spiderweb \
-    /home/spiderweb/.spiderweb-ltm
+    /home/spiderweb/.spiderweb-state
 
 # Set ownership
 RUN chown -R spiderweb:spiderweb /home/spiderweb

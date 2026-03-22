@@ -188,13 +188,13 @@ disown "$launcher_pid" 2>/dev/null || true
 log_info "Waiting for auth tokens and control plane to become ready..."
 ready=0
 for _ in $(seq 1 60); do
-    admin_token="$(
+    access_token="$(
         cd "$RUNTIME_CWD" &&
         HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" "$INSTALL_DIR/spiderweb-config" auth status --reveal 2>/dev/null |
-            sed -n 's/^  admin_token: //p' | tail -n1 | tr -d '\r'
+            sed -n 's/^  access_token: //p' | tail -n1 | tr -d '\r'
     )"
-    if [[ -n "$admin_token" ]] && \
-        HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" "$INSTALL_DIR/spiderweb-control" --url "ws://127.0.0.1:${SERVER_PORT}/" --auth-token "$admin_token" workspace_list >"$TEST_ROOT/workspace_list.json" 2>/dev/null; then
+    if [[ -n "$access_token" ]] && \
+        HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" "$INSTALL_DIR/spiderweb-control" --url "ws://127.0.0.1:${SERVER_PORT}/" --auth-token "$access_token" workspace_list >"$TEST_ROOT/workspace_list.json" 2>/dev/null; then
         ready=1
         break
     fi
@@ -214,7 +214,7 @@ fi
     HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" "$INSTALL_DIR/spiderweb-config" auth status --reveal > /tmp/spiderweb-install-auth.txt
 )
 head -n 5 /tmp/spiderweb-install-auth.txt
-log_success "Admin token available from installed spiderweb-config"
+log_success "Access token available from installed spiderweb-config"
 log_success "Installed spiderweb is serving control requests"
 
 log_info "Creating a smoke-test workspace..."
@@ -223,7 +223,7 @@ log_info "Creating a smoke-test workspace..."
     HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" \
         "$INSTALL_DIR/spiderweb-control" \
         --url "ws://127.0.0.1:${SERVER_PORT}/" \
-        --auth-token "$admin_token" \
+        --auth-token "$access_token" \
         workspace_create \
         '{"name":"Install Smoke","vision":"Installer smoke test"}' >"$TEST_ROOT/workspace_create.json"
 )
@@ -243,7 +243,7 @@ log_info "Exercising installed spiderweb-fs-mount without an OS mount..."
         "$INSTALL_DIR/spiderweb-fs-mount" \
         --workspace-url "ws://127.0.0.1:${SERVER_PORT}/" \
         --workspace-id "$workspace_id" \
-        --auth-token "$admin_token" \
+        --auth-token "$access_token" \
         readdir / >"$TEST_ROOT/fs_root.json"
 )
 

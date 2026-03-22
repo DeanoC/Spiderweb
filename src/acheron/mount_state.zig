@@ -43,13 +43,13 @@ pub const ClientStateStore = struct {
     pub fn loadOrCreateAgentId(
         self: *ClientStateStore,
         namespace_url: []const u8,
-        project_id: []const u8,
+        workspace_id: []const u8,
     ) ![]u8 {
         var entries = try self.loadEntries();
         defer deinitStoredEntryList(self.allocator, &entries);
 
         for (entries.items) |entry| {
-            if (std.mem.eql(u8, entry.namespace_url, namespace_url) and std.mem.eql(u8, entry.project_id, project_id)) {
+            if (std.mem.eql(u8, entry.namespace_url, namespace_url) and std.mem.eql(u8, entry.workspace_id, workspace_id)) {
                 return self.allocator.dupe(u8, entry.agent_id);
             }
         }
@@ -59,7 +59,7 @@ pub const ClientStateStore = struct {
 
         try entries.append(self.allocator, .{
             .namespace_url = try self.allocator.dupe(u8, namespace_url),
-            .project_id = try self.allocator.dupe(u8, project_id),
+            .workspace_id = try self.allocator.dupe(u8, workspace_id),
             .agent_id = try self.allocator.dupe(u8, generated),
         });
         try self.writeEntries(entries.items);
@@ -80,12 +80,12 @@ pub const ClientStateStore = struct {
 
     const StoredEntry = struct {
         namespace_url: []u8,
-        project_id: []u8,
+        workspace_id: []u8,
         agent_id: []u8,
 
         fn deinit(self: *StoredEntry, allocator: std.mem.Allocator) void {
             allocator.free(self.namespace_url);
-            allocator.free(self.project_id);
+            allocator.free(self.workspace_id);
             allocator.free(self.agent_id);
             self.* = undefined;
         }
@@ -121,11 +121,11 @@ pub const ClientStateStore = struct {
         for (entries_value.array.items) |item| {
             if (item != .object) return error.InvalidClientState;
             const namespace_url = getRequiredString(item.object, "namespace_url") orelse return error.InvalidClientState;
-            const project_id = getRequiredString(item.object, "project_id") orelse return error.InvalidClientState;
+            const workspace_id = getRequiredStringByNames(item.object, &.{ "workspace_id", "project_id" }) orelse return error.InvalidClientState;
             const agent_id = getRequiredString(item.object, "agent_id") orelse return error.InvalidClientState;
             try entries.append(self.allocator, .{
                 .namespace_url = try self.allocator.dupe(u8, namespace_url),
-                .project_id = try self.allocator.dupe(u8, project_id),
+                .workspace_id = try self.allocator.dupe(u8, workspace_id),
                 .agent_id = try self.allocator.dupe(u8, agent_id),
             });
         }
@@ -144,13 +144,13 @@ pub const ClientStateStore = struct {
             if (idx != 0) try out.append(self.allocator, ',');
             const escaped_namespace = try jsonEscape(self.allocator, entry.namespace_url);
             defer self.allocator.free(escaped_namespace);
-            const escaped_project = try jsonEscape(self.allocator, entry.project_id);
-            defer self.allocator.free(escaped_project);
+            const escaped_workspace = try jsonEscape(self.allocator, entry.workspace_id);
+            defer self.allocator.free(escaped_workspace);
             const escaped_agent = try jsonEscape(self.allocator, entry.agent_id);
             defer self.allocator.free(escaped_agent);
             try out.writer(self.allocator).print(
-                "{{\"namespace_url\":\"{s}\",\"project_id\":\"{s}\",\"agent_id\":\"{s}\"}}",
-                .{ escaped_namespace, escaped_project, escaped_agent },
+                "{{\"namespace_url\":\"{s}\",\"workspace_id\":\"{s}\",\"agent_id\":\"{s}\"}}",
+                .{ escaped_namespace, escaped_workspace, escaped_agent },
             );
         }
         try out.appendSlice(self.allocator, "]}");
@@ -184,6 +184,13 @@ fn getRequiredString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const value = obj.get(key) orelse return null;
     if (value != .string or value.string.len == 0) return null;
     return value.string;
+}
+
+fn getRequiredStringByNames(obj: std.json.ObjectMap, keys: []const []const u8) ?[]const u8 {
+    for (keys) |key| {
+        if (getRequiredString(obj, key)) |value| return value;
+    }
+    return null;
 }
 
 fn generateStableExternalAgentId(allocator: std.mem.Allocator) ![]u8 {

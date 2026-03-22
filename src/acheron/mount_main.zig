@@ -17,7 +17,7 @@ const namespace_warmup_deadline_ms: i64 = 10_000;
 const namespace_warmup_retry_ms: u64 = 200;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -126,13 +126,13 @@ pub fn main() !void {
         var connect_info = try client.controlConnect();
         defer connect_info.deinit(allocator);
 
-        const resolved_project_id = if (workspace_id) |project_id|
-            try allocator.dupe(u8, project_id)
-        else if (connect_info.project_id) |project_id|
-            try allocator.dupe(u8, project_id)
+        const resolved_workspace_id = if (workspace_id) |requested_workspace_id|
+            try allocator.dupe(u8, requested_workspace_id)
+        else if (connect_info.workspace_id) |connected_workspace_id|
+            try allocator.dupe(u8, connected_workspace_id)
         else
-            return error.ProjectRequired;
-        defer allocator.free(resolved_project_id);
+            return error.WorkspaceRequired;
+        defer allocator.free(resolved_workspace_id);
 
         var state_store = try mount_state.ClientStateStore.init(allocator);
         defer state_store.deinit();
@@ -140,7 +140,7 @@ pub fn main() !void {
         const resolved_agent_id = if (namespace_agent_id) |agent_id|
             try allocator.dupe(u8, agent_id)
         else
-            try state_store.loadOrCreateAgentId(url, resolved_project_id);
+            try state_store.loadOrCreateAgentId(url, resolved_workspace_id);
         defer allocator.free(resolved_agent_id);
 
         const resolved_session_key = if (namespace_session_key) |session_key|
@@ -152,14 +152,15 @@ pub fn main() !void {
         var attach_info = try client.controlSessionAttach(.{
             .session_key = resolved_session_key,
             .agent_id = resolved_agent_id,
-            .project_id = resolved_project_id,
-            .project_token = workspace_token,
+            .workspace_id = resolved_workspace_id,
+            .workspace_token = workspace_token,
         });
         defer attach_info.deinit(allocator);
 
         namespace_status = .{
             .namespace_url = try allocator.dupe(u8, url),
-            .project_id = try allocator.dupe(u8, resolved_project_id),
+            .workspace_id = try allocator.dupe(u8, resolved_workspace_id),
+            .workspace_name = if (hydrated.workspace_name) |value| try allocator.dupe(u8, value) else null,
             .agent_id = try allocator.dupe(u8, resolved_agent_id),
             .session_key = try allocator.dupe(u8, resolved_session_key),
         };
@@ -171,13 +172,13 @@ pub fn main() !void {
         var connect_info = try client.controlConnect();
         defer connect_info.deinit(allocator);
 
-        const resolved_project_id = if (workspace_id) |project_id|
-            try allocator.dupe(u8, project_id)
-        else if (connect_info.project_id) |project_id|
-            try allocator.dupe(u8, project_id)
+        const resolved_workspace_id = if (workspace_id) |requested_workspace_id|
+            try allocator.dupe(u8, requested_workspace_id)
+        else if (connect_info.workspace_id) |connected_workspace_id|
+            try allocator.dupe(u8, connected_workspace_id)
         else
-            return error.ProjectRequired;
-        defer allocator.free(resolved_project_id);
+            return error.WorkspaceRequired;
+        defer allocator.free(resolved_workspace_id);
 
         var state_store = try mount_state.ClientStateStore.init(allocator);
         defer state_store.deinit();
@@ -185,7 +186,7 @@ pub fn main() !void {
         const resolved_agent_id = if (namespace_agent_id) |agent_id|
             try allocator.dupe(u8, agent_id)
         else
-            try state_store.loadOrCreateAgentId(url, resolved_project_id);
+            try state_store.loadOrCreateAgentId(url, resolved_workspace_id);
         defer allocator.free(resolved_agent_id);
 
         const resolved_session_key = if (namespace_session_key) |session_key|
@@ -197,15 +198,15 @@ pub fn main() !void {
         var attach_info = try client.controlSessionAttach(.{
             .session_key = resolved_session_key,
             .agent_id = resolved_agent_id,
-            .project_id = resolved_project_id,
-            .project_token = workspace_token,
+            .workspace_id = resolved_workspace_id,
+            .workspace_token = workspace_token,
         });
         defer attach_info.deinit(allocator);
 
         var hydrated = try fetchWorkspaceEndpointSpecs(
             allocator,
             url,
-            resolved_project_id,
+            resolved_workspace_id,
             workspace_token,
             resolved_workspace_auth_token,
         );
@@ -214,7 +215,8 @@ pub fn main() !void {
 
         namespace_status = .{
             .namespace_url = try allocator.dupe(u8, url),
-            .project_id = try allocator.dupe(u8, resolved_project_id),
+            .workspace_id = try allocator.dupe(u8, resolved_workspace_id),
+            .workspace_name = if (hydrated.workspace_name) |value| try allocator.dupe(u8, value) else null,
             .agent_id = try allocator.dupe(u8, resolved_agent_id),
             .session_key = try allocator.dupe(u8, resolved_session_key),
         };
@@ -229,7 +231,7 @@ pub fn main() !void {
         if (namespace_url == null) {
             try endpoint_specs.append(allocator, .{
                 .name = "a",
-                .url = "ws://127.0.0.1:18891/v2/fs",
+                .url = "ws://127.0.0.1:18891/fs",
                 .export_name = null,
                 .mount_path = "/a",
             });
@@ -643,10 +645,10 @@ fn printHelp() !void {
         \\  mount <mountpoint>
         \\
         \\Examples:
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs#work readdir /a
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs#work@/src readdir /src
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs cat /a/README.md
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs status
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs#work readdir /a
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs#work@/src readdir /src
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs cat /a/README.md
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs status
         \\  spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ readdir /
         \\  spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ --workspace-id ws-demo --workspace-sync-interval-ms 5000 mount /mnt/spiderweb
         \\  spiderweb-fs-mount --workspace-url ws://127.0.0.1:18790/ --workspace-id ws-demo --mount-backend native mount ~/spiderweb-demo
@@ -656,7 +658,7 @@ fn printHelp() !void {
         \\  spiderweb-fs-mount --namespace-url ws://127.0.0.1:18790/ --workspace-id ws-demo mount /mnt/spiderweb
         \\  spiderweb-fs-mount --namespace-url ws://127.0.0.1:18790/ --workspace-id ws-demo mount ~/spiderweb-demo
         \\  spiderweb-fs-mount --namespace-url ws://127.0.0.1:18790/ --workspace-id ws-demo --mount-backend winfsp mount X:
-        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/v2/fs#work@/a --endpoint b=ws://127.0.0.1:18892/v2/fs#work@/a readdir /a
+        \\  spiderweb-fs-mount --endpoint a=ws://127.0.0.1:18891/fs#work@/a --endpoint b=ws://127.0.0.1:18892/fs#work@/a readdir /a
         \\    (repeat the same mount path to enable failover)
         \\  Auth token for workspace control can also come from SPIDERWEB_AUTH_TOKEN.
         \\
@@ -683,13 +685,15 @@ fn validateStandaloneEndpointMountPaths(
 
 const NamespaceStatus = struct {
     namespace_url: ?[]u8 = null,
-    project_id: ?[]u8 = null,
+    workspace_id: ?[]u8 = null,
+    workspace_name: ?[]u8 = null,
     agent_id: ?[]u8 = null,
     session_key: ?[]u8 = null,
 
     fn deinit(self: *NamespaceStatus, allocator: std.mem.Allocator) void {
         if (self.namespace_url) |value| allocator.free(value);
-        if (self.project_id) |value| allocator.free(value);
+        if (self.workspace_id) |value| allocator.free(value);
+        if (self.workspace_name) |value| allocator.free(value);
         if (self.agent_id) |value| allocator.free(value);
         if (self.session_key) |value| allocator.free(value);
         self.* = .{};
@@ -923,7 +927,7 @@ fn requestNativeMount(
         .namespace_keepalive_interval_ms = namespace_keepalive_interval_ms,
         .endpoints = native_endpoints,
         .namespace = namespace_binding,
-    }, native_mount_timeout_ms);
+    }, native_mount_timeout_ms, namespace_status.workspace_name);
 }
 
 fn buildSharedHelperLaunchConfig(
@@ -995,9 +999,11 @@ fn makeNativeNamespaceBinding(
     return .{
         .namespace_url = namespace_status.namespace_url orelse return error.NativeNamespaceBindingRequired,
         .auth_token = auth_token,
-        .project_id = namespace_status.project_id orelse return error.ProjectRequired,
+        .workspace_id = namespace_status.workspace_id orelse return error.WorkspaceRequired,
+        .project_id = namespace_status.workspace_id,
         .agent_id = namespace_status.agent_id orelse return error.InvalidResponse,
         .session_key = namespace_status.session_key orelse return error.InvalidResponse,
+        .workspace_token = workspace_token,
         .project_token = workspace_token,
     };
 }
@@ -1015,18 +1021,18 @@ fn buildNativeNamespaceStatusFromWorkspace(
     var connect_info = try client.controlConnect();
     defer connect_info.deinit(allocator);
 
-    const resolved_project_id = if (workspace_id) |project_id|
-        try allocator.dupe(u8, project_id)
-    else if (connect_info.project_id) |project_id|
-        try allocator.dupe(u8, project_id)
+    const resolved_workspace_id = if (workspace_id) |requested_workspace_id|
+        try allocator.dupe(u8, requested_workspace_id)
+    else if (connect_info.workspace_id) |connected_workspace_id|
+        try allocator.dupe(u8, connected_workspace_id)
     else
-        return error.ProjectRequired;
-    errdefer allocator.free(resolved_project_id);
+        return error.WorkspaceRequired;
+    errdefer allocator.free(resolved_workspace_id);
 
     var state_store = try mount_state.ClientStateStore.init(allocator);
     defer state_store.deinit();
 
-    const resolved_agent_id = try state_store.loadOrCreateAgentId(workspace_url, resolved_project_id);
+    const resolved_agent_id = try state_store.loadOrCreateAgentId(workspace_url, resolved_workspace_id);
     errdefer allocator.free(resolved_agent_id);
 
     const resolved_session_key = try mount_state.ClientStateStore.generateEphemeralSessionKey(allocator);
@@ -1035,14 +1041,29 @@ fn buildNativeNamespaceStatusFromWorkspace(
     var attach_info = try client.controlSessionAttach(.{
         .session_key = resolved_session_key,
         .agent_id = resolved_agent_id,
-        .project_id = resolved_project_id,
-        .project_token = workspace_token,
+        .workspace_id = resolved_workspace_id,
+        .workspace_token = workspace_token,
     });
     defer attach_info.deinit(allocator);
 
+    const workspace_status_json = try client.controlWorkspaceStatus(resolved_workspace_id, workspace_token);
+    defer allocator.free(workspace_status_json);
+
+    var parsed_status = try std.json.parseFromSlice(std.json.Value, allocator, workspace_status_json, .{});
+    defer parsed_status.deinit();
+    if (parsed_status.value != .object) return error.InvalidWorkspacePayload;
+    const workspace_name = if (getOptionalString(parsed_status.value.object, "workspace_name") orelse
+        getOptionalString(parsed_status.value.object, "name") orelse
+        getOptionalString(parsed_status.value.object, "project_name")) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (workspace_name) |value| allocator.free(value);
+
     return .{
         .namespace_url = try allocator.dupe(u8, workspace_url),
-        .project_id = resolved_project_id,
+        .workspace_id = resolved_workspace_id,
+        .workspace_name = workspace_name,
         .agent_id = resolved_agent_id,
         .session_key = resolved_session_key,
     };
@@ -1058,10 +1079,11 @@ fn buildNamespaceStatusJson(
     defer allocator.free(router_status);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"mode\":\"namespace\",\"namespace_url\":\"{s}\",\"project_id\":\"{s}\",\"agent_id\":\"{s}\",\"session_key\":\"{s}\",\"router\":{s}}}",
+        "{{\"mode\":\"namespace\",\"namespace_url\":\"{s}\",\"workspace_id\":\"{s}\",\"workspace_name\":\"{s}\",\"agent_id\":\"{s}\",\"session_key\":\"{s}\",\"router\":{s}}}",
         .{
             namespace_status.namespace_url orelse "",
-            namespace_status.project_id orelse "",
+            namespace_status.workspace_id orelse "",
+            namespace_status.workspace_name orelse "",
             namespace_status.agent_id orelse "",
             namespace_status.session_key orelse "",
             router_status,
@@ -1184,10 +1206,12 @@ const WorkspaceEndpointSpec = struct {
 
 const WorkspaceEndpointSpecs = struct {
     allocator: std.mem.Allocator,
+    workspace_name: ?[]u8 = null,
     items: std.ArrayListUnmanaged(WorkspaceEndpointSpec) = .{},
 
     fn deinit(self: *WorkspaceEndpointSpecs, allocator: std.mem.Allocator) void {
         _ = allocator;
+        if (self.workspace_name) |value| self.allocator.free(value);
         for (self.items.items) |*item| item.deinit(self.allocator);
         self.items.deinit(self.allocator);
         self.* = undefined;
@@ -1405,7 +1429,7 @@ fn fetchWorkspaceEndpointSpecs(
     if (!shouldFetchWorkspaceStatusFromControl(
         workspace_id,
         workspace_token,
-        connect_info.project_id,
+        connect_info.workspace_id,
         connect_info.has_workspace_mounts,
     )) {
         if (connect_info.workspace_json) |workspace_json| {
@@ -1417,8 +1441,8 @@ fn fetchWorkspaceEndpointSpecs(
         }
     }
 
-    const effective_project_id = workspace_id orelse connect_info.project_id;
-    const payload_json = try client.controlWorkspaceStatus(effective_project_id, workspace_token);
+    const effective_workspace_id = workspace_id orelse connect_info.workspace_id;
+    const payload_json = try client.controlWorkspaceStatus(effective_workspace_id, workspace_token);
     defer allocator.free(payload_json);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
@@ -1430,15 +1454,15 @@ fn fetchWorkspaceEndpointSpecs(
 }
 
 fn shouldFetchWorkspaceStatusFromControl(
-    requested_project_id: ?[]const u8,
-    requested_project_token: ?[]const u8,
-    connect_project_id: ?[]const u8,
+    requested_workspace_id: ?[]const u8,
+    requested_workspace_token: ?[]const u8,
+    connected_workspace_id: ?[]const u8,
     connect_has_workspace_mounts: bool,
 ) bool {
-    if (requested_project_token != null) return true;
-    if (requested_project_id) |selected_project| {
-        if (connect_project_id) |connected_project| {
-            if (!std.mem.eql(u8, selected_project, connected_project)) return true;
+    if (requested_workspace_token != null) return true;
+    if (requested_workspace_id) |selected_workspace| {
+        if (connected_workspace_id) |connected_workspace| {
+            if (!std.mem.eql(u8, selected_workspace, connected_workspace)) return true;
             return !connect_has_workspace_mounts;
         }
         return true;
@@ -1459,6 +1483,15 @@ fn appendWorkspaceMountSpecsFromStatusObject(
     specs: *WorkspaceEndpointSpecs,
     status_obj: std.json.ObjectMap,
 ) !void {
+    if (specs.workspace_name == null) {
+        const workspace_name = getOptionalString(status_obj, "workspace_name") orelse
+            getOptionalString(status_obj, "name") orelse
+            getOptionalString(status_obj, "project_name");
+        if (workspace_name) |value| {
+            specs.workspace_name = try allocator.dupe(u8, value);
+        }
+    }
+
     const mounts_value = status_obj.get("mounts") orelse return;
     if (mounts_value != .array) return error.InvalidWorkspacePayload;
 
@@ -1471,7 +1504,7 @@ fn appendWorkspaceMountSpecsFromStatusObject(
         if (url_val != .string) continue;
         if (url_val.string.len == 0) continue;
         if (!std.mem.startsWith(u8, url_val.string, "ws://")) continue;
-        if (std.mem.indexOf(u8, url_val.string, "/v2/fs") == null) continue;
+        if (std.mem.indexOf(u8, url_val.string, "/fs") == null) continue;
 
         const node_id = if (item.object.get("node_id")) |value|
             if (value == .string and value.string.len > 0) value.string else "node"
@@ -1501,6 +1534,12 @@ fn appendWorkspaceMountSpecsFromStatusObject(
     }
 }
 
+fn getOptionalString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    if (value != .string or value.string.len == 0) return null;
+    return value.string;
+}
+
 fn negotiateControlVersion(
     allocator: std.mem.Allocator,
     stream: *std.net.Stream,
@@ -1508,7 +1547,7 @@ fn negotiateControlVersion(
 ) !void {
     const message = try std.fmt.allocPrint(
         allocator,
-        "{{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"{s}\",\"payload\":{{\"protocol\":\"unified-v2\"}}}}",
+        "{{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"{s}\",\"payload\":{{\"protocol\":\"spiderweb-control\"}}}}",
         .{request_id},
     );
     defer allocator.free(message);
@@ -1793,12 +1832,12 @@ fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
 
 const LiveSmokeConfig = struct {
     url: []u8,
-    project_id: []u8,
+    workspace_id: []u8,
     auth_token: []u8,
 
     fn deinit(self: *LiveSmokeConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.url);
-        allocator.free(self.project_id);
+        allocator.free(self.workspace_id);
         allocator.free(self.auth_token);
         self.* = undefined;
     }
@@ -1807,13 +1846,13 @@ const LiveSmokeConfig = struct {
 fn loadLiveSmokeConfig(allocator: std.mem.Allocator) !?LiveSmokeConfig {
     const url = std.process.getEnvVarOwned(allocator, "SPIDERWEB_LIVE_SMOKE_URL") catch return null;
     errdefer allocator.free(url);
-    const project_id = std.process.getEnvVarOwned(allocator, "SPIDERWEB_LIVE_SMOKE_PROJECT_ID") catch return null;
-    errdefer allocator.free(project_id);
+    const workspace_id = std.process.getEnvVarOwned(allocator, "SPIDERWEB_LIVE_SMOKE_PROJECT_ID") catch return null;
+    errdefer allocator.free(workspace_id);
     const auth_token = std.process.getEnvVarOwned(allocator, "SPIDERWEB_LIVE_SMOKE_AUTH_TOKEN") catch return null;
     errdefer allocator.free(auth_token);
     return .{
         .url = url,
-        .project_id = project_id,
+        .workspace_id = workspace_id,
         .auth_token = auth_token,
     };
 }
@@ -1848,29 +1887,18 @@ fn liveSmokeWriteFile(client: *namespace_client.NamespaceClient, path: []const u
     try client.release(file);
 }
 
-fn extractMissionIdFromResultPayload(allocator: std.mem.Allocator, payload_json: []const u8) ![]u8 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidResponse;
-    const result_value = parsed.value.object.get("result") orelse return error.InvalidResponse;
-    if (result_value != .object) return error.InvalidResponse;
-    const mission_id_value = result_value.object.get("mission_id") orelse return error.InvalidResponse;
-    if (mission_id_value != .string or mission_id_value.string.len == 0) return error.InvalidResponse;
-    return allocator.dupe(u8, mission_id_value.string);
-}
-
 test "acheron_mount_main: parseEndpointFlag supports explicit mount path" {
-    const parsed = try parseEndpointFlag("a=ws://127.0.0.1:18891/v2/fs#work@/src");
+    const parsed = try parseEndpointFlag("a=ws://127.0.0.1:18891/fs#work@/src");
     try std.testing.expectEqualStrings("a", parsed.name);
-    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/v2/fs", parsed.url);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/fs", parsed.url);
     try std.testing.expectEqualStrings("work", parsed.export_name.?);
     try std.testing.expectEqualStrings("/src", parsed.mount_path.?);
 }
 
 test "acheron_mount_main: parseEndpointFlag defaults mount path to endpoint name" {
-    const parsed = try parseEndpointFlag("alpha=ws://127.0.0.1:18891/v2/fs#work");
+    const parsed = try parseEndpointFlag("alpha=ws://127.0.0.1:18891/fs#work");
     try std.testing.expectEqualStrings("alpha", parsed.name);
-    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/v2/fs", parsed.url);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/fs", parsed.url);
     try std.testing.expectEqualStrings("work", parsed.export_name.?);
     try std.testing.expect(parsed.mount_path == null);
 }
@@ -1896,7 +1924,7 @@ test "acheron_mount_main: connectWorkspaceHasMounts requires non-empty mounts ar
     defer parsed_empty_mounts.deinit();
     try std.testing.expect(!connectWorkspaceHasMounts(parsed_empty_mounts.value.object.get("workspace")));
 
-    var parsed_with_mount = try std.json.parseFromSlice(std.json.Value, allocator, "{\"workspace\":{\"mounts\":[{\"mount_path\":\"/m\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\"}]}}", .{});
+    var parsed_with_mount = try std.json.parseFromSlice(std.json.Value, allocator, "{\"workspace\":{\"mounts\":[{\"mount_path\":\"/m\",\"fs_url\":\"ws://127.0.0.1:18891/fs\"}]}}", .{});
     defer parsed_with_mount.deinit();
     try std.testing.expect(connectWorkspaceHasMounts(parsed_with_mount.value.object.get("workspace")));
 }
@@ -1909,7 +1937,7 @@ test "acheron_mount_main: workspace status parsing tolerates deprecated metadata
     var parsed = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/v2/fs\",\"namespace_owned_subpaths\":[\"/AGENTS.md\",\"/.spiderweb\"]}]}",
+        "{\"mounts\":[{\"mount_path\":\"/nodes/local/fs\",\"fs_url\":\"ws://127.0.0.1:18891/fs\",\"namespace_owned_subpaths\":[\"/AGENTS.md\",\"/.spiderweb\"]}]}",
         .{},
     );
     defer parsed.deinit();
@@ -1917,7 +1945,7 @@ test "acheron_mount_main: workspace status parsing tolerates deprecated metadata
     try appendWorkspaceMountSpecsFromStatusObject(allocator, &specs, parsed.value.object);
     try std.testing.expectEqual(@as(usize, 1), specs.items.items.len);
     try std.testing.expectEqualStrings("/nodes/local/fs", specs.items.items[0].mount_path);
-    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/v2/fs", specs.items.items[0].url);
+    try std.testing.expectEqualStrings("ws://127.0.0.1:18891/fs", specs.items.items[0].url);
 }
 
 test "acheron_mount_main: standalone endpoint mode rejects Spiderweb namespace roots" {
@@ -1925,7 +1953,7 @@ test "acheron_mount_main: standalone endpoint mode rejects Spiderweb namespace r
     const endpoint_specs = [_]fs_router.EndpointConfig{
         .{
             .name = "local",
-            .url = "ws://127.0.0.1:18891/v2/fs",
+            .url = "ws://127.0.0.1:18891/fs",
             .export_name = null,
             .mount_path = "/nodes/local/fs",
         },
@@ -1947,7 +1975,7 @@ test "acheron_mount_main: explicit native mount requires namespace binding" {
     try std.testing.expectError(error.NativeNamespaceBindingRequired, makeNativeNamespaceBinding(.{}, null, null));
 }
 
-test "acheron_mount_main: live mac smoke covers terminal exec and pr review validation" {
+test "acheron_mount_main: live mac smoke covers terminal exec" {
     if (builtin.os.tag != .macos) return;
 
     const allocator = std.testing.allocator;
@@ -1967,7 +1995,7 @@ test "acheron_mount_main: live mac smoke covers terminal exec and pr review vali
     var attach_info = try client.controlSessionAttach(.{
         .session_key = session_key,
         .agent_id = agent_id,
-        .project_id = live.project_id,
+        .workspace_id = live.workspace_id,
     });
     defer attach_info.deinit(allocator);
     try client.attachNamespaceRoot(attach_info.session_key);
@@ -1994,30 +2022,6 @@ test "acheron_mount_main: live mac smoke covers terminal exec and pr review vali
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "\"operation\":\"exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "\"ok\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "dGVybWluYWwtb2s=") != null);
-
-    try liveSmokeWriteFile(
-        &client,
-        "/agents/self/pr_review/control/start.json",
-        "{\"repo_key\":\"DeanoC/Spiderweb\",\"pr_number\":130,\"checkout_path\":\"/nodes/local/fs\",\"default_review_commands\":[\"printf validation-ok\"]}",
-    );
-
-    const pr_start_result = try liveSmokeReadFile(allocator, &client, "/agents/self/pr_review/result.json");
-    defer allocator.free(pr_start_result);
-    const mission_id = try extractMissionIdFromResultPayload(allocator, pr_start_result);
-    defer allocator.free(mission_id);
-
-    const validation_payload = try std.fmt.allocPrint(allocator, "{{\"mission_id\":\"{s}\"}}", .{mission_id});
-    defer allocator.free(validation_payload);
-    try liveSmokeWriteFile(
-        &client,
-        "/agents/self/pr_review/control/run_validation.json",
-        validation_payload,
-    );
-
-    const pr_result = try liveSmokeReadFile(allocator, &client, "/agents/self/pr_review/result.json");
-    defer allocator.free(pr_result);
-    try std.testing.expect(std.mem.indexOf(u8, pr_result, "\"operation\":\"run_validation\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, pr_result, "\"ok\":true") != null);
 
     const terminal_current = try liveSmokeReadFile(allocator, &client, "/nodes/local/venoms/terminal/current.json");
     defer allocator.free(terminal_current);

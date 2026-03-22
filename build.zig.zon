@@ -4,6 +4,9 @@
     .fingerprint = 0xe46867958f0d9203,
     .minimum_zig_version = "0.13.0",
     .dependencies = .{
+        .spider_node = .{
+            .path = "deps/spider-node",
+        },
         .spider_protocol = .{
             .path = "deps/spider-protocol",
         },

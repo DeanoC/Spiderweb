@@ -87,7 +87,7 @@ This harness documents and exercises the Linux-first external Codex operator pat
 - agent-driven in-workspace bootstrap, validation, and report artifact capture
 
 The harness assumes one Spiderweb-owned mount model across macOS, Linux, and
-Windows: workers start in the mounted project directory, and `.spiderweb` is a
+Windows: workers start in the mounted workspace directory, and `.spiderweb` is a
 server-projected part of that same namespace rather than a client overlay or
 direct endpoint shortcut.
 
@@ -95,9 +95,9 @@ Mounted namespace paths used by the harness:
 
 - local writable project tree: `/nodes/local/fs`
 - remote shared seed data: `/shared_data`
-- project metadata: `/projects/<project_id>/meta/*`
+- workspace metadata: `/projects/<workspace_id>/meta/*`
 - namespace metadata: `/meta/*`
-- generic project services: `/services/*`
+- generic workspace services: `/services/*`
 
 Run the Linux harness directly from the repo root:
 
@@ -105,11 +105,24 @@ Run the Linux harness directly from the repo root:
 bash test-env/test-external-codex-workspace.sh
 ```
 
+For a faster smoke iteration that still exercises bootstrap, mount, external
+Codex launch, and mounted writes, use the light scenario:
+
+```bash
+bash test-env/test-external-codex-workspace-light.sh
+```
+
 On macOS with OrbStack installed, use the Orb wrapper so the exact same Linux
 harness runs inside Orb:
 
 ```bash
 bash test-env/test-external-codex-workspace-orb.sh
+```
+
+Light Orb smoke variant:
+
+```bash
+bash test-env/test-external-codex-workspace-orb-light.sh
 ```
 
 Use `ORB_MACHINE=<name>` or `ORB_USER=<user>` if you need a non-default Orb
@@ -123,10 +136,17 @@ current Spiderweb app build has been installed with
 bash test-env/test-external-codex-workspace-macos.sh
 ```
 
+Light native macOS smoke variant:
+
+```bash
+bash test-env/test-external-codex-workspace-macos-light.sh
+```
+
 Or through `make`:
 
 ```bash
 cd test-env && make test-external-codex-workspace
+cd test-env && make test-external-codex-workspace-light
 ```
 
 Repeatability runner:
@@ -215,8 +235,8 @@ Usage report result semantics:
 - `reliability_ok`: true only when the run stayed inside the mounted workspace plus harness-owned runtime roots, plus any explicit temporary host-write allowlists
 - `workspace_bootstrap_ok`: true only when the attached agent read the bootstrap metadata and performed the required in-workspace bootstrap actions
 - `machine_independence_ok`: true only when no host-runtime gaps were observed
-- `project_bound_services`: services bound under `/services/*` for the mounted workspace
-- `namespace_visible_services`: services visible somewhere in the namespace, even if not project-bound under `/services/*`
+- `workspace_bound_services`: services bound under `/services/*` for the mounted workspace
+- `namespace_visible_services`: services visible somewhere in the namespace, even if not workspace-bound under `/services/*`
 - `external_prereqs_observed`: declared external prerequisites observed during the run, such as the operator-installed Codex runtime
 - `candidate_venom_gaps`: inferred local-runtime gaps such as `codex_home`, `terminal_runtime`, `git_runtime`, and `search_code_bridge`
 
@@ -233,19 +253,19 @@ Operator notes:
 
 - prefer the installer-first Linux path for this harness; use `./install-fs-mount.sh` only when the namespace mount happens on a separate Linux machine
 - the harness is about the standalone node + namespace story, not the older routed `--workspace-url` only flow
-- the mounted project directory exposed at `nodes/local/fs` is the canonical external-agent entrypoint
+- the mounted workspace directory exposed at `nodes/local/fs` is the canonical external-agent entrypoint
 - the clean writable project tree is `nodes/local/fs`; Spiderweb’s own runtime root is kept separate from that workspace on purpose
-- the harness creates only a generic `dev`-template workspace baseline; after attach, Spiderweb must surface a real project-root `AGENTS.md`, and the external agent is responsible for reading that file first and then following the project-local `./.spiderweb/*` bootstrap projection from inside the workspace
+- the harness creates only a generic `dev`-template workspace baseline; after attach, Spiderweb must surface a real workspace-root `AGENTS.md`, and the external agent is responsible for reading that file first and then following the workspace-local `./.spiderweb/*` bootstrap projection from inside the workspace
 - `AGENTS.md` is the human-facing workspace contract; `./.spiderweb/agent_bootstrap.json` and `./.spiderweb/agent_bootstrap_quickref.json` are the exact machine-readable bootstrap surface for discovery order, preferred `./.spiderweb/services/*` usage, self-home provisioning, service verification/repair, and persistence semantics
-- the expected interactive user flow is: start `codex` in the mounted project directory, give a short prompt that tells it to read `AGENTS.md`, and let it work relative to that directory
-- shared project binds persist across agent detach/reattach, while worker-private loopback state is expected to be ephemeral
+- the expected interactive user flow is: start `codex` in the mounted workspace directory, give a short prompt that tells it to read `AGENTS.md`, and let it work relative to that directory
+- shared workspace binds persist across agent detach/reattach, while worker-private loopback state is expected to be ephemeral
 - `CODEX_AUTH_MODE=api_key` is still the strict fresh-install path, but `existing_login` is temporarily acceptable for reliability because host `~/.codex` writes are allowlisted by default while still reported as a `codex_home` machine-independence gap
 - `CODEX_LAUNCH_CMD` is optional; the harness can build a default launcher around the pinned `codex exec` flow
 - the default live launcher now preserves both `logs/codex.stdout.log` and `logs/codex.pty.log`, which makes it much easier to distinguish “still progressing” from “stopped after a tool result”
 - `test-env/test-external-codex-cli-matrix.sh` is the fast way to compare pinned Codex CLI versions and PTY/JSON launch modes against the same Spiderweb scenario
 - `test-env/test-external-codex-repeatability.sh` is the fast way to prove the new `workspace_bootstrap_ok` milestone stays green across multiple live runs on the same machine
 - `test-env/package-external-codex-repro.sh` collects the matrix outputs into a single upstream-ready repro pack with a generated bug report
-- custom launch templates may use `{codex_bin}`, `{workspace_root}`, `{namespace_root}`, `{namespace_meta_dir}`, `{project_meta_dir}`, `{shared_data_dir}`, `{prompt_file}`, and `{artifact_dir}`
+- custom launch templates may use `{codex_bin}`, `{workspace_root}`, `{namespace_root}`, `{namespace_meta_dir}`, `{workspace_meta_dir}`, `{shared_data_dir}`, `{prompt_file}`, and `{artifact_dir}`
 - the default artifact directory is now outside the repo checkout so the harness does not create false host-repo leakage by itself
 - the current milestone is `workspace_bootstrap_ok`; plain Codex still cannot fully clear `codex_home`, `terminal_runtime`, and `git_runtime` under the no-launch-hook rule, so `machine_independence_ok` remains the follow-on milestone
 - if you still want to override the launcher, a working template is:
@@ -254,7 +274,7 @@ Operator notes:
 CODEX_MODE=live \
 CODEX_AUTH_MODE=api_key \
 OPENAI_API_KEY=... \
-CODEX_LAUNCH_CMD='cat {prompt_file} | {codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --add-dir {namespace_meta_dir} --add-dir {project_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -' \
+CODEX_LAUNCH_CMD='cat {prompt_file} | {codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --add-dir {namespace_meta_dir} --add-dir {workspace_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -' \
 bash test-env/test-external-codex-workspace.sh
 ```
 
@@ -277,7 +297,7 @@ cd test-env && make test-embed-multi-service
 
 What it validates:
 - boots `embed-multi-service-node` with a temporary export
-- probes `/v2/fs` via `spiderweb-fs-mount` (`readdir` + `cat`)
+- probes `/fs` via `spiderweb-fs-mount` (`readdir` + `cat`)
 - probes `/v1/health` with a raw WebSocket handshake and validates `ok: true`
 
 Useful env vars:
@@ -290,7 +310,7 @@ Useful env vars:
 This test exercises the control-plane + mount integration flow end-to-end:
 - starts `spiderweb`
 - starts two `embed-multi-service-node` filesystem nodes
-- negotiates `control.version` (`unified-v2`) then runs `control.node_invite_create`, `control.node_join`, `control.project_create`, `control.project_mount_set`, and `control.project_activate` with project mutation auth (`project_token`)
+- negotiates `control.version` (`spiderweb-control`) then runs `control.node_invite_create`, `control.node_join`, `control.workspace_create`, `control.workspace_mount_set`, and `control.workspace_activate` with workspace mutation auth (`workspace_token`)
 - restarts `spiderweb` and verifies control-plane state is recovered from persisted LTM snapshot
 - updates mounts live (`/src` -> `/live`) and validates the mount client converges to the new path
 - mounts both nodes at the same project mount path (`/src`) as a failover group
@@ -298,7 +318,7 @@ This test exercises the control-plane + mount integration flow end-to-end:
 - restarts the stopped node, rejoins/remounts it, then kills the surviving node to verify second failover convergence
 
 Additional focused scenarios:
-- `test-distributed-workspace-bootstrap.sh`: validates `control.project_up` bootstrap output and workspace desired/actual/drift schema.
+- `test-distributed-workspace-bootstrap.sh`: validates `control.workspace_up` bootstrap output and workspace desired/actual/drift schema.
 - `test-distributed-workspace-drift.sh`: forces a desired/actual mismatch and verifies drift + reconcile diagnostics.
 - `test-distributed-workspace-matrix.sh`: runs failover/reconnect/bootstrap/drift as one matrix entrypoint.
 
@@ -314,7 +334,7 @@ cd test-env && make test-distributed-workspace-matrix
 cd test-env && make test-distributed-workspace-encrypted
 cd test-env && make test-distributed-workspace-operator-token
 cd test-env && make test-distributed-soak-chaos
-cd test-env && make test-unified-v2-protocol
+cd test-env && make test-spiderweb-control-protocol
 ```
 
 Useful env vars:
@@ -339,10 +359,10 @@ Validates protocol-level contract points used in release checks:
 
 ```bash
 # Run directly
-bash test-env/test-unified-v2-protocol.sh
+bash test-env/test-spiderweb-control-protocol.sh
 
 # Or through make
-cd test-env && make test-unified-v2-protocol
+cd test-env && make test-spiderweb-control-protocol
 ```
 
 Useful env vars:

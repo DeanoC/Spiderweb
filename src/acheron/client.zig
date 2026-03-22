@@ -150,7 +150,7 @@ fn parseWsUrl(url: []const u8) !ParsedUrl {
 
     const slash_idx = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
     const host_port = rest[0..slash_idx];
-    const path = if (slash_idx < rest.len) rest[slash_idx..] else "/v2/fs";
+    const path = if (slash_idx < rest.len) rest[slash_idx..] else "/fs";
     if (host_port.len == 0) return error.InvalidUrl;
 
     if (std.mem.lastIndexOfScalar(u8, host_port, ':')) |colon_idx| {
@@ -571,17 +571,17 @@ fn waitForReadable(stream: *std.net.Stream, timeout_ms: i32) !bool {
 }
 
 test "acheron_client: parseWsUrl supports explicit port" {
-    const parsed = try parseWsUrl("ws://127.0.0.1:18891/v2/fs");
+    const parsed = try parseWsUrl("ws://127.0.0.1:18891/fs");
     try std.testing.expectEqualStrings("127.0.0.1", parsed.host);
     try std.testing.expectEqual(@as(u16, 18891), parsed.port);
-    try std.testing.expectEqualStrings("/v2/fs", parsed.path);
+    try std.testing.expectEqualStrings("/fs", parsed.path);
 }
 
 test "acheron_client: parseWsUrl defaults path and port" {
     const parsed = try parseWsUrl("ws://localhost");
     try std.testing.expectEqualStrings("localhost", parsed.host);
     try std.testing.expectEqual(@as(u16, 80), parsed.port);
-    try std.testing.expectEqualStrings("/v2/fs", parsed.path);
+    try std.testing.expectEqualStrings("/fs", parsed.path);
 }
 
 test "acheron_client: parseResponse rejects tag above u32 range" {

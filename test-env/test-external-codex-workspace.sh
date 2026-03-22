@@ -20,6 +20,7 @@ LOCAL_WORKSPACE_NODE_PORT="${LOCAL_WORKSPACE_NODE_PORT-}"
 REMOTE_NODE_PORT="${REMOTE_NODE_PORT-}"
 
 SPIDERWEB_E2E_VARIANT="${SPIDERWEB_E2E_VARIANT:-linux}"
+SPIDERWEB_E2E_SCENARIO="${SPIDERWEB_E2E_SCENARIO:-game}"
 CODEX_MODE="${CODEX_MODE:-auto}"
 CODEX_LAUNCH_CMD="${CODEX_LAUNCH_CMD:-}"
 TRACE_BACKEND="${TRACE_BACKEND:-}"
@@ -48,7 +49,7 @@ SPIDERWEB_RELEASE_VERSION="${SPIDERWEB_RELEASE_VERSION:-}"
 SPIDERWEB_RELEASE_ARCHIVE_URL="${SPIDERWEB_RELEASE_ARCHIVE_URL:-}"
 SPIDERWEB_RELEASE_ARCHIVE_SHA256="${SPIDERWEB_RELEASE_ARCHIVE_SHA256:-}"
 MANUAL_EXIT_CODE=20
-OUTPUT_DIR="${OUTPUT_DIR:-/tmp/spiderweb-external-codex-workspace-$(date +%Y%m%d-%H%M%S)-$$}"
+OUTPUT_DIR="${OUTPUT_DIR:-/tmp/spiderweb-external-codex-workspace-${SPIDERWEB_E2E_VARIANT}-${SPIDERWEB_E2E_SCENARIO}-$(date +%Y%m%d-%H%M%S)-$$}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -239,9 +240,14 @@ RUN_STARTED_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 TEST_TMP_DIR="$(mktemp -d)"
 TEMP_HOME="$TEST_TMP_DIR/home"
-REPO_BUILD_INSTALL_DIR="$ROOT_DIR/zig-out/bin"
+REPO_BUILD_ROOT="$TEST_TMP_DIR/repo-build"
+REPO_BUILD_PREFIX="$REPO_BUILD_ROOT/prefix"
+REPO_BUILD_INSTALL_DIR="$REPO_BUILD_PREFIX/bin"
+REPO_ZIG_LOCAL_CACHE_DIR="$REPO_BUILD_ROOT/zig-cache-local"
+REPO_ZIG_GLOBAL_CACHE_DIR="$REPO_BUILD_ROOT/zig-cache-global"
+SIGNED_APP_RESOURCE_DIR="/Applications/Spiderweb.app/Contents/Resources"
 if is_macos_native_variant; then
-    INSTALL_DIR="/Applications/Spiderweb.app/Contents/Resources"
+    INSTALL_DIR="$REPO_BUILD_INSTALL_DIR"
 else
     INSTALL_DIR="$TEMP_HOME/.local/bin"
     PATH="$INSTALL_DIR:$PATH"
@@ -251,6 +257,7 @@ mkdir -p "$TEMP_HOME"
 if ! is_macos_native_variant; then
     mkdir -p "$INSTALL_DIR"
 fi
+mkdir -p "$REPO_BUILD_PREFIX" "$REPO_ZIG_LOCAL_CACHE_DIR" "$REPO_ZIG_GLOBAL_CACHE_DIR"
 
 INSTALL_LOG="$OUTPUT_DIR/logs/install.log"
 SPIDERWEB_LOG="$OUTPUT_DIR/logs/spiderweb.log"
@@ -307,6 +314,31 @@ CODEX_BRIDGE_NODE="$CODEX_BRIDGE_DIR/node"
 CODEX_BRIDGE_SETSID="$CODEX_BRIDGE_DIR/setsid"
 CODEX_BRIDGE_LSB_RELEASE="$CODEX_BRIDGE_DIR/lsb_release"
 CODEX_BRIDGE_GETCONF="$CODEX_BRIDGE_DIR/getconf"
+
+case "$SPIDERWEB_E2E_SCENARIO" in
+    game)
+        SCENARIO_NAME="game"
+        PROMPT_TEMPLATE="$ASSET_DIR/external_codex_game_prompt.txt"
+        VALIDATOR_SRC="$ASSET_DIR/validate_text_adventure.py"
+        WORKSPACE_VALIDATOR_BASENAME="validate_game.py"
+        VALIDATION_OUTPUT="$OUTPUT_DIR/game_validation.json"
+        PROJECT_UP_NAME="External Codex Text Adventure"
+        PROJECT_UP_VISION="Installer-first external Codex workspace validation"
+        ;;
+    smoke)
+        SCENARIO_NAME="smoke"
+        PROMPT_TEMPLATE="$ASSET_DIR/external_codex_smoke_prompt.txt"
+        VALIDATOR_SRC="$ASSET_DIR/validate_workspace_smoke.py"
+        WORKSPACE_VALIDATOR_BASENAME="validate_smoke.py"
+        VALIDATION_OUTPUT="$OUTPUT_DIR/smoke_validation.json"
+        PROJECT_UP_NAME="External Codex Smoke"
+        PROJECT_UP_VISION="Fast external Codex bootstrap and write smoke validation"
+        ;;
+    *)
+        log_fail "unsupported SPIDERWEB_E2E_SCENARIO: $SPIDERWEB_E2E_SCENARIO"
+        exit 1
+        ;;
+esac
 CODEX_EXEC_PATH=""
 AGENT_HOME_TARGET_ROOT="$WORKSPACE_EXPORT_ROOT/.spiderweb/agents/$EXTERNAL_AGENT_ID/home"
 AGENT_HOME_MOUNT_ROOT="$MOUNT_WORKSPACE_PATH/.spiderweb/agents/$EXTERNAL_AGENT_ID/home"
@@ -334,7 +366,7 @@ build_usage_report() {
         --workspace-root "$MOUNT_WORKSPACE_PATH"
         --mount-root "$MOUNT_POINT"
         --artifact-root "$OUTPUT_DIR"
-        --project-id "${PROJECT_ID:-unknown}"
+        --workspace-id "${PROJECT_ID:-unknown}"
         --mode "$CODEX_MODE"
         --mounted-services "$OUTPUT_DIR/snapshots/mounted_services.json"
         --venom-packages "$OUTPUT_DIR/snapshots/venom_packages.json"
@@ -450,13 +482,13 @@ PY
 }
 
 workspace_first_write_info() {
-    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" <<'PY'
+    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
 workspace = Path(sys.argv[1])
-skip = {"AGENTS.md", "validate_game.py"}
+skip = {"AGENTS.md", sys.argv[2]}
 best = None
 
 if workspace.exists():
@@ -508,14 +540,15 @@ write_codex_progress_timeline() {
 observe_codex_progress() {
     local changed=0
     local first_write_info
+    local home_result_path="$MOUNT_WORKSPACE_PATH/.spiderweb/services/home/result.json"
 
-    if [[ -z "$CODEX_BOOTSTRAP_COMPLETE_AT_UTC" && -s "$MOUNT_WORKSPACE_PATH/.spiderweb/services/home/control/ensure.json" ]]; then
-        CODEX_BOOTSTRAP_COMPLETE_AT_UTC="$(file_mtime_utc "$MOUNT_WORKSPACE_PATH/.spiderweb/services/home/control/ensure.json" || true)"
+    if [[ -z "$CODEX_BOOTSTRAP_COMPLETE_AT_UTC" && -f "$home_result_path" ]] && jq -e '.ok == true' "$home_result_path" >/dev/null 2>&1; then
+        CODEX_BOOTSTRAP_COMPLETE_AT_UTC="$(file_mtime_utc "$home_result_path" || true)"
         if [[ -n "$CODEX_BOOTSTRAP_COMPLETE_AT_UTC" ]]; then
-            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/control/ensure.json"
+            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/result.json"
         else
             CODEX_BOOTSTRAP_COMPLETE_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/control/ensure.json (observed)"
+            CODEX_BOOTSTRAP_COMPLETE_SOURCE="./.spiderweb/services/home/result.json (observed)"
         fi
         changed=1
     fi
@@ -630,7 +663,7 @@ Optional custom launch templates may use these placeholders:
 - \`{workspace_root}\`
 - \`{namespace_root}\`
 - \`{namespace_meta_dir}\`
-- \`{project_meta_dir}\`
+- \`{workspace_meta_dir}\`
 - \`{shared_data_dir}\`
 - \`{prompt_file}\`
 - \`{artifact_dir}\`
@@ -642,13 +675,13 @@ EOF
 wait_for_control_ready() {
     for _ in $(seq 1 180); do
         if [[ -f "$AUTH_TOKENS_FILE" ]]; then
-            SPIDERWEB_AUTH_TOKEN="$(jq -r '.admin_token // empty' "$AUTH_TOKENS_FILE" 2>/dev/null || true)"
+            SPIDERWEB_AUTH_TOKEN="$(jq -r '.access_token // empty' "$AUTH_TOKENS_FILE" 2>/dev/null || true)"
             if [[ -n "${SPIDERWEB_AUTH_TOKEN:-}" ]]; then
                 export SPIDERWEB_AUTH_TOKEN
                 if run_with_timeout 3 "$INSTALL_DIR/spiderweb-control" \
                     --url "$CONTROL_URL" \
                     --auth-token "$SPIDERWEB_AUTH_TOKEN" \
-                    workspace_status '{"project_id":"system"}' >/dev/null 2>&1; then
+                    node_list >/dev/null 2>&1; then
                     return 0
                 fi
             fi
@@ -698,7 +731,7 @@ wait_for_node_join() {
 wait_for_workspace_mounts() {
     local reply
     for _ in $(seq 1 180); do
-        reply="$(control_call workspace_status "$(jq -cn --arg project_id "$PROJECT_ID" '{project_id: $project_id}')")" || {
+        reply="$(control_call workspace_status "$(jq -cn --arg workspace_id "$PROJECT_ID" '{workspace_id: $workspace_id}')")" || {
             sleep 0.2
             continue
         }
@@ -857,12 +890,12 @@ PY
 
 assert_seeded_workspace_layout() {
     local path="$1"
-    python3 - "$path" <<'PY'
+    python3 - "$path" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 import sys
 from pathlib import Path
 
 workspace = Path(sys.argv[1])
-expected = [".spiderweb", "AGENTS.md", "validate_game.py"]
+expected = [".spiderweb", "AGENTS.md", sys.argv[2]]
 entries = sorted(item.name for item in workspace.iterdir())
 if entries != expected:
     raise SystemExit(f"expected clean workspace entries {expected}, found {entries}")
@@ -871,12 +904,12 @@ PY
 
 assert_attached_workspace_layout() {
     local path="$1"
-    python3 - "$path" <<'PY'
+    python3 - "$path" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 import sys
 from pathlib import Path
 
 workspace = Path(sys.argv[1])
-expected = [".spiderweb", "AGENTS.md", "validate_game.py"]
+expected = [".spiderweb", "AGENTS.md", sys.argv[2]]
 entries = sorted(item.name for item in workspace.iterdir())
 if entries != expected:
     raise SystemExit(f"expected attached workspace entries {expected}, found {entries}")
@@ -927,7 +960,7 @@ inject_codex_cli_workarounds() {
 }
 
 render_prompt() {
-    python3 - "$ASSET_DIR/external_codex_game_prompt.txt" "$PROMPT_FILE" \
+    python3 - "$PROMPT_TEMPLATE" "$PROMPT_FILE" \
         "$PROJECT_ID" \
         "$MOUNT_POINT" \
         "$MOUNT_POINT/services" \
@@ -958,17 +991,44 @@ PY
 }
 
 write_workspace_seed_files() {
-    cp "$VALIDATOR_SRC" "$WORKSPACE_EXPORT_ROOT/validate_game.py"
-    chmod +x "$WORKSPACE_EXPORT_ROOT/validate_game.py"
+    cp "$VALIDATOR_SRC" "$WORKSPACE_EXPORT_ROOT/$WORKSPACE_VALIDATOR_BASENAME"
+    chmod +x "$WORKSPACE_EXPORT_ROOT/$WORKSPACE_VALIDATOR_BASENAME"
 }
 
 write_workspace_agents_file() {
-    python3 - "$WORKSPACE_EXPORT_ROOT/AGENTS.md" "$PROJECT_ID" <<'PY'
+    python3 - "$WORKSPACE_EXPORT_ROOT/AGENTS.md" "$PROJECT_ID" "$SCENARIO_NAME" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 from pathlib import Path
 import sys
 
 output_path = Path(sys.argv[1])
 project_id = sys.argv[2]
+scenario = sys.argv[3]
+validator_name = sys.argv[4]
+
+if scenario == "game":
+    task_block = f"""- If the user asks for the standard text-adventure task, completion means:
+  - write `game.py`, `game_manifest.json`, `walkthrough.txt`, and `README.md` in the current directory
+  - keep the lantern behind all seeded puzzle gates and do not leave alternate exits or shortcuts that bypass a required seeded puzzle
+  - run `python3 -m py_compile game.py`
+  - run `python3 game.py < walkthrough.txt`
+  - run `python3 {validator_name} --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json`
+  - if a validation step fails, fix the project files and rerun only the failed step
+  - if a file-write command times out or fails partway through, check exactly which target files landed and then rewrite only the missing or incomplete files cleanly
+  - a `0` exit code from the walkthrough or validator means the step succeeded, even if stdout contains prompts like `> `
+  - do not stop after partial outputs; finish when all required files exist and validation succeeds"""
+    rewrite_rules = """- If `game.py` fails compile or walkthrough validation, delete and recreate `game.py` from scratch before retrying. If a regenerated `game.py` still fails compile, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
+- Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless the walkthrough or validator exits non-zero.
+- Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated input prompts such as `> `.
+- Treat `python3 {validator_name} --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json` as successful when it exits with code `0`.""".replace("{validator_name}", validator_name)
+else:
+    task_block = f"""- If the user asks for the fast Spiderweb smoke task, completion means:
+  - write `smoke_result.json`, `smoke_notes.txt`, and `README.md` in the current directory
+  - include the exact shared-data input paths in `smoke_result.json`
+  - keep the writes small and deterministic; this is a bootstrap/write smoke, not a game task
+  - run `python3 {validator_name} --workspace . --shared-data ./.spiderweb/shared_data --output smoke_validation.json`
+  - if validation fails, fix only the required output files and rerun the validator
+  - finish when all required files exist and validation succeeds"""
+    rewrite_rules = f"""- Treat `python3 {validator_name} --workspace . --shared-data ./.spiderweb/shared_data --output smoke_validation.json` as successful when it exits with code `0`."""
 
 managed = f"""# AGENTS.md
 
@@ -995,12 +1055,9 @@ Bootstrap rules:
 - Keep project writes inside the current directory `.` unless the user explicitly asks otherwise.
 - When creating or fixing a project file, rewrite the whole file in one pass instead of appending partial repair fragments.
 - If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
-- If `game.py` fails compile or walkthrough validation, delete and recreate `game.py` from scratch before retrying. If a regenerated `game.py` still fails compile, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
-- Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless the walkthrough or validator exits non-zero.
-- Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated input prompts such as `> `.
-- Treat `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json` as successful when it exits with code `0`.
+{rewrite_rules}
 - Do not rerun either validation command through nested shell wrappers or alternate redirection forms unless the command itself failed.
-- Preserve existing workspace support files such as `./validate_game.py`.
+- Preserve existing workspace support files such as `./{validator_name}`.
 - Do not run broad scans such as `find`, `rg --files`, or recursive `ls` across `services/`, `projects/`, or `meta/`. Read only the exact listed files directly.
 - Do not climb out of this directory with `..` to discover Spiderweb paths. Use the local Spiderweb-managed `./.spiderweb/` projection instead.
 
@@ -1020,16 +1077,7 @@ Namespace facts:
 Task source:
 - The concrete task comes from the user prompt, not from `TASK.md`.
 - After the required reads above, begin implementation and validation immediately unless a required service is genuinely missing.
-- If the user asks for the standard text-adventure task, completion means:
-  - write `game.py`, `game_manifest.json`, `walkthrough.txt`, and `README.md` in the current directory
-  - keep the lantern behind all seeded puzzle gates and do not leave alternate exits or shortcuts that bypass a required seeded puzzle
-  - run `python3 -m py_compile game.py`
-  - run `python3 game.py < walkthrough.txt`
-  - run `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json`
-  - if a validation step fails, fix the project files and rerun only the failed step
-  - if a file-write command times out or fails partway through, check exactly which target files landed and then rewrite only the missing or incomplete files cleanly
-  - a `0` exit code from the walkthrough or validator means the step succeeded, even if stdout contains prompts like `> `
-  - do not stop after partial outputs; finish when all required files exist and validation succeeds
+{task_block}
 
 Do not:
 - Invent old metadata field names when the current JSON already defines the contract.
@@ -1419,7 +1467,7 @@ setup_codex_auth() {
 }
 
 default_codex_launch_cmd() {
-    printf '%s' '{codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --color never --add-dir {namespace_meta_dir} --add-dir {project_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -'
+    printf '%s' '{codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --color never --add-dir {namespace_meta_dir} --add-dir {workspace_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -'
 }
 
 render_codex_launch_command() {
@@ -1438,7 +1486,7 @@ render_codex_launch_command() {
     cmd="${cmd//\{workspace_root\}/$(shell_quote "$MOUNT_WORKSPACE_PATH")}"
     cmd="${cmd//\{namespace_root\}/$(shell_quote "$MOUNT_POINT")}"
     cmd="${cmd//\{namespace_meta_dir\}/$(shell_quote "$MOUNT_POINT/meta")}"
-    cmd="${cmd//\{project_meta_dir\}/$(shell_quote "$MOUNT_POINT/projects/$PROJECT_ID/meta")}"
+    cmd="${cmd//\{workspace_meta_dir\}/$(shell_quote "$MOUNT_POINT/projects/$PROJECT_ID/meta")}"
     cmd="${cmd//\{shared_data_dir\}/$(shell_quote "$MOUNT_POINT/shared_data")}"
     cmd="${cmd//\{prompt_file\}/$(shell_quote "$PROMPT_FILE")}"
     cmd="${cmd//\{artifact_dir\}/$(shell_quote "$artifact_dir")}"
@@ -1449,7 +1497,7 @@ render_codex_launch_command() {
 }
 
 progress_fingerprint() {
-    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" "$CODEX_STDOUT_LOG" "$CODEX_STDERR_LOG" "$CODEX_PTY_LOG" <<'PY'
+    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" "$CODEX_STDOUT_LOG" "$CODEX_STDERR_LOG" "$CODEX_PTY_LOG" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 from pathlib import Path
 import sys
 import os
@@ -1458,7 +1506,7 @@ workspace = Path(sys.argv[1])
 stdout_log = Path(sys.argv[2])
 stderr_log = Path(sys.argv[3])
 pty_log = Path(sys.argv[4])
-skip_files = {"AGENTS.md", "validate_game.py"}
+skip_files = {"AGENTS.md", sys.argv[5]}
 
 count = 0
 latest = 0
@@ -1678,6 +1726,9 @@ run_spiderweb_installer() {
     SPIDERWEB_NON_INTERACTIVE=1 \
     SPIDERWEB_INSTALL_DIR="$INSTALL_DIR" \
     SPIDERWEB_REPO_DIR="$ROOT_DIR" \
+    SPIDERWEB_ZIG_PREFIX="$REPO_BUILD_PREFIX" \
+    SPIDERWEB_ZIG_LOCAL_CACHE_DIR="$REPO_ZIG_LOCAL_CACHE_DIR" \
+    SPIDERWEB_ZIG_GLOBAL_CACHE_DIR="$REPO_ZIG_GLOBAL_CACHE_DIR" \
     SPIDERWEB_INSTALL_ZSS=0 \
     SPIDERWEB_INSTALL_SYSTEMD=0 \
     SPIDERWEB_INSTALL_SOURCE="$install_source" \
@@ -1712,7 +1763,10 @@ install_spiderweb_harness_binaries() {
         log_info "Building Spiderweb binaries from the current checkout for native macOS E2E..."
         (
             cd "$ROOT_DIR"
-            zig build
+            zig build \
+                --prefix "$REPO_BUILD_PREFIX" \
+                --cache-dir "$REPO_ZIG_LOCAL_CACHE_DIR" \
+                --global-cache-dir "$REPO_ZIG_GLOBAL_CACHE_DIR"
         ) >"$INSTALL_LOG" 2>&1 || {
             tail -n 200 "$INSTALL_LOG" || true
             return 1
@@ -1720,18 +1774,18 @@ install_spiderweb_harness_binaries() {
 
         local missing_bin=""
         if missing_bin="$(first_missing_spiderweb_bin_in "$REPO_BUILD_INSTALL_DIR")"; then
-            log_fail "repo build did not produce expected binary in zig-out/bin: $missing_bin"
+            log_fail "repo build did not produce expected binary in $REPO_BUILD_INSTALL_DIR: $missing_bin"
             tail -n 200 "$INSTALL_LOG" || true
             return 1
         fi
 
-        if missing_bin="$(first_missing_spiderweb_bin_in "$INSTALL_DIR")"; then
-            log_fail "installed Spiderweb app is missing required runtime binary: $missing_bin"
+        if [[ ! -x "$SIGNED_APP_RESOURCE_DIR/spiderweb-config" ]]; then
+            log_fail "installed Spiderweb app is missing signed FSKit resources"
             tail -n 200 "$INSTALL_LOG" || true
             return 1
         fi
 
-        log_pass "repo build completed and native runtime will use signed app resources"
+        log_pass "repo build completed and native runtime will use current checkout binaries with signed app FSKit resources"
         return 0
     fi
 
@@ -1812,8 +1866,8 @@ cat > "$SPIDERWEB_CONFIG_FILE" <<EOF
   },
   "runtime": {
     "default_agent_id": "default",
-    "ltm_directory": "$LTM_DIR",
-    "ltm_filename": "runtime-memory.db",
+    "state_directory": "$LTM_DIR",
+    "state_db_filename": "runtime-state.db",
     "spider_web_root": "$SPIDERWEB_RUNTIME_ROOT",
     "local_node": {
       "export_path": "$WORKSPACE_EXPORT_ROOT"
@@ -1889,8 +1943,8 @@ fi
 log_pass "remote shared-data node joined as $REMOTE_NODE_ID"
 
 PROJECT_UP_PAYLOAD="$(jq -cn \
-    --arg name "External Codex Text Adventure" \
-    --arg vision "Installer-first external Codex workspace validation" \
+    --arg name "$PROJECT_UP_NAME" \
+    --arg vision "$PROJECT_UP_VISION" \
     --arg template_id "dev" \
     --arg local_node "$LOCAL_WORKSPACE_NODE_ID" \
     --arg remote_node "$REMOTE_NODE_ID" \
@@ -1905,10 +1959,10 @@ PROJECT_UP_PAYLOAD="$(jq -cn \
         ]
     }'
 )"
-PROJECT_UP_RESP="$(control_call project_up "$PROJECT_UP_PAYLOAD")"
-PROJECT_ID="$(json_field "$PROJECT_UP_RESP" '.payload.project_id')"
-PROJECT_TOKEN="$(jq -r '.payload.project_token // empty' <<<"$PROJECT_UP_RESP")"
-printf '%s\n' "$PROJECT_UP_RESP" > "$OUTPUT_DIR/snapshots/project_up.json"
+PROJECT_UP_RESP="$(control_call workspace_up "$PROJECT_UP_PAYLOAD")"
+PROJECT_ID="$(json_field "$PROJECT_UP_RESP" '.payload.workspace_id')"
+PROJECT_TOKEN="$(jq -r '.payload.workspace_token // empty' <<<"$PROJECT_UP_RESP")"
+printf '%s\n' "$PROJECT_UP_RESP" > "$OUTPUT_DIR/snapshots/workspace_up.json"
 write_workspace_agents_file
 assert_seeded_workspace_layout "$WORKSPACE_EXPORT_ROOT"
 log_pass "seeded workspace AGENTS contract for project $PROJECT_ID"
@@ -2000,7 +2054,7 @@ run_live_codex
 
 VALIDATION_STARTED_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 write_codex_progress_timeline
-python3 "$MOUNT_WORKSPACE_PATH/validate_game.py" \
+python3 "$MOUNT_WORKSPACE_PATH/$WORKSPACE_VALIDATOR_BASENAME" \
     --workspace "$MOUNT_WORKSPACE_PATH" \
     --shared-data "$MOUNT_POINT/shared_data" \
     --output "$VALIDATION_OUTPUT"
@@ -2008,8 +2062,8 @@ python3 "$MOUNT_WORKSPACE_PATH/validate_game.py" \
 build_usage_report
 
 if ! jq -e '.ok == true' "$VALIDATION_OUTPUT" >/dev/null 2>&1; then
-    write_handoff_bundle "game_validation_failed"
-    log_fail "game validation failed"
+    write_handoff_bundle "${SCENARIO_NAME}_validation_failed"
+    log_fail "$SCENARIO_NAME validation failed"
     cat "$VALIDATION_OUTPUT"
     exit 1
 fi

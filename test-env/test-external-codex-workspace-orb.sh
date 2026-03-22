@@ -21,6 +21,7 @@ build_orb_env_list() {
         SPIDERWEB_PORT
         LOCAL_WORKSPACE_NODE_PORT
         REMOTE_NODE_PORT
+        SPIDERWEB_E2E_SCENARIO
         CODEX_MODE
         CODEX_LAUNCH_CMD
         TRACE_BACKEND
@@ -101,7 +102,8 @@ run_linux_harness_via_orb() {
         exit 1
     fi
 
-    local output_dir="${OUTPUT_DIR:-$ROOT_DIR/test-env/out/external-codex-workspace-orb-$(date +%Y%m%d-%H%M%S)}"
+    local scenario="${SPIDERWEB_E2E_SCENARIO:-game}"
+    local output_dir="${OUTPUT_DIR:-$ROOT_DIR/test-env/out/external-codex-workspace-orb-linux-${scenario}-$(date +%Y%m%d-%H%M%S)-$$}"
     local orb_env
     orb_env="$(build_orb_env_list)"
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Distributed workspace matrix:
 # - failover + reconnect (base scenario)
-# - project_up bootstrap scenario
+# - workspace_up bootstrap scenario
 # - drift/reconcile scenario
 
 set -euo pipefail

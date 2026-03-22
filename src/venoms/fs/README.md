@@ -9,7 +9,7 @@ It is split into two kinds of files:
 
 Authoritative generic node/runtime behavior lives in:
 
-- `deps/spider-protocol/src/spiderweb_node/`
+- `../SpiderNode/src/spiderweb_node/`
 
 The shim files now live under `src/venoms/fs/shared/`.
 
@@ -21,5 +21,5 @@ Examples are:
 - `shared/fs_node_server.zig`
 - `shared/fs_watch_runtime.zig`
 
-If a change is generic to all nodes, move it into the shared protocol runtime.
+If a change is generic to all nodes, move it into SpiderNode.
 If a change is specifically about Spiderweb’s FS Venom surface, keep it here.

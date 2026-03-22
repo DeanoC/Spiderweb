@@ -169,7 +169,7 @@ final class SpiderwebSetupModel: ObservableObject {
         let workspaceID = localWorkspaceID.isEmpty ? "<workspace-id>" : localWorkspaceID
         let escapedMountpoint = shellQuote(localMountpoint)
         return """
-        SPIDERWEB_AUTH_TOKEN="$(jq -r '.admin_token' "$(spiderweb-config auth path)")" \\
+        SPIDERWEB_AUTH_TOKEN="$(jq -r '.access_token' "$(spiderweb-config auth path)")" \\
         spiderweb-fs-mount \\
           --workspace-url ws://127.0.0.1:18790/ \\
           --workspace-id \(workspaceID) \\

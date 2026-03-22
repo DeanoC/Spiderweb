@@ -410,7 +410,11 @@ fn hasSpiderwebMacosProjectAt(allocator: std.mem.Allocator, root: []const u8) bo
     return pathExists(project_path);
 }
 
-pub fn writeLaunchRequest(allocator: std.mem.Allocator, config: native_protocol.LaunchConfig) ![]u8 {
+pub fn writeLaunchRequest(
+    allocator: std.mem.Allocator,
+    config: native_protocol.LaunchConfig,
+    volume_name_override: ?[]const u8,
+) ![]u8 {
     const request_dir = try defaultRequestDirectory(allocator);
     defer allocator.free(request_dir);
     try makePathAny(request_dir);
@@ -421,7 +425,7 @@ pub fn writeLaunchRequest(allocator: std.mem.Allocator, config: native_protocol.
     defer allocator.free(request_filename);
     const request_path = try std.fs.path.join(allocator, &.{ request_dir, request_filename });
 
-    const volume_name = try defaultVolumeNameForMountpoint(allocator, config.mountpoint);
+    const volume_name = try resolveRequestedVolumeName(allocator, config.mountpoint, volume_name_override);
     defer allocator.free(volume_name);
     const payload = try native_protocol.encodeMountRequest(allocator, .{
         .volume_name = volume_name,
@@ -441,13 +445,32 @@ pub fn writeLaunchRequest(allocator: std.mem.Allocator, config: native_protocol.
     return request_path;
 }
 
-pub fn requestNativeMount(allocator: std.mem.Allocator, config: native_protocol.LaunchConfig, timeout_ms: u64) !void {
+pub fn requestNativeMount(
+    allocator: std.mem.Allocator,
+    config: native_protocol.LaunchConfig,
+    timeout_ms: u64,
+    volume_name_override: ?[]const u8,
+) !void {
     try probeNativeBackend(allocator);
     try makePathAny(config.mountpoint);
-    const request_path = try writeLaunchRequest(allocator, config);
+    const request_path = try writeLaunchRequest(allocator, config, volume_name_override);
     defer allocator.free(request_path);
     try issueMountRequest(allocator, request_path, config.mountpoint);
     try waitForMountpoint(config.mountpoint, timeout_ms);
+}
+
+fn resolveRequestedVolumeName(
+    allocator: std.mem.Allocator,
+    mountpoint: []const u8,
+    volume_name_override: ?[]const u8,
+) ![]u8 {
+    if (volume_name_override) |raw_name| {
+        const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
+        if (trimmed.len > 0 and std.mem.indexOfScalar(u8, trimmed, '/') == null) {
+            return allocator.dupe(u8, trimmed);
+        }
+    }
+    return defaultVolumeNameForMountpoint(allocator, mountpoint);
 }
 
 pub fn openSystemSettingsForFsExtension() void {

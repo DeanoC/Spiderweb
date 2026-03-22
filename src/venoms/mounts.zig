@@ -359,7 +359,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
         },
         .mkdir => {
             const plane = self.control_plane orelse return error.InvalidPayload;
-            if (!plane.projectAllowsAction(scope.project_id, self.agent_id, .mount, scope.project_token, self.is_admin)) {
+            if (!plane.workspaceAllowsAction(scope.project_id, self.agent_id, .mount, scope.project_token, self.is_admin)) {
                 return error.AccessDenied;
             }
             const path = extractOptionalStringByNames(args_obj, &[_][]const u8{ "path", "folder", "relative_path" }) orelse return error.InvalidPayload;

@@ -102,7 +102,7 @@ pub fn handleSessionAttachControl(
     if (!isValidAgentId(attach_agent_id)) {
         return .{ .err = .{ .code = "invalid_payload", .message = "invalid agent_id" } };
     }
-    if (!isValidProjectId(attach_workspace_id)) {
+    if (!isValidWorkspaceId(attach_workspace_id)) {
         return .{ .err = .{ .code = "invalid_payload", .message = "invalid workspace_id" } };
     }
 
@@ -462,7 +462,7 @@ fn isValidAgentId(agent_id: []const u8) bool {
     return true;
 }
 
-fn isValidProjectId(project_id: []const u8) bool {
+fn isValidWorkspaceId(project_id: []const u8) bool {
     if (project_id.len == 0 or project_id.len > 128) return false;
     for (project_id) |char| {
         if (std.ascii.isAlphanumeric(char)) continue;

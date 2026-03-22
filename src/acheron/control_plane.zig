@@ -714,7 +714,7 @@ pub const ControlPlane = struct {
         return std.mem.eql(u8, agent_id, self.host_actor_id);
     }
 
-    pub fn projectAllowsAction(
+    pub fn workspaceAllowsAction(
         self: *ControlPlane,
         project_id: []const u8,
         agent_id: ?[]const u8,
@@ -2022,7 +2022,7 @@ pub const ControlPlane = struct {
 
     /// Resolve a deterministic "first" agent for a project from active bindings.
     /// Current ordering is lexical `agent_id` to keep selection stable across restarts.
-    pub fn firstProjectAgent(self: *ControlPlane, project_id: []const u8, include_primary: bool) !?[]u8 {
+    pub fn firstWorkspaceAgent(self: *ControlPlane, project_id: []const u8, include_primary: bool) !?[]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2046,7 +2046,7 @@ pub const ControlPlane = struct {
         return null;
     }
 
-    pub fn agentActiveInProject(self: *ControlPlane, agent_id: []const u8, project_id: []const u8) bool {
+    pub fn agentActiveInWorkspace(self: *ControlPlane, agent_id: []const u8, project_id: []const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2054,7 +2054,7 @@ pub const ControlPlane = struct {
         return std.mem.eql(u8, active_project_id, project_id);
     }
 
-    pub fn projectHasMounts(self: *ControlPlane, project_id: []const u8) bool {
+    pub fn workspaceHasMounts(self: *ControlPlane, project_id: []const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -7087,7 +7087,7 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
     );
     defer allocator.free(denied_mount_req);
     try std.testing.expectError(ControlPlaneError.ProjectPolicyForbidden, plane.setProjectMount(denied_mount_req));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .bind, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .bind, null, false));
 
     const denied_bind_req = try std.fmt.allocPrint(
         allocator,
@@ -7107,12 +7107,12 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
     defer allocator.free(updated);
     try std.testing.expect(std.mem.indexOf(u8, updated, "\"access_policy\"") != null);
 
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .mount, null, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .bind, null, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "alice", .mount, null, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "alice", .bind, null, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .observe, null, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "alice", .observe, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .mount, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .bind, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "alice", .mount, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "alice", .bind, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .observe, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "alice", .observe, null, false));
 
     const mounted_req = try std.fmt.allocPrint(
         allocator,
@@ -7133,11 +7133,11 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
     defer rotated_parsed.deinit();
     const project_token = rotated_parsed.value.object.get("project_token").?.string;
 
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .read, null, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .read, project_token, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .observe, null, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .observe, project_token, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "alice", .mount, project_token, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .read, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .read, project_token, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .observe, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .observe, project_token, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "alice", .mount, project_token, false));
     try std.testing.expect(plane.projectAllowsNodeVenomEvent(project_id, "bob", project_token, node_id, false));
     try std.testing.expect(!plane.projectAllowsNodeVenomEvent(project_id, "bob", null, node_id, false));
 }
@@ -7156,30 +7156,30 @@ test "acheron_control_plane: access policy action matrix honors token admin and 
     const project_id = project.value.object.get("project_id").?.string;
     const project_token = project.value.object.get("project_token").?.string;
 
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .read, null, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .observe, null, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .observe, project_token, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .invoke, null, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .invoke, project_token, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .mount, null, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .mount, project_token, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .bind, null, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .bind, project_token, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "bob", .admin, null, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .admin, project_token, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .read, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .observe, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .observe, project_token, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .invoke, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .invoke, project_token, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .mount, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .mount, project_token, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .bind, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .bind, project_token, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .admin, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .admin, project_token, false));
 
-    try std.testing.expect(plane.projectAllowsAction(project_id, "worker", .invoke, null, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "worker", .mount, null, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "worker", .mount, project_token, false));
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "worker", .bind, null, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "worker", .bind, project_token, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "worker", .invoke, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "worker", .mount, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "worker", .mount, project_token, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "worker", .bind, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "worker", .bind, project_token, false));
 
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .read, null, true));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .observe, null, true));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .invoke, null, true));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .mount, null, true));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .bind, null, true));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "bob", .admin, null, true));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .read, null, true));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .observe, null, true));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .invoke, null, true));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .mount, null, true));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .bind, null, true));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .admin, null, true));
 }
 
 test "acheron_control_plane: workspace status filters invoke service mounts when invoke is denied" {
@@ -8389,8 +8389,8 @@ test "acheron_control_plane: primary agent bypasses project invoke token gates" 
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    try std.testing.expect(!plane.projectAllowsAction(host_workspace_id, "worker", .invoke, null, false));
-    try std.testing.expect(plane.projectAllowsAction(host_workspace_id, default_host_actor_id, .invoke, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(host_workspace_id, "worker", .invoke, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(host_workspace_id, default_host_actor_id, .invoke, null, false));
 
     const created = try plane.createProject("{\"name\":\"InvokeGate\",\"vision\":\"InvokeGate\"}");
     defer allocator.free(created);
@@ -8399,9 +8399,9 @@ test "acheron_control_plane: primary agent bypasses project invoke token gates" 
     const project_id = parsed.value.object.get("project_id").?.string;
     const project_token = parsed.value.object.get("project_token").?.string;
 
-    try std.testing.expect(!plane.projectAllowsAction(project_id, "worker", .invoke, null, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, "worker", .invoke, project_token, false));
-    try std.testing.expect(plane.projectAllowsAction(project_id, default_host_actor_id, .invoke, null, false));
+    try std.testing.expect(!plane.workspaceAllowsAction(project_id, "worker", .invoke, null, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, "worker", .invoke, project_token, false));
+    try std.testing.expect(plane.workspaceAllowsAction(project_id, default_host_actor_id, .invoke, null, false));
 }
 
 test "acheron_control_plane: project create/up require non-empty vision" {

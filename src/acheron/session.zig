@@ -3355,14 +3355,14 @@ pub const Session = struct {
         return session_project_status.buildFallbackWorkspaceStatusJson(self, policy);
     }
 
-    fn projectAllowsAction(self: *Session, action: control_plane_mod.ProjectAction) bool {
+    fn workspaceAllowsAction(self: *Session, action: control_plane_mod.ProjectAction) bool {
         const plane = self.control_plane orelse return true;
         const project_id = self.project_id orelse return true;
-        return plane.projectAllowsAction(project_id, self.agent_id, action, self.project_token, self.is_admin);
+        return plane.workspaceAllowsAction(project_id, self.agent_id, action, self.project_token, self.is_admin);
     }
 
     pub fn canAccessVenomWithPermissions(self: *Session, permissions_json: []const u8) bool {
-        if (!self.projectAllowsAction(.invoke)) return false;
+        if (!self.workspaceAllowsAction(.invoke)) return false;
         if (self.is_admin) return true;
         if (permissions_json.len == 0) return true;
 

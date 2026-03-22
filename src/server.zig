@@ -2340,7 +2340,7 @@ const AgentRuntimeRegistry = struct {
         project_id: ?[]const u8,
     ) ?*runtime_handle_mod.RuntimeHandle {
         var selected_runtime: ?*runtime_handle_mod.RuntimeHandle = null;
-        const runtime_key = runtimeMapKeyForProject(project_id);
+        const runtime_key = runtimeMapKeyForWorkspace(project_id);
         self.mutex.lock();
         if (self.by_agent.getPtr(runtime_key)) |existing| {
             if (std.mem.eql(u8, existing.runtime_agent_id, agent_id)) {
@@ -2370,7 +2370,7 @@ const AgentRuntimeRegistry = struct {
         error_message: []const u8,
     ) bool {
         var removed_unhealthy: ?RemovedRuntimeEntry = null;
-        const runtime_key = runtimeMapKeyForProject(project_id);
+        const runtime_key = runtimeMapKeyForWorkspace(project_id);
         const binding_key = self.runtimeBindingKey(agent_id, project_id) catch null;
         defer if (binding_key) |value| self.allocator.free(value);
 
@@ -2423,7 +2423,7 @@ const AgentRuntimeRegistry = struct {
         // messages.
     }
 
-    fn projectExistsWithRole(self: *AgentRuntimeRegistry, project_id: []const u8, is_admin: bool) bool {
+    fn workspaceExistsWithRole(self: *AgentRuntimeRegistry, project_id: []const u8, is_admin: bool) bool {
         const escaped_project = unified.jsonEscape(self.allocator, project_id) catch return false;
         defer self.allocator.free(escaped_project);
         const payload = std.fmt.allocPrint(self.allocator, "{{\"project_id\":\"{s}\"}}", .{escaped_project}) catch return false;
@@ -2433,9 +2433,9 @@ const AgentRuntimeRegistry = struct {
         return true;
     }
 
-    fn firstAgentForProject(self: *AgentRuntimeRegistry, role: ConnectionRole, project_id: []const u8) ?[]u8 {
+    fn firstAgentForWorkspace(self: *AgentRuntimeRegistry, role: ConnectionRole, project_id: []const u8) ?[]u8 {
         const include_primary = role == .access and std.mem.eql(u8, project_id, host_workspace_id);
-        return self.control_plane.firstProjectAgent(project_id, include_primary) catch null;
+        return self.control_plane.firstWorkspaceAgent(project_id, include_primary) catch null;
     }
 
     fn resolvePreferredBindingForRole(self: *AgentRuntimeRegistry, role: ConnectionRole) !?SessionBinding {
@@ -2446,11 +2446,11 @@ const AgentRuntimeRegistry = struct {
                 owned.deinit(self.allocator);
             }
 
-            if (self.projectExistsWithRole(remembered.project_id, is_admin)) {
+            if (self.workspaceExistsWithRole(remembered.project_id, is_admin)) {
                 var chosen_agent: ?[]u8 = null;
-                if (self.control_plane.agentActiveInProject(remembered.agent_id, remembered.project_id)) {
+                if (self.control_plane.agentActiveInWorkspace(remembered.agent_id, remembered.project_id)) {
                     chosen_agent = try self.allocator.dupe(u8, remembered.agent_id);
-                } else if (self.firstAgentForProject(role, remembered.project_id)) |fallback| {
+                } else if (self.firstAgentForWorkspace(role, remembered.project_id)) |fallback| {
                     chosen_agent = fallback;
                 } else {
                     chosen_agent = try self.allocator.dupe(u8, remembered.agent_id);
@@ -2616,13 +2616,13 @@ const AgentRuntimeRegistry = struct {
         }
 
         for (bindings) |binding| {
-            if (!self.control_plane.projectHasMounts(binding.project_id)) continue;
+            if (!self.control_plane.workspaceHasMounts(binding.project_id)) continue;
             if (std.mem.eql(u8, binding.agent_id, host_actor_id) and
                 !std.mem.eql(u8, binding.project_id, host_workspace_id))
             {
                 continue;
             }
-            if (self.hasHealthyRuntimeForProject(binding.project_id) and
+            if (self.hasHealthyRuntimeForWorkspace(binding.project_id) and
                 !self.hasRuntimeForBinding(binding.agent_id, binding.project_id))
             {
                 continue;
@@ -2648,7 +2648,7 @@ const AgentRuntimeRegistry = struct {
         entry: AgentRuntimeEntry,
     };
 
-    fn runtimeMapKeyForProject(project_id: ?[]const u8) []const u8 {
+    fn runtimeMapKeyForWorkspace(project_id: ?[]const u8) []const u8 {
         return project_id orelse "__auto__";
     }
 
@@ -2683,9 +2683,9 @@ const AgentRuntimeRegistry = struct {
         requested_project_token: ?[]const u8,
     ) !*runtime_handle_mod.RuntimeHandle {
         if (!isValidAgentId(agent_id)) return error.InvalidAgentId;
-        const resolved_project_id = try self.resolveProjectId(agent_id, requested_project_id);
+        const resolved_project_id = try self.resolveWorkspaceId(agent_id, requested_project_id);
         defer self.allocator.free(resolved_project_id);
-        const runtime_key = runtimeMapKeyForProject(resolved_project_id);
+        const runtime_key = runtimeMapKeyForWorkspace(resolved_project_id);
 
         var creation_claimed = false;
         while (!creation_claimed) {
@@ -2837,15 +2837,15 @@ const AgentRuntimeRegistry = struct {
         };
     }
 
-    fn resolveProjectId(
+    fn resolveWorkspaceId(
         self: *AgentRuntimeRegistry,
         agent_id: []const u8,
         requested_project_id: ?[]const u8,
     ) ![]u8 {
         _ = agent_id;
         if (requested_project_id) |project_id| {
-            if (!isValidProjectId(project_id)) return error.InvalidProjectId;
-            if (!self.control_plane.projectHasMounts(project_id)) {
+            if (!isValidWorkspaceId(project_id)) return error.InvalidProjectId;
+            if (!self.control_plane.workspaceHasMounts(project_id)) {
                 return error.ProjectMountsMissing;
             }
             return self.allocator.dupe(u8, project_id);
@@ -2864,7 +2864,7 @@ const AgentRuntimeRegistry = struct {
         return true;
     }
 
-    fn isValidProjectId(project_id: []const u8) bool {
+    fn isValidWorkspaceId(project_id: []const u8) bool {
         if (project_id.len == 0 or project_id.len > max_project_id_len) return false;
         if (std.mem.eql(u8, project_id, ".") or std.mem.eql(u8, project_id, "..")) return false;
         for (project_id) |char| {
@@ -2878,23 +2878,23 @@ const AgentRuntimeRegistry = struct {
     fn hasRuntimeForBinding(self: *AgentRuntimeRegistry, agent_id: []const u8, project_id: ?[]const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        const runtime_key = runtimeMapKeyForProject(project_id);
+        const runtime_key = runtimeMapKeyForWorkspace(project_id);
         const existing = self.by_agent.getPtr(runtime_key) orelse return false;
         if (!std.mem.eql(u8, existing.runtime_agent_id, agent_id)) return false;
         return existing.runtime.isHealthy();
     }
 
-    fn hasHealthyRuntimeForProject(self: *AgentRuntimeRegistry, project_id: ?[]const u8) bool {
+    fn hasHealthyRuntimeForWorkspace(self: *AgentRuntimeRegistry, project_id: ?[]const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        const runtime_key = runtimeMapKeyForProject(project_id);
+        const runtime_key = runtimeMapKeyForWorkspace(project_id);
         const existing = self.by_agent.getPtr(runtime_key) orelse return false;
         return existing.runtime.isHealthy();
     }
 
     fn runtimeBindingKey(self: *AgentRuntimeRegistry, agent_id: []const u8, project_id: ?[]const u8) ![]u8 {
         _ = agent_id;
-        return self.allocator.dupe(u8, runtimeMapKeyForProject(project_id));
+        return self.allocator.dupe(u8, runtimeMapKeyForWorkspace(project_id));
     }
 
     fn runtimeAttachSnapshotByKey(self: *AgentRuntimeRegistry, binding_key: []const u8) SessionAttachStateSnapshot {
@@ -2919,7 +2919,7 @@ const AgentRuntimeRegistry = struct {
     fn runtimeAttachSnapshot(self: *AgentRuntimeRegistry, agent_id: []const u8, project_id: ?[]const u8) SessionAttachStateSnapshot {
         _ = agent_id;
         if (project_id) |value| {
-            if (self.control_plane.projectHasMounts(value)) {
+            if (self.control_plane.workspaceHasMounts(value)) {
                 return .{
                     .state = .ready,
                     .runtime_ready = true,
@@ -2951,7 +2951,7 @@ const AgentRuntimeRegistry = struct {
         const binding_key = self.runtimeBindingKey(agent_id, project_id) catch return;
         defer self.allocator.free(binding_key);
         if (project_id) |value| {
-            if (self.control_plane.projectHasMounts(value)) {
+            if (self.control_plane.workspaceHasMounts(value)) {
                 self.markRuntimeWarmupReady(binding_key);
             } else {
                 self.markRuntimeWarmupError(
@@ -3198,7 +3198,7 @@ const AgentRuntimeRegistry = struct {
         _ = project_token;
         _ = retry_on_error;
         if (project_id) |value| {
-            if (!self.control_plane.projectHasMounts(value)) {
+            if (!self.control_plane.workspaceHasMounts(value)) {
                 const binding_key = try self.runtimeBindingKey(agent_id, project_id);
                 defer self.allocator.free(binding_key);
                 self.markRuntimeWarmupError(
@@ -6942,12 +6942,12 @@ test "server: agent id validation allows safe identifiers only" {
 }
 
 test "server: project id validation rejects traversal-like values" {
-    try std.testing.expect(AgentRuntimeRegistry.isValidProjectId("proj-1"));
-    try std.testing.expect(AgentRuntimeRegistry.isValidProjectId("proj.alpha_2"));
-    try std.testing.expect(!AgentRuntimeRegistry.isValidProjectId(""));
-    try std.testing.expect(!AgentRuntimeRegistry.isValidProjectId("."));
-    try std.testing.expect(!AgentRuntimeRegistry.isValidProjectId(".."));
-    try std.testing.expect(!AgentRuntimeRegistry.isValidProjectId("proj/../../etc"));
+    try std.testing.expect(AgentRuntimeRegistry.isValidWorkspaceId("proj-1"));
+    try std.testing.expect(AgentRuntimeRegistry.isValidWorkspaceId("proj.alpha_2"));
+    try std.testing.expect(!AgentRuntimeRegistry.isValidWorkspaceId(""));
+    try std.testing.expect(!AgentRuntimeRegistry.isValidWorkspaceId("."));
+    try std.testing.expect(!AgentRuntimeRegistry.isValidWorkspaceId(".."));
+    try std.testing.expect(!AgentRuntimeRegistry.isValidWorkspaceId("proj/../../etc"));
 }
 
 test "server: invalid configured default agent falls back to built-in default" {

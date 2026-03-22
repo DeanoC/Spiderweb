@@ -366,7 +366,7 @@ build_usage_report() {
         --workspace-root "$MOUNT_WORKSPACE_PATH"
         --mount-root "$MOUNT_POINT"
         --artifact-root "$OUTPUT_DIR"
-        --project-id "${PROJECT_ID:-unknown}"
+        --workspace-id "${PROJECT_ID:-unknown}"
         --mode "$CODEX_MODE"
         --mounted-services "$OUTPUT_DIR/snapshots/mounted_services.json"
         --venom-packages "$OUTPUT_DIR/snapshots/venom_packages.json"

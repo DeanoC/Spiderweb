@@ -307,7 +307,7 @@ def markdown_report(payload: dict) -> str:
         f"- Reliability: {'ok' if payload.get('reliability_ok') else 'issue'}",
         f"- Workspace Bootstrap: {'ok' if payload.get('workspace_bootstrap_ok') else 'issue'}",
         f"- Machine Independence: {'ok' if payload.get('machine_independence_ok') else 'issue'}",
-        f"- Project ID: {payload.get('project_id')}",
+        f"- Workspace ID: {payload.get('workspace_id')}",
         f"- Mode: {payload.get('mode')}",
     ]
     if payload.get("skipped_reason"):
@@ -367,7 +367,7 @@ def main() -> int:
     parser.add_argument("--workspace-root", required=True)
     parser.add_argument("--mount-root", required=True)
     parser.add_argument("--artifact-root", required=True)
-    parser.add_argument("--project-id", required=True)
+    parser.add_argument("--workspace-id", required=True)
     parser.add_argument("--mode", required=True)
     parser.add_argument("--mounted-services", required=True)
     parser.add_argument("--venom-packages", required=True)
@@ -538,16 +538,16 @@ def main() -> int:
     if args.codex_event_log:
         required_namespace_reads = {
             "/meta/protocol.json",
-            f"/projects/{args.project_id}/meta/agent_bootstrap_quickref.json",
-            f"/projects/{args.project_id}/meta/agent_bootstrap.json",
+            f"/projects/{args.workspace_id}/meta/agent_bootstrap_quickref.json",
+            f"/projects/{args.workspace_id}/meta/agent_bootstrap.json",
             "/shared_data/world_seed.json",
             "/shared_data/items_seed.json",
             "/shared_data/puzzle_seed.json",
         }
         fallback_namespace_reads = {
-            f"/projects/{args.project_id}/meta/workspace_status.json",
-            f"/projects/{args.project_id}/meta/mounted_services.json",
-            f"/projects/{args.project_id}/meta/venom_packages.json",
+            f"/projects/{args.workspace_id}/meta/workspace_status.json",
+            f"/projects/{args.workspace_id}/meta/mounted_services.json",
+            f"/projects/{args.workspace_id}/meta/venom_packages.json",
         }
         ensure_home_namespace_path = "/services/home/control/ensure.json"
         for event in parse_jsonl_events(Path(args.codex_event_log)):
@@ -562,13 +562,13 @@ def main() -> int:
             for namespace_path in required_namespace_reads:
                 relative_path = namespace_path_to_entrypoint_relative(namespace_path)
                 if namespace_path in command or any(variant in command for variant in command_path_variants(relative_path)):
-                    mount_path = namespace_path_to_mount_path(namespace_path, mount_root, args.project_id)
+                    mount_path = namespace_path_to_mount_path(namespace_path, mount_root, args.workspace_id)
                     if mount_path:
                         append_unique(bootstrap_reads, mount_path)
             for namespace_path in fallback_namespace_reads:
                 relative_path = namespace_path_to_entrypoint_relative(namespace_path)
                 if namespace_path in command or any(variant in command for variant in command_path_variants(relative_path)):
-                    mount_path = namespace_path_to_mount_path(namespace_path, mount_root, args.project_id)
+                    mount_path = namespace_path_to_mount_path(namespace_path, mount_root, args.workspace_id)
                     if mount_path:
                         append_unique(fallback_bootstrap_reads, mount_path)
 
@@ -657,9 +657,9 @@ def main() -> int:
         "workspace_bootstrap_ok": workspace_bootstrap_ok,
         "machine_independence_ok": machine_independence_ok,
         "mode": args.mode,
-        "project_id": args.project_id,
+        "workspace_id": args.workspace_id,
         "skipped_reason": args.skipped_reason,
-        "project_bound_services": project_bound_services,
+        "workspace_bound_services": project_bound_services,
         "namespace_visible_services": namespace_visible_services,
         "venom_packages": venom_packages,
         "access_summary": {

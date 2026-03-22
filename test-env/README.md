@@ -87,7 +87,7 @@ This harness documents and exercises the Linux-first external Codex operator pat
 - agent-driven in-workspace bootstrap, validation, and report artifact capture
 
 The harness assumes one Spiderweb-owned mount model across macOS, Linux, and
-Windows: workers start in the mounted project directory, and `.spiderweb` is a
+Windows: workers start in the mounted workspace directory, and `.spiderweb` is a
 server-projected part of that same namespace rather than a client overlay or
 direct endpoint shortcut.
 
@@ -95,7 +95,7 @@ Mounted namespace paths used by the harness:
 
 - local writable project tree: `/nodes/local/fs`
 - remote shared seed data: `/shared_data`
-- project metadata: `/projects/<project_id>/meta/*`
+- workspace metadata: `/projects/<workspace_id>/meta/*`
 - namespace metadata: `/meta/*`
 - generic project services: `/services/*`
 
@@ -235,7 +235,7 @@ Usage report result semantics:
 - `reliability_ok`: true only when the run stayed inside the mounted workspace plus harness-owned runtime roots, plus any explicit temporary host-write allowlists
 - `workspace_bootstrap_ok`: true only when the attached agent read the bootstrap metadata and performed the required in-workspace bootstrap actions
 - `machine_independence_ok`: true only when no host-runtime gaps were observed
-- `project_bound_services`: services bound under `/services/*` for the mounted workspace
+- `workspace_bound_services`: services bound under `/services/*` for the mounted workspace
 - `namespace_visible_services`: services visible somewhere in the namespace, even if not project-bound under `/services/*`
 - `external_prereqs_observed`: declared external prerequisites observed during the run, such as the operator-installed Codex runtime
 - `candidate_venom_gaps`: inferred local-runtime gaps such as `codex_home`, `terminal_runtime`, `git_runtime`, and `search_code_bridge`
@@ -253,12 +253,12 @@ Operator notes:
 
 - prefer the installer-first Linux path for this harness; use `./install-fs-mount.sh` only when the namespace mount happens on a separate Linux machine
 - the harness is about the standalone node + namespace story, not the older routed `--workspace-url` only flow
-- the mounted project directory exposed at `nodes/local/fs` is the canonical external-agent entrypoint
+- the mounted workspace directory exposed at `nodes/local/fs` is the canonical external-agent entrypoint
 - the clean writable project tree is `nodes/local/fs`; Spiderweb’s own runtime root is kept separate from that workspace on purpose
-- the harness creates only a generic `dev`-template workspace baseline; after attach, Spiderweb must surface a real project-root `AGENTS.md`, and the external agent is responsible for reading that file first and then following the project-local `./.spiderweb/*` bootstrap projection from inside the workspace
+- the harness creates only a generic `dev`-template workspace baseline; after attach, Spiderweb must surface a real workspace-root `AGENTS.md`, and the external agent is responsible for reading that file first and then following the workspace-local `./.spiderweb/*` bootstrap projection from inside the workspace
 - `AGENTS.md` is the human-facing workspace contract; `./.spiderweb/agent_bootstrap.json` and `./.spiderweb/agent_bootstrap_quickref.json` are the exact machine-readable bootstrap surface for discovery order, preferred `./.spiderweb/services/*` usage, self-home provisioning, service verification/repair, and persistence semantics
-- the expected interactive user flow is: start `codex` in the mounted project directory, give a short prompt that tells it to read `AGENTS.md`, and let it work relative to that directory
-- shared project binds persist across agent detach/reattach, while worker-private loopback state is expected to be ephemeral
+- the expected interactive user flow is: start `codex` in the mounted workspace directory, give a short prompt that tells it to read `AGENTS.md`, and let it work relative to that directory
+- shared workspace binds persist across agent detach/reattach, while worker-private loopback state is expected to be ephemeral
 - `CODEX_AUTH_MODE=api_key` is still the strict fresh-install path, but `existing_login` is temporarily acceptable for reliability because host `~/.codex` writes are allowlisted by default while still reported as a `codex_home` machine-independence gap
 - `CODEX_LAUNCH_CMD` is optional; the harness can build a default launcher around the pinned `codex exec` flow
 - the default live launcher now preserves both `logs/codex.stdout.log` and `logs/codex.pty.log`, which makes it much easier to distinguish “still progressing” from “stopped after a tool result”
@@ -310,7 +310,7 @@ Useful env vars:
 This test exercises the control-plane + mount integration flow end-to-end:
 - starts `spiderweb`
 - starts two `embed-multi-service-node` filesystem nodes
-- negotiates `control.version` (`spiderweb-control`) then runs `control.node_invite_create`, `control.node_join`, `control.workspace_create`, `control.workspace_mount_set`, and `control.workspace_activate` with project mutation auth (`project_token`)
+- negotiates `control.version` (`spiderweb-control`) then runs `control.node_invite_create`, `control.node_join`, `control.workspace_create`, `control.workspace_mount_set`, and `control.workspace_activate` with workspace mutation auth (`workspace_token`)
 - restarts `spiderweb` and verifies control-plane state is recovered from persisted LTM snapshot
 - updates mounts live (`/src` -> `/live`) and validates the mount client converges to the new path
 - mounts both nodes at the same project mount path (`/src`) as a failover group

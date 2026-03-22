@@ -2593,24 +2593,24 @@ pub const ControlPlane = struct {
         defer payload.deinit();
         const obj = payload.value.object;
 
-        const requested_project_id = getOptionalString(obj, "project_id");
-        const requested_name = getOptionalString(obj, "name") orelse getOptionalString(obj, "project_name");
-        const requested_vision = getOptionalString(obj, "vision");
-        const requested_status = getOptionalString(obj, "status");
-        const requested_template_id = getOptionalString(obj, "template_id");
-        const requested_project_token = getOptionalString(obj, "project_token");
-        const requested_access_policy_value = obj.get("access_policy");
+        const requested_workspace_id = getOptionalString(obj, "project_id");
+        const requested_workspace_name = getOptionalString(obj, "name") orelse getOptionalString(obj, "project_name");
+        const requested_workspace_vision = getOptionalString(obj, "vision");
+        const requested_workspace_status = getOptionalString(obj, "status");
+        const requested_workspace_template_id = getOptionalString(obj, "template_id");
+        const requested_workspace_token = getOptionalString(obj, "project_token");
+        const requested_workspace_access_policy = obj.get("access_policy");
         const activate = getOptionalBool(obj, "activate", true) catch return ControlPlaneError.InvalidPayload;
-        if (requested_project_token) |project_token| try validateSecretToken(project_token, 256);
+        if (requested_workspace_token) |workspace_token| try validateSecretToken(workspace_token, 256);
 
         const resolved_project = try resolveWorkspaceUpTargetLocked(
             self,
-            requested_project_id,
-            requested_name,
-            requested_vision,
-            requested_status,
-            requested_template_id,
-            requested_access_policy_value,
+            requested_workspace_id,
+            requested_workspace_name,
+            requested_workspace_vision,
+            requested_workspace_status,
+            requested_workspace_template_id,
+            requested_workspace_access_policy,
             now_ms,
         );
         const project = resolved_project.project;
@@ -2626,12 +2626,12 @@ pub const ControlPlane = struct {
                 agent_id,
                 is_admin,
                 is_host_actor,
-                requested_project_token,
-                requested_name,
-                requested_vision,
-                requested_status,
-                requested_template_id,
-                requested_access_policy_value,
+                requested_workspace_token,
+                requested_workspace_name,
+                requested_workspace_vision,
+                requested_workspace_status,
+                requested_workspace_template_id,
+                requested_workspace_access_policy,
                 obj.get("desired_mounts") != null,
                 obj.get("desired_binds") != null,
             );
@@ -2661,33 +2661,14 @@ pub const ControlPlane = struct {
         _ = try self.runReconcileCycleLocked(now_ms, false);
         self.persistSnapshotBestEffortLocked();
 
-        const workspace_json = try self.renderWorkspaceStatusForProjectLocked(
+        return buildWorkspaceUpResultPayloadLocked(
+            self,
             agent_id,
-            project.id,
-            null,
+            project,
             is_admin,
             now_ms,
-        );
-        defer self.allocator.free(workspace_json);
-        const escaped_project = try jsonEscape(self.allocator, project.id);
-        defer self.allocator.free(escaped_project);
-        const token_json = if (projectTokenEnabled(project)) blk: {
-            const escaped_token = try jsonEscape(self.allocator, project.mutation_token);
-            defer self.allocator.free(escaped_token);
-            break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped_token});
-        } else try self.allocator.dupe(u8, "null");
-        defer self.allocator.free(token_json);
-
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"project_id\":\"{s}\",\"project_token\":{s},\"created\":{s},\"activated\":{s},\"workspace\":{s}}}",
-            .{
-                escaped_project,
-                token_json,
-                if (created) "true" else "false",
-                if (activate) "true" else "false",
-                workspace_json,
-            },
+            created,
+            activate,
         );
     }
 
@@ -3066,6 +3047,45 @@ fn applyWorkspaceUpBindReplacementsLocked(
     project.binds.deinit(self.allocator);
     project.binds = next_binds;
     return true;
+}
+
+fn buildWorkspaceUpResultPayloadLocked(
+    self: *ControlPlane,
+    agent_id: []const u8,
+    project: *Project,
+    is_admin: bool,
+    now_ms: i64,
+    created: bool,
+    activate: bool,
+) ![]u8 {
+    const workspace_json = try self.renderWorkspaceStatusForProjectLocked(
+        agent_id,
+        project.id,
+        null,
+        is_admin,
+        now_ms,
+    );
+    defer self.allocator.free(workspace_json);
+    const escaped_project = try jsonEscape(self.allocator, project.id);
+    defer self.allocator.free(escaped_project);
+    const workspace_token_json = if (projectTokenEnabled(project)) blk: {
+        const escaped_token = try jsonEscape(self.allocator, project.mutation_token);
+        defer self.allocator.free(escaped_token);
+        break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped_token});
+    } else try self.allocator.dupe(u8, "null");
+    defer self.allocator.free(workspace_token_json);
+
+    return std.fmt.allocPrint(
+        self.allocator,
+        "{{\"project_id\":\"{s}\",\"project_token\":{s},\"created\":{s},\"activated\":{s},\"workspace\":{s}}}",
+        .{
+            escaped_project,
+            workspace_token_json,
+            if (created) "true" else "false",
+            if (activate) "true" else "false",
+            workspace_json,
+        },
+    );
 }
 
 fn resolveVisibleActiveProjectIdLocked(self: *ControlPlane, agent_id: []const u8) ?[]const u8 {

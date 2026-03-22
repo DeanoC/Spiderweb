@@ -8,6 +8,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const spider_node_dep = b.dependency("spider_node", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const spider_protocol_protocol_module = b.createModule(.{
         .root_source_file = b.path("deps/spider-protocol/src/protocol.zig"),
         .target = target,
@@ -25,9 +29,10 @@ pub fn build(b: *std.Build) void {
     });
     spider_protocol_module.addImport("spider-protocol-protocol", spider_protocol_protocol_module);
     spider_protocol_module.addImport("spider-protocol-unified", spider_protocol_unified_module);
-    const spiderweb_node_module = spider_protocol_dep.module("spiderweb_node");
+    const spiderweb_node_module = spider_node_dep.module("spiderweb_node");
     const spiderweb_fs_protocol_module = spider_protocol_dep.module("spiderweb_fs");
     spiderweb_node_module.addImport("spider-protocol", spider_protocol_module);
+    spiderweb_node_module.addImport("spiderweb_fs", spiderweb_fs_protocol_module);
     spiderweb_fs_protocol_module.addImport("spider-protocol", spider_protocol_module);
     const ziggy_tool_runtime_dep = b.dependency("ziggy_tool_runtime", .{
         .target = target,

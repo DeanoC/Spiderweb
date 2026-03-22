@@ -4035,20 +4035,30 @@ pub const Session = struct {
         var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return false;
         defer router.deinit();
 
-        const open_file = router.open(proxy.remote_path, 1) catch |err| switch (err) {
-            error.FileNotFound => router.create(proxy.remote_path, 0o100644, 2) catch |create_err| return switch (create_err) {
+        const existing = router.open(proxy.remote_path, 2) catch |err| switch (err) {
+            error.FileNotFound => null,
+            error.OperationNotSupported => return false,
+            else => return err,
+        };
+        if (existing) |open_file| {
+            router.close(open_file) catch {};
+        } else {
+            const created = router.create(proxy.remote_path, 0o100644, 2) catch |create_err| return switch (create_err) {
                 error.FileNotFound,
                 error.OperationNotSupported,
                 => false,
                 else => create_err,
-            },
-            error.OperationNotSupported => return false,
-            else => return err,
-        };
-        defer router.close(open_file) catch {};
+            };
+            router.close(created) catch {};
+        }
 
         try router.truncate(proxy.remote_path, 0);
         if (data.len != 0) {
+            const open_file = router.open(proxy.remote_path, 2) catch |err| return switch (err) {
+                error.OperationNotSupported => false,
+                else => err,
+            };
+            defer router.close(open_file) catch {};
             const written = try router.write(open_file, 0, data);
             if (written != data.len) return error.InvalidPayload;
         }

@@ -5,7 +5,7 @@
     .minimum_zig_version = "0.13.0",
     .dependencies = .{
         .spider_node = .{
-            .path = "../SpiderNode",
+            .path = "deps/spider-node",
         },
         .spider_protocol = .{
             .path = "deps/spider-protocol",

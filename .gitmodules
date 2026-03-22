@@ -7,3 +7,6 @@
 [submodule "deps/ziggy-tool-runtime"]
 	path = deps/ziggy-tool-runtime
 	url = https://github.com/DeanoC/ZiggyToolRuntime.git
+[submodule "deps/spider-node"]
+	path = deps/spider-node
+	url = https://github.com/DeanoC/SpiderNode.git

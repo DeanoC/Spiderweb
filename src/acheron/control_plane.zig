@@ -618,24 +618,8 @@ pub const ControlPlane = struct {
         var active_it = self.active_project_by_agent.iterator();
         while (active_it.next()) |entry| {
             if (!std.mem.eql(u8, entry.value_ptr.*, host_project_id)) continue;
-            if (std.mem.eql(u8, entry.key_ptr.*, self.host_actor_id)) continue;
             self.allocator.free(entry.value_ptr.*);
             entry.value_ptr.* = try self.allocator.dupe(u8, "");
-            changed = true;
-        }
-
-        if (self.active_project_by_agent.getPtr(self.host_actor_id)) |existing| {
-            if (!std.mem.eql(u8, existing.*, host_project_id)) {
-                self.allocator.free(existing.*);
-                existing.* = try self.allocator.dupe(u8, host_project_id);
-                changed = true;
-            }
-        } else {
-            try self.active_project_by_agent.put(
-                self.allocator,
-                try self.allocator.dupe(u8, self.host_actor_id),
-                try self.allocator.dupe(u8, host_project_id),
-            );
             changed = true;
         }
 
@@ -2545,21 +2529,10 @@ pub const ControlPlane = struct {
         try self.ensureBuiltinHostProjectLocked(now_ms);
         const project = try getHostProjectPtrLocked(self);
 
-        if (self.active_project_by_agent.getPtr(self.host_actor_id)) |existing| {
-            self.allocator.free(existing.*);
-            existing.* = try self.allocator.dupe(u8, host_project_id);
-        } else {
-            try self.active_project_by_agent.put(
-                self.allocator,
-                try self.allocator.dupe(u8, self.host_actor_id),
-                try self.allocator.dupe(u8, host_project_id),
-            );
-        }
         self.project_activations_total +%= 1;
         if (project.mounts.items.len == 0 and self.spider_web_root.len > 0) {
             std.log.info("host project active without mount; waiting for local node registration (root={s})", .{self.spider_web_root});
         }
-        self.persistSnapshotBestEffortLocked();
 
         const workspace_root = "/";
         const escaped_agent = try jsonEscape(self.allocator, self.host_actor_id);
@@ -2608,16 +2581,7 @@ pub const ControlPlane = struct {
             _ = try self.runReconcileCycleLocked(now_ms, false);
         }
 
-        if (self.active_project_by_agent.getPtr(agent_id)) |existing| {
-            self.allocator.free(existing.*);
-            existing.* = try self.allocator.dupe(u8, project_id);
-        } else {
-            try self.active_project_by_agent.put(
-                self.allocator,
-                try self.allocator.dupe(u8, agent_id),
-                try self.allocator.dupe(u8, project_id),
-            );
-        }
+        try upsertActiveProjectBindingLocked(self, agent_id, project_id);
         self.project_activations_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
@@ -2940,16 +2904,7 @@ pub const ControlPlane = struct {
             if (project.kind == .host_internal and !(is_host_actor or is_admin)) {
                 return ControlPlaneError.ProjectAssignmentForbidden;
             }
-            if (self.active_project_by_agent.getPtr(agent_id)) |existing| {
-                self.allocator.free(existing.*);
-                existing.* = try self.allocator.dupe(u8, project.id);
-            } else {
-                try self.active_project_by_agent.put(
-                    self.allocator,
-                    try self.allocator.dupe(u8, agent_id),
-                    try self.allocator.dupe(u8, project.id),
-                );
-            }
+            try upsertActiveProjectBindingLocked(self, agent_id, project.id);
             self.project_activations_total +%= 1;
         }
 
@@ -3085,9 +3040,9 @@ pub const ControlPlane = struct {
             if (active_project_id.len > 0) {
                 if (self.projects.get(active_project_id)) |active_project| {
                     if (active_project.kind == .host_internal) {
-                        self.allocator.free(self.active_project_by_agent.getPtr(agent_id).?.*);
-                        self.active_project_by_agent.getPtr(agent_id).?.* = try self.allocator.dupe(u8, "");
-                        self.persistSnapshotBestEffortLocked();
+                        if (clearActiveProjectBindingLocked(self, agent_id)) {
+                            self.persistSnapshotBestEffortLocked();
+                        }
                     } else {
                         return try self.renderWorkspaceStatusForProjectLocked(
                             agent_id,
@@ -5050,6 +5005,13 @@ pub const ControlPlane = struct {
         var normalize_it = self.active_project_by_agent.iterator();
         while (normalize_it.next()) |entry| {
             if (entry.value_ptr.*.len == 0) continue;
+            if (self.projects.get(entry.value_ptr.*)) |project| {
+                if (project.kind == .host_internal) {
+                    self.allocator.free(entry.value_ptr.*);
+                    entry.value_ptr.* = try self.allocator.dupe(u8, "");
+                }
+                continue;
+            }
             if (!self.projects.contains(entry.value_ptr.*)) {
                 self.allocator.free(entry.value_ptr.*);
                 entry.value_ptr.* = try self.allocator.dupe(u8, "");
@@ -6011,6 +5973,28 @@ fn getHostProjectPtrLocked(self: *ControlPlane) !*Project {
     return self.projects.getPtr(host_project_id) orelse ControlPlaneError.ProjectNotFound;
 }
 
+fn upsertActiveProjectBindingLocked(self: *ControlPlane, agent_id: []const u8, project_id: []const u8) !void {
+    if (self.active_project_by_agent.getPtr(agent_id)) |existing| {
+        if (std.mem.eql(u8, existing.*, project_id)) return;
+        self.allocator.free(existing.*);
+        existing.* = try self.allocator.dupe(u8, project_id);
+        return;
+    }
+
+    try self.active_project_by_agent.put(
+        self.allocator,
+        try self.allocator.dupe(u8, agent_id),
+        try self.allocator.dupe(u8, project_id),
+    );
+}
+
+fn clearActiveProjectBindingLocked(self: *ControlPlane, agent_id: []const u8) bool {
+    const removed = self.active_project_by_agent.fetchRemove(agent_id) orelse return false;
+    self.allocator.free(removed.key);
+    self.allocator.free(removed.value);
+    return true;
+}
+
 fn hostProjectHasMountsLocked(self: *ControlPlane) bool {
     const project = getHostProjectLocked(self) catch return false;
     return project.mounts.items.len > 0;
@@ -6568,10 +6552,15 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     const activated = try plane.activateHostWorkspace();
     defer allocator.free(activated);
     try std.testing.expect(std.mem.indexOf(u8, activated, "\"project_id\":\"system\"") != null);
+    try std.testing.expect(plane.active_project_by_agent.get(default_host_actor_id) == null);
 
     const status = try plane.hostWorkspaceStatus();
     defer allocator.free(status);
     try std.testing.expect(std.mem.indexOf(u8, status, "\"project_id\":\"system\"") != null);
+
+    const generic_status = try plane.workspaceStatusWithRole(default_host_actor_id, null, true);
+    defer allocator.free(generic_status);
+    try std.testing.expect(std.mem.indexOf(u8, generic_status, "\"project_id\":null") != null);
 
     const non_system = try plane.createProject("{\"name\":\"Product\",\"vision\":\"Ship product milestones\"}");
     defer allocator.free(non_system);

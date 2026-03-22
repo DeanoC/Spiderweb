@@ -48,20 +48,30 @@ pub fn handleMountAttachControl(
         trusted_namespace_mount_url,
         is_admin,
     );
-    const workspace_json = try buildWorkspaceStatusPayloadForBinding(
+    const workspace_json = buildWorkspaceStatusPayloadForBinding(
         allocator,
         runtime_registry,
         binding,
         connection_workspace_url,
         is_admin,
-    );
+    ) catch |err| {
+        std.log.warn("mount_attach workspace status build failed: {s}", .{@errorName(err)});
+        return err;
+    };
     defer allocator.free(workspace_json);
     return session.buildMountGraphSnapshotPayloadForPath(
         workspace_json,
         session_key,
         requested_path,
         requested_depth,
-    );
+    ) catch |err| {
+        std.log.warn("mount_attach snapshot build failed path={s} depth={d}: {s}", .{
+            requested_path,
+            requested_depth,
+            @errorName(err),
+        });
+        return err;
+    };
 }
 
 pub fn handleMountFileReadControl(

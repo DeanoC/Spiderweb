@@ -116,11 +116,11 @@ pub fn buildWorkspaceAccessPayload(
         defer allocator.free(escaped_token);
         return std.fmt.allocPrint(
             allocator,
-            "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
+            "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
             .{ escaped_workspace, escaped_token },
         );
     }
-    return std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{escaped_workspace});
+    return std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{escaped_workspace});
 }
 
 pub fn buildWorkspaceStatusPayloadForBinding(

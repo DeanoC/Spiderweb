@@ -174,19 +174,19 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             const workspace_id = extractOptionalStringByNames(args_obj, &[_][]const u8{ "workspace_id", "project_id", "id" }) orelse return error.InvalidPayload;
             const escaped_project = try unified.jsonEscape(self.allocator, workspace_id);
             defer self.allocator.free(escaped_project);
-            const token_fragment = if (extractOptionalStringByNames(args_obj, &[_][]const u8{"project_token"})) |token| blk2: {
+            const token_fragment = if (extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_token"})) |token| blk2: {
                 const escaped = try unified.jsonEscape(self.allocator, token);
                 defer self.allocator.free(escaped);
-                break :blk2 try std.fmt.allocPrint(self.allocator, ",\"project_token\":\"{s}\"", .{escaped});
+                break :blk2 try std.fmt.allocPrint(self.allocator, ",\"workspace_token\":\"{s}\"", .{escaped});
             } else if (self.project_token) |token| blk2: {
                 const escaped = try unified.jsonEscape(self.allocator, token);
                 defer self.allocator.free(escaped);
-                break :blk2 try std.fmt.allocPrint(self.allocator, ",\"project_token\":\"{s}\"", .{escaped});
+                break :blk2 try std.fmt.allocPrint(self.allocator, ",\"workspace_token\":\"{s}\"", .{escaped});
             } else try self.allocator.dupe(u8, "");
             defer self.allocator.free(token_fragment);
             const payload = try std.fmt.allocPrint(
                 self.allocator,
-                "{{\"project_id\":\"{s}\"{s}}}",
+                "{{\"workspace_id\":\"{s}\"{s}}}",
                 .{ escaped_project, token_fragment },
             );
             defer self.allocator.free(payload);
@@ -228,8 +228,6 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
 }
 
 fn renderWorkspaceUpPayload(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
-    const has_explicit_project_id = args_obj.get("project_id") != null;
-
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(self.allocator);
     const writer = out.writer(self.allocator);
@@ -238,12 +236,9 @@ fn renderWorkspaceUpPayload(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
 
     var it = args_obj.iterator();
     while (it.next()) |entry| {
-        const original_key = entry.key_ptr.*;
-        if (std.mem.eql(u8, original_key, "workspace_id") and has_explicit_project_id) continue;
-        const key = if (std.mem.eql(u8, original_key, "workspace_id")) "project_id" else original_key;
         if (!first) try writer.writeByte(',');
         first = false;
-        try writeJsonString(writer, key);
+        try writeJsonString(writer, entry.key_ptr.*);
         try writer.writeByte(':');
         try writer.print("{f}", .{std.json.fmt(entry.value_ptr.*, .{})});
     }
@@ -256,7 +251,7 @@ fn buildListResultJson(self: anytype) ![]u8 {
     const plane = self.control_plane orelse return buildSuccessResultJson(self, .list, "{\"workspaces\":[]}");
     const result = try plane.listProjects();
     defer self.allocator.free(result);
-    const workspaces_array = try extractObjectArrayJson(self.allocator, result, "projects");
+    const workspaces_array = try extractObjectArrayJson(self.allocator, result, "workspaces");
     defer self.allocator.free(workspaces_array);
     const payload = try std.fmt.allocPrint(
         self.allocator,

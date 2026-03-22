@@ -79,5 +79,12 @@ pub fn initNamespaceSessionForBinding(
             .actor_id = binding.actor_id,
             .is_admin = is_admin,
         },
-    );
+    ) catch |err| {
+        std.log.warn("namespace session init failed agent={s} workspace={s}: {s}", .{
+            binding.agent_id,
+            project_id,
+            @errorName(err),
+        });
+        return err;
+    };
 }

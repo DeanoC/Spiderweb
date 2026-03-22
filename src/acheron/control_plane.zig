@@ -1857,11 +1857,11 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const obj = payload.value.object;
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        try validateIdentifier(project_id, 128);
-        const project_token = getOptionalString(obj, "project_token");
-        const project = try getPublicProjectPtrLocked(self, project_id);
-        try requireProjectAccessToken(project, project_token, is_admin);
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        try validateIdentifier(workspace_id, 128);
+        const workspace_token = getOptionalString(obj, "workspace_token");
+        const project = try getPublicProjectPtrLocked(self, workspace_id);
+        try requireProjectAccessToken(project, workspace_token, is_admin);
         const next_name = getOptionalString(obj, "name");
         const next_vision = getOptionalString(obj, "vision");
         const next_status = getOptionalString(obj, "status");
@@ -1907,20 +1907,20 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const obj = payload.value.object;
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        try validateIdentifier(project_id, 128);
-        const project_token = getOptionalString(obj, "project_token");
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        try validateIdentifier(workspace_id, 128);
+        const workspace_token = getOptionalString(obj, "workspace_token");
 
-        const existing_project = try getPublicProjectLocked(self, project_id);
+        const existing_project = try getPublicProjectLocked(self, workspace_id);
         if (existing_project.is_delete_protected) return ControlPlaneError.ProjectProtected;
-        try requireProjectAccessToken(&existing_project, project_token, is_admin);
-        const removed = self.projects.fetchRemove(project_id) orelse return ControlPlaneError.ProjectNotFound;
+        try requireProjectAccessToken(&existing_project, workspace_token, is_admin);
+        const removed = self.projects.fetchRemove(workspace_id) orelse return ControlPlaneError.ProjectNotFound;
         var project = removed.value;
         defer project.deinit(self.allocator);
 
         var active_it = self.active_project_by_agent.iterator();
         while (active_it.next()) |entry| {
-            if (std.mem.eql(u8, entry.value_ptr.*, project_id)) {
+            if (std.mem.eql(u8, entry.value_ptr.*, workspace_id)) {
                 self.allocator.free(entry.value_ptr.*);
                 entry.value_ptr.* = try self.allocator.dupe(u8, "");
             }
@@ -1928,9 +1928,9 @@ pub const ControlPlane = struct {
         self.project_deletes_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
-        const escaped = try jsonEscape(self.allocator, project_id);
+        const escaped = try jsonEscape(self.allocator, workspace_id);
         defer self.allocator.free(escaped);
-        return std.fmt.allocPrint(self.allocator, "{{\"deleted\":true,\"project_id\":\"{s}\"}}", .{escaped});
+        return std.fmt.allocPrint(self.allocator, "{{\"deleted\":true,\"workspace_id\":\"{s}\"}}", .{escaped});
     }
 
     pub fn listProjects(self: *ControlPlane) ![]u8 {
@@ -1940,7 +1940,7 @@ pub const ControlPlane = struct {
 
         var out = std.ArrayListUnmanaged(u8){};
         defer out.deinit(self.allocator);
-        try out.appendSlice(self.allocator, "{\"projects\":[");
+        try out.appendSlice(self.allocator, "{\"workspaces\":[");
         var first = true;
         var it = self.projects.valueIterator();
         while (it.next()) |project| {
@@ -2113,10 +2113,10 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const obj = payload.value.object;
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const project_token = getOptionalString(obj, "project_token");
-        const project = try getPublicProjectLocked(self, project_id);
-        try requireProjectActionAccess(&project, .read, null, project_token, is_admin);
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const workspace_token = getOptionalString(obj, "workspace_token");
+        const project = try getPublicProjectLocked(self, workspace_id);
+        try requireProjectActionAccess(&project, .read, null, workspace_token, is_admin);
 
         return renderProjectPayload(self.allocator, project, false);
     }
@@ -2134,18 +2134,18 @@ pub const ControlPlane = struct {
         defer payload.deinit();
         const obj = payload.value.object;
 
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const project_token = getOptionalString(obj, "project_token");
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const workspace_token = getOptionalString(obj, "workspace_token");
         const node_id = getRequiredString(obj, "node_id") catch return ControlPlaneError.MissingField;
         const export_name = getRequiredString(obj, "export_name") catch return ControlPlaneError.MissingField;
         const mount_path_raw = getRequiredString(obj, "mount_path") catch return ControlPlaneError.MissingField;
-        try validateIdentifier(project_id, 128);
+        try validateIdentifier(workspace_id, 128);
         try validateIdentifier(node_id, 128);
         try validateExportName(export_name);
 
         if (!self.nodes.contains(node_id)) return ControlPlaneError.NodeNotFound;
-        const project = try getPublicProjectPtrLocked(self, project_id);
-        try requireProjectActionAccess(project, .mount, null, project_token, is_admin);
+        const project = try getPublicProjectPtrLocked(self, workspace_id);
+        try requireProjectActionAccess(project, .mount, null, workspace_token, is_admin);
 
         const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
         errdefer self.allocator.free(mount_path);
@@ -2174,7 +2174,7 @@ pub const ControlPlane = struct {
         self.persistSnapshotBestEffortLocked();
         std.log.info(
             "control-plane mount set: project={s} node={s} export={s} path={s}",
-            .{ project_id, node_id, export_name, mount_path },
+            .{ workspace_id, node_id, export_name, mount_path },
         );
 
         return renderProjectPayload(self.allocator, project.*, false);
@@ -2193,20 +2193,20 @@ pub const ControlPlane = struct {
         defer payload.deinit();
         const obj = payload.value.object;
 
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const project_token = getOptionalString(obj, "project_token");
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const workspace_token = getOptionalString(obj, "workspace_token");
         const mount_path_raw = getRequiredString(obj, "mount_path") catch return ControlPlaneError.MissingField;
         const node_id_filter = getOptionalString(obj, "node_id");
         const export_name_filter = getOptionalString(obj, "export_name");
-        try validateIdentifier(project_id, 128);
+        try validateIdentifier(workspace_id, 128);
         if ((node_id_filter == null) != (export_name_filter == null)) return ControlPlaneError.MissingField;
         if (node_id_filter) |node_id| try validateIdentifier(node_id, 128);
         if (export_name_filter) |export_name| try validateExportName(export_name);
         const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
         defer self.allocator.free(mount_path);
 
-        const project = try getPublicProjectPtrLocked(self, project_id);
-        try requireProjectActionAccess(project, .mount, null, project_token, is_admin);
+        const project = try getPublicProjectPtrLocked(self, workspace_id);
+        try requireProjectActionAccess(project, .mount, null, workspace_token, is_admin);
         const removed_count = removeProjectMountEntriesLocked(
             self.allocator,
             project,
@@ -2234,16 +2234,16 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const obj = payload.value.object;
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const project_token = getOptionalString(obj, "project_token");
-        const project = try getPublicProjectLocked(self, project_id);
-        try requireProjectActionAccess(&project, .read, null, project_token, is_admin);
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const workspace_token = getOptionalString(obj, "workspace_token");
+        const project = try getPublicProjectLocked(self, workspace_id);
+        try requireProjectActionAccess(&project, .read, null, workspace_token, is_admin);
 
         const escaped_id = try jsonEscape(self.allocator, project.id);
         defer self.allocator.free(escaped_id);
         var out = std.ArrayListUnmanaged(u8){};
         defer out.deinit(self.allocator);
-        try out.writer(self.allocator).print("{{\"project_id\":\"{s}\",\"mounts\":[", .{escaped_id});
+        try out.writer(self.allocator).print("{{\"workspace_id\":\"{s}\",\"mounts\":[", .{escaped_id});
         for (project.mounts.items, 0..) |mount, idx| {
             if (idx != 0) try out.append(self.allocator, ',');
             try appendMountJson(self.allocator, &out, mount);
@@ -2265,14 +2265,14 @@ pub const ControlPlane = struct {
         defer payload.deinit();
         const obj = payload.value.object;
 
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const project_token = getOptionalString(obj, "project_token");
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const workspace_token = getOptionalString(obj, "workspace_token");
         const bind_path_raw = getRequiredString(obj, "bind_path") catch return ControlPlaneError.MissingField;
         const target_path_raw = getRequiredString(obj, "target_path") catch return ControlPlaneError.MissingField;
-        try validateIdentifier(project_id, 128);
+        try validateIdentifier(workspace_id, 128);
 
-        const project = try getPublicProjectPtrLocked(self, project_id);
-        try requireProjectActionAccess(project, .bind, null, project_token, is_admin);
+        const project = try getPublicProjectPtrLocked(self, workspace_id);
+        try requireProjectActionAccess(project, .bind, null, workspace_token, is_admin);
 
         const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
         errdefer self.allocator.free(bind_path);
@@ -2323,15 +2323,15 @@ pub const ControlPlane = struct {
         defer payload.deinit();
         const obj = payload.value.object;
 
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const project_token = getOptionalString(obj, "project_token");
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const workspace_token = getOptionalString(obj, "workspace_token");
         const bind_path_raw = getRequiredString(obj, "bind_path") catch return ControlPlaneError.MissingField;
-        try validateIdentifier(project_id, 128);
+        try validateIdentifier(workspace_id, 128);
         const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
         defer self.allocator.free(bind_path);
 
-        const project = try getPublicProjectPtrLocked(self, project_id);
-        try requireProjectActionAccess(project, .bind, null, project_token, is_admin);
+        const project = try getPublicProjectPtrLocked(self, workspace_id);
+        try requireProjectActionAccess(project, .bind, null, workspace_token, is_admin);
 
         var removed = false;
         var i: usize = 0;
@@ -2364,16 +2364,16 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const obj = payload.value.object;
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const project_token = getOptionalString(obj, "project_token");
-        const project = try getPublicProjectLocked(self, project_id);
-        try requireProjectActionAccess(&project, .read, null, project_token, is_admin);
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const workspace_token = getOptionalString(obj, "workspace_token");
+        const project = try getPublicProjectLocked(self, workspace_id);
+        try requireProjectActionAccess(&project, .read, null, workspace_token, is_admin);
 
         const escaped_id = try jsonEscape(self.allocator, project.id);
         defer self.allocator.free(escaped_id);
         var out = std.ArrayListUnmanaged(u8){};
         defer out.deinit(self.allocator);
-        try out.writer(self.allocator).print("{{\"project_id\":\"{s}\",\"binds\":[", .{escaped_id});
+        try out.writer(self.allocator).print("{{\"workspace_id\":\"{s}\",\"binds\":[", .{escaped_id});
         for (project.binds.items, 0..) |bind, idx| {
             if (idx != 0) try out.append(self.allocator, ',');
             try appendBindJson(self.allocator, &out, bind);
@@ -2394,14 +2394,14 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const obj = payload.value.object;
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const project_token = getOptionalString(obj, "project_token");
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const workspace_token = getOptionalString(obj, "workspace_token");
         const path_raw = getRequiredString(obj, "path") catch return ControlPlaneError.MissingField;
         const path = try normalizeMountPath(self.allocator, path_raw);
         defer self.allocator.free(path);
 
-        const project = try getPublicProjectLocked(self, project_id);
-        try requireProjectActionAccess(&project, .read, null, project_token, is_admin);
+        const project = try getPublicProjectLocked(self, workspace_id);
+        try requireProjectActionAccess(&project, .read, null, workspace_token, is_admin);
 
         const resolved_path = try resolveBoundPath(self.allocator, &project, path);
         defer if (resolved_path) |value| self.allocator.free(value);
@@ -2417,7 +2417,7 @@ pub const ControlPlane = struct {
         defer self.allocator.free(resolved_json);
         return std.fmt.allocPrint(
             self.allocator,
-            "{{\"project_id\":\"{s}\",\"path\":\"{s}\",\"resolved_path\":{s},\"matched\":{s}}}",
+            "{{\"workspace_id\":\"{s}\",\"path\":\"{s}\",\"resolved_path\":{s},\"matched\":{s}}}",
             .{ escaped_project, escaped_path, resolved_json, if (resolved_path != null) "true" else "false" },
         );
     }
@@ -2434,10 +2434,10 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const obj = payload.value.object;
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const current_token = getOptionalString(obj, "project_token");
-        try validateIdentifier(project_id, 128);
-        const project = try getPublicProjectPtrLocked(self, project_id);
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const current_token = getOptionalString(obj, "workspace_token");
+        try validateIdentifier(workspace_id, 128);
+        const project = try getPublicProjectPtrLocked(self, workspace_id);
         try requireProjectAccessToken(project, current_token, is_admin);
 
         self.allocator.free(project.mutation_token);
@@ -2447,13 +2447,13 @@ pub const ControlPlane = struct {
         self.project_token_rotates_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
-        const escaped_project = try jsonEscape(self.allocator, project_id);
+        const escaped_project = try jsonEscape(self.allocator, workspace_id);
         defer self.allocator.free(escaped_project);
         const escaped_token = try jsonEscape(self.allocator, project.mutation_token);
         defer self.allocator.free(escaped_token);
         return std.fmt.allocPrint(
             self.allocator,
-            "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\",\"rotated\":true,\"updated_at_ms\":{d}}}",
+            "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"rotated\":true,\"updated_at_ms\":{d}}}",
             .{ escaped_project, escaped_token, project.updated_at_ms },
         );
     }
@@ -2470,10 +2470,10 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const obj = payload.value.object;
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        const current_token = getOptionalString(obj, "project_token");
-        try validateIdentifier(project_id, 128);
-        const project = try getPublicProjectPtrLocked(self, project_id);
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        const current_token = getOptionalString(obj, "workspace_token");
+        try validateIdentifier(workspace_id, 128);
+        const project = try getPublicProjectPtrLocked(self, workspace_id);
         try requireProjectAccessToken(project, current_token, is_admin);
 
         project.token_locked = false;
@@ -2481,11 +2481,11 @@ pub const ControlPlane = struct {
         self.project_token_revokes_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
-        const escaped_project = try jsonEscape(self.allocator, project_id);
+        const escaped_project = try jsonEscape(self.allocator, workspace_id);
         defer self.allocator.free(escaped_project);
         return std.fmt.allocPrint(
             self.allocator,
-            "{{\"project_id\":\"{s}\",\"project_token\":null,\"revoked\":true,\"updated_at_ms\":{d}}}",
+            "{{\"workspace_id\":\"{s}\",\"workspace_token\":null,\"revoked\":true,\"updated_at_ms\":{d}}}",
             .{ escaped_project, project.updated_at_ms },
         );
     }
@@ -2524,17 +2524,17 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const obj = payload.value.object;
-        const project_id = getRequiredString(obj, "project_id") catch return ControlPlaneError.MissingField;
-        try validateIdentifier(project_id, 128);
-        const project = self.projects.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
+        const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
+        try validateIdentifier(workspace_id, 128);
+        const project = self.projects.getPtr(workspace_id) orelse return ControlPlaneError.ProjectNotFound;
         if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
         const is_host_actor = self.isHostActor(agent_id);
-        if (is_host_actor and !std.mem.eql(u8, project_id, host_project_id)) {
+        if (is_host_actor and !std.mem.eql(u8, workspace_id, host_project_id)) {
             return ControlPlaneError.ProjectAssignmentForbidden;
         }
 
-        const maybe_project_token = getOptionalString(obj, "project_token");
-        try requireProjectActionAccess(project, .read, agent_id, maybe_project_token, is_admin);
+        const maybe_workspace_token = getOptionalString(obj, "workspace_token");
+        try requireProjectActionAccess(project, .read, agent_id, maybe_workspace_token, is_admin);
         if (try ensureDefaultProjectMountsLocked(self, project)) {
             project.updated_at_ms = now_ms;
             self.mount_sets_total +%= 1;
@@ -2542,11 +2542,11 @@ pub const ControlPlane = struct {
             _ = try self.runReconcileCycleLocked(now_ms, false);
         }
 
-        try upsertActiveProjectBindingLocked(self, agent_id, project_id);
+        try upsertActiveProjectBindingLocked(self, agent_id, workspace_id);
         self.project_activations_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
-        return buildWorkspaceActivationPayload(self.allocator, agent_id, project_id);
+        return buildWorkspaceActivationPayload(self.allocator, agent_id, workspace_id);
     }
 
     pub fn requestReconcile(self: *ControlPlane) void {
@@ -2593,12 +2593,12 @@ pub const ControlPlane = struct {
         defer payload.deinit();
         const obj = payload.value.object;
 
-        const requested_workspace_id = getOptionalString(obj, "project_id");
-        const requested_workspace_name = getOptionalString(obj, "name") orelse getOptionalString(obj, "project_name");
+        const requested_workspace_id = getOptionalString(obj, "workspace_id");
+        const requested_workspace_name = getOptionalString(obj, "name") orelse getOptionalString(obj, "workspace_name");
         const requested_workspace_vision = getOptionalString(obj, "vision");
         const requested_workspace_status = getOptionalString(obj, "status");
         const requested_workspace_template_id = getOptionalString(obj, "template_id");
-        const requested_workspace_token = getOptionalString(obj, "project_token");
+        const requested_workspace_token = getOptionalString(obj, "workspace_token");
         const requested_workspace_access_policy = obj.get("access_policy");
         const activate = getOptionalBool(obj, "activate", true) catch return ControlPlaneError.InvalidPayload;
         if (requested_workspace_token) |workspace_token| try validateSecretToken(workspace_token, 256);
@@ -2712,11 +2712,11 @@ pub const ControlPlane = struct {
         var selected_workspace_token: ?[]const u8 = null;
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
-        if (getOptionalString(payload.value.object, "project_id")) |workspace_id| {
+        if (getOptionalString(payload.value.object, "workspace_id")) |workspace_id| {
             try validateIdentifier(workspace_id, 128);
             selected_workspace_id = workspace_id;
         }
-        if (getOptionalString(payload.value.object, "project_token")) |workspace_token| {
+        if (getOptionalString(payload.value.object, "workspace_token")) |workspace_token| {
             try validateSecretToken(workspace_token, 256);
             selected_workspace_token = workspace_token;
         }
@@ -2756,19 +2756,19 @@ fn requestReconcileLocked(self: *ControlPlane, now_ms: i64) void {
 fn buildWorkspaceActivationPayload(
     allocator: std.mem.Allocator,
     agent_id: []const u8,
-    project_id: []const u8,
+    workspace_id: []const u8,
 ) ![]u8 {
     const escaped_agent = try jsonEscape(allocator, agent_id);
     defer allocator.free(escaped_agent);
-    const escaped_project = try jsonEscape(allocator, project_id);
-    defer allocator.free(escaped_project);
+    const escaped_workspace = try jsonEscape(allocator, workspace_id);
+    defer allocator.free(escaped_workspace);
     const escaped_root = try jsonEscape(allocator, "/");
     defer allocator.free(escaped_root);
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
-        .{ escaped_agent, escaped_project, escaped_root },
+        "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
+        .{ escaped_agent, escaped_workspace, escaped_root },
     );
 }
 
@@ -3052,7 +3052,7 @@ fn applyWorkspaceUpBindReplacementsLocked(
 fn buildWorkspaceUpResultPayloadLocked(
     self: *ControlPlane,
     agent_id: []const u8,
-    project: *Project,
+    workspace: *Project,
     is_admin: bool,
     now_ms: i64,
     created: bool,
@@ -3060,16 +3060,16 @@ fn buildWorkspaceUpResultPayloadLocked(
 ) ![]u8 {
     const workspace_json = try self.renderWorkspaceStatusForProjectLocked(
         agent_id,
-        project.id,
+        workspace.id,
         null,
         is_admin,
         now_ms,
     );
     defer self.allocator.free(workspace_json);
-    const escaped_project = try jsonEscape(self.allocator, project.id);
-    defer self.allocator.free(escaped_project);
-    const workspace_token_json = if (projectTokenEnabled(project)) blk: {
-        const escaped_token = try jsonEscape(self.allocator, project.mutation_token);
+    const escaped_workspace = try jsonEscape(self.allocator, workspace.id);
+    defer self.allocator.free(escaped_workspace);
+    const workspace_token_json = if (projectTokenEnabled(workspace)) blk: {
+        const escaped_token = try jsonEscape(self.allocator, workspace.mutation_token);
         defer self.allocator.free(escaped_token);
         break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped_token});
     } else try self.allocator.dupe(u8, "null");
@@ -3077,9 +3077,9 @@ fn buildWorkspaceUpResultPayloadLocked(
 
     return std.fmt.allocPrint(
         self.allocator,
-        "{{\"project_id\":\"{s}\",\"project_token\":{s},\"created\":{s},\"activated\":{s},\"workspace\":{s}}}",
+        "{{\"workspace_id\":\"{s}\",\"workspace_token\":{s},\"created\":{s},\"activated\":{s},\"workspace\":{s}}}",
         .{
-            escaped_project,
+            escaped_workspace,
             workspace_token_json,
             if (created) "true" else "false",
             if (activate) "true" else "false",
@@ -3152,7 +3152,7 @@ fn buildEmptyWorkspaceStatusPayloadLocked(
 
     return std.fmt.allocPrint(
         self.allocator,
-        "{{\"agent_id\":\"{s}\",\"project_id\":null,\"name\":null,\"workspace_name\":null,\"template_id\":null,\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"{s}\",\"last_reconcile_ms\":{d},\"last_success_ms\":{d},\"last_error\":{s},\"queue_depth\":{d}}}",
+        "{{\"agent_id\":\"{s}\",\"workspace_id\":null,\"name\":null,\"workspace_name\":null,\"template_id\":null,\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"{s}\",\"last_reconcile_ms\":{d},\"last_success_ms\":{d},\"last_error\":{s},\"queue_depth\":{d}}}",
         .{
             escaped_agent,
             reconcileStateName(self.reconcile_state),
@@ -3249,10 +3249,10 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         if (payload_json != null) {
             var payload = try parsePayload(self.allocator, payload_json);
             defer payload.deinit();
-            if (getOptionalString(payload.value.object, "project_id")) |project_id| {
-                try validateIdentifier(project_id, 128);
-                if (!self.projects.contains(project_id)) return ControlPlaneError.ProjectNotFound;
-                selected_project_id = project_id;
+            if (getOptionalString(payload.value.object, "workspace_id")) |workspace_id| {
+                try validateIdentifier(workspace_id, 128);
+                if (!self.projects.contains(workspace_id)) return ControlPlaneError.ProjectNotFound;
+                selected_project_id = workspace_id;
             }
         }
 
@@ -3300,7 +3300,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 const escaped_project = try jsonEscape(self.allocator, project.id);
                 defer self.allocator.free(escaped_project);
                 try out.writer(self.allocator).print(
-                    "{{\"project_id\":\"{s}\",\"mounts\":{d},\"selected_mounts\":{d},\"online_mounts\":{d},\"degraded_mounts\":{d},\"missing_mounts\":{d},\"drift_count\":{d},\"queue_depth\":{d}}}",
+                    "{{\"workspace_id\":\"{s}\",\"mounts\":{d},\"selected_mounts\":{d},\"online_mounts\":{d},\"degraded_mounts\":{d},\"missing_mounts\":{d},\"drift_count\":{d},\"queue_depth\":{d}}}",
                     .{
                         escaped_project,
                         project.mounts.items.len,
@@ -3351,7 +3351,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         var out = std.ArrayListUnmanaged(u8){};
         errdefer out.deinit(self.allocator);
         try out.writer(self.allocator).print(
-            "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"name\":\"{s}\",\"workspace_name\":\"{s}\",\"template_id\":\"{s}\",\"workspace_root\":\"{s}\"",
+            "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"name\":\"{s}\",\"workspace_name\":\"{s}\",\"template_id\":\"{s}\",\"workspace_root\":\"{s}\"",
             .{ escaped_agent, escaped_project, escaped_name, escaped_name, escaped_template_id, escaped_root },
         );
         const topology = try self.appendWorkspaceTopologyJsonLocked(
@@ -5398,7 +5398,7 @@ fn appendProjectSummaryJson(allocator: std.mem.Allocator, out: *std.ArrayListUnm
     const escaped_kind = try jsonEscape(allocator, projectKindName(project.kind));
     defer allocator.free(escaped_kind);
     try out.writer(allocator).print(
-        "{{\"project_id\":\"{s}\",\"name\":\"{s}\",\"status\":\"{s}\",\"kind\":\"{s}\",\"is_delete_protected\":{s},\"mount_count\":{d}}}",
+        "{{\"workspace_id\":\"{s}\",\"name\":\"{s}\",\"status\":\"{s}\",\"kind\":\"{s}\",\"is_delete_protected\":{s},\"mount_count\":{d}}}",
         .{
             escaped_id,
             escaped_name,
@@ -5992,7 +5992,7 @@ fn renderProjectPayload(allocator: std.mem.Allocator, project: Project, include_
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(allocator);
     try out.writer(allocator).print(
-        "{{\"project_id\":\"{s}\",\"name\":\"{s}\",\"vision\":\"{s}\",\"status\":\"{s}\",\"template_id\":\"{s}\",\"kind\":\"{s}\",\"is_delete_protected\":{s},\"token_locked\":{s},\"created_at_ms\":{d},\"updated_at_ms\":{d}",
+        "{{\"workspace_id\":\"{s}\",\"name\":\"{s}\",\"vision\":\"{s}\",\"status\":\"{s}\",\"template_id\":\"{s}\",\"kind\":\"{s}\",\"is_delete_protected\":{s},\"token_locked\":{s},\"created_at_ms\":{d},\"updated_at_ms\":{d}",
         .{
             escaped_id,
             escaped_name,
@@ -6007,7 +6007,7 @@ fn renderProjectPayload(allocator: std.mem.Allocator, project: Project, include_
         },
     );
     if (escaped_token) |token| {
-        try out.writer(allocator).print(",\"project_token\":\"{s}\"", .{token});
+        try out.writer(allocator).print(",\"workspace_token\":\"{s}\"", .{token});
     }
     try out.appendSlice(allocator, ",\"access_policy\":");
     try appendProjectAccessPolicyJson(allocator, &out, project.access_policy);

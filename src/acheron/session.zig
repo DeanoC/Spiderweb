@@ -1310,7 +1310,7 @@ pub const Session = struct {
     }
 
     fn seedNamespace(self: *Session) !void {
-        var policy = try workspace_policy.loadWorkspacePolicy(
+        var policy = workspace_policy.loadWorkspacePolicy(
             self.allocator,
             .{
                 .agent_id = self.agent_id,
@@ -1318,7 +1318,10 @@ pub const Session = struct {
                 .agents_dir = self.agents_dir,
                 .projects_dir = self.projects_dir,
             },
-        );
+        ) catch |err| {
+            std.log.warn("seedNamespace loadWorkspacePolicy failed: {s}", .{@errorName(err)});
+            return err;
+        };
         defer policy.deinit(self.allocator);
         if (self.active_namespace_project_id) |value| self.allocator.free(value);
         self.active_namespace_project_id = try self.allocator.dupe(u8, policy.project_id);
@@ -1358,12 +1361,18 @@ pub const Session = struct {
             "{\"read\":true,\"write\":false}",
             "System-wide stable namespaces shared across agents/projects.",
         );
-        try self.addNodeDirectoriesFromControlPlane(nodes_root);
+        self.addNodeDirectoriesFromControlPlane(nodes_root) catch |err| {
+            std.log.warn("seedNamespace addNodeDirectoriesFromControlPlane failed: {s}", .{@errorName(err)});
+            return err;
+        };
         for (policy.nodes.items) |node| {
             if (self.lookupChild(nodes_root, node.id) != null) continue;
             try self.addNodeDirectory(nodes_root, node, false);
         }
-        try self.seedLocalCatalogServiceNamespaces(global_root);
+        self.seedLocalCatalogServiceNamespaces(global_root) catch |err| {
+            std.log.warn("seedNamespace seedLocalCatalogServiceNamespaces failed: {s}", .{@errorName(err)});
+            return err;
+        };
 
         const active_agent_dir = try self.addDir(agents_root, self.agent_id, false);
         _ = try self.addFile(active_agent_dir, "README.md", "Active agent identity in this project namespace.\n", false, .none);
@@ -1503,13 +1512,16 @@ pub const Session = struct {
             _ = try self.addFile(project_agents_dir, agent_name, target, false, .none);
         }
 
-        try self.addProjectMetaFiles(
+        self.addProjectMetaFiles(
             project_meta_dir,
             policy,
             workspace_status_json,
             loaded_live_mounts,
             loaded_live_nodes,
-        );
+        ) catch |err| {
+            std.log.warn("seedNamespace addProjectMetaFiles failed: {s}", .{@errorName(err)});
+            return err;
+        };
 
         try self.addDirectoryDescriptors(
             meta_root,
@@ -1568,11 +1580,20 @@ pub const Session = struct {
             _ = try self.addFile(meta_root, "workspace_alerts.json", "[]", false, .none);
         }
 
-        try self.refreshProjectBindsFromControlPlane();
+        self.refreshProjectBindsFromControlPlane() catch |err| {
+            std.log.warn("seedNamespace refreshProjectBindsFromControlPlane failed: {s}", .{@errorName(err)});
+            return err;
+        };
         if (workspace_status_json) |status_json| {
-            try self.appendWorkspaceMountAliasesFromWorkspaceStatus(status_json);
+            self.appendWorkspaceMountAliasesFromWorkspaceStatus(status_json) catch |err| {
+                std.log.warn("seedNamespace appendWorkspaceMountAliasesFromWorkspaceStatus failed: {s}", .{@errorName(err)});
+                return err;
+            };
         }
-        try self.materializeProjectBindPrefixDirectories();
+        self.materializeProjectBindPrefixDirectories() catch |err| {
+            std.log.warn("seedNamespace materializeProjectBindPrefixDirectories failed: {s}", .{@errorName(err)});
+            return err;
+        };
         if (self.lookupChild(self.root_id, "services")) |services_root| {
             try self.addDirectoryDescriptors(
                 services_root,
@@ -1583,21 +1604,60 @@ pub const Session = struct {
             );
         }
 
-        try self.registerExistingGlobalVenomBinding(global_root, "events", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "search_code", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "terminal", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "mounts", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "workers", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "workspaces", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "git", "project_namespace");
-        try self.registerExistingGlobalVenomBinding(global_root, "library", "global_namespace");
+        self.registerExistingGlobalVenomBinding(global_root, "events", "project_namespace") catch |err| {
+            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(events) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerExistingGlobalVenomBinding(global_root, "search_code", "project_namespace") catch |err| {
+            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(search_code) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerExistingGlobalVenomBinding(global_root, "terminal", "project_namespace") catch |err| {
+            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(terminal) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerExistingGlobalVenomBinding(global_root, "mounts", "project_namespace") catch |err| {
+            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(mounts) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerExistingGlobalVenomBinding(global_root, "workers", "project_namespace") catch |err| {
+            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(workers) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerExistingGlobalVenomBinding(global_root, "workspaces", "project_namespace") catch |err| {
+            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(workspaces) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerExistingGlobalVenomBinding(global_root, "git", "project_namespace") catch |err| {
+            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(git) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerExistingGlobalVenomBinding(global_root, "library", "global_namespace") catch |err| {
+            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(library) failed: {s}", .{@errorName(err)});
+            return err;
+        };
         const preferred_fs_node_id = try self.resolvePreferredBoundVenomNodeId("fs");
         defer if (preferred_fs_node_id) |value| self.allocator.free(value);
-        _ = try self.seedBoundGlobalFsNamespace(global_root, preferred_fs_node_id orelse "local");
-        try self.seedActiveScopedVenomBindings(active_agent_venoms_dir, project_venoms_dir, policy.project_id);
-        try self.refreshScopedVenomIndexes();
-        try self.addWorkspaceServiceDiscoveryFiles(meta_root, project_meta_dir, policy.project_id);
-        try self.seedWorkspaceAgentsContract(policy.project_id);
+        _ = self.seedBoundGlobalFsNamespace(global_root, preferred_fs_node_id orelse "local") catch |err| {
+            std.log.warn("seedNamespace seedBoundGlobalFsNamespace failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.seedActiveScopedVenomBindings(active_agent_venoms_dir, project_venoms_dir, policy.project_id) catch |err| {
+            std.log.warn("seedNamespace seedActiveScopedVenomBindings failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.refreshScopedVenomIndexes() catch |err| {
+            std.log.warn("seedNamespace refreshScopedVenomIndexes failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.addWorkspaceServiceDiscoveryFiles(meta_root, project_meta_dir, policy.project_id) catch |err| {
+            std.log.warn("seedNamespace addWorkspaceServiceDiscoveryFiles failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.seedWorkspaceAgentsContract(policy.project_id) catch |err| {
+            std.log.warn("seedNamespace seedWorkspaceAgentsContract failed: {s}", .{@errorName(err)});
+            return err;
+        };
     }
 
     fn addProjectMetaFiles(
@@ -1925,10 +1985,10 @@ pub const Session = struct {
             defer self.allocator.free(escaped_token);
             break :blk try std.fmt.allocPrint(
                 self.allocator,
-                "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
+                "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
                 .{ escaped_project, escaped_token },
             );
-        } else try std.fmt.allocPrint(self.allocator, "{{\"project_id\":\"{s}\"}}", .{escaped_project});
+        } else try std.fmt.allocPrint(self.allocator, "{{\"workspace_id\":\"{s}\"}}", .{escaped_project});
         defer self.allocator.free(payload);
 
         const binds_json = plane.listProjectBindsWithRole(payload, self.is_admin) catch return;
@@ -2220,32 +2280,62 @@ pub const Session = struct {
         const local_venoms_root = self.lookupLocalNodeVenomsRoot() orelse return;
 
         const library_dir = try self.addDir(local_venoms_root, "library", false);
-        try self.seedGlobalLibraryNamespaceAt(library_dir, "/nodes/local/venoms/library");
-        try self.seedBuiltinPackageMetadata(library_dir, "library");
+        self.seedGlobalLibraryNamespaceAt(library_dir, "/nodes/local/venoms/library") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces library namespace failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.seedBuiltinPackageMetadata(library_dir, "library") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces library metadata failed: {s}", .{@errorName(err)});
+            return err;
+        };
         _ = try self.cloneLocalCatalogVenomAlias(library_dir, global_root, "library");
 
         const venom_packages_dir = try self.addDir(local_venoms_root, "venom_packages", false);
-        try self.seedVenomPackagesNamespaceAt(venom_packages_dir, "/nodes/local/venoms/venom_packages");
-        try self.seedBuiltinPackageMetadata(venom_packages_dir, "venom_packages");
+        self.seedVenomPackagesNamespaceAt(venom_packages_dir, "/nodes/local/venoms/venom_packages") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces venom_packages namespace failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.seedBuiltinPackageMetadata(venom_packages_dir, "venom_packages") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces venom_packages metadata failed: {s}", .{@errorName(err)});
+            return err;
+        };
         const venom_packages_alias_dir = try self.cloneLocalCatalogVenomAlias(venom_packages_dir, global_root, "venom_packages");
         self.venom_packages_status_alias_id = self.lookupChild(venom_packages_alias_dir, "status.json") orelse 0;
         self.venom_packages_result_alias_id = self.lookupChild(venom_packages_alias_dir, "result.json") orelse 0;
 
         const events_dir = try self.addDir(local_venoms_root, "events", false);
-        try self.seedEventsNamespaceAt(events_dir, "/nodes/local/venoms/events");
-        try self.seedBuiltinPackageMetadata(events_dir, "events");
+        self.seedEventsNamespaceAt(events_dir, "/nodes/local/venoms/events") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces events namespace failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.seedBuiltinPackageMetadata(events_dir, "events") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces events metadata failed: {s}", .{@errorName(err)});
+            return err;
+        };
         _ = try self.cloneLocalCatalogVenomAlias(events_dir, global_root, "events");
 
         const home_dir = try self.addDir(local_venoms_root, "home", false);
-        try self.seedAgentHomeNamespaceAt(home_dir, "/nodes/local/venoms/home");
-        try self.seedBuiltinPackageMetadata(home_dir, "home");
+        self.seedAgentHomeNamespaceAt(home_dir, "/nodes/local/venoms/home") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces home namespace failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.seedBuiltinPackageMetadata(home_dir, "home") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces home metadata failed: {s}", .{@errorName(err)});
+            return err;
+        };
         const home_alias_dir = try self.cloneLocalCatalogVenomAlias(home_dir, global_root, "home");
         self.home_status_alias_id = self.lookupChild(home_alias_dir, "status.json") orelse 0;
         self.home_result_alias_id = self.lookupChild(home_alias_dir, "result.json") orelse 0;
 
         const workers_dir = try self.addDir(local_venoms_root, "workers", false);
-        try workers_venom.seedNamespaceAt(self, workers_dir, "/nodes/local/venoms/workers");
-        try self.seedBuiltinPackageMetadata(workers_dir, "workers");
+        workers_venom.seedNamespaceAt(self, workers_dir, "/nodes/local/venoms/workers") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces workers namespace failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.seedBuiltinPackageMetadata(workers_dir, "workers") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces workers metadata failed: {s}", .{@errorName(err)});
+            return err;
+        };
         const workers_alias_dir = try self.cloneLocalCatalogVenomAlias(workers_dir, global_root, "workers");
         self.workers_status_alias_id = self.lookupChild(workers_alias_dir, "status.json") orelse 0;
         self.workers_result_alias_id = self.lookupChild(workers_alias_dir, "result.json") orelse 0;
@@ -2259,15 +2349,27 @@ pub const Session = struct {
         }
 
         const mounts_dir = try self.addDir(local_venoms_root, "mounts", false);
-        try self.seedAgentMountsNamespaceAt(mounts_dir, "/nodes/local/venoms/mounts");
-        try self.seedBuiltinPackageMetadata(mounts_dir, "mounts");
+        self.seedAgentMountsNamespaceAt(mounts_dir, "/nodes/local/venoms/mounts") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces mounts namespace failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.seedBuiltinPackageMetadata(mounts_dir, "mounts") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces mounts metadata failed: {s}", .{@errorName(err)});
+            return err;
+        };
         const mounts_alias_dir = try self.cloneLocalCatalogVenomAlias(mounts_dir, global_root, "mounts");
         self.mounts_status_alias_id = self.lookupChild(mounts_alias_dir, "status.json") orelse 0;
         self.mounts_result_alias_id = self.lookupChild(mounts_alias_dir, "result.json") orelse 0;
 
         const workspaces_dir = try self.addDir(local_venoms_root, "workspaces", false);
-        try self.seedAgentWorkspacesNamespaceAt(workspaces_dir, "/nodes/local/venoms/workspaces");
-        try self.seedBuiltinPackageMetadata(workspaces_dir, "workspaces");
+        self.seedAgentWorkspacesNamespaceAt(workspaces_dir, "/nodes/local/venoms/workspaces") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces workspaces namespace failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.seedBuiltinPackageMetadata(workspaces_dir, "workspaces") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces workspaces metadata failed: {s}", .{@errorName(err)});
+            return err;
+        };
         _ = try self.cloneLocalCatalogVenomAlias(workspaces_dir, global_root, "workspaces");
 
         if (self.lookupChild(local_venoms_root, "git")) |git_dir| {
@@ -2276,16 +2378,46 @@ pub const Session = struct {
             self.git_result_alias_id = self.lookupChild(git_alias_dir, "result.json") orelse 0;
         }
 
-        try self.refreshNodeVenomsIndex("local");
-        try self.registerLocalCatalogVenomBinding("library", "node_catalog");
-        try self.registerLocalCatalogVenomBinding("venom_packages", "node_catalog");
-        try self.registerLocalCatalogVenomBinding("events", "node_catalog");
-        try self.registerLocalCatalogVenomBinding("workers", "node_catalog");
-        try self.registerLocalCatalogVenomBinding("search_code", "node_catalog");
-        try self.registerLocalCatalogVenomBinding("terminal", "node_catalog");
-        try self.registerLocalCatalogVenomBinding("mounts", "node_catalog");
-        try self.registerLocalCatalogVenomBinding("workspaces", "node_catalog");
-        try self.registerLocalCatalogVenomBinding("git", "node_catalog");
+        self.refreshNodeVenomsIndex("local") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces refreshNodeVenomsIndex failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerLocalCatalogVenomBinding("library", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(library) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerLocalCatalogVenomBinding("venom_packages", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(venom_packages) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerLocalCatalogVenomBinding("events", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(events) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerLocalCatalogVenomBinding("workers", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(workers) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerLocalCatalogVenomBinding("search_code", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(search_code) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerLocalCatalogVenomBinding("terminal", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(terminal) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerLocalCatalogVenomBinding("mounts", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(mounts) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerLocalCatalogVenomBinding("workspaces", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(workspaces) failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.registerLocalCatalogVenomBinding("git", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(git) failed: {s}", .{@errorName(err)});
+            return err;
+        };
     }
 
     fn addProjectFsLinksFromPolicy(

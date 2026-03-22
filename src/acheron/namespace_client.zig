@@ -1649,7 +1649,13 @@ fn readControlPayloadFor(self: *NamespaceClient, expected_id: []const u8, expect
 
         const msg_type = getRequiredString(parsed.value.object, "type") orelse continue;
         if (std.mem.eql(u8, msg_type, "control.error")) return mapControlError(parsed.value.object);
-        if (!std.mem.eql(u8, msg_type, expected_type)) return error.UnexpectedControlResponse;
+        if (!std.mem.eql(u8, msg_type, expected_type)) {
+            std.log.warn(
+                "unexpected control response type id={s} expected={s} actual={s}",
+                .{ expected_id, expected_type, msg_type },
+            );
+            return error.UnexpectedControlResponse;
+        }
 
         const payload = parsed.value.object.get("payload") orelse return self.allocator.dupe(u8, "{}");
         return std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(payload, .{})});

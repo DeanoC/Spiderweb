@@ -19,31 +19,6 @@ pub const ControlResult = union(enum) {
     err: ControlError,
 };
 
-const JsonFieldAlias = struct {
-    from: []const u8,
-    to: []const u8,
-};
-
-const workspace_to_project_aliases = [_]JsonFieldAlias{
-    .{ .from = "workspace_id", .to = "project_id" },
-    .{ .from = "workspace_token", .to = "project_token" },
-    .{ .from = "workspace_name", .to = "name" },
-    .{ .from = "workspaces", .to = "projects" },
-    .{ .from = "active_workspace", .to = "active_project" },
-    .{ .from = "selected_workspace", .to = "selected_project" },
-    .{ .from = "workspace_mount_digest", .to = "project_mount_digest" },
-};
-
-const project_to_workspace_aliases = [_]JsonFieldAlias{
-    .{ .from = "project_id", .to = "workspace_id" },
-    .{ .from = "project_token", .to = "workspace_token" },
-    .{ .from = "project_name", .to = "workspace_name" },
-    .{ .from = "projects", .to = "workspaces" },
-    .{ .from = "active_project", .to = "active_workspace" },
-    .{ .from = "selected_project", .to = "selected_workspace" },
-    .{ .from = "project_mount_digest", .to = "workspace_mount_digest" },
-};
-
 pub fn handleControlPlaneControl(
     allocator: std.mem.Allocator,
     runtime_registry: anytype,
@@ -154,96 +129,6 @@ fn isWorkspaceTopologyMutation(control_type: unified.ControlType) bool {
     };
 }
 
-fn isWorkspaceApiControlType(control_type: unified.ControlType) bool {
-    return switch (control_type) {
-        .workspace_create,
-        .workspace_update,
-        .workspace_delete,
-        .workspace_list,
-        .workspace_get,
-        .workspace_template_list,
-        .workspace_template_get,
-        .workspace_mount_set,
-        .workspace_mount_remove,
-        .workspace_mount_list,
-        .workspace_bind_set,
-        .workspace_bind_remove,
-        .workspace_bind_list,
-        .workspace_token_rotate,
-        .workspace_token_revoke,
-        .workspace_activate,
-        .workspace_status,
-        .workspace_up,
-        => true,
-        else => false,
-    };
-}
-
-fn aliasFieldName(name: []const u8, aliases: []const JsonFieldAlias) []const u8 {
-    for (aliases) |alias| {
-        if (std.mem.eql(u8, name, alias.from)) return alias.to;
-    }
-    return name;
-}
-
-fn appendAliasedJsonValue(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayListUnmanaged(u8),
-    value: std.json.Value,
-    aliases: []const JsonFieldAlias,
-) !void {
-    switch (value) {
-        .null => try out.appendSlice(allocator, "null"),
-        .bool => |boolean| try out.appendSlice(allocator, if (boolean) "true" else "false"),
-        .integer => |integer| try out.writer(allocator).print("{d}", .{integer}),
-        .float => |float| try out.writer(allocator).print("{d}", .{float}),
-        .number_string => |number| try out.appendSlice(allocator, number),
-        .string => |string| {
-            const escaped = try unified.jsonEscape(allocator, string);
-            defer allocator.free(escaped);
-            try out.writer(allocator).print("\"{s}\"", .{escaped});
-        },
-        .array => |array| {
-            try out.append(allocator, '[');
-            for (array.items, 0..) |item, idx| {
-                if (idx != 0) try out.append(allocator, ',');
-                try appendAliasedJsonValue(allocator, out, item, aliases);
-            }
-            try out.append(allocator, ']');
-        },
-        .object => |object| {
-            try out.append(allocator, '{');
-            var it = object.iterator();
-            var idx: usize = 0;
-            while (it.next()) |entry| : (idx += 1) {
-                if (idx != 0) try out.append(allocator, ',');
-                const aliased_name = aliasFieldName(entry.key_ptr.*, aliases);
-                const escaped_name = try unified.jsonEscape(allocator, aliased_name);
-                defer allocator.free(escaped_name);
-                try out.writer(allocator).print("\"{s}\":", .{escaped_name});
-                try appendAliasedJsonValue(allocator, out, entry.value_ptr.*, aliases);
-            }
-            try out.append(allocator, '}');
-        },
-    }
-}
-
-fn rewriteJsonFieldAliases(
-    allocator: std.mem.Allocator,
-    payload_json: ?[]const u8,
-    aliases: []const JsonFieldAlias,
-) !?[]u8 {
-    const raw = payload_json orelse return null;
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
-    defer parsed.deinit();
-
-    var out = std.ArrayListUnmanaged(u8){};
-    errdefer out.deinit(allocator);
-    try appendAliasedJsonValue(allocator, &out, parsed.value, aliases);
-    const owned = try out.toOwnedSlice(allocator);
-    return @as(?[]u8, owned);
-}
-
 pub fn handleControlPlaneCommand(
     runtime_registry: anytype,
     control_type: unified.ControlType,
@@ -252,48 +137,41 @@ pub fn handleControlPlaneCommand(
     payload_json: ?[]const u8,
     connection_workspace_url: ?[]const u8,
 ) ![]u8 {
-    const request_json = if (isWorkspaceApiControlType(control_type) or control_type == .workspace_status)
-        try rewriteJsonFieldAliases(runtime_registry.allocator, payload_json, &workspace_to_project_aliases)
-    else
-        null;
-    defer if (request_json) |value| runtime_registry.allocator.free(value);
-
-    const effective_payload = if (request_json) |value| @as(?[]const u8, value) else payload_json;
     const raw_response_json = switch (control_type) {
-        .node_invite_create => try runtime_registry.control_plane.createNodeInvite(effective_payload),
-        .node_join_request => try runtime_registry.control_plane.nodeJoinRequest(effective_payload),
-        .node_join_pending_list => try runtime_registry.control_plane.listPendingNodeJoins(effective_payload),
-        .node_join_approve => try runtime_registry.control_plane.approvePendingNodeJoin(effective_payload),
-        .node_join_deny => try runtime_registry.control_plane.denyPendingNodeJoin(effective_payload),
-        .node_join => try runtime_registry.control_plane.nodeJoin(effective_payload),
-        .node_ensure => try runtime_registry.control_plane.nodeEnsure(effective_payload),
-        .node_lease_refresh => try runtime_registry.control_plane.refreshNodeLease(effective_payload),
-        .venom_bind => try runtime_registry.control_plane.bindPreferredVenomProvider(effective_payload),
-        .venom_upsert => try runtime_registry.control_plane.nodeVenomUpsert(effective_payload),
-        .venom_get => try runtime_registry.control_plane.nodeVenomGet(effective_payload),
+        .node_invite_create => try runtime_registry.control_plane.createNodeInvite(payload_json),
+        .node_join_request => try runtime_registry.control_plane.nodeJoinRequest(payload_json),
+        .node_join_pending_list => try runtime_registry.control_plane.listPendingNodeJoins(payload_json),
+        .node_join_approve => try runtime_registry.control_plane.approvePendingNodeJoin(payload_json),
+        .node_join_deny => try runtime_registry.control_plane.denyPendingNodeJoin(payload_json),
+        .node_join => try runtime_registry.control_plane.nodeJoin(payload_json),
+        .node_ensure => try runtime_registry.control_plane.nodeEnsure(payload_json),
+        .node_lease_refresh => try runtime_registry.control_plane.refreshNodeLease(payload_json),
+        .venom_bind => try runtime_registry.control_plane.bindPreferredVenomProvider(payload_json),
+        .venom_upsert => try runtime_registry.control_plane.nodeVenomUpsert(payload_json),
+        .venom_get => try runtime_registry.control_plane.nodeVenomGet(payload_json),
         .node_list => try runtime_registry.control_plane.listNodes(),
-        .node_get => try runtime_registry.control_plane.getNode(effective_payload),
-        .node_delete => try runtime_registry.control_plane.deleteNode(effective_payload),
-        .workspace_create => try runtime_registry.control_plane.createProject(effective_payload),
-        .workspace_update => try runtime_registry.control_plane.updateProjectWithRole(effective_payload, is_admin),
-        .workspace_delete => try runtime_registry.control_plane.deleteProjectWithRole(effective_payload, is_admin),
+        .node_get => try runtime_registry.control_plane.getNode(payload_json),
+        .node_delete => try runtime_registry.control_plane.deleteNode(payload_json),
+        .workspace_create => try runtime_registry.control_plane.createProject(payload_json),
+        .workspace_update => try runtime_registry.control_plane.updateProjectWithRole(payload_json, is_admin),
+        .workspace_delete => try runtime_registry.control_plane.deleteProjectWithRole(payload_json, is_admin),
         .workspace_list => try runtime_registry.control_plane.listProjects(),
-        .workspace_get => try runtime_registry.control_plane.getProjectWithRole(effective_payload, is_admin),
+        .workspace_get => try runtime_registry.control_plane.getProjectWithRole(payload_json, is_admin),
         .workspace_template_list => try runtime_registry.control_plane.listWorkspaceTemplates(),
-        .workspace_template_get => try runtime_registry.control_plane.getWorkspaceTemplate(effective_payload),
-        .workspace_mount_set => try runtime_registry.control_plane.setProjectMountWithRole(effective_payload, is_admin),
-        .workspace_mount_remove => try runtime_registry.control_plane.removeProjectMountWithRole(effective_payload, is_admin),
-        .workspace_mount_list => try runtime_registry.control_plane.listProjectMountsWithRole(effective_payload, is_admin),
-        .workspace_bind_set => try runtime_registry.control_plane.setProjectBindWithRole(effective_payload, is_admin),
-        .workspace_bind_remove => try runtime_registry.control_plane.removeProjectBindWithRole(effective_payload, is_admin),
-        .workspace_bind_list => try runtime_registry.control_plane.listProjectBindsWithRole(effective_payload, is_admin),
-        .workspace_token_rotate => try runtime_registry.control_plane.rotateProjectTokenWithRole(effective_payload, is_admin),
-        .workspace_token_revoke => try runtime_registry.control_plane.revokeProjectTokenWithRole(effective_payload, is_admin),
-        .workspace_activate => try runtime_registry.control_plane.activateProjectWithRole(agent_id, effective_payload, is_admin),
-        .workspace_status => try runtime_registry.control_plane.workspaceStatusWithRole(agent_id, effective_payload, is_admin),
-        .reconcile_status => try runtime_registry.control_plane.reconcileStatus(effective_payload),
-        .workspace_up => try runtime_registry.control_plane.projectUpWithRole(agent_id, effective_payload, is_admin),
-        .audit_tail => try runtime_registry.buildAuditTailPayload(effective_payload),
+        .workspace_template_get => try runtime_registry.control_plane.getWorkspaceTemplate(payload_json),
+        .workspace_mount_set => try runtime_registry.control_plane.setProjectMountWithRole(payload_json, is_admin),
+        .workspace_mount_remove => try runtime_registry.control_plane.removeProjectMountWithRole(payload_json, is_admin),
+        .workspace_mount_list => try runtime_registry.control_plane.listProjectMountsWithRole(payload_json, is_admin),
+        .workspace_bind_set => try runtime_registry.control_plane.setProjectBindWithRole(payload_json, is_admin),
+        .workspace_bind_remove => try runtime_registry.control_plane.removeProjectBindWithRole(payload_json, is_admin),
+        .workspace_bind_list => try runtime_registry.control_plane.listProjectBindsWithRole(payload_json, is_admin),
+        .workspace_token_rotate => try runtime_registry.control_plane.rotateProjectTokenWithRole(payload_json, is_admin),
+        .workspace_token_revoke => try runtime_registry.control_plane.revokeProjectTokenWithRole(payload_json, is_admin),
+        .workspace_activate => try runtime_registry.control_plane.activateProjectWithRole(agent_id, payload_json, is_admin),
+        .workspace_status => try runtime_registry.control_plane.workspaceStatusWithRole(agent_id, payload_json, is_admin),
+        .reconcile_status => try runtime_registry.control_plane.reconcileStatus(payload_json),
+        .workspace_up => try runtime_registry.control_plane.projectUpWithRole(agent_id, payload_json, is_admin),
+        .audit_tail => try runtime_registry.buildAuditTailPayload(payload_json),
         else => return error.UnsupportedControlPlaneOperation,
     };
     errdefer runtime_registry.allocator.free(raw_response_json);
@@ -310,13 +188,6 @@ pub fn handleControlPlaneCommand(
     };
     if (response_json.ptr != raw_response_json.ptr) runtime_registry.allocator.free(raw_response_json);
     errdefer runtime_registry.allocator.free(response_json);
-
-    if (isWorkspaceApiControlType(control_type) or control_type == .workspace_status) {
-        const rewritten = try rewriteJsonFieldAliases(runtime_registry.allocator, response_json, &project_to_workspace_aliases);
-        const rewritten_value = rewritten orelse return response_json;
-        runtime_registry.allocator.free(response_json);
-        return rewritten_value;
-    }
 
     return response_json;
 }

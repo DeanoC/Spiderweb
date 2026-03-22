@@ -347,12 +347,12 @@ pub fn loadProjectWorkspaceStatus(session: anytype, project_id: []const u8) !?[]
         defer session.allocator.free(escaped_token);
         break :blk try std.fmt.allocPrint(
             session.allocator,
-            "{{\"project_id\":\"{s}\",\"project_token\":\"{s}\"}}",
+            "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
             .{ escaped_project_id, escaped_token },
         );
     } else try std.fmt.allocPrint(
         session.allocator,
-        "{{\"project_id\":\"{s}\"}}",
+        "{{\"workspace_id\":\"{s}\"}}",
         .{escaped_project_id},
     );
     defer session.allocator.free(request_json);
@@ -382,7 +382,7 @@ fn workspaceStatusMatchesProject(
     var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, workspace_status_json, .{}) catch return false;
     defer parsed.deinit();
     if (parsed.value != .object) return false;
-    const project_id_value = parsed.value.object.get("project_id") orelse return false;
+    const project_id_value = parsed.value.object.get("workspace_id") orelse return false;
     if (project_id_value != .string) return false;
     return std.mem.eql(u8, project_id_value.string, expected_project_id);
 }

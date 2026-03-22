@@ -4041,6 +4041,7 @@ fn handleWebSocketConnection(
                                     principal.role == .access,
                                     parsed.payload_json,
                                 ) catch |err| {
+                                    std.log.warn("mount_attach failed: {s}", .{@errorName(err)});
                                     const response = try unified.buildControlError(
                                         allocator,
                                         parsed.id,

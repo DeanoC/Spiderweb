@@ -7,6 +7,7 @@ const runtime_handle_mod = @import("runtime_handle.zig");
 const websocket_transport = @import("websocket_transport.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
 const acheron_session_mod = @import("acheron/session.zig");
+const server_protocol_validation = @import("server_protocol_validation.zig");
 const server_session_payloads = @import("server_session_payloads.zig");
 const server_workspace_status = @import("server_workspace_status.zig");
 const fs_protocol = @import("spiderweb_fs").fs_protocol;
@@ -878,14 +879,7 @@ fn parseNodeTunnelHelloPayload(
 }
 
 fn parseFsHelloAuthToken(allocator: std.mem.Allocator, payload_json: ?[]const u8) !?[]u8 {
-    const raw = payload_json orelse return null;
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidType;
-    const auth_value = parsed.value.object.get("auth_token") orelse return null;
-    if (auth_value != .string or auth_value.string.len == 0) return null;
-    const copy = try allocator.dupe(u8, auth_value.string);
-    return @as(?[]u8, copy);
+    return server_protocol_validation.parseFsHelloAuthToken(allocator, payload_json);
 }
 
 fn controlNodeErrorToErrno(err: anyerror) i32 {
@@ -6623,6 +6617,14 @@ fn buildSessionHistoryPayload(
     return server_session_payloads.buildSessionHistoryPayload(allocator, history);
 }
 
+fn validateControlVersionPayload(allocator: std.mem.Allocator, payload_json: ?[]const u8) !void {
+    return server_protocol_validation.validateControlVersionPayload(
+        allocator,
+        payload_json,
+        control_protocol_version,
+    );
+}
+
 fn isControlAdminOnly(control_type: unified.ControlType) bool {
     return switch (control_type) {
         .metrics,
@@ -6659,58 +6661,20 @@ fn sendWebSocketErrorAndClose(
     try websocket_transport.writeFrame(stream, "", .close);
 }
 
-fn validateControlVersionPayload(allocator: std.mem.Allocator, payload_json: ?[]const u8) !void {
-    const raw = payload_json orelse return error.MissingField;
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidType;
-    const protocol_value = parsed.value.object.get("protocol") orelse return error.MissingField;
-    if (protocol_value != .string) return error.InvalidType;
-    if (!std.mem.eql(u8, protocol_value.string, control_protocol_version)) return error.ProtocolMismatch;
-}
-
-const FsNodeHelloOptions = struct {
-    allow_invalidations: bool = false,
-};
+const FsNodeHelloOptions = server_protocol_validation.FsNodeHelloOptions;
 
 fn validateFsNodeHelloPayloadWithAcceptedTokens(
     allocator: std.mem.Allocator,
     payload_json: ?[]const u8,
     accepted_auth_tokens: ?[]const []const u8,
 ) !FsNodeHelloOptions {
-    const raw = payload_json orelse return error.MissingField;
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidType;
-
-    const protocol_value = parsed.value.object.get("protocol") orelse return error.MissingField;
-    if (protocol_value != .string) return error.InvalidType;
-    if (!std.mem.eql(u8, protocol_value.string, acheron_node_protocol_version)) return error.ProtocolMismatch;
-
-    const proto_value = parsed.value.object.get("proto") orelse return error.MissingField;
-    if (proto_value != .integer) return error.InvalidType;
-    if (proto_value.integer != acheron_node_proto_id) return error.ProtocolMismatch;
-
-    if (accepted_auth_tokens) |expected_tokens| {
-        const auth_value = parsed.value.object.get("auth_token") orelse return error.AuthMissing;
-        if (auth_value != .string) return error.InvalidType;
-
-        var matched = false;
-        for (expected_tokens) |expected| {
-            if (std.mem.eql(u8, auth_value.string, expected)) {
-                matched = true;
-                break;
-            }
-        }
-        if (!matched) return error.AuthFailed;
-    }
-
-    var opts = FsNodeHelloOptions{};
-    if (parsed.value.object.get("subscribe_invalidations")) |value| {
-        if (value != .bool) return error.InvalidType;
-        opts.allow_invalidations = value.bool;
-    }
-    return opts;
+    return server_protocol_validation.validateFsNodeHelloPayloadWithAcceptedTokens(
+        allocator,
+        payload_json,
+        accepted_auth_tokens,
+        acheron_node_protocol_version,
+        acheron_node_proto_id,
+    );
 }
 
 fn validateFsNodeHelloPayload(
@@ -6718,11 +6682,13 @@ fn validateFsNodeHelloPayload(
     payload_json: ?[]const u8,
     required_auth_token: ?[]const u8,
 ) !FsNodeHelloOptions {
-    if (required_auth_token) |expected| {
-        const tokens = [_][]const u8{expected};
-        return validateFsNodeHelloPayloadWithAcceptedTokens(allocator, payload_json, tokens[0..]);
-    }
-    return validateFsNodeHelloPayloadWithAcceptedTokens(allocator, payload_json, null);
+    return server_protocol_validation.validateFsNodeHelloPayload(
+        allocator,
+        payload_json,
+        required_auth_token,
+        acheron_node_protocol_version,
+        acheron_node_proto_id,
+    );
 }
 
 fn writeFrameLocked(

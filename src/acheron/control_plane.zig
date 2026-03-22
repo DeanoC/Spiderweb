@@ -2637,114 +2637,8 @@ pub const ControlPlane = struct {
             );
         }
 
-        if (obj.get("desired_mounts")) |desired_val| {
-            if (project.kind == .host_internal) return ControlPlaneError.ProjectProtected;
-            if (desired_val != .array) return ControlPlaneError.InvalidPayload;
-            var next_mounts = std.ArrayListUnmanaged(ProjectMount){};
-            errdefer {
-                for (next_mounts.items) |*mount| mount.deinit(self.allocator);
-                next_mounts.deinit(self.allocator);
-            }
-
-            for (desired_val.array.items) |item| {
-                if (item != .object) return ControlPlaneError.InvalidPayload;
-                const mount_obj = item.object;
-                const node_id = getRequiredString(mount_obj, "node_id") catch return ControlPlaneError.MissingField;
-                const export_name = getRequiredString(mount_obj, "export_name") catch return ControlPlaneError.MissingField;
-                const mount_path_raw = getRequiredString(mount_obj, "mount_path") catch return ControlPlaneError.MissingField;
-                try validateIdentifier(node_id, 128);
-                try validateExportName(export_name);
-                if (!self.nodes.contains(node_id)) return ControlPlaneError.NodeNotFound;
-                const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
-                errdefer self.allocator.free(mount_path);
-
-                var duplicate_exact = false;
-                for (next_mounts.items) |existing| {
-                    if (std.mem.eql(u8, existing.mount_path, mount_path)) {
-                        if (std.mem.eql(u8, existing.node_id, node_id) and std.mem.eql(u8, existing.export_name, export_name)) {
-                            duplicate_exact = true;
-                            break;
-                        }
-                        continue;
-                    }
-                    if (mountPathsOverlap(existing.mount_path, mount_path)) return ControlPlaneError.MountConflict;
-                }
-                for (project.binds.items) |existing_bind| {
-                    if (pathsConflict(existing_bind.bind_path, mount_path)) return ControlPlaneError.MountConflict;
-                }
-                if (duplicate_exact) {
-                    self.allocator.free(mount_path);
-                    continue;
-                }
-
-                try next_mounts.append(self.allocator, .{
-                    .mount_path = mount_path,
-                    .node_id = try self.allocator.dupe(u8, node_id),
-                    .export_name = try self.allocator.dupe(u8, export_name),
-                });
-            }
-
-            for (project.mounts.items) |*mount| mount.deinit(self.allocator);
-            project.mounts.deinit(self.allocator);
-            project.mounts = next_mounts;
-            mounts_replaced = true;
-        } else if (created) {
-            if (try ensureDefaultProjectMountsLocked(self, project)) mounts_replaced = true;
-        }
-
-        if (obj.get("desired_binds")) |desired_val| {
-            if (project.kind == .host_internal) return ControlPlaneError.ProjectProtected;
-            if (desired_val != .array) return ControlPlaneError.InvalidPayload;
-            var next_binds = std.ArrayListUnmanaged(ProjectBind){};
-            errdefer {
-                for (next_binds.items) |*bind| bind.deinit(self.allocator);
-                next_binds.deinit(self.allocator);
-            }
-
-            for (desired_val.array.items) |item| {
-                if (item != .object) return ControlPlaneError.InvalidPayload;
-                const bind_obj = item.object;
-                const bind_path_raw = getRequiredString(bind_obj, "bind_path") catch return ControlPlaneError.MissingField;
-                const target_path_raw = getRequiredString(bind_obj, "target_path") catch return ControlPlaneError.MissingField;
-                const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
-                errdefer self.allocator.free(bind_path);
-                if (std.mem.eql(u8, bind_path, "/")) return ControlPlaneError.InvalidPayload;
-                const target_path = try normalizeMountPath(self.allocator, target_path_raw);
-                errdefer self.allocator.free(target_path);
-                if (!projectPathWithinBindAuthority(project, target_path)) return ControlPlaneError.BindConflict;
-
-                for (project.mounts.items) |mount| {
-                    if (pathsConflict(mount.mount_path, bind_path)) return ControlPlaneError.BindConflict;
-                }
-
-                var duplicate_exact = false;
-                for (next_binds.items) |existing| {
-                    if (std.mem.eql(u8, existing.bind_path, bind_path)) {
-                        if (std.mem.eql(u8, existing.target_path, target_path)) {
-                            duplicate_exact = true;
-                            break;
-                        }
-                        return ControlPlaneError.BindConflict;
-                    }
-                    if (pathsConflict(existing.bind_path, bind_path)) return ControlPlaneError.BindConflict;
-                }
-                if (duplicate_exact) {
-                    self.allocator.free(bind_path);
-                    self.allocator.free(target_path);
-                    continue;
-                }
-
-                try next_binds.append(self.allocator, .{
-                    .bind_path = bind_path,
-                    .target_path = target_path,
-                });
-            }
-
-            for (project.binds.items) |*bind| bind.deinit(self.allocator);
-            project.binds.deinit(self.allocator);
-            project.binds = next_binds;
-            binds_replaced = true;
-        }
+        mounts_replaced = try applyWorkspaceUpMountReplacementsLocked(self, project, obj.get("desired_mounts"), created);
+        binds_replaced = try applyWorkspaceUpBindReplacementsLocked(self, project, obj.get("desired_binds"));
 
         if (try ensureProjectTemplateBindsLocked(self, project)) binds_replaced = true;
 
@@ -3048,6 +2942,130 @@ fn applyWorkspaceUpMetadataUpdatesLocked(
         project.access_policy.deinit(self.allocator);
         project.access_policy = parsed_policy;
     }
+}
+
+fn applyWorkspaceUpMountReplacementsLocked(
+    self: *ControlPlane,
+    project: *Project,
+    desired_mounts_value: ?std.json.Value,
+    created: bool,
+) !bool {
+    if (desired_mounts_value) |desired_val| {
+        if (project.kind == .host_internal) return ControlPlaneError.ProjectProtected;
+        if (desired_val != .array) return ControlPlaneError.InvalidPayload;
+        var next_mounts = std.ArrayListUnmanaged(ProjectMount){};
+        errdefer {
+            for (next_mounts.items) |*mount| mount.deinit(self.allocator);
+            next_mounts.deinit(self.allocator);
+        }
+
+        for (desired_val.array.items) |item| {
+            if (item != .object) return ControlPlaneError.InvalidPayload;
+            const mount_obj = item.object;
+            const node_id = getRequiredString(mount_obj, "node_id") catch return ControlPlaneError.MissingField;
+            const export_name = getRequiredString(mount_obj, "export_name") catch return ControlPlaneError.MissingField;
+            const mount_path_raw = getRequiredString(mount_obj, "mount_path") catch return ControlPlaneError.MissingField;
+            try validateIdentifier(node_id, 128);
+            try validateExportName(export_name);
+            if (!self.nodes.contains(node_id)) return ControlPlaneError.NodeNotFound;
+            const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
+            errdefer self.allocator.free(mount_path);
+
+            var duplicate_exact = false;
+            for (next_mounts.items) |existing| {
+                if (std.mem.eql(u8, existing.mount_path, mount_path)) {
+                    if (std.mem.eql(u8, existing.node_id, node_id) and std.mem.eql(u8, existing.export_name, export_name)) {
+                        duplicate_exact = true;
+                        break;
+                    }
+                    continue;
+                }
+                if (mountPathsOverlap(existing.mount_path, mount_path)) return ControlPlaneError.MountConflict;
+            }
+            for (project.binds.items) |existing_bind| {
+                if (pathsConflict(existing_bind.bind_path, mount_path)) return ControlPlaneError.MountConflict;
+            }
+            if (duplicate_exact) {
+                self.allocator.free(mount_path);
+                continue;
+            }
+
+            try next_mounts.append(self.allocator, .{
+                .mount_path = mount_path,
+                .node_id = try self.allocator.dupe(u8, node_id),
+                .export_name = try self.allocator.dupe(u8, export_name),
+            });
+        }
+
+        for (project.mounts.items) |*mount| mount.deinit(self.allocator);
+        project.mounts.deinit(self.allocator);
+        project.mounts = next_mounts;
+        return true;
+    }
+
+    if (created) {
+        return ensureDefaultProjectMountsLocked(self, project);
+    }
+    return false;
+}
+
+fn applyWorkspaceUpBindReplacementsLocked(
+    self: *ControlPlane,
+    project: *Project,
+    desired_binds_value: ?std.json.Value,
+) !bool {
+    const desired_val = desired_binds_value orelse return false;
+    if (project.kind == .host_internal) return ControlPlaneError.ProjectProtected;
+    if (desired_val != .array) return ControlPlaneError.InvalidPayload;
+    var next_binds = std.ArrayListUnmanaged(ProjectBind){};
+    errdefer {
+        for (next_binds.items) |*bind| bind.deinit(self.allocator);
+        next_binds.deinit(self.allocator);
+    }
+
+    for (desired_val.array.items) |item| {
+        if (item != .object) return ControlPlaneError.InvalidPayload;
+        const bind_obj = item.object;
+        const bind_path_raw = getRequiredString(bind_obj, "bind_path") catch return ControlPlaneError.MissingField;
+        const target_path_raw = getRequiredString(bind_obj, "target_path") catch return ControlPlaneError.MissingField;
+        const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
+        errdefer self.allocator.free(bind_path);
+        if (std.mem.eql(u8, bind_path, "/")) return ControlPlaneError.InvalidPayload;
+        const target_path = try normalizeMountPath(self.allocator, target_path_raw);
+        errdefer self.allocator.free(target_path);
+        if (!projectPathWithinBindAuthority(project, target_path)) return ControlPlaneError.BindConflict;
+
+        for (project.mounts.items) |mount| {
+            if (pathsConflict(mount.mount_path, bind_path)) return ControlPlaneError.BindConflict;
+        }
+
+        var duplicate_exact = false;
+        for (next_binds.items) |existing| {
+            if (std.mem.eql(u8, existing.bind_path, bind_path)) {
+                if (std.mem.eql(u8, existing.target_path, target_path)) {
+                    duplicate_exact = true;
+                    break;
+                }
+                return ControlPlaneError.BindConflict;
+            }
+            if (pathsConflict(existing.bind_path, bind_path)) return ControlPlaneError.BindConflict;
+        }
+        if (duplicate_exact) {
+            self.allocator.free(bind_path);
+            self.allocator.free(target_path);
+            continue;
+        }
+
+        try next_binds.append(self.allocator, .{
+            .bind_path = bind_path,
+            .target_path = target_path,
+        });
+    }
+
+    for (project.binds.items) |*bind| bind.deinit(self.allocator);
+    project.binds.deinit(self.allocator);
+    project.binds = next_binds;
+    return true;
 }
 
 fn resolveVisibleActiveProjectIdLocked(self: *ControlPlane, agent_id: []const u8) ?[]const u8 {

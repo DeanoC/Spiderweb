@@ -56,7 +56,7 @@ pub fn seedNamespaceAt(self: anytype, workspaces_dir: u32, base_path: []const u8
         false,
         .none,
     );
-    self.projects_status_id = try self.addFile(
+    self.workspaces_status_id = try self.addFile(
         workspaces_dir,
         "status.json",
         "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}",
@@ -65,7 +65,7 @@ pub fn seedNamespaceAt(self: anytype, workspaces_dir: u32, base_path: []const u8
     );
     const initial_result = try buildListResultJson(self);
     defer self.allocator.free(initial_result);
-    self.projects_result_id = try self.addFile(
+    self.workspaces_result_id = try self.addFile(
         workspaces_dir,
         "result.json",
         initial_result,
@@ -81,10 +81,10 @@ pub fn seedNamespaceAt(self: anytype, workspaces_dir: u32, base_path: []const u8
         false,
         .none,
     );
-    _ = try self.addFile(control_dir, "invoke.json", "", true, .projects_invoke);
-    _ = try self.addFile(control_dir, "list.json", "", true, .projects_list);
-    _ = try self.addFile(control_dir, "get.json", "", true, .projects_get);
-    _ = try self.addFile(control_dir, "up.json", "", true, .projects_up);
+    _ = try self.addFile(control_dir, "invoke.json", "", true, .workspaces_invoke);
+    _ = try self.addFile(control_dir, "list.json", "", true, .workspaces_list);
+    _ = try self.addFile(control_dir, "get.json", "", true, .workspaces_get);
+    _ = try self.addFile(control_dir, "up.json", "", true, .workspaces_up);
 }
 
 pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_input: []const u8) !usize {
@@ -98,10 +98,10 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
     const obj = parsed.value.object;
 
     const op = switch (special) {
-        .projects_list => Op.list,
-        .projects_get => Op.get,
-        .projects_up => Op.up,
-        .projects_invoke => blk: {
+        .workspaces_list => Op.list,
+        .workspaces_get => Op.get,
+        .workspaces_up => Op.up,
+        .workspaces_invoke => blk: {
             const op_raw = blk2: {
                 if (obj.get("op")) |value| if (value == .string and value.string.len > 0) break :blk2 value.string;
                 if (obj.get("operation")) |value| if (value == .string and value.string.len > 0) break :blk2 value.string;
@@ -131,9 +131,9 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
 
 fn parseOp(raw: []const u8) ?Op {
     const value = std.mem.trim(u8, raw, " \t\r\n");
-    if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "workspaces_list") or std.mem.eql(u8, value, "projects_list")) return .list;
-    if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "workspaces_get") or std.mem.eql(u8, value, "projects_get")) return .get;
-    if (std.mem.eql(u8, value, "up") or std.mem.eql(u8, value, "workspace_up") or std.mem.eql(u8, value, "workspaces_up") or std.mem.eql(u8, value, "project_up") or std.mem.eql(u8, value, "projects_up")) return .up;
+    if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "workspaces_list")) return .list;
+    if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "workspaces_get")) return .get;
+    if (std.mem.eql(u8, value, "up") or std.mem.eql(u8, value, "workspace_up") or std.mem.eql(u8, value, "workspaces_up")) return .up;
     return null;
 }
 
@@ -141,7 +141,7 @@ fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, written: usize
     const tool_name = statusToolName(op);
     const running_status = try self.buildServiceInvokeStatusJson("running", tool_name, null);
     defer self.allocator.free(running_status);
-    if (self.projects_status_id != 0) try self.setFileContent(self.projects_status_id, running_status);
+    if (self.workspaces_status_id != 0) try self.setFileContent(self.workspaces_status_id, running_status);
 
     const result_payload = executeOpPayload(self, op, args_obj) catch |err| {
         const error_message = @errorName(err);
@@ -151,18 +151,18 @@ fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, written: usize
         };
         const failed_status = try self.buildServiceInvokeStatusJson("failed", tool_name, error_message);
         defer self.allocator.free(failed_status);
-        if (self.projects_status_id != 0) try self.setFileContent(self.projects_status_id, failed_status);
+        if (self.workspaces_status_id != 0) try self.setFileContent(self.workspaces_status_id, failed_status);
         const failed_result = try buildFailureResultJson(self, op, error_code, error_message);
         defer self.allocator.free(failed_result);
-        if (self.projects_result_id != 0) try self.setFileContent(self.projects_result_id, failed_result);
+        if (self.workspaces_result_id != 0) try self.setFileContent(self.workspaces_result_id, failed_result);
         return err;
     };
     defer self.allocator.free(result_payload);
 
     const done_status = try self.buildServiceInvokeStatusJson("done", tool_name, null);
     defer self.allocator.free(done_status);
-    if (self.projects_status_id != 0) try self.setFileContent(self.projects_status_id, done_status);
-    if (self.projects_result_id != 0) try self.setFileContent(self.projects_result_id, result_payload);
+    if (self.workspaces_status_id != 0) try self.setFileContent(self.workspaces_status_id, done_status);
+    if (self.workspaces_result_id != 0) try self.setFileContent(self.workspaces_result_id, result_payload);
     return written;
 }
 

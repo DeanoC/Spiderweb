@@ -9,7 +9,7 @@ const server_session_bindings = @import("server_session_bindings.zig");
 const server_workspace_status = @import("server_workspace_status.zig");
 
 const host_actor_id = "spiderweb";
-const host_project_id = control_plane_mod.host_project_id;
+const host_workspace_id = control_plane_mod.host_workspace_id;
 const max_mount_graph_materialized_file_bytes: usize = 16 * 1024 * 1024;
 
 const parseControlPayloadObject = server_control_payloads.parseControlPayloadObject;
@@ -392,7 +392,7 @@ fn buildWorkspaceStatusPayloadForBinding(
         allocator,
         &runtime_registry.control_plane,
         host_actor_id,
-        host_project_id,
+        host_workspace_id,
         binding,
         connection_workspace_url,
         is_admin,

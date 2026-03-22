@@ -41,9 +41,9 @@ const local_node_default_name = server_local_node_supervisor.local_node_default_
 const local_node_ready_timeout_ms: u64 = 10_000;
 const local_node_ready_poll_ms: u64 = 100;
 const host_actor_id = "spiderweb";
-const host_project_id = control_plane_mod.host_project_id;
+const host_workspace_id = control_plane_mod.host_workspace_id;
 const legacy_local_node_mount_agents_self_capabilities = "/global/capabilities";
-const legacy_local_node_mount_projects_host_agents_self_capabilities = "/nodes/local/projects/" ++ host_project_id ++ "/global/capabilities";
+const legacy_local_node_mount_projects_host_agents_self_capabilities = "/nodes/local/projects/" ++ host_workspace_id ++ "/global/capabilities";
 const control_operator_token_env = "SPIDERWEB_CONTROL_OPERATOR_TOKEN";
 const control_project_scope_token_env = "SPIDERWEB_CONTROL_PROJECT_SCOPE_TOKEN";
 const control_node_scope_token_env = "SPIDERWEB_CONTROL_NODE_SCOPE_TOKEN";
@@ -2434,7 +2434,7 @@ const AgentRuntimeRegistry = struct {
     }
 
     fn firstAgentForProject(self: *AgentRuntimeRegistry, role: ConnectionRole, project_id: []const u8) ?[]u8 {
-        const include_primary = role == .access and std.mem.eql(u8, project_id, host_project_id);
+        const include_primary = role == .access and std.mem.eql(u8, project_id, host_workspace_id);
         return self.control_plane.firstProjectAgent(project_id, include_primary) catch null;
     }
 
@@ -2499,7 +2499,7 @@ const AgentRuntimeRegistry = struct {
         project_id: ?[]const u8,
     ) void {
         const concrete_project = project_id orelse return;
-        if (std.mem.eql(u8, concrete_project, host_project_id)) return;
+        if (std.mem.eql(u8, concrete_project, host_workspace_id)) return;
         self.auth_tokens.recordSessionActivity(
             principal.role,
             session_key,
@@ -2602,13 +2602,13 @@ const AgentRuntimeRegistry = struct {
         if (self.control_plane.hostHasMounts()) {
             var host_attach_state = self.ensureRuntimeWarmup(
                 host_actor_id,
-                host_project_id,
+                host_workspace_id,
                 null,
                 retry_on_error,
             ) catch |err| blk: {
                 std.log.warn(
                     "host runtime residency warmup failed: agent={s} project={s} err={s}",
-                    .{ host_actor_id, host_project_id, @errorName(err) },
+                    .{ host_actor_id, host_workspace_id, @errorName(err) },
                 );
                 break :blk null;
             };
@@ -2618,7 +2618,7 @@ const AgentRuntimeRegistry = struct {
         for (bindings) |binding| {
             if (!self.control_plane.projectHasMounts(binding.project_id)) continue;
             if (std.mem.eql(u8, binding.agent_id, host_actor_id) and
-                !std.mem.eql(u8, binding.project_id, host_project_id))
+                !std.mem.eql(u8, binding.project_id, host_workspace_id))
             {
                 continue;
             }

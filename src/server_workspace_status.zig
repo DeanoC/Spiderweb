@@ -127,14 +127,14 @@ pub fn buildWorkspaceStatusPayloadForBinding(
     allocator: std.mem.Allocator,
     control_plane: anytype,
     host_actor_id: []const u8,
-    host_project_id: []const u8,
+    host_workspace_id: []const u8,
     binding: anytype,
     connection_workspace_url: ?[]const u8,
     is_admin: bool,
 ) ![]u8 {
     if (std.mem.eql(u8, binding.agent_id, host_actor_id) and
         binding.project_id != null and
-        std.mem.eql(u8, binding.project_id.?, host_project_id))
+        std.mem.eql(u8, binding.project_id.?, host_workspace_id))
     {
         const workspace_json = control_plane.hostWorkspaceStatusWithRole(is_admin) catch |err| {
             std.log.warn(

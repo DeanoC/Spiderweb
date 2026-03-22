@@ -45,9 +45,9 @@ pub fn initNamespaceSessionForBinding(
     trusted_namespace_mount_url: ?[]const u8,
     is_admin: bool,
 ) !acheron_session_mod.Session {
-    const project_id = binding.project_id orelse return error.InvalidState;
-    const runtime = runtime_registry.getRuntimeForBindingIfReady(binding.agent_id, binding.project_id) orelse
-        try runtime_registry.getOrCreate(binding.agent_id, binding.project_id, binding.project_token);
+    const workspace_id = binding.workspace_id orelse return error.InvalidState;
+    const runtime = runtime_registry.getRuntimeForBindingIfReady(binding.agent_id, binding.workspace_id) orelse
+        try runtime_registry.getOrCreate(binding.agent_id, binding.workspace_id, binding.workspace_token);
     defer runtime.release();
 
     const namespace_auth_token = if (is_admin)
@@ -61,8 +61,8 @@ pub fn initNamespaceSessionForBinding(
         runtime,
         binding.agent_id,
         .{
-            .project_id = project_id,
-            .project_token = binding.project_token,
+            .project_id = workspace_id,
+            .project_token = binding.workspace_token,
             .namespace_mount_url = trusted_namespace_mount_url orelse runtime_registry.workspace_url,
             .namespace_session_key = session_key,
             .agents_dir = runtime_registry.runtime_config.agents_dir,
@@ -82,7 +82,7 @@ pub fn initNamespaceSessionForBinding(
     ) catch |err| {
         std.log.warn("namespace session init failed agent={s} workspace={s}: {s}", .{
             binding.agent_id,
-            project_id,
+            workspace_id,
             @errorName(err),
         });
         return err;

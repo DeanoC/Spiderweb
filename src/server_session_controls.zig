@@ -34,7 +34,7 @@ pub fn buildConnectAckPayload(
     is_admin: bool,
     control_protocol_version: []const u8,
 ) ![]u8 {
-    const workspace_id_json = if (binding.project_id) |workspace_id| blk: {
+    const workspace_id_json = if (binding.workspace_id) |workspace_id| blk: {
         const escaped_workspace = try unified.jsonEscape(allocator, workspace_id);
         defer allocator.free(escaped_workspace);
         break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_workspace});
@@ -108,7 +108,7 @@ pub fn handleSessionAttachControl(
 
     const existing_binding = session_bindings.get(session_key);
     if (existing_binding != null and std.mem.eql(u8, existing_binding.?.agent_id, attach_agent_id) and attach_workspace_token == null) {
-        attach_workspace_token = existing_binding.?.project_token;
+        attach_workspace_token = existing_binding.?.workspace_token;
     }
 
     const activate_payload = try server_workspace_status.buildWorkspaceAccessPayload(allocator, attach_workspace_id, attach_workspace_token);
@@ -144,8 +144,8 @@ pub fn handleSessionAttachControl(
     const active_binding = session_bindings.get(session_key) orelse return error.InvalidState;
     var attach_state = runtime_registry.ensureRuntimeWarmup(
         active_binding.agent_id,
-        active_binding.project_id,
-        active_binding.project_token,
+        active_binding.workspace_id,
+        active_binding.workspace_token,
         true,
     ) catch |warm_err| {
         return .{ .err = .{
@@ -169,7 +169,7 @@ pub fn handleSessionAttachControl(
         allocator,
         session_key,
         active_binding.agent_id,
-        active_binding.project_id,
+        active_binding.workspace_id,
         workspace_json,
         attach_json,
     );
@@ -179,12 +179,12 @@ pub fn handleSessionAttachControl(
         principal,
         session_key,
         active_binding.agent_id,
-        active_binding.project_id,
+        active_binding.workspace_id,
     );
 
     if (control_service_attached) {
         const runtime_binding_changed = !std.mem.eql(u8, previous_active_binding.agent_id, active_binding.agent_id) or
-            !optionalStringsEqual(previous_active_binding.project_id, active_binding.project_id);
+            !optionalStringsEqual(previous_active_binding.workspace_id, active_binding.workspace_id);
         if (runtime_binding_changed) {
             runtime_registry.publishVenomPresenceForBinding(
                 principal.role,
@@ -240,8 +240,8 @@ pub fn handleSessionResumeControl(
 
     var attach_state = runtime_registry.ensureRuntimeWarmup(
         binding.agent_id,
-        binding.project_id,
-        binding.project_token,
+        binding.workspace_id,
+        binding.workspace_token,
         true,
     ) catch |warm_err| {
         return .{ .err = .{
@@ -265,7 +265,7 @@ pub fn handleSessionResumeControl(
         allocator,
         session_key,
         binding.agent_id,
-        binding.project_id,
+        binding.workspace_id,
         workspace_json,
         attach_json,
     );
@@ -275,12 +275,12 @@ pub fn handleSessionResumeControl(
         principal,
         session_key,
         binding.agent_id,
-        binding.project_id,
+        binding.workspace_id,
     );
 
     if (control_service_attached) {
         const runtime_binding_changed = !std.mem.eql(u8, previous_binding.agent_id, binding.agent_id) or
-            !optionalStringsEqual(previous_binding.project_id, binding.project_id);
+            !optionalStringsEqual(previous_binding.workspace_id, binding.workspace_id);
         if (runtime_binding_changed) {
             runtime_registry.publishVenomPresenceForBinding(
                 principal.role,
@@ -354,7 +354,7 @@ pub fn handleSessionCloseControl(
         const main_binding = session_bindings.get(active_session_key.*) orelse return error.InvalidState;
         const old_binding = previous_active_binding.?;
         const runtime_binding_changed = !std.mem.eql(u8, old_binding.agent_id, main_binding.agent_id) or
-            !optionalStringsEqual(old_binding.project_id, main_binding.project_id);
+            !optionalStringsEqual(old_binding.workspace_id, main_binding.workspace_id);
         if (runtime_binding_changed) {
             runtime_registry.publishVenomPresenceForBinding(
                 principal.role,

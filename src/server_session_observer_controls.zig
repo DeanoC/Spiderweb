@@ -73,15 +73,15 @@ pub fn handleSessionStatusControl(
             principal,
             session_key,
             binding.agent_id,
-            binding.project_id,
+            binding.workspace_id,
         );
-        runtime_registry.touchRuntimeAttachState(binding.agent_id, binding.project_id);
+        runtime_registry.touchRuntimeAttachState(binding.agent_id, binding.workspace_id);
     }
 
     var attach_state = runtime_registry.ensureRuntimeWarmup(
         binding.agent_id,
-        binding.project_id,
-        binding.project_token,
+        binding.workspace_id,
+        binding.workspace_token,
         false,
     ) catch |warm_err| {
         return .{ .err = .{
@@ -102,7 +102,7 @@ pub fn handleSessionStatusControl(
         allocator,
         session_key,
         binding.agent_id,
-        binding.project_id,
+        binding.workspace_id,
         attach_json,
         session_last_active_ms,
         session_stale,
@@ -191,7 +191,7 @@ fn deinitAttachState(allocator: std.mem.Allocator, state: anytype) void {
 fn deinitHistoryEntry(allocator: std.mem.Allocator, entry: anytype) void {
     allocator.free(entry.session_key);
     allocator.free(entry.agent_id);
-    allocator.free(entry.project_id);
+    allocator.free(entry.workspace_id);
     if (entry.summary) |value| allocator.free(value);
     entry.* = undefined;
 }

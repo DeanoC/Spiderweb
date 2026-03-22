@@ -133,8 +133,8 @@ pub fn buildWorkspaceStatusPayloadForBinding(
     is_admin: bool,
 ) ![]u8 {
     if (std.mem.eql(u8, binding.agent_id, host_actor_id) and
-        binding.project_id != null and
-        std.mem.eql(u8, binding.project_id.?, host_workspace_id))
+        binding.workspace_id != null and
+        std.mem.eql(u8, binding.workspace_id.?, host_workspace_id))
     {
         const workspace_json = control_plane.hostWorkspaceStatusWithRole(is_admin) catch |err| {
             std.log.warn(
@@ -147,8 +147,8 @@ pub fn buildWorkspaceStatusPayloadForBinding(
         return rewriteWorkspaceStatusFsUrls(allocator, workspace_json, connection_workspace_url);
     }
 
-    const status_req = if (binding.project_id) |workspace_id|
-        try buildWorkspaceAccessPayload(allocator, workspace_id, binding.project_token)
+    const status_req = if (binding.workspace_id) |workspace_id|
+        try buildWorkspaceAccessPayload(allocator, workspace_id, binding.workspace_token)
     else
         try allocator.dupe(u8, "{}");
     defer allocator.free(status_req);
@@ -156,7 +156,7 @@ pub fn buildWorkspaceStatusPayloadForBinding(
     const workspace_json = control_plane.workspaceStatusWithRole(binding.agent_id, status_req, is_admin) catch |err| {
         std.log.warn(
             "workspace status unavailable for agent={s} project={s}: {s}",
-            .{ binding.agent_id, binding.project_id orelse "null", @errorName(err) },
+            .{ binding.agent_id, binding.workspace_id orelse "null", @errorName(err) },
         );
         return try allocator.dupe(u8, "{}");
     };

@@ -120,7 +120,7 @@ pub fn buildSessionListPayload(
         defer allocator.free(escaped_key);
         const escaped_agent = try unified.jsonEscape(allocator, entry.value_ptr.agent_id);
         defer allocator.free(escaped_agent);
-        const workspace_id_json = if (entry.value_ptr.project_id) |workspace_id| blk: {
+        const workspace_id_json = if (entry.value_ptr.workspace_id) |workspace_id| blk: {
             const escaped_workspace = try unified.jsonEscape(allocator, workspace_id);
             defer allocator.free(escaped_workspace);
             break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_workspace});
@@ -172,7 +172,7 @@ fn appendSessionHistoryEntryJson(
     defer allocator.free(escaped_session);
     const escaped_agent = try unified.jsonEscape(allocator, entry.agent_id);
     defer allocator.free(escaped_agent);
-    const escaped_workspace = try unified.jsonEscape(allocator, entry.project_id);
+    const escaped_workspace = try unified.jsonEscape(allocator, entry.workspace_id);
     defer allocator.free(escaped_workspace);
     const summary_json = if (entry.summary) |value| blk: {
         const escaped_summary = try unified.jsonEscape(allocator, value);

@@ -27,7 +27,7 @@ const spiderweb_node = @import("spiderweb_node");
 const unified = @import("spider-protocol").unified;
 const default_max_agent_runtimes: usize = 64;
 const max_agent_id_len: usize = 64;
-const max_project_id_len: usize = 128;
+const max_workspace_id_len: usize = 128;
 const node_venom_event_history_max_default: usize = 1024;
 const local_node_export_path_env = "SPIDERWEB_LOCAL_NODE_EXPORT_PATH";
 const local_node_export_name_env = "SPIDERWEB_LOCAL_NODE_EXPORT_NAME";
@@ -1327,7 +1327,7 @@ const RuntimeWarmupState = struct {
 
 const VenomPresenceDispatchJob = struct {
     agent_id: []u8,
-    project_id: ?[]u8 = null,
+    workspace_id: ?[]u8 = null,
     session_key: []u8,
     venom_id: []u8,
     attached: bool,
@@ -1335,7 +1335,7 @@ const VenomPresenceDispatchJob = struct {
 
     fn deinit(self: *VenomPresenceDispatchJob, allocator: std.mem.Allocator) void {
         allocator.free(self.agent_id);
-        if (self.project_id) |value| allocator.free(value);
+        if (self.workspace_id) |value| allocator.free(value);
         allocator.free(self.session_key);
         allocator.free(self.venom_id);
         allocator.free(self.payload_json);
@@ -1345,13 +1345,13 @@ const VenomPresenceDispatchJob = struct {
     fn matches(
         self: *const VenomPresenceDispatchJob,
         agent_id: []const u8,
-        project_id: ?[]const u8,
+        workspace_id: ?[]const u8,
         session_key: []const u8,
         venom_id: []const u8,
         attached: bool,
     ) bool {
         return std.mem.eql(u8, self.agent_id, agent_id) and
-            optionalStringsEqual(self.project_id, project_id) and
+            optionalStringsEqual(self.workspace_id, workspace_id) and
             std.mem.eql(u8, self.session_key, session_key) and
             std.mem.eql(u8, self.venom_id, venom_id) and
             self.attached == attached;
@@ -1360,11 +1360,11 @@ const VenomPresenceDispatchJob = struct {
 
 const RememberedTarget = struct {
     agent_id: []u8,
-    project_id: []u8,
+    workspace_id: []u8,
 
     fn deinit(self: *RememberedTarget, allocator: std.mem.Allocator) void {
         allocator.free(self.agent_id);
-        allocator.free(self.project_id);
+        allocator.free(self.workspace_id);
         self.* = undefined;
     }
 };
@@ -1372,7 +1372,7 @@ const RememberedTarget = struct {
 const SessionHistoryEntry = struct {
     session_key: []u8,
     agent_id: []u8,
-    project_id: []u8,
+    workspace_id: []u8,
     last_active_ms: i64,
     message_count: u64 = 0,
     summary: ?[]u8 = null,
@@ -1380,7 +1380,7 @@ const SessionHistoryEntry = struct {
     fn deinit(self: *SessionHistoryEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.session_key);
         allocator.free(self.agent_id);
-        allocator.free(self.project_id);
+        allocator.free(self.workspace_id);
         if (self.summary) |value| allocator.free(value);
         self.* = undefined;
     }
@@ -1389,7 +1389,7 @@ const SessionHistoryEntry = struct {
         return .{
             .session_key = try allocator.dupe(u8, self.session_key),
             .agent_id = try allocator.dupe(u8, self.agent_id),
-            .project_id = try allocator.dupe(u8, self.project_id),
+            .workspace_id = try allocator.dupe(u8, self.workspace_id),
             .last_active_ms = self.last_active_ms,
             .message_count = self.message_count,
             .summary = if (self.summary) |value| try allocator.dupe(u8, value) else null,
@@ -1483,19 +1483,19 @@ const AuthTokenStore = struct {
         const stored = self.access_last_target orelse return null;
         return .{
             .agent_id = try self.allocator.dupe(u8, stored.agent_id),
-            .project_id = try self.allocator.dupe(u8, stored.project_id),
+            .workspace_id = try self.allocator.dupe(u8, stored.workspace_id),
         };
     }
 
-    fn setRememberedTarget(self: *AuthTokenStore, role: ConnectionRole, agent_id: []const u8, project_id: []const u8) !void {
+    fn setRememberedTarget(self: *AuthTokenStore, role: ConnectionRole, agent_id: []const u8, workspace_id: []const u8) !void {
         _ = role;
         const next_agent = try self.allocator.dupe(u8, agent_id);
         errdefer self.allocator.free(next_agent);
-        const next_project = try self.allocator.dupe(u8, project_id);
-        errdefer self.allocator.free(next_project);
+        const next_workspace = try self.allocator.dupe(u8, workspace_id);
+        errdefer self.allocator.free(next_workspace);
         var next_target = RememberedTarget{
             .agent_id = next_agent,
-            .project_id = next_project,
+            .workspace_id = next_workspace,
         };
 
         self.mutex.lock();
@@ -1532,7 +1532,7 @@ const AuthTokenStore = struct {
         role: ConnectionRole,
         session_key: []const u8,
         agent_id: []const u8,
-        project_id: []const u8,
+        workspace_id: []const u8,
         message_delta: u64,
     ) !void {
         const max_history_entries: usize = 10;
@@ -1547,7 +1547,7 @@ const AuthTokenStore = struct {
         for (history.items) |*entry| {
             if (std.mem.eql(u8, entry.session_key, session_key) and
                 std.mem.eql(u8, entry.agent_id, agent_id) and
-                std.mem.eql(u8, entry.project_id, project_id))
+                std.mem.eql(u8, entry.workspace_id, workspace_id))
             {
                 entry.last_active_ms = now_ms;
                 entry.message_count += message_delta;
@@ -1562,13 +1562,13 @@ const AuthTokenStore = struct {
         try history.append(self.allocator, .{
             .session_key = try self.allocator.dupe(u8, session_key),
             .agent_id = try self.allocator.dupe(u8, agent_id),
-            .project_id = try self.allocator.dupe(u8, project_id),
+            .workspace_id = try self.allocator.dupe(u8, workspace_id),
             .last_active_ms = now_ms,
             .message_count = message_delta,
             .summary = try std.fmt.allocPrint(
                 self.allocator,
                 "{s} @ {s}",
-                .{ agent_id, project_id },
+                .{ agent_id, workspace_id },
             ),
         });
         self.sortSessionHistoryNewestFirst(history);
@@ -1698,12 +1698,12 @@ const AuthTokenStore = struct {
         const access_target_json = if (self.access_last_target) |target| blk: {
             const escaped_agent = try unified.jsonEscape(self.allocator, target.agent_id);
             defer self.allocator.free(escaped_agent);
-            const escaped_project = try unified.jsonEscape(self.allocator, target.project_id);
-            defer self.allocator.free(escaped_project);
+            const escaped_workspace = try unified.jsonEscape(self.allocator, target.workspace_id);
+            defer self.allocator.free(escaped_workspace);
             break :blk try std.fmt.allocPrint(
                 self.allocator,
-                "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\"}}",
-                .{ escaped_agent, escaped_project },
+                "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\"}}",
+                .{ escaped_agent, escaped_workspace },
             );
         } else try self.allocator.dupe(u8, "null");
         defer self.allocator.free(access_target_json);
@@ -1796,7 +1796,7 @@ const AuthTokenStore = struct {
             .access_token = self.access_token,
             .access_last_target = if (self.access_last_target) |value| .{
                 .agent_id = value.agent_id,
-                .project_id = value.project_id,
+                .project_id = value.workspace_id,
             } else null,
             .access_session_history = access_history,
             .updated_at_ms = std.time.milliTimestamp(),
@@ -1824,7 +1824,7 @@ const AuthTokenStore = struct {
         const project_id = value.project_id orelse return null;
         return .{
             .agent_id = try allocator.dupe(u8, agent_id),
-            .project_id = try allocator.dupe(u8, project_id),
+            .workspace_id = try allocator.dupe(u8, project_id),
         };
     }
 
@@ -1840,7 +1840,7 @@ const AuthTokenStore = struct {
             try out.append(allocator, .{
                 .session_key = try allocator.dupe(u8, entry.session_key),
                 .agent_id = try allocator.dupe(u8, entry.agent_id),
-                .project_id = try allocator.dupe(u8, entry.project_id),
+                .workspace_id = try allocator.dupe(u8, entry.project_id),
                 .last_active_ms = entry.last_active_ms,
                 .message_count = entry.message_count,
                 .summary = if (entry.summary) |value| try allocator.dupe(u8, value) else null,
@@ -1868,7 +1868,7 @@ const AuthTokenStore = struct {
             out[idx] = .{
                 .session_key = entry.session_key,
                 .agent_id = entry.agent_id,
-                .project_id = entry.project_id,
+                .project_id = entry.workspace_id,
                 .last_active_ms = entry.last_active_ms,
                 .message_count = entry.message_count,
                 .summary = entry.summary,
@@ -1910,12 +1910,12 @@ const AuthTokenStore = struct {
 
 const AgentRuntimeEntry = struct {
     runtime: *runtime_handle_mod.RuntimeHandle,
-    project_id: []u8,
+    workspace_id: []u8,
     runtime_agent_id: []u8,
 
     fn deinit(self: *AgentRuntimeEntry, allocator: std.mem.Allocator) void {
         self.runtime.destroy();
-        allocator.free(self.project_id);
+        allocator.free(self.workspace_id);
         allocator.free(self.runtime_agent_id);
         self.* = undefined;
     }
@@ -2235,11 +2235,11 @@ const AgentRuntimeRegistry = struct {
     fn dispatchRuntimeAgentControlForTarget(
         self: *AgentRuntimeRegistry,
         agent_id: []const u8,
-        project_id: ?[]const u8,
+        workspace_id: ?[]const u8,
         action: []const u8,
         content_json: []const u8,
     ) !void {
-        const runtime = self.getRuntimeForBindingIfReady(agent_id, project_id) orelse
+        const runtime = self.getRuntimeForBindingIfReady(agent_id, workspace_id) orelse
             return error.RuntimeUnavailable;
         defer runtime.release();
 
@@ -2262,11 +2262,11 @@ const AgentRuntimeRegistry = struct {
         if (responses.len == 0) return error.MissingJobResponse;
         if (std.mem.indexOf(u8, responses[0], "\"type\":\"error\"") != null) {
             std.log.warn(
-                "runtime agent.control rejected: action={s} agent={s} project={s} response={s}",
+                "runtime agent.control rejected: action={s} agent={s} workspace={s} response={s}",
                 .{
                     action,
                     agent_id,
-                    project_id orelse "null",
+                    workspace_id orelse "null",
                     responses[0],
                 },
             );
@@ -2280,7 +2280,7 @@ const AgentRuntimeRegistry = struct {
         action: []const u8,
         content_json: []const u8,
     ) !void {
-        return self.dispatchRuntimeAgentControlForTarget(binding.agent_id, binding.project_id, action, content_json);
+        return self.dispatchRuntimeAgentControlForTarget(binding.agent_id, binding.workspace_id, action, content_json);
     }
 
     fn enqueueVenomPresenceDispatch(
@@ -2295,11 +2295,11 @@ const AgentRuntimeRegistry = struct {
 
         const owned_agent_id = try self.allocator.dupe(u8, binding.agent_id);
         errdefer self.allocator.free(owned_agent_id);
-        const owned_project_id = if (binding.project_id) |value|
+        const owned_workspace_id = if (binding.workspace_id) |value|
             try self.allocator.dupe(u8, value)
         else
             null;
-        errdefer if (owned_project_id) |value| self.allocator.free(value);
+        errdefer if (owned_workspace_id) |value| self.allocator.free(value);
         const owned_session_key = try self.allocator.dupe(u8, session_key);
         errdefer self.allocator.free(owned_session_key);
         const owned_venom_id = try self.allocator.dupe(u8, venom_id);
@@ -2311,10 +2311,10 @@ const AgentRuntimeRegistry = struct {
         if (self.venom_presence_worker_stop) return error.ShuttingDown;
 
         for (self.venom_presence_jobs.items) |*job| {
-            if (job.matches(binding.agent_id, binding.project_id, session_key, venom_id, attached)) {
+            if (job.matches(binding.agent_id, binding.workspace_id, session_key, venom_id, attached)) {
                 self.allocator.free(owned_venom_id);
                 self.allocator.free(owned_session_key);
-                if (owned_project_id) |value| self.allocator.free(value);
+                if (owned_workspace_id) |value| self.allocator.free(value);
                 self.allocator.free(owned_agent_id);
                 self.allocator.free(payload_json);
                 return;
@@ -2325,7 +2325,7 @@ const AgentRuntimeRegistry = struct {
 
         try self.venom_presence_jobs.append(self.allocator, .{
             .agent_id = owned_agent_id,
-            .project_id = owned_project_id,
+            .workspace_id = owned_workspace_id,
             .session_key = owned_session_key,
             .venom_id = owned_venom_id,
             .attached = attached,
@@ -2337,10 +2337,10 @@ const AgentRuntimeRegistry = struct {
     pub fn getRuntimeForBindingIfReady(
         self: *AgentRuntimeRegistry,
         agent_id: []const u8,
-        project_id: ?[]const u8,
+        workspace_id: ?[]const u8,
     ) ?*runtime_handle_mod.RuntimeHandle {
         var selected_runtime: ?*runtime_handle_mod.RuntimeHandle = null;
-        const runtime_key = runtimeMapKeyForWorkspace(project_id);
+        const runtime_key = runtimeMapKeyForWorkspace(workspace_id);
         self.mutex.lock();
         if (self.by_agent.getPtr(runtime_key)) |existing| {
             if (std.mem.eql(u8, existing.runtime_agent_id, agent_id)) {
@@ -2354,9 +2354,9 @@ const AgentRuntimeRegistry = struct {
         if (selected_runtime == null) {
             _ = self.dropUnhealthyRuntimeForBinding(
                 agent_id,
-                project_id,
+                workspace_id,
                 "runtime_unhealthy",
-                "project runtime became unhealthy",
+                "workspace runtime became unhealthy",
             );
         }
         return selected_runtime;
@@ -2365,13 +2365,13 @@ const AgentRuntimeRegistry = struct {
     fn dropUnhealthyRuntimeForBinding(
         self: *AgentRuntimeRegistry,
         agent_id: []const u8,
-        project_id: ?[]const u8,
+        workspace_id: ?[]const u8,
         error_code: []const u8,
         error_message: []const u8,
     ) bool {
         var removed_unhealthy: ?RemovedRuntimeEntry = null;
-        const runtime_key = runtimeMapKeyForWorkspace(project_id);
-        const binding_key = self.runtimeBindingKey(agent_id, project_id) catch null;
+        const runtime_key = runtimeMapKeyForWorkspace(workspace_id);
+        const binding_key = self.runtimeBindingKey(agent_id, workspace_id) catch null;
         defer if (binding_key) |value| self.allocator.free(value);
 
         self.mutex.lock();
@@ -2386,9 +2386,9 @@ const AgentRuntimeRegistry = struct {
             const health_summary = removed.entry.runtime.healthSummary(self.allocator) catch null;
             defer if (health_summary) |value| self.allocator.free(value);
             std.log.warn(
-                "dropping unhealthy ready runtime binding: project={s} agent={s} detail={s}",
+                "dropping unhealthy ready runtime binding: workspace={s} agent={s} detail={s}",
                 .{
-                    project_id orelse "__auto__",
+                    workspace_id orelse "__auto__",
                     removed.entry.runtime_agent_id,
                     health_summary orelse "unavailable",
                 },
@@ -2423,19 +2423,19 @@ const AgentRuntimeRegistry = struct {
         // messages.
     }
 
-    fn workspaceExistsWithRole(self: *AgentRuntimeRegistry, project_id: []const u8, is_admin: bool) bool {
-        const escaped_project = unified.jsonEscape(self.allocator, project_id) catch return false;
-        defer self.allocator.free(escaped_project);
-        const payload = std.fmt.allocPrint(self.allocator, "{{\"project_id\":\"{s}\"}}", .{escaped_project}) catch return false;
+    fn workspaceExistsWithRole(self: *AgentRuntimeRegistry, workspace_id: []const u8, is_admin: bool) bool {
+        const escaped_workspace = unified.jsonEscape(self.allocator, workspace_id) catch return false;
+        defer self.allocator.free(escaped_workspace);
+        const payload = std.fmt.allocPrint(self.allocator, "{{\"workspace_id\":\"{s}\"}}", .{escaped_workspace}) catch return false;
         defer self.allocator.free(payload);
         const result = self.control_plane.getProjectWithRole(payload, is_admin) catch return false;
         self.allocator.free(result);
         return true;
     }
 
-    fn firstAgentForWorkspace(self: *AgentRuntimeRegistry, role: ConnectionRole, project_id: []const u8) ?[]u8 {
-        const include_primary = role == .access and std.mem.eql(u8, project_id, host_workspace_id);
-        return self.control_plane.firstWorkspaceAgent(project_id, include_primary) catch null;
+    fn firstAgentForWorkspace(self: *AgentRuntimeRegistry, role: ConnectionRole, workspace_id: []const u8) ?[]u8 {
+        const include_primary = role == .access and std.mem.eql(u8, workspace_id, host_workspace_id);
+        return self.control_plane.firstWorkspaceAgent(workspace_id, include_primary) catch null;
     }
 
     fn resolvePreferredBindingForRole(self: *AgentRuntimeRegistry, role: ConnectionRole) !?SessionBinding {
@@ -2446,11 +2446,11 @@ const AgentRuntimeRegistry = struct {
                 owned.deinit(self.allocator);
             }
 
-            if (self.workspaceExistsWithRole(remembered.project_id, is_admin)) {
+            if (self.workspaceExistsWithRole(remembered.workspace_id, is_admin)) {
                 var chosen_agent: ?[]u8 = null;
-                if (self.control_plane.agentActiveInWorkspace(remembered.agent_id, remembered.project_id)) {
+                if (self.control_plane.agentActiveInWorkspace(remembered.agent_id, remembered.workspace_id)) {
                     chosen_agent = try self.allocator.dupe(u8, remembered.agent_id);
-                } else if (self.firstAgentForWorkspace(role, remembered.project_id)) |fallback| {
+                } else if (self.firstAgentForWorkspace(role, remembered.workspace_id)) |fallback| {
                     chosen_agent = fallback;
                 } else {
                     chosen_agent = try self.allocator.dupe(u8, remembered.agent_id);
@@ -2461,8 +2461,8 @@ const AgentRuntimeRegistry = struct {
                         .agent_id = agent_id,
                         .actor_type = try self.allocator.dupe(u8, server_session_bindings.defaultActorTypeForRole(role)),
                         .actor_id = try self.allocator.dupe(u8, connectionRoleName(role)),
-                        .project_id = try self.allocator.dupe(u8, remembered.project_id),
-                        .project_token = null,
+                        .workspace_id = try self.allocator.dupe(u8, remembered.workspace_id),
+                        .workspace_token = null,
                     };
                 }
             } else {
@@ -2485,8 +2485,8 @@ const AgentRuntimeRegistry = struct {
                 .agent_id = try self.allocator.dupe(u8, self.default_agent_id),
                 .actor_type = try self.allocator.dupe(u8, server_session_bindings.defaultActorTypeForRole(role)),
                 .actor_id = try self.allocator.dupe(u8, connectionRoleName(role)),
-                .project_id = null,
-                .project_token = null,
+                .workspace_id = null,
+                .workspace_token = null,
             },
         };
     }
@@ -2496,20 +2496,20 @@ const AgentRuntimeRegistry = struct {
         principal: ConnectionPrincipal,
         session_key: []const u8,
         agent_id: []const u8,
-        project_id: ?[]const u8,
+        workspace_id: ?[]const u8,
     ) void {
-        const concrete_project = project_id orelse return;
-        if (std.mem.eql(u8, concrete_project, host_workspace_id)) return;
+        const concrete_workspace = workspace_id orelse return;
+        if (std.mem.eql(u8, concrete_workspace, host_workspace_id)) return;
         self.auth_tokens.recordSessionActivity(
             principal.role,
             session_key,
             agent_id,
-            concrete_project,
+            concrete_workspace,
             0,
         ) catch |err| {
             std.log.warn("failed to persist session history for {s}: {s}", .{ connectionRoleName(principal.role), @errorName(err) });
         };
-        self.auth_tokens.setRememberedTarget(principal.role, agent_id, concrete_project) catch |err| {
+        self.auth_tokens.setRememberedTarget(principal.role, agent_id, concrete_workspace) catch |err| {
             std.log.warn("failed to persist remembered target for {s}: {s}", .{ connectionRoleName(principal.role), @errorName(err) });
         };
     }
@@ -2616,26 +2616,26 @@ const AgentRuntimeRegistry = struct {
         }
 
         for (bindings) |binding| {
-            if (!self.control_plane.workspaceHasMounts(binding.project_id)) continue;
+            if (!self.control_plane.workspaceHasMounts(binding.workspace_id)) continue;
             if (std.mem.eql(u8, binding.agent_id, host_actor_id) and
-                !std.mem.eql(u8, binding.project_id, host_workspace_id))
+                !std.mem.eql(u8, binding.workspace_id, host_workspace_id))
             {
                 continue;
             }
-            if (self.hasHealthyRuntimeForWorkspace(binding.project_id) and
-                !self.hasRuntimeForBinding(binding.agent_id, binding.project_id))
+            if (self.hasHealthyRuntimeForWorkspace(binding.workspace_id) and
+                !self.hasRuntimeForBinding(binding.agent_id, binding.workspace_id))
             {
                 continue;
             }
             var attach_state = self.ensureRuntimeWarmup(
                 binding.agent_id,
-                binding.project_id,
+                binding.workspace_id,
                 null,
                 retry_on_error,
             ) catch |err| {
                 std.log.warn(
                     "active runtime residency warmup failed: agent={s} project={s} err={s}",
-                    .{ binding.agent_id, binding.project_id, @errorName(err) },
+                    .{ binding.agent_id, binding.workspace_id, @errorName(err) },
                 );
                 continue;
             };
@@ -2648,8 +2648,8 @@ const AgentRuntimeRegistry = struct {
         entry: AgentRuntimeEntry,
     };
 
-    fn runtimeMapKeyForWorkspace(project_id: ?[]const u8) []const u8 {
-        return project_id orelse "__auto__";
+    fn runtimeMapKeyForWorkspace(workspace_id: ?[]const u8) []const u8 {
+        return workspace_id orelse "__auto__";
     }
 
     fn takeUnhealthyRuntimeLocked(self: *AgentRuntimeRegistry, runtime_key: []const u8) ?RemovedRuntimeEntry {
@@ -2679,13 +2679,13 @@ const AgentRuntimeRegistry = struct {
     pub fn getOrCreate(
         self: *AgentRuntimeRegistry,
         agent_id: []const u8,
-        requested_project_id: ?[]const u8,
-        requested_project_token: ?[]const u8,
+        requested_workspace_id: ?[]const u8,
+        requested_workspace_token: ?[]const u8,
     ) !*runtime_handle_mod.RuntimeHandle {
         if (!isValidAgentId(agent_id)) return error.InvalidAgentId;
-        const resolved_project_id = try self.resolveWorkspaceId(agent_id, requested_project_id);
-        defer self.allocator.free(resolved_project_id);
-        const runtime_key = runtimeMapKeyForWorkspace(resolved_project_id);
+        const resolved_workspace_id = try self.resolveWorkspaceId(agent_id, requested_workspace_id);
+        defer self.allocator.free(resolved_workspace_id);
+        const runtime_key = runtimeMapKeyForWorkspace(resolved_workspace_id);
 
         var creation_claimed = false;
         while (!creation_claimed) {
@@ -2713,15 +2713,15 @@ const AgentRuntimeRegistry = struct {
                     self.mutex.unlock();
                     if (removed_unhealthy) |removed| {
                         std.log.warn(
-                            "replacing unhealthy project runtime: project={s} agent={s}",
-                            .{ resolved_project_id, removed.entry.runtime_agent_id },
+                            "replacing unhealthy workspace runtime: workspace={s} agent={s}",
+                            .{ resolved_workspace_id, removed.entry.runtime_agent_id },
                         );
                         self.deinitRemovedRuntime(removed);
                     }
                     if (removed_mismatched) |removed| {
                         std.log.info(
-                            "switching project runtime persona: project={s} from={s} to={s}",
-                            .{ resolved_project_id, removed.entry.runtime_agent_id, agent_id },
+                            "switching workspace runtime persona: workspace={s} from={s} to={s}",
+                            .{ resolved_workspace_id, removed.entry.runtime_agent_id, agent_id },
                         );
                         self.deinitRemovedRuntime(removed);
                     }
@@ -2737,16 +2737,16 @@ const AgentRuntimeRegistry = struct {
 
             if (removed_unhealthy) |removed| {
                 std.log.warn(
-                    "replacing unhealthy project runtime: project={s} agent={s}",
-                    .{ resolved_project_id, removed.entry.runtime_agent_id },
+                    "replacing unhealthy workspace runtime: workspace={s} agent={s}",
+                    .{ resolved_workspace_id, removed.entry.runtime_agent_id },
                 );
                 self.deinitRemovedRuntime(removed);
             }
 
             if (removed_mismatched) |removed| {
                 std.log.info(
-                    "switching project runtime persona: project={s} from={s} to={s}",
-                    .{ resolved_project_id, removed.entry.runtime_agent_id, agent_id },
+                    "switching workspace runtime persona: workspace={s} from={s} to={s}",
+                    .{ resolved_workspace_id, removed.entry.runtime_agent_id, agent_id },
                 );
                 self.deinitRemovedRuntime(removed);
             }
@@ -2772,8 +2772,8 @@ const AgentRuntimeRegistry = struct {
 
         const entry = try self.createRuntimeEntry(
             agent_id,
-            resolved_project_id,
-            requested_project_token,
+            resolved_workspace_id,
+            requested_workspace_token,
         );
         var entry_installed = false;
         errdefer if (!entry_installed) {
@@ -2820,10 +2820,10 @@ const AgentRuntimeRegistry = struct {
     fn createRuntimeEntry(
         self: *AgentRuntimeRegistry,
         agent_id: []const u8,
-        project_id: []const u8,
-        project_token: ?[]const u8,
+        workspace_id: []const u8,
+        workspace_token: ?[]const u8,
     ) !AgentRuntimeEntry {
-        _ = project_token;
+        _ = workspace_token;
         const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
             self.allocator,
             "external_worker_required",
@@ -2832,7 +2832,7 @@ const AgentRuntimeRegistry = struct {
         errdefer runtime_handle.destroy();
         return .{
             .runtime = runtime_handle,
-            .project_id = try self.allocator.dupe(u8, project_id),
+            .workspace_id = try self.allocator.dupe(u8, workspace_id),
             .runtime_agent_id = try self.allocator.dupe(u8, agent_id),
         };
     }
@@ -2840,15 +2840,15 @@ const AgentRuntimeRegistry = struct {
     fn resolveWorkspaceId(
         self: *AgentRuntimeRegistry,
         agent_id: []const u8,
-        requested_project_id: ?[]const u8,
+        requested_workspace_id: ?[]const u8,
     ) ![]u8 {
         _ = agent_id;
-        if (requested_project_id) |project_id| {
-            if (!isValidWorkspaceId(project_id)) return error.InvalidProjectId;
-            if (!self.control_plane.workspaceHasMounts(project_id)) {
+        if (requested_workspace_id) |workspace_id| {
+            if (!isValidWorkspaceId(workspace_id)) return error.InvalidProjectId;
+            if (!self.control_plane.workspaceHasMounts(workspace_id)) {
                 return error.ProjectMountsMissing;
             }
-            return self.allocator.dupe(u8, project_id);
+            return self.allocator.dupe(u8, workspace_id);
         }
         return error.ProjectRequired;
     }
@@ -2864,10 +2864,10 @@ const AgentRuntimeRegistry = struct {
         return true;
     }
 
-    fn isValidWorkspaceId(project_id: []const u8) bool {
-        if (project_id.len == 0 or project_id.len > max_project_id_len) return false;
-        if (std.mem.eql(u8, project_id, ".") or std.mem.eql(u8, project_id, "..")) return false;
-        for (project_id) |char| {
+    fn isValidWorkspaceId(workspace_id: []const u8) bool {
+        if (workspace_id.len == 0 or workspace_id.len > max_workspace_id_len) return false;
+        if (std.mem.eql(u8, workspace_id, ".") or std.mem.eql(u8, workspace_id, "..")) return false;
+        for (workspace_id) |char| {
             if (std.ascii.isAlphanumeric(char)) continue;
             if (char == '_' or char == '-' or char == '.') continue;
             return false;
@@ -3449,7 +3449,7 @@ const AgentRuntimeRegistry = struct {
 
             self.dispatchRuntimeAgentControlForTarget(
             job.agent_id,
-            job.project_id,
+            job.workspace_id,
             "venom.event",
             job.payload_json,
         ) catch |err| {
@@ -3640,8 +3640,8 @@ fn handleWebSocketConnection(
         initial_binding.binding.agent_id,
         server_session_bindings.defaultActorTypeForRole(principal.role),
         server_session_bindings.defaultActorIdForPrincipal(principal),
-        initial_binding.binding.project_id,
-        initial_binding.binding.project_token,
+        initial_binding.binding.workspace_id,
+        initial_binding.binding.workspace_token,
     );
     var active_session_key = try allocator.dupe(u8, "main");
     defer allocator.free(active_session_key);
@@ -4738,7 +4738,7 @@ fn handleWebSocketConnection(
                         }
 
                         const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                        if (active_binding.project_id == null) {
+                        if (active_binding.workspace_id == null) {
                             const response = try unified.buildFsrpcError(
                                 allocator,
                                 parsed.tag,
@@ -5176,8 +5176,8 @@ test "server: admin initial binding prefers remembered workspace target" {
         owned.deinit(allocator);
     }
     try std.testing.expectEqualStrings("roger", initial.binding.agent_id);
-    try std.testing.expect(initial.binding.project_id != null);
-    try std.testing.expectEqualStrings(project_id_value.string, initial.binding.project_id.?);
+    try std.testing.expect(initial.binding.workspace_id != null);
+    try std.testing.expectEqualStrings(project_id_value.string, initial.binding.workspace_id.?);
 }
 
 fn readHttpHeadersAlloc(allocator: std.mem.Allocator, stream: *std.net.Stream, max_bytes: usize) ![]u8 {
@@ -5430,7 +5430,7 @@ fn expectWorkspaceScopeSnapshotsEqual(
     lhs: *const WorkspaceScopeSnapshot,
     rhs: *const WorkspaceScopeSnapshot,
 ) !void {
-    try std.testing.expectEqualStrings(lhs.project_id, rhs.project_id);
+    try std.testing.expectEqualStrings(lhs.workspace_id, rhs.workspace_id);
     try std.testing.expectEqualStrings(lhs.workspace_root, rhs.workspace_root);
     try std.testing.expectEqual(lhs.mount_paths.items.len, rhs.mount_paths.items.len);
     for (lhs.mount_paths.items, rhs.mount_paths.items) |left_path, right_path| {
@@ -6200,7 +6200,7 @@ test "server: session_attach ignores public actor identity fields" {
     try setAuthTokensForTests(&runtime_registry, "access-secret");
     try seedRememberedTargetForTests(&runtime_registry, runtime_registry.default_agent_id);
     const remembered_target = runtime_registry.auth_tokens.access_last_target orelse return error.TestExpectedResult;
-    const remembered_project_id = remembered_target.project_id;
+    const remembered_project_id = remembered_target.workspace_id;
 
     var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
     defer listener.deinit();
@@ -6261,7 +6261,7 @@ test "server: control.session_history and control.session_restore survive reconn
     try setAuthTokensForTests(&runtime_registry, "access-secret");
     try seedRememberedTargetForTests(&runtime_registry, runtime_registry.default_agent_id);
     const remembered_target = runtime_registry.auth_tokens.access_last_target orelse return error.TestExpectedResult;
-    const remembered_project_id = remembered_target.project_id;
+    const remembered_project_id = remembered_target.workspace_id;
 
     var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
     defer listener.deinit();

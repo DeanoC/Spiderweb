@@ -7,15 +7,15 @@ pub const SessionBinding = struct {
     agent_id: []u8,
     actor_type: []u8,
     actor_id: []u8,
-    project_id: ?[]u8 = null,
-    project_token: ?[]u8 = null,
+    workspace_id: ?[]u8 = null,
+    workspace_token: ?[]u8 = null,
 
     pub fn deinit(self: *SessionBinding, allocator: std.mem.Allocator) void {
         allocator.free(self.agent_id);
         allocator.free(self.actor_type);
         allocator.free(self.actor_id);
-        if (self.project_id) |value| allocator.free(value);
-        if (self.project_token) |value| allocator.free(value);
+        if (self.workspace_id) |value| allocator.free(value);
+        if (self.workspace_token) |value| allocator.free(value);
         self.* = undefined;
     }
 };
@@ -42,12 +42,12 @@ pub fn cloneSessionBinding(
         .agent_id = try allocator.dupe(u8, binding.agent_id),
         .actor_type = try allocator.dupe(u8, binding.actor_type),
         .actor_id = try allocator.dupe(u8, binding.actor_id),
-        .project_id = null,
-        .project_token = null,
+        .workspace_id = null,
+        .workspace_token = null,
     };
     errdefer out.deinit(allocator);
-    if (binding.project_id) |value| out.project_id = try allocator.dupe(u8, value);
-    if (binding.project_token) |value| out.project_token = try allocator.dupe(u8, value);
+    if (binding.workspace_id) |value| out.workspace_id = try allocator.dupe(u8, value);
+    if (binding.workspace_token) |value| out.workspace_token = try allocator.dupe(u8, value);
     return out;
 }
 
@@ -58,8 +58,8 @@ pub fn upsertSessionBinding(
     agent_id: []const u8,
     actor_type: []const u8,
     actor_id: []const u8,
-    project_id: ?[]const u8,
-    project_token: ?[]const u8,
+    workspace_id: ?[]const u8,
+    workspace_token: ?[]const u8,
 ) !void {
     if (map.getPtr(session_key)) |existing| {
         const next_agent_id = try allocator.dupe(u8, agent_id);
@@ -68,18 +68,18 @@ pub fn upsertSessionBinding(
         errdefer allocator.free(next_actor_type);
         const next_actor_id = try allocator.dupe(u8, actor_id);
         errdefer allocator.free(next_actor_id);
-        const next_project_id: ?[]u8 = if (project_id) |value| try allocator.dupe(u8, value) else null;
-        errdefer if (next_project_id) |value| allocator.free(value);
-        const next_project_token: ?[]u8 = if (project_token) |value| try allocator.dupe(u8, value) else null;
-        errdefer if (next_project_token) |value| allocator.free(value);
+        const next_workspace_id: ?[]u8 = if (workspace_id) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (next_workspace_id) |value| allocator.free(value);
+        const next_workspace_token: ?[]u8 = if (workspace_token) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (next_workspace_token) |value| allocator.free(value);
 
         existing.deinit(allocator);
         existing.* = .{
             .agent_id = next_agent_id,
             .actor_type = next_actor_type,
             .actor_id = next_actor_id,
-            .project_id = next_project_id,
-            .project_token = next_project_token,
+            .workspace_id = next_workspace_id,
+            .workspace_token = next_workspace_token,
         };
         return;
     }
@@ -91,8 +91,8 @@ pub fn upsertSessionBinding(
             .agent_id = try allocator.dupe(u8, agent_id),
             .actor_type = try allocator.dupe(u8, actor_type),
             .actor_id = try allocator.dupe(u8, actor_id),
-            .project_id = if (project_id) |value| try allocator.dupe(u8, value) else null,
-            .project_token = if (project_token) |value| try allocator.dupe(u8, value) else null,
+            .workspace_id = if (workspace_id) |value| try allocator.dupe(u8, value) else null,
+            .workspace_token = if (workspace_token) |value| try allocator.dupe(u8, value) else null,
         },
     );
 }

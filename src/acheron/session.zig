@@ -24,6 +24,7 @@ const git_venom = @import("../venoms/git.zig");
 const venom_packages = @import("../venom_packages.zig");
 const venom_package = @import("../venom_package.zig");
 const session_workspace_contract = @import("session_workspace_contract.zig");
+const session_service_discovery = @import("session_service_discovery.zig");
 
 var direct_builtin_shell_exec_mutex: std.Thread.Mutex = .{};
 
@@ -1751,32 +1752,11 @@ pub const Session = struct {
     }
 
     fn buildVenomPackagesJson(self: *Session) ![]u8 {
-        if (self.control_plane) |plane| {
-            return plane.listVenomPackages();
-        }
-        return venom_packages.buildPackagesJson(self.allocator);
+        return session_service_discovery.buildVenomPackagesJson(self);
     }
 
     fn buildProjectBindsArrayJson(self: *Session) ![]u8 {
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.append(self.allocator, '[');
-        var first = true;
-        for (self.project_binds.items) |bind| {
-            if (bind.kind != .workspace) continue;
-            if (!first) try out.append(self.allocator, ',');
-            first = false;
-            const escaped_bind = try unified.jsonEscape(self.allocator, bind.bind_path);
-            defer self.allocator.free(escaped_bind);
-            const escaped_target = try unified.jsonEscape(self.allocator, bind.target_path);
-            defer self.allocator.free(escaped_target);
-            try out.writer(self.allocator).print(
-                "{{\"bind_path\":\"{s}\",\"target_path\":\"{s}\"}}",
-                .{ escaped_bind, escaped_target },
-            );
-        }
-        try out.append(self.allocator, ']');
-        return out.toOwnedSlice(self.allocator);
+        return session_service_discovery.buildProjectBindsArrayJson(self);
     }
 
     pub fn hasProjectBindPath(self: *Session, bind_path: []const u8) bool {
@@ -1911,146 +1891,10 @@ pub const Session = struct {
     }
 
     fn buildMountedServicesJson(self: *Session) ![]u8 {
-        var out = std.ArrayListUnmanaged(u8){};
-        errdefer out.deinit(self.allocator);
-        try out.append(self.allocator, '[');
-        var first = true;
-
-        for (self.project_binds.items) |bind| {
-            if (bind.kind != .workspace) continue;
-            if (!first) try out.append(self.allocator, ',');
-            first = false;
-            try self.appendMountedServiceBindJson(&out, bind);
-        }
-
-        for (self.scoped_venom_bindings.items) |binding| {
-            if (!first) try out.append(self.allocator, ',');
-            first = false;
-            try self.appendDirectMountedServiceJson(&out, binding);
-        }
-
-        try out.append(self.allocator, ']');
-        return out.toOwnedSlice(self.allocator);
+        return session_service_discovery.buildMountedServicesJson(self);
     }
 
-    fn appendMountedServiceBindJson(self: *Session, out: *std.ArrayListUnmanaged(u8), bind: PathBind) !void {
-        var selected: ?*const ScopedVenomBinding = null;
-        for (self.scoped_venom_bindings.items) |*binding| {
-            if (!pathMatchesPrefixBoundary(bind.target_path, binding.venom_path)) continue;
-            if (selected == null or binding.venom_path.len > selected.?.venom_path.len) selected = binding;
-        }
-
-        const escaped_bind = try unified.jsonEscape(self.allocator, bind.bind_path);
-        defer self.allocator.free(escaped_bind);
-        const escaped_target = try unified.jsonEscape(self.allocator, bind.target_path);
-        defer self.allocator.free(escaped_target);
-
-        if (selected) |binding| {
-            const escaped_venom_id = try unified.jsonEscape(self.allocator, binding.venom_id);
-            defer self.allocator.free(escaped_venom_id);
-            const escaped_scope = try unified.jsonEscape(self.allocator, binding.scope);
-            defer self.allocator.free(escaped_scope);
-            const escaped_source = try unified.jsonEscape(self.allocator, binding.venom_path);
-            defer self.allocator.free(escaped_source);
-            const invoke_json = if (binding.invoke_path) |invoke_path| blk: {
-                if (try self.rebaseBoundServicePath(bind.bind_path, bind.target_path, invoke_path)) |rebased| {
-                    defer self.allocator.free(rebased);
-                    const escaped = try unified.jsonEscape(self.allocator, rebased);
-                    defer self.allocator.free(escaped);
-                    break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-                }
-                break :blk try self.allocator.dupe(u8, "null");
-            } else try self.allocator.dupe(u8, "null");
-            defer self.allocator.free(invoke_json);
-            const provider_node_json = if (binding.provider_node_id) |value| blk: {
-                const escaped = try unified.jsonEscape(self.allocator, value);
-                defer self.allocator.free(escaped);
-                break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-            } else try self.allocator.dupe(u8, "null");
-            defer self.allocator.free(provider_node_json);
-            const provider_path_json = if (binding.provider_venom_path) |value| blk: {
-                const escaped = try unified.jsonEscape(self.allocator, value);
-                defer self.allocator.free(escaped);
-                break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-            } else try self.allocator.dupe(u8, "null");
-            defer self.allocator.free(provider_path_json);
-            const endpoint_json = if (binding.endpoint_path) |value| blk: {
-                const escaped = try unified.jsonEscape(self.allocator, value);
-                defer self.allocator.free(escaped);
-                break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-            } else try self.allocator.dupe(u8, "null");
-            defer self.allocator.free(endpoint_json);
-
-            try out.writer(self.allocator).print(
-                "{{\"kind\":\"venom\",\"exposure\":\"project_bind\",\"venom_id\":\"{s}\",\"scope\":\"{s}\",\"path\":\"{s}\",\"target_path\":\"{s}\",\"source_path\":\"{s}\",\"provider_node_id\":{s},\"provider_venom_path\":{s},\"endpoint_path\":{s},\"invoke_path\":{s}}}",
-                .{
-                    escaped_venom_id,
-                    escaped_scope,
-                    escaped_bind,
-                    escaped_target,
-                    escaped_source,
-                    provider_node_json,
-                    provider_path_json,
-                    endpoint_json,
-                    invoke_json,
-                },
-            );
-            return;
-        }
-
-        try out.writer(self.allocator).print(
-            "{{\"kind\":\"path_bind\",\"exposure\":\"project_bind\",\"path\":\"{s}\",\"target_path\":\"{s}\"}}",
-            .{ escaped_bind, escaped_target },
-        );
-    }
-
-    fn appendDirectMountedServiceJson(self: *Session, out: *std.ArrayListUnmanaged(u8), binding: ScopedVenomBinding) !void {
-        const escaped_venom_id = try unified.jsonEscape(self.allocator, binding.venom_id);
-        defer self.allocator.free(escaped_venom_id);
-        const escaped_scope = try unified.jsonEscape(self.allocator, binding.scope);
-        defer self.allocator.free(escaped_scope);
-        const escaped_path = try unified.jsonEscape(self.allocator, binding.venom_path);
-        defer self.allocator.free(escaped_path);
-        const provider_node_json = if (binding.provider_node_id) |value| blk: {
-            const escaped = try unified.jsonEscape(self.allocator, value);
-            defer self.allocator.free(escaped);
-            break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-        } else try self.allocator.dupe(u8, "null");
-        defer self.allocator.free(provider_node_json);
-        const provider_path_json = if (binding.provider_venom_path) |value| blk: {
-            const escaped = try unified.jsonEscape(self.allocator, value);
-            defer self.allocator.free(escaped);
-            break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-        } else try self.allocator.dupe(u8, "null");
-        defer self.allocator.free(provider_path_json);
-        const endpoint_json = if (binding.endpoint_path) |value| blk: {
-            const escaped = try unified.jsonEscape(self.allocator, value);
-            defer self.allocator.free(escaped);
-            break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-        } else try self.allocator.dupe(u8, "null");
-        defer self.allocator.free(endpoint_json);
-        const invoke_json = if (binding.invoke_path) |value| blk: {
-            const escaped = try unified.jsonEscape(self.allocator, value);
-            defer self.allocator.free(escaped);
-            break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-        } else try self.allocator.dupe(u8, "null");
-        defer self.allocator.free(invoke_json);
-
-        try out.writer(self.allocator).print(
-            "{{\"kind\":\"venom\",\"exposure\":\"direct\",\"venom_id\":\"{s}\",\"scope\":\"{s}\",\"path\":\"{s}\",\"provider_node_id\":{s},\"provider_venom_path\":{s},\"endpoint_path\":{s},\"invoke_path\":{s}}}",
-            .{
-                escaped_venom_id,
-                escaped_scope,
-                escaped_path,
-                provider_node_json,
-                provider_path_json,
-                endpoint_json,
-                invoke_json,
-            },
-        );
-    }
-
-    fn rebaseBoundServicePath(
+    pub fn rebaseBoundServicePath(
         self: *Session,
         bind_path: []const u8,
         target_path: []const u8,

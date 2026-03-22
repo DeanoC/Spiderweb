@@ -41,11 +41,11 @@ pub const ControlPlaneError = error{
     NodeNotFound,
     NodeAuthFailed,
     PendingJoinNotFound,
-    ProjectNotFound,
-    ProjectAuthFailed,
-    ProjectProtected,
-    ProjectAssignmentForbidden,
-    ProjectPolicyForbidden,
+    WorkspaceNotFound,
+    WorkspaceAuthFailed,
+    WorkspaceProtected,
+    WorkspaceAssignmentForbidden,
+    WorkspacePolicyForbidden,
     MountConflict,
     MountNotFound,
     BindConflict,
@@ -605,15 +605,15 @@ pub const ControlPlane = struct {
         while (project_it.next()) |project| {
             if (project.kind == .host_internal) continue;
             var project_changed = false;
-            if (try ensureDefaultProjectMountsLocked(self, project)) project_changed = true;
-            if (try ensureProjectTemplateBindsLocked(self, project)) project_changed = true;
+            if (try ensureDefaultWorkspaceMountsLocked(self, project)) project_changed = true;
+            if (try ensureWorkspaceTemplateBindsLocked(self, project)) project_changed = true;
             if (!project_changed) continue;
             project.updated_at_ms = now_ms;
             changed = true;
         }
 
-        const host_project = getHostProjectPtrLocked(self) catch return;
-        if (try ensureHostProjectBindsLocked(self, host_project)) {
+        const host_project = getHostWorkspacePtrLocked(self) catch return;
+        if (try ensureHostWorkspaceBindsLocked(self, host_project)) {
             host_project.updated_at_ms = now_ms;
             changed = true;
         }
@@ -641,7 +641,7 @@ pub const ControlPlane = struct {
         if (mount_specs.len == 0) return ControlPlaneError.MissingField;
         if (!self.nodes.contains(node_id)) return ControlPlaneError.NodeNotFound;
         try self.ensureBuiltinHostProjectLocked(now_ms);
-        const project = try getHostProjectPtrLocked(self);
+        const project = try getHostWorkspacePtrLocked(self);
 
         var normalized_paths = std.ArrayListUnmanaged([]u8){};
         defer {
@@ -732,7 +732,7 @@ pub const ControlPlane = struct {
         if (project.kind == .host_internal and !is_admin) {
             return false;
         }
-        requireProjectActionAccess(&project, action, agent_id, project_token, is_admin) catch return false;
+        requireWorkspaceActionAccess(&project, action, agent_id, project_token, is_admin) catch return false;
         return true;
     }
 
@@ -754,7 +754,7 @@ pub const ControlPlane = struct {
             if (!actor_is_primary) return false;
         }
         if (!actor_is_primary) {
-            requireProjectActionAccess(&project, .observe, agent_id, project_token, is_admin) catch return false;
+            requireWorkspaceActionAccess(&project, .observe, agent_id, project_token, is_admin) catch return false;
         }
 
         for (project.mounts.items) |mount| {
@@ -1453,7 +1453,7 @@ pub const ControlPlane = struct {
                 const project = project_id orelse return ControlPlaneError.MissingField;
                 if (agent_id != null) return ControlPlaneError.InvalidPayload;
                 try validateIdentifier(project, 128);
-                _ = self.workspaces.get(project) orelse return ControlPlaneError.ProjectNotFound;
+                _ = self.workspaces.get(project) orelse return ControlPlaneError.WorkspaceNotFound;
                 break :blk project;
             },
             .agent => blk: {
@@ -1797,7 +1797,7 @@ pub const ControlPlane = struct {
         var access_policy: WorkspaceAccessPolicy = .{};
         errdefer access_policy.deinit(self.allocator);
         if (obj.get("access_policy")) |value| {
-            access_policy = try parseProjectAccessPolicyValue(self.allocator, value);
+            access_policy = try parseWorkspaceAccessPolicyValue(self.allocator, value);
         }
 
         const project_id = try makeSequentialId(self.allocator, "proj", &self.next_workspace_id);
@@ -1825,12 +1825,12 @@ pub const ControlPlane = struct {
             self.allocator.free(project.mutation_token);
         }
         try self.workspaces.put(self.allocator, project.id, project);
-        const stored_project = self.workspaces.getPtr(project_id) orelse return error.ProjectNotFound;
+        const stored_project = self.workspaces.getPtr(project_id) orelse return error.WorkspaceNotFound;
         var project_changed = false;
-        if (try ensureDefaultProjectMountsLocked(self, stored_project)) {
+        if (try ensureDefaultWorkspaceMountsLocked(self, stored_project)) {
             project_changed = true;
         }
-        if (try ensureProjectTemplateBindsLocked(self, stored_project)) {
+        if (try ensureWorkspaceTemplateBindsLocked(self, stored_project)) {
             project_changed = true;
         }
         if (project_changed) {
@@ -1842,7 +1842,7 @@ pub const ControlPlane = struct {
         self.workspace_creates_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
-        return renderProjectPayload(self.allocator, stored_project.*, true);
+        return renderWorkspacePayload(self.allocator, stored_project.*, true);
     }
 
     pub fn updateWorkspace(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -1860,8 +1860,8 @@ pub const ControlPlane = struct {
         const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
         try validateIdentifier(workspace_id, 128);
         const workspace_token = getOptionalString(obj, "workspace_token");
-        const project = try getPublicProjectPtrLocked(self, workspace_id);
-        try requireProjectAccessToken(project, workspace_token, is_admin);
+        const project = try getPublicWorkspacePtrLocked(self, workspace_id);
+        try requireWorkspaceAccessToken(project, workspace_token, is_admin);
         const next_name = getOptionalString(obj, "name");
         const next_vision = getOptionalString(obj, "vision");
         const next_status = getOptionalString(obj, "status");
@@ -1883,7 +1883,7 @@ pub const ControlPlane = struct {
             project.status = try self.allocator.dupe(u8, value);
         }
         if (next_access_policy) |value| {
-            var parsed_policy = try parseProjectAccessPolicyValue(self.allocator, value);
+            var parsed_policy = try parseWorkspaceAccessPolicyValue(self.allocator, value);
             errdefer parsed_policy.deinit(self.allocator);
             project.access_policy.deinit(self.allocator);
             project.access_policy = parsed_policy;
@@ -1892,7 +1892,7 @@ pub const ControlPlane = struct {
         self.workspace_updates_total +%= 1;
         self.persistSnapshotBestEffortLocked();
 
-        return renderProjectPayload(self.allocator, project.*, false);
+        return renderWorkspacePayload(self.allocator, project.*, false);
     }
 
     pub fn deleteWorkspace(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -1911,10 +1911,10 @@ pub const ControlPlane = struct {
         try validateIdentifier(workspace_id, 128);
         const workspace_token = getOptionalString(obj, "workspace_token");
 
-        const existing_project = try getPublicProjectLocked(self, workspace_id);
-        if (existing_project.is_delete_protected) return ControlPlaneError.ProjectProtected;
-        try requireProjectAccessToken(&existing_project, workspace_token, is_admin);
-        const removed = self.workspaces.fetchRemove(workspace_id) orelse return ControlPlaneError.ProjectNotFound;
+        const existing_project = try getPublicWorkspaceLocked(self, workspace_id);
+        if (existing_project.is_delete_protected) return ControlPlaneError.WorkspaceProtected;
+        try requireWorkspaceAccessToken(&existing_project, workspace_token, is_admin);
+        const removed = self.workspaces.fetchRemove(workspace_id) orelse return ControlPlaneError.WorkspaceNotFound;
         var project = removed.value;
         defer project.deinit(self.allocator);
 
@@ -1970,8 +1970,8 @@ pub const ControlPlane = struct {
 
         const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
         defer self.allocator.free(mount_path);
-        const project = try getHostProjectPtrLocked(self);
-        const removed_count = removeProjectMountEntriesLocked(
+        const project = try getHostWorkspacePtrLocked(self);
+        const removed_count = removeWorkspaceMountEntriesLocked(
             self.allocator,
             project,
             mount_path,
@@ -2026,7 +2026,7 @@ pub const ControlPlane = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
-        if (!self.workspaces.contains(project_id)) return ControlPlaneError.ProjectNotFound;
+        if (!self.workspaces.contains(project_id)) return ControlPlaneError.WorkspaceNotFound;
 
         var selected: ?[]const u8 = null;
         var it = self.active_workspace_by_agent.iterator();
@@ -2058,7 +2058,7 @@ pub const ControlPlane = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
-        const project = getPublicProjectLocked(self, project_id) catch return false;
+        const project = getPublicWorkspaceLocked(self, project_id) catch return false;
         return project.mounts.items.len > 0;
     }
 
@@ -2066,7 +2066,7 @@ pub const ControlPlane = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
-        return hostProjectHasMountsLocked(self);
+        return hostWorkspaceHasMountsLocked(self);
     }
 
     pub fn snapshotActiveWorkspaceBindings(
@@ -2115,10 +2115,10 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
         const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
         const workspace_token = getOptionalString(obj, "workspace_token");
-        const project = try getPublicProjectLocked(self, workspace_id);
-        try requireProjectActionAccess(&project, .read, null, workspace_token, is_admin);
+        const project = try getPublicWorkspaceLocked(self, workspace_id);
+        try requireWorkspaceActionAccess(&project, .read, null, workspace_token, is_admin);
 
-        return renderProjectPayload(self.allocator, project, false);
+        return renderWorkspacePayload(self.allocator, project, false);
     }
 
     pub fn setWorkspaceMount(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -2144,8 +2144,8 @@ pub const ControlPlane = struct {
         try validateExportName(export_name);
 
         if (!self.nodes.contains(node_id)) return ControlPlaneError.NodeNotFound;
-        const project = try getPublicProjectPtrLocked(self, workspace_id);
-        try requireProjectActionAccess(project, .mount, null, workspace_token, is_admin);
+        const project = try getPublicWorkspacePtrLocked(self, workspace_id);
+        try requireWorkspaceActionAccess(project, .mount, null, workspace_token, is_admin);
 
         const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
         errdefer self.allocator.free(mount_path);
@@ -2153,7 +2153,7 @@ pub const ControlPlane = struct {
             if (std.mem.eql(u8, existing.mount_path, mount_path)) {
                 if (std.mem.eql(u8, existing.node_id, node_id) and std.mem.eql(u8, existing.export_name, export_name)) {
                     self.allocator.free(mount_path);
-                    return renderProjectPayload(self.allocator, project.*, false);
+                    return renderWorkspacePayload(self.allocator, project.*, false);
                 }
                 // Exact same mount path on different nodes is a failover group and is allowed.
                 continue;
@@ -2177,7 +2177,7 @@ pub const ControlPlane = struct {
             .{ workspace_id, node_id, export_name, mount_path },
         );
 
-        return renderProjectPayload(self.allocator, project.*, false);
+        return renderWorkspacePayload(self.allocator, project.*, false);
     }
 
     pub fn removeWorkspaceMount(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -2205,9 +2205,9 @@ pub const ControlPlane = struct {
         const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
         defer self.allocator.free(mount_path);
 
-        const project = try getPublicProjectPtrLocked(self, workspace_id);
-        try requireProjectActionAccess(project, .mount, null, workspace_token, is_admin);
-        const removed_count = removeProjectMountEntriesLocked(
+        const project = try getPublicWorkspacePtrLocked(self, workspace_id);
+        try requireWorkspaceActionAccess(project, .mount, null, workspace_token, is_admin);
+        const removed_count = removeWorkspaceMountEntriesLocked(
             self.allocator,
             project,
             mount_path,
@@ -2219,7 +2219,7 @@ pub const ControlPlane = struct {
         self.mount_removes_total +%= removed_count;
         self.persistSnapshotBestEffortLocked();
 
-        return renderProjectPayload(self.allocator, project.*, false);
+        return renderWorkspacePayload(self.allocator, project.*, false);
     }
 
     pub fn listWorkspaceMounts(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -2236,8 +2236,8 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
         const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
         const workspace_token = getOptionalString(obj, "workspace_token");
-        const project = try getPublicProjectLocked(self, workspace_id);
-        try requireProjectActionAccess(&project, .read, null, workspace_token, is_admin);
+        const project = try getPublicWorkspaceLocked(self, workspace_id);
+        try requireWorkspaceActionAccess(&project, .read, null, workspace_token, is_admin);
 
         const escaped_id = try jsonEscape(self.allocator, project.id);
         defer self.allocator.free(escaped_id);
@@ -2271,15 +2271,15 @@ pub const ControlPlane = struct {
         const target_path_raw = getRequiredString(obj, "target_path") catch return ControlPlaneError.MissingField;
         try validateIdentifier(workspace_id, 128);
 
-        const project = try getPublicProjectPtrLocked(self, workspace_id);
-        try requireProjectActionAccess(project, .bind, null, workspace_token, is_admin);
+        const project = try getPublicWorkspacePtrLocked(self, workspace_id);
+        try requireWorkspaceActionAccess(project, .bind, null, workspace_token, is_admin);
 
         const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
         errdefer self.allocator.free(bind_path);
         if (std.mem.eql(u8, bind_path, "/")) return ControlPlaneError.InvalidPayload;
         const target_path = try normalizeMountPath(self.allocator, target_path_raw);
         errdefer self.allocator.free(target_path);
-        if (!projectPathWithinBindAuthority(project, target_path)) return ControlPlaneError.BindConflict;
+        if (!workspacePathWithinBindAuthority(project, target_path)) return ControlPlaneError.BindConflict;
 
         for (project.mounts.items) |mount| {
             if (pathsConflict(mount.mount_path, bind_path)) return ControlPlaneError.BindConflict;
@@ -2289,14 +2289,14 @@ pub const ControlPlane = struct {
                 if (std.mem.eql(u8, existing.target_path, target_path)) {
                     self.allocator.free(bind_path);
                     self.allocator.free(target_path);
-                    return renderProjectPayload(self.allocator, project.*, false);
+                    return renderWorkspacePayload(self.allocator, project.*, false);
                 }
                 self.allocator.free(existing.target_path);
                 existing.target_path = target_path;
                 self.allocator.free(bind_path);
                 project.updated_at_ms = std.time.milliTimestamp();
                 self.persistSnapshotBestEffortLocked();
-                return renderProjectPayload(self.allocator, project.*, false);
+                return renderWorkspacePayload(self.allocator, project.*, false);
             }
             if (pathsConflict(existing.bind_path, bind_path)) return ControlPlaneError.BindConflict;
         }
@@ -2307,7 +2307,7 @@ pub const ControlPlane = struct {
         });
         project.updated_at_ms = std.time.milliTimestamp();
         self.persistSnapshotBestEffortLocked();
-        return renderProjectPayload(self.allocator, project.*, false);
+        return renderWorkspacePayload(self.allocator, project.*, false);
     }
 
     pub fn removeWorkspaceBind(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -2330,8 +2330,8 @@ pub const ControlPlane = struct {
         const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
         defer self.allocator.free(bind_path);
 
-        const project = try getPublicProjectPtrLocked(self, workspace_id);
-        try requireProjectActionAccess(project, .bind, null, workspace_token, is_admin);
+        const project = try getPublicWorkspacePtrLocked(self, workspace_id);
+        try requireWorkspaceActionAccess(project, .bind, null, workspace_token, is_admin);
 
         var removed = false;
         var i: usize = 0;
@@ -2349,7 +2349,7 @@ pub const ControlPlane = struct {
         if (!removed) return ControlPlaneError.BindNotFound;
         project.updated_at_ms = std.time.milliTimestamp();
         self.persistSnapshotBestEffortLocked();
-        return renderProjectPayload(self.allocator, project.*, false);
+        return renderWorkspacePayload(self.allocator, project.*, false);
     }
 
     pub fn listWorkspaceBinds(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -2366,8 +2366,8 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
         const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
         const workspace_token = getOptionalString(obj, "workspace_token");
-        const project = try getPublicProjectLocked(self, workspace_id);
-        try requireProjectActionAccess(&project, .read, null, workspace_token, is_admin);
+        const project = try getPublicWorkspaceLocked(self, workspace_id);
+        try requireWorkspaceActionAccess(&project, .read, null, workspace_token, is_admin);
 
         const escaped_id = try jsonEscape(self.allocator, project.id);
         defer self.allocator.free(escaped_id);
@@ -2400,8 +2400,8 @@ pub const ControlPlane = struct {
         const path = try normalizeMountPath(self.allocator, path_raw);
         defer self.allocator.free(path);
 
-        const project = try getPublicProjectLocked(self, workspace_id);
-        try requireProjectActionAccess(&project, .read, null, workspace_token, is_admin);
+        const project = try getPublicWorkspaceLocked(self, workspace_id);
+        try requireWorkspaceActionAccess(&project, .read, null, workspace_token, is_admin);
 
         const resolved_path = try resolveBoundPath(self.allocator, &project, path);
         defer if (resolved_path) |value| self.allocator.free(value);
@@ -2437,8 +2437,8 @@ pub const ControlPlane = struct {
         const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
         const current_token = getOptionalString(obj, "workspace_token");
         try validateIdentifier(workspace_id, 128);
-        const project = try getPublicProjectPtrLocked(self, workspace_id);
-        try requireProjectAccessToken(project, current_token, is_admin);
+        const project = try getPublicWorkspacePtrLocked(self, workspace_id);
+        try requireWorkspaceAccessToken(project, current_token, is_admin);
 
         self.allocator.free(project.mutation_token);
         project.mutation_token = try makeToken(self.allocator, "proj");
@@ -2473,8 +2473,8 @@ pub const ControlPlane = struct {
         const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
         const current_token = getOptionalString(obj, "workspace_token");
         try validateIdentifier(workspace_id, 128);
-        const project = try getPublicProjectPtrLocked(self, workspace_id);
-        try requireProjectAccessToken(project, current_token, is_admin);
+        const project = try getPublicWorkspacePtrLocked(self, workspace_id);
+        try requireWorkspaceAccessToken(project, current_token, is_admin);
 
         project.token_locked = false;
         project.updated_at_ms = std.time.milliTimestamp();
@@ -2500,7 +2500,7 @@ pub const ControlPlane = struct {
         const now_ms = std.time.milliTimestamp();
         _ = self.reapExpiredLeasesLocked(now_ms);
         try self.ensureBuiltinHostProjectLocked(now_ms);
-        const project = try getHostProjectPtrLocked(self);
+        const project = try getHostWorkspacePtrLocked(self);
 
         self.workspace_activations_total +%= 1;
         if (project.mounts.items.len == 0 and self.spider_web_root.len > 0) {
@@ -2526,16 +2526,16 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
         const workspace_id = getRequiredString(obj, "workspace_id") catch return ControlPlaneError.MissingField;
         try validateIdentifier(workspace_id, 128);
-        const project = self.workspaces.getPtr(workspace_id) orelse return ControlPlaneError.ProjectNotFound;
-        if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
+        const project = self.workspaces.getPtr(workspace_id) orelse return ControlPlaneError.WorkspaceNotFound;
+        if (project.kind == .host_internal) return ControlPlaneError.WorkspaceNotFound;
         const is_host_actor = self.isHostActor(agent_id);
         if (is_host_actor and !std.mem.eql(u8, workspace_id, host_workspace_id)) {
-            return ControlPlaneError.ProjectAssignmentForbidden;
+            return ControlPlaneError.WorkspaceAssignmentForbidden;
         }
 
         const maybe_workspace_token = getOptionalString(obj, "workspace_token");
-        try requireProjectActionAccess(project, .read, agent_id, maybe_workspace_token, is_admin);
-        if (try ensureDefaultProjectMountsLocked(self, project)) {
+        try requireWorkspaceActionAccess(project, .read, agent_id, maybe_workspace_token, is_admin);
+        if (try ensureDefaultWorkspaceMountsLocked(self, project)) {
             project.updated_at_ms = now_ms;
             self.mount_sets_total +%= 1;
             self.requestReconcileLocked(now_ms);
@@ -2617,7 +2617,7 @@ pub const ControlPlane = struct {
         const created = resolved_workspace.created;
         var mounts_replaced = false;
         var binds_replaced = false;
-        if (workspace.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
+        if (workspace.kind == .host_internal) return ControlPlaneError.WorkspaceNotFound;
         const is_host_actor = self.isHostActor(agent_id);
         if (!created) {
             try applyWorkspaceUpMetadataUpdatesLocked(
@@ -2640,7 +2640,7 @@ pub const ControlPlane = struct {
         mounts_replaced = try applyWorkspaceUpMountReplacementsLocked(self, workspace, obj.get("desired_mounts"), created);
         binds_replaced = try applyWorkspaceUpBindReplacementsLocked(self, workspace, obj.get("desired_binds"));
 
-        if (try ensureProjectTemplateBindsLocked(self, workspace)) binds_replaced = true;
+        if (try ensureWorkspaceTemplateBindsLocked(self, workspace)) binds_replaced = true;
 
         workspace.updated_at_ms = now_ms;
         if (!created) self.workspace_updates_total +%= 1;
@@ -2648,10 +2648,10 @@ pub const ControlPlane = struct {
 
         if (activate) {
             if (is_host_actor and !std.mem.eql(u8, workspace.id, host_workspace_id)) {
-                return ControlPlaneError.ProjectAssignmentForbidden;
+                return ControlPlaneError.WorkspaceAssignmentForbidden;
             }
             if (workspace.kind == .host_internal and !(is_host_actor or is_admin)) {
-                return ControlPlaneError.ProjectAssignmentForbidden;
+                return ControlPlaneError.WorkspaceAssignmentForbidden;
             }
             try upsertActiveWorkspaceBindingLocked(self, agent_id, workspace.id);
             self.workspace_activations_total +%= 1;
@@ -2724,8 +2724,8 @@ pub const ControlPlane = struct {
         const escaped_agent = try jsonEscape(self.allocator, agent_id);
         defer self.allocator.free(escaped_agent);
         if (selected_workspace_id) |workspace_id| {
-            const workspace = self.workspaces.get(workspace_id) orelse return ControlPlaneError.ProjectNotFound;
-            if (workspace.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
+            const workspace = self.workspaces.get(workspace_id) orelse return ControlPlaneError.WorkspaceNotFound;
+            if (workspace.kind == .host_internal) return ControlPlaneError.WorkspaceNotFound;
             try requireWorkspaceStatusAccessLocked(self, agent_id, &workspace, workspace_id, selected_workspace_token, is_admin);
             return try self.renderWorkspaceStatusForProjectLocked(
                 agent_id,
@@ -2792,7 +2792,7 @@ fn resolveWorkspaceUpTargetLocked(
     if (requested_workspace_id) |workspace_id| {
         try validateIdentifier(workspace_id, 128);
         workspace_ptr = self.workspaces.getPtr(workspace_id);
-        if (workspace_ptr == null) return ControlPlaneError.ProjectNotFound;
+        if (workspace_ptr == null) return ControlPlaneError.WorkspaceNotFound;
     } else if (requested_workspace_name) |workspace_name| {
         try validateDisplayString(workspace_name, 128);
         var project_it = self.workspaces.valueIterator();
@@ -2824,7 +2824,7 @@ fn resolveWorkspaceUpTargetLocked(
     var access_policy: WorkspaceAccessPolicy = .{};
     errdefer access_policy.deinit(self.allocator);
     if (requested_workspace_access_policy) |value| {
-        access_policy = try parseProjectAccessPolicyValue(self.allocator, value);
+        access_policy = try parseWorkspaceAccessPolicyValue(self.allocator, value);
     }
 
     const workspace = Workspace{
@@ -2877,21 +2877,21 @@ fn applyWorkspaceUpMetadataUpdatesLocked(
         requested_access_policy_value != null;
     if (!is_host_actor) {
         if (wants_mount_update) {
-            try requireProjectActionAccess(project, .mount, agent_id, requested_project_token, is_admin);
+            try requireWorkspaceActionAccess(project, .mount, agent_id, requested_project_token, is_admin);
         }
         if (wants_bind_update) {
-            try requireProjectActionAccess(project, .bind, agent_id, requested_project_token, is_admin);
+            try requireWorkspaceActionAccess(project, .bind, agent_id, requested_project_token, is_admin);
         }
         if (wants_admin_update) {
-            try requireProjectActionAccess(project, .admin, agent_id, requested_project_token, is_admin);
+            try requireWorkspaceActionAccess(project, .admin, agent_id, requested_project_token, is_admin);
         }
         if (!wants_mount_update and !wants_bind_update and !wants_admin_update) {
-            try requireProjectActionAccess(project, .read, agent_id, requested_project_token, is_admin);
+            try requireWorkspaceActionAccess(project, .read, agent_id, requested_project_token, is_admin);
         }
     } else if (requested_project_token) |project_token| {
         try validateSecretToken(project_token, 256);
-        if (!projectTokenEnabled(project) or !secureTokenEql(project.mutation_token, project_token)) {
-            return ControlPlaneError.ProjectAuthFailed;
+        if (!workspaceTokenEnabled(project) or !secureTokenEql(project.mutation_token, project_token)) {
+            return ControlPlaneError.WorkspaceAuthFailed;
         }
     }
 
@@ -2918,7 +2918,7 @@ fn applyWorkspaceUpMetadataUpdatesLocked(
         }
     }
     if (requested_access_policy_value) |value| {
-        var parsed_policy = try parseProjectAccessPolicyValue(self.allocator, value);
+        var parsed_policy = try parseWorkspaceAccessPolicyValue(self.allocator, value);
         errdefer parsed_policy.deinit(self.allocator);
         project.access_policy.deinit(self.allocator);
         project.access_policy = parsed_policy;
@@ -2932,7 +2932,7 @@ fn applyWorkspaceUpMountReplacementsLocked(
     created: bool,
 ) !bool {
     if (desired_mounts_value) |desired_val| {
-        if (project.kind == .host_internal) return ControlPlaneError.ProjectProtected;
+        if (project.kind == .host_internal) return ControlPlaneError.WorkspaceProtected;
         if (desired_val != .array) return ControlPlaneError.InvalidPayload;
         var next_mounts = std.ArrayListUnmanaged(WorkspaceMount){};
         errdefer {
@@ -2985,7 +2985,7 @@ fn applyWorkspaceUpMountReplacementsLocked(
     }
 
     if (created) {
-        return ensureDefaultProjectMountsLocked(self, project);
+        return ensureDefaultWorkspaceMountsLocked(self, project);
     }
     return false;
 }
@@ -2996,7 +2996,7 @@ fn applyWorkspaceUpBindReplacementsLocked(
     desired_binds_value: ?std.json.Value,
 ) !bool {
     const desired_val = desired_binds_value orelse return false;
-    if (project.kind == .host_internal) return ControlPlaneError.ProjectProtected;
+    if (project.kind == .host_internal) return ControlPlaneError.WorkspaceProtected;
     if (desired_val != .array) return ControlPlaneError.InvalidPayload;
     var next_binds = std.ArrayListUnmanaged(WorkspaceBind){};
     errdefer {
@@ -3014,7 +3014,7 @@ fn applyWorkspaceUpBindReplacementsLocked(
         if (std.mem.eql(u8, bind_path, "/")) return ControlPlaneError.InvalidPayload;
         const target_path = try normalizeMountPath(self.allocator, target_path_raw);
         errdefer self.allocator.free(target_path);
-        if (!projectPathWithinBindAuthority(project, target_path)) return ControlPlaneError.BindConflict;
+        if (!workspacePathWithinBindAuthority(project, target_path)) return ControlPlaneError.BindConflict;
 
         for (project.mounts.items) |mount| {
             if (pathsConflict(mount.mount_path, bind_path)) return ControlPlaneError.BindConflict;
@@ -3068,7 +3068,7 @@ fn buildWorkspaceUpResultPayloadLocked(
     defer self.allocator.free(workspace_json);
     const escaped_workspace = try jsonEscape(self.allocator, workspace.id);
     defer self.allocator.free(escaped_workspace);
-    const workspace_token_json = if (projectTokenEnabled(workspace)) blk: {
+    const workspace_token_json = if (workspaceTokenEnabled(workspace)) blk: {
         const escaped_token = try jsonEscape(self.allocator, workspace.mutation_token);
         defer self.allocator.free(escaped_token);
         break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped_token});
@@ -3111,28 +3111,28 @@ fn requireWorkspaceStatusAccessLocked(
 ) !void {
     const is_host_actor = self.isHostActor(agent_id);
     if (is_host_actor and !is_admin and !std.mem.eql(u8, workspace_id, host_workspace_id)) {
-        return ControlPlaneError.ProjectAssignmentForbidden;
+        return ControlPlaneError.WorkspaceAssignmentForbidden;
     }
     if (is_admin) return;
 
-    switch (resolveProjectActionMode(workspace, .read, agent_id)) {
-        .admin, .deny => return ControlPlaneError.ProjectPolicyForbidden,
+    switch (resolveWorkspaceActionMode(workspace, .read, agent_id)) {
+        .admin, .deny => return ControlPlaneError.WorkspacePolicyForbidden,
         .token => {
             if (selected_workspace_token) |workspace_token| {
                 try validateSecretToken(workspace_token, 256);
-                if (!projectTokenEnabled(workspace) or !secureTokenEql(workspace.mutation_token, workspace_token)) {
-                    return ControlPlaneError.ProjectAuthFailed;
+                if (!workspaceTokenEnabled(workspace) or !secureTokenEql(workspace.mutation_token, workspace_token)) {
+                    return ControlPlaneError.WorkspaceAuthFailed;
                 }
                 return;
             }
             if (is_host_actor) return;
-            const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
-            if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.ProjectAuthFailed;
+            const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.WorkspaceAuthFailed;
+            if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.WorkspaceAuthFailed;
         },
         .open => {
             if (is_host_actor) return;
-            const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
-            if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.ProjectAuthFailed;
+            const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.WorkspaceAuthFailed;
+            if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.WorkspaceAuthFailed;
         },
     }
 }
@@ -3251,7 +3251,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             defer payload.deinit();
             if (getOptionalString(payload.value.object, "workspace_id")) |workspace_id| {
                 try validateIdentifier(workspace_id, 128);
-                if (!self.workspaces.contains(workspace_id)) return ControlPlaneError.ProjectNotFound;
+                if (!self.workspaces.contains(workspace_id)) return ControlPlaneError.WorkspaceNotFound;
                 selected_project_id = workspace_id;
             }
         }
@@ -3328,7 +3328,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         is_admin: bool,
         now_ms: i64,
     ) ![]u8 {
-        const project = self.workspaces.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
+        const project = self.workspaces.get(project_id) orelse return ControlPlaneError.WorkspaceNotFound;
         const workspace_root = "/";
         const include_node_secrets = is_admin or project_token != null or self.isHostActor(agent_id);
         const escaped_agent = try jsonEscape(self.allocator, agent_id);
@@ -3632,7 +3632,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             )) return false;
         }
         if (!matched_invoke_venom) return true;
-        requireProjectActionAccess(&project, .invoke, actor_id, actor_project_token, false) catch return false;
+        requireWorkspaceActionAccess(&project, .invoke, actor_id, actor_project_token, false) catch return false;
         return true;
     }
 
@@ -4750,7 +4750,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             defer self.allocator.free(escaped_vision);
             const escaped_status = try jsonEscape(self.allocator, project.status);
             defer self.allocator.free(escaped_status);
-            const escaped_kind = try jsonEscape(self.allocator, projectKindName(project.kind));
+            const escaped_kind = try jsonEscape(self.allocator, workspaceKindName(project.kind));
             defer self.allocator.free(escaped_kind);
             const escaped_template_id = try jsonEscape(self.allocator, project.template_id);
             defer self.allocator.free(escaped_template_id);
@@ -4773,7 +4773,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                     project.updated_at_ms,
                 },
             );
-            try appendProjectAccessPolicyJson(self.allocator, &out, project.access_policy);
+            try appendWorkspaceAccessPolicyJson(self.allocator, &out, project.access_policy);
             try out.appendSlice(self.allocator, ",\"mounts\":[");
             for (project.mounts.items, 0..) |mount, idx| {
                 if (idx != 0) try out.append(self.allocator, ',');
@@ -5011,7 +5011,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 var parsed_access_policy: ?WorkspaceAccessPolicy = null;
                 errdefer if (parsed_access_policy) |*policy| policy.deinit(self.allocator);
                 if (item.object.get("access_policy")) |policy_value| {
-                    parsed_access_policy = parseProjectAccessPolicyValue(self.allocator, policy_value) catch return error.InvalidSnapshot;
+                    parsed_access_policy = parseWorkspaceAccessPolicyValue(self.allocator, policy_value) catch return error.InvalidSnapshot;
                 }
                 var project = Workspace{
                     .id = try dupeRequiredString(self.allocator, item.object, "id"),
@@ -5406,7 +5406,7 @@ fn appendProjectSummaryJson(allocator: std.mem.Allocator, out: *std.ArrayListUnm
     defer allocator.free(escaped_name);
     const escaped_status = try jsonEscape(allocator, project.status);
     defer allocator.free(escaped_status);
-    const escaped_kind = try jsonEscape(allocator, projectKindName(project.kind));
+    const escaped_kind = try jsonEscape(allocator, workspaceKindName(project.kind));
     defer allocator.free(escaped_kind);
     try out.writer(allocator).print(
         "{{\"workspace_id\":\"{s}\",\"name\":\"{s}\",\"status\":\"{s}\",\"kind\":\"{s}\",\"is_delete_protected\":{s},\"mount_count\":{d}}}",
@@ -5721,7 +5721,7 @@ fn driftSeverityName(severity: DriftSeverity) []const u8 {
     };
 }
 
-fn projectKindName(kind: WorkspaceKind) []const u8 {
+fn workspaceKindName(kind: WorkspaceKind) []const u8 {
     return switch (kind) {
         .normal => normal_project_kind_name,
         .host_internal => host_internal_project_kind_name,
@@ -5747,7 +5747,7 @@ fn resolveProjectTemplateSpec(template_id: []const u8) ?WorkspaceTemplateSpec {
     return null;
 }
 
-fn projectTokenEnabled(project: *const Workspace) bool {
+fn workspaceTokenEnabled(project: *const Workspace) bool {
     return project.token_locked and project.mutation_token.len > 0;
 }
 
@@ -5768,7 +5768,7 @@ fn parseAccessMode(value: []const u8) !AccessMode {
     return ControlPlaneError.InvalidPayload;
 }
 
-fn projectActionPolicyIsEmpty(policy: *const WorkspaceActionPolicy) bool {
+fn workspaceActionPolicyIsEmpty(policy: *const WorkspaceActionPolicy) bool {
     return policy.read == null and
         policy.observe == null and
         policy.invoke == null and
@@ -5777,7 +5777,7 @@ fn projectActionPolicyIsEmpty(policy: *const WorkspaceActionPolicy) bool {
         policy.admin == null;
 }
 
-fn parseProjectActionPolicyFromObject(obj: std.json.ObjectMap, policy: *WorkspaceActionPolicy) !void {
+fn parseWorkspaceActionPolicyFromObject(obj: std.json.ObjectMap, policy: *WorkspaceActionPolicy) !void {
     if (obj.get("read")) |value| {
         if (value != .string) return ControlPlaneError.InvalidPayload;
         policy.read = try parseAccessMode(value.string);
@@ -5818,17 +5818,17 @@ fn upsertAgentAccessOverride(
     try list.append(allocator, entry);
 }
 
-fn parseProjectAccessPolicyValue(allocator: std.mem.Allocator, value: std.json.Value) !WorkspaceAccessPolicy {
+fn parseWorkspaceAccessPolicyValue(allocator: std.mem.Allocator, value: std.json.Value) !WorkspaceAccessPolicy {
     if (value != .object) return ControlPlaneError.InvalidPayload;
     const obj = value.object;
 
     var policy = WorkspaceAccessPolicy{};
     errdefer policy.deinit(allocator);
 
-    try parseProjectActionPolicyFromObject(obj, &policy.actions);
+    try parseWorkspaceActionPolicyFromObject(obj, &policy.actions);
     if (obj.get("actions")) |actions_value| {
         if (actions_value != .object) return ControlPlaneError.InvalidPayload;
-        try parseProjectActionPolicyFromObject(actions_value.object, &policy.actions);
+        try parseWorkspaceActionPolicyFromObject(actions_value.object, &policy.actions);
     }
 
     if (obj.get("agents")) |agents_value| {
@@ -5842,12 +5842,12 @@ fn parseProjectAccessPolicyValue(allocator: std.mem.Allocator, value: std.json.V
                         .agent_id = try allocator.dupe(u8, entry.key_ptr.*),
                     };
                     errdefer allocator.free(agent_override.agent_id);
-                    try parseProjectActionPolicyFromObject(entry.value_ptr.*.object, &agent_override.actions);
+                    try parseWorkspaceActionPolicyFromObject(entry.value_ptr.*.object, &agent_override.actions);
                     if (entry.value_ptr.*.object.get("actions")) |actions_value| {
                         if (actions_value != .object) return ControlPlaneError.InvalidPayload;
-                        try parseProjectActionPolicyFromObject(actions_value.object, &agent_override.actions);
+                        try parseWorkspaceActionPolicyFromObject(actions_value.object, &agent_override.actions);
                     }
-                    if (projectActionPolicyIsEmpty(&agent_override.actions)) {
+                    if (workspaceActionPolicyIsEmpty(&agent_override.actions)) {
                         allocator.free(agent_override.agent_id);
                         continue;
                     }
@@ -5863,12 +5863,12 @@ fn parseProjectAccessPolicyValue(allocator: std.mem.Allocator, value: std.json.V
                         .agent_id = try allocator.dupe(u8, agent_id),
                     };
                     errdefer allocator.free(agent_override.agent_id);
-                    try parseProjectActionPolicyFromObject(item.object, &agent_override.actions);
+                    try parseWorkspaceActionPolicyFromObject(item.object, &agent_override.actions);
                     if (item.object.get("actions")) |actions_value| {
                         if (actions_value != .object) return ControlPlaneError.InvalidPayload;
-                        try parseProjectActionPolicyFromObject(actions_value.object, &agent_override.actions);
+                        try parseWorkspaceActionPolicyFromObject(actions_value.object, &agent_override.actions);
                     }
-                    if (projectActionPolicyIsEmpty(&agent_override.actions)) {
+                    if (workspaceActionPolicyIsEmpty(&agent_override.actions)) {
                         allocator.free(agent_override.agent_id);
                         continue;
                     }
@@ -5882,7 +5882,7 @@ fn parseProjectAccessPolicyValue(allocator: std.mem.Allocator, value: std.json.V
     return policy;
 }
 
-fn appendProjectActionPolicyJson(
+fn appendWorkspaceActionPolicyJson(
     allocator: std.mem.Allocator,
     out: *std.ArrayListUnmanaged(u8),
     policy: WorkspaceActionPolicy,
@@ -5921,44 +5921,44 @@ fn appendProjectActionPolicyJson(
     try out.appendSlice(allocator, "}");
 }
 
-fn appendProjectAccessPolicyJson(
+fn appendWorkspaceAccessPolicyJson(
     allocator: std.mem.Allocator,
     out: *std.ArrayListUnmanaged(u8),
     policy: WorkspaceAccessPolicy,
 ) !void {
     try out.appendSlice(allocator, "{\"actions\":");
-    try appendProjectActionPolicyJson(allocator, out, policy.actions);
+    try appendWorkspaceActionPolicyJson(allocator, out, policy.actions);
     try out.appendSlice(allocator, ",\"agents\":{");
     for (policy.agents.items, 0..) |agent, idx| {
         if (idx != 0) try out.append(allocator, ',');
         const escaped_agent = try jsonEscape(allocator, agent.agent_id);
         defer allocator.free(escaped_agent);
         try out.writer(allocator).print("\"{s}\":", .{escaped_agent});
-        try appendProjectActionPolicyJson(allocator, out, agent.actions);
+        try appendWorkspaceActionPolicyJson(allocator, out, agent.actions);
     }
     try out.appendSlice(allocator, "}}");
 }
 
-fn defaultProjectActionMode(project: *const Workspace, action: WorkspaceAction) AccessMode {
+fn defaultWorkspaceActionMode(project: *const Workspace, action: WorkspaceAction) AccessMode {
     _ = action;
-    return if (projectTokenEnabled(project)) .token else .open;
+    return if (workspaceTokenEnabled(project)) .token else .open;
 }
 
-fn resolveProjectActionMode(project: *const Workspace, action: WorkspaceAction, actor_id: ?[]const u8) AccessMode {
+fn resolveWorkspaceActionMode(project: *const Workspace, action: WorkspaceAction, actor_id: ?[]const u8) AccessMode {
     if (action == .bind) {
         if (project.access_policy.modeFor(actor_id, .bind)) |mode| return mode;
         if (project.access_policy.modeFor(actor_id, .mount)) |mode| return mode;
-        return defaultProjectActionMode(project, .bind);
+        return defaultWorkspaceActionMode(project, .bind);
     }
 
-    var mode = defaultProjectActionMode(project, action);
+    var mode = defaultWorkspaceActionMode(project, action);
     if (project.access_policy.modeFor(actor_id, action)) |override_mode| {
         mode = override_mode;
     }
     return mode;
 }
 
-fn requireProjectActionAccess(
+fn requireWorkspaceActionAccess(
     project: *const Workspace,
     action: WorkspaceAction,
     actor_id: ?[]const u8,
@@ -5966,23 +5966,23 @@ fn requireProjectActionAccess(
     is_admin: bool,
 ) !void {
     if (is_admin) return;
-    switch (resolveProjectActionMode(project, action, actor_id)) {
+    switch (resolveWorkspaceActionMode(project, action, actor_id)) {
         .open => return,
         .token => {
             const token = provided_token orelse return ControlPlaneError.MissingField;
             try validateSecretToken(token, 256);
-            if (!projectTokenEnabled(project)) return ControlPlaneError.ProjectAuthFailed;
-            if (!secureTokenEql(project.mutation_token, token)) return ControlPlaneError.ProjectAuthFailed;
+            if (!workspaceTokenEnabled(project)) return ControlPlaneError.WorkspaceAuthFailed;
+            if (!secureTokenEql(project.mutation_token, token)) return ControlPlaneError.WorkspaceAuthFailed;
         },
-        .admin, .deny => return ControlPlaneError.ProjectPolicyForbidden,
+        .admin, .deny => return ControlPlaneError.WorkspacePolicyForbidden,
     }
 }
 
-fn requireProjectAccessToken(project: *const Workspace, provided_token: ?[]const u8, is_admin: bool) !void {
-    try requireProjectActionAccess(project, .admin, null, provided_token, is_admin);
+fn requireWorkspaceAccessToken(project: *const Workspace, provided_token: ?[]const u8, is_admin: bool) !void {
+    try requireWorkspaceActionAccess(project, .admin, null, provided_token, is_admin);
 }
 
-fn renderProjectPayload(allocator: std.mem.Allocator, project: Workspace, include_project_token: bool) ![]u8 {
+fn renderWorkspacePayload(allocator: std.mem.Allocator, project: Workspace, include_project_token: bool) ![]u8 {
     const escaped_id = try jsonEscape(allocator, project.id);
     defer allocator.free(escaped_id);
     const escaped_name = try jsonEscape(allocator, project.name);
@@ -5993,9 +5993,9 @@ fn renderProjectPayload(allocator: std.mem.Allocator, project: Workspace, includ
     defer allocator.free(escaped_status);
     const escaped_template_id = try jsonEscape(allocator, project.template_id);
     defer allocator.free(escaped_template_id);
-    const escaped_kind = try jsonEscape(allocator, projectKindName(project.kind));
+    const escaped_kind = try jsonEscape(allocator, workspaceKindName(project.kind));
     defer allocator.free(escaped_kind);
-    const escaped_token = if (include_project_token and projectTokenEnabled(&project)) blk: {
+    const escaped_token = if (include_project_token and workspaceTokenEnabled(&project)) blk: {
         break :blk try jsonEscape(allocator, project.mutation_token);
     } else null;
     defer if (escaped_token) |token| allocator.free(token);
@@ -6021,7 +6021,7 @@ fn renderProjectPayload(allocator: std.mem.Allocator, project: Workspace, includ
         try out.writer(allocator).print(",\"workspace_token\":\"{s}\"", .{token});
     }
     try out.appendSlice(allocator, ",\"access_policy\":");
-    try appendProjectAccessPolicyJson(allocator, &out, project.access_policy);
+    try appendWorkspaceAccessPolicyJson(allocator, &out, project.access_policy);
     try out.appendSlice(allocator, ",\"mounts\":[");
     for (project.mounts.items, 0..) |mount, idx| {
         if (idx != 0) try out.append(allocator, ',');
@@ -6046,24 +6046,24 @@ fn normalizeMountPath(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "/{s}", .{trimmed});
 }
 
-fn getPublicProjectLocked(self: *ControlPlane, project_id: []const u8) !Workspace {
-    const project = self.workspaces.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
-    if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
+fn getPublicWorkspaceLocked(self: *ControlPlane, project_id: []const u8) !Workspace {
+    const project = self.workspaces.get(project_id) orelse return ControlPlaneError.WorkspaceNotFound;
+    if (project.kind == .host_internal) return ControlPlaneError.WorkspaceNotFound;
     return project;
 }
 
-fn getPublicProjectPtrLocked(self: *ControlPlane, project_id: []const u8) !*Workspace {
-    const project = self.workspaces.getPtr(project_id) orelse return ControlPlaneError.ProjectNotFound;
-    if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
+fn getPublicWorkspacePtrLocked(self: *ControlPlane, project_id: []const u8) !*Workspace {
+    const project = self.workspaces.getPtr(project_id) orelse return ControlPlaneError.WorkspaceNotFound;
+    if (project.kind == .host_internal) return ControlPlaneError.WorkspaceNotFound;
     return project;
 }
 
-fn getHostProjectLocked(self: *ControlPlane) !Workspace {
-    return self.workspaces.get(host_workspace_id) orelse ControlPlaneError.ProjectNotFound;
+fn getHostWorkspaceLocked(self: *ControlPlane) !Workspace {
+    return self.workspaces.get(host_workspace_id) orelse ControlPlaneError.WorkspaceNotFound;
 }
 
-fn getHostProjectPtrLocked(self: *ControlPlane) !*Workspace {
-    return self.workspaces.getPtr(host_workspace_id) orelse ControlPlaneError.ProjectNotFound;
+fn getHostWorkspacePtrLocked(self: *ControlPlane) !*Workspace {
+    return self.workspaces.getPtr(host_workspace_id) orelse ControlPlaneError.WorkspaceNotFound;
 }
 
 fn upsertActiveWorkspaceBindingLocked(self: *ControlPlane, agent_id: []const u8, workspace_id: []const u8) !void {
@@ -6088,12 +6088,12 @@ fn clearActiveWorkspaceBindingLocked(self: *ControlPlane, agent_id: []const u8) 
     return true;
 }
 
-fn hostProjectHasMountsLocked(self: *ControlPlane) bool {
-    const project = getHostProjectLocked(self) catch return false;
+fn hostWorkspaceHasMountsLocked(self: *ControlPlane) bool {
+    const project = getHostWorkspaceLocked(self) catch return false;
     return project.mounts.items.len > 0;
 }
 
-fn removeProjectMountEntriesLocked(
+fn removeWorkspaceMountEntriesLocked(
     allocator: std.mem.Allocator,
     project: *Workspace,
     mount_path: []const u8,
@@ -6129,16 +6129,16 @@ fn removeProjectMountEntriesLocked(
     return removed_count;
 }
 
-fn ensureDefaultProjectMountsLocked(self: *ControlPlane, project: *Workspace) !bool {
+fn ensureDefaultWorkspaceMountsLocked(self: *ControlPlane, project: *Workspace) !bool {
     if (project.kind == .host_internal) return false;
 
     var changed = false;
     var mounted_from_host = false;
-    if (getHostProjectLocked(self)) |host_project| {
+    if (getHostWorkspaceLocked(self)) |host_project| {
         for (host_project.mounts.items) |host_mount| {
             if (!self.nodes.contains(host_mount.node_id)) continue;
 
-            const remapped_path = try remapSystemMountPathForProject(
+            const remapped_path = try remapSystemMountPathForWorkspace(
                 self.allocator,
                 project.id,
                 host_mount.mount_path,
@@ -6179,7 +6179,7 @@ fn ensureDefaultProjectMountsLocked(self: *ControlPlane, project: *Workspace) !b
         }
     } else |_| {}
 
-    if (!mounted_from_host and !projectHasCanonicalWorkspaceMount(project)) {
+    if (!mounted_from_host and !workspaceHasCanonicalMount(project)) {
         var default_node_id: ?[]const u8 = null;
         var node_it = self.nodes.iterator();
         if (node_it.next()) |entry| default_node_id = entry.key_ptr.*;
@@ -6206,12 +6206,12 @@ fn ensureDefaultProjectMountsLocked(self: *ControlPlane, project: *Workspace) !b
     return changed;
 }
 
-fn ensureProjectTemplateBindsLocked(self: *ControlPlane, project: *Workspace) !bool {
+fn ensureWorkspaceTemplateBindsLocked(self: *ControlPlane, project: *Workspace) !bool {
     const template = resolveProjectTemplateSpec(project.template_id) orelse return false;
     return ensureBindSpecsLocked(self, project, template.bind_specs);
 }
 
-fn ensureHostProjectBindsLocked(self: *ControlPlane, project: *Workspace) !bool {
+fn ensureHostWorkspaceBindsLocked(self: *ControlPlane, project: *Workspace) !bool {
     return ensureBindSpecsLocked(self, project, core_workspace_bind_specs[0..]);
 }
 
@@ -6228,7 +6228,7 @@ fn ensureBindSpecsLocked(
         const normalized_target = try normalizeMountPath(self.allocator, target_path);
         defer self.allocator.free(normalized_target);
 
-        if (!projectPathWithinBindAuthority(project, normalized_target)) continue;
+        if (!workspacePathWithinBindAuthority(project, normalized_target)) continue;
 
         var skip = false;
         for (project.mounts.items) |mount| {
@@ -6264,7 +6264,7 @@ fn resolveTemplateBindTargetPath(spec: WorkspaceTemplateBindSpec) ?[]const u8 {
     return venom_packages.resolveBuiltinTargetPath(spec.venom_id, spec.provider_scope);
 }
 
-fn projectHasCanonicalWorkspaceMount(project: *const Workspace) bool {
+fn workspaceHasCanonicalMount(project: *const Workspace) bool {
     for (project.mounts.items) |mount| {
         if (std.mem.eql(u8, mount.mount_path, host_workspace_mount_path)) return true;
     }
@@ -6272,12 +6272,12 @@ fn projectHasCanonicalWorkspaceMount(project: *const Workspace) bool {
 }
 
 fn pruneLegacyWorkspaceAliasMountsIfReplacementLocked(self: *ControlPlane, project: *Workspace) bool {
-    if (!projectHasCanonicalWorkspaceMount(project)) return false;
+    if (!workspaceHasCanonicalMount(project)) return false;
     return pruneLegacyWorkspaceAliasMountsLocked(self, project);
 }
 
 fn pruneLegacyWorkspaceAliasMountsLocked(self: *ControlPlane, project: *Workspace) bool {
-    if (!projectHasCanonicalWorkspaceMount(project)) return false;
+    if (!workspaceHasCanonicalMount(project)) return false;
 
     var removed = false;
     var idx: usize = 0;
@@ -6295,7 +6295,7 @@ fn pruneLegacyWorkspaceAliasMountsLocked(self: *ControlPlane, project: *Workspac
     return removed;
 }
 
-fn remapSystemMountPathForProject(
+fn remapSystemMountPathForWorkspace(
     allocator: std.mem.Allocator,
     project_id: []const u8,
     mount_path: []const u8,
@@ -6331,15 +6331,15 @@ fn pathIsAncestorOrEqual(ancestor: []const u8, path: []const u8) bool {
     return path[ancestor.len] == '/';
 }
 
-fn projectPathWithinMountAuthority(project: *const Workspace, path: []const u8) bool {
+fn workspacePathWithinMountAuthority(project: *const Workspace, path: []const u8) bool {
     for (project.mounts.items) |mount| {
         if (pathIsAncestorOrEqual(mount.mount_path, path)) return true;
     }
     return false;
 }
 
-fn projectPathWithinBindAuthority(project: *const Workspace, path: []const u8) bool {
-    if (projectPathWithinMountAuthority(project, path)) return true;
+fn workspacePathWithinBindAuthority(project: *const Workspace, path: []const u8) bool {
+    if (workspacePathWithinMountAuthority(project, path)) return true;
     if (isNodeVenomCatalogPath(path)) return true;
     if (std.mem.eql(u8, path, "/global")) return true;
     if (pathMatchesPrefix(path, "/global")) return true;
@@ -6586,11 +6586,11 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"kind\":\"host_internal\"") == null);
 
     try std.testing.expectError(
-        ControlPlaneError.ProjectNotFound,
+        ControlPlaneError.WorkspaceNotFound,
         plane.deleteWorkspace("{\"project_id\":\"system\",\"project_token\":\"token\"}"),
     );
     try std.testing.expectError(
-        ControlPlaneError.ProjectNotFound,
+        ControlPlaneError.WorkspaceNotFound,
         plane.getWorkspace("{\"project_id\":\"system\"}"),
     );
     const state_json = try plane.dumpState();
@@ -6619,15 +6619,15 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     );
     defer allocator.free(update_req);
     try std.testing.expectError(
-        ControlPlaneError.ProjectNotFound,
+        ControlPlaneError.WorkspaceNotFound,
         plane.updateWorkspace(update_req),
     );
     try std.testing.expectError(
-        ControlPlaneError.ProjectNotFound,
+        ControlPlaneError.WorkspaceNotFound,
         plane.activateWorkspace("agent-worker", "{\"project_id\":\"system\",\"project_token\":\"token\"}"),
     );
     try std.testing.expectError(
-        ControlPlaneError.ProjectNotFound,
+        ControlPlaneError.WorkspaceNotFound,
         plane.workspaceStatus("agent-worker", "{\"project_id\":\"system\"}"),
     );
 
@@ -6638,7 +6638,7 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     );
     defer allocator.free(activate_missing_token);
     try std.testing.expectError(
-        ControlPlaneError.ProjectNotFound,
+        ControlPlaneError.WorkspaceNotFound,
         plane.activateWorkspace(default_host_actor_id, activate_missing_token),
     );
 
@@ -6663,12 +6663,12 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     const activate_non_system = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{non_system_project_id});
     defer allocator.free(activate_non_system);
     try std.testing.expectError(
-        ControlPlaneError.ProjectAssignmentForbidden,
+        ControlPlaneError.WorkspaceAssignmentForbidden,
         plane.activateWorkspace(default_host_actor_id, activate_non_system),
     );
 
     try std.testing.expectError(
-        ControlPlaneError.ProjectAssignmentForbidden,
+        ControlPlaneError.WorkspaceAssignmentForbidden,
         plane.activateWorkspaceWithRole(default_host_actor_id, activate_non_system, true),
     );
     const admin_status = try plane.workspaceStatusWithRole(default_host_actor_id, activate_non_system, true);
@@ -7097,7 +7097,7 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
         .{ project_id, node_id },
     );
     defer allocator.free(denied_mount_req);
-    try std.testing.expectError(ControlPlaneError.ProjectPolicyForbidden, plane.setWorkspaceMount(denied_mount_req));
+    try std.testing.expectError(ControlPlaneError.WorkspacePolicyForbidden, plane.setWorkspaceMount(denied_mount_req));
     try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .bind, null, false));
 
     const denied_bind_req = try std.fmt.allocPrint(
@@ -7106,7 +7106,7 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
         .{project_id},
     );
     defer allocator.free(denied_bind_req);
-    try std.testing.expectError(ControlPlaneError.ProjectPolicyForbidden, plane.setWorkspaceBind(denied_bind_req));
+    try std.testing.expectError(ControlPlaneError.WorkspacePolicyForbidden, plane.setWorkspaceBind(denied_bind_req));
 
     const update_policy_req = try std.fmt.allocPrint(
         allocator,
@@ -7629,7 +7629,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
         .{ project_id, token_1, node_id },
     );
     defer allocator.free(mount_old_token);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.setWorkspaceMount(mount_old_token));
+    try std.testing.expectError(ControlPlaneError.WorkspaceAuthFailed, plane.setWorkspaceMount(mount_old_token));
 
     const mount_new_token = try std.fmt.allocPrint(
         allocator,
@@ -7659,7 +7659,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
         .{ project_id, token_2 },
     );
     defer allocator.free(remove_old_token);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.removeWorkspaceMount(remove_old_token));
+    try std.testing.expectError(ControlPlaneError.WorkspaceAuthFailed, plane.removeWorkspaceMount(remove_old_token));
 
     const remove_new_token = try std.fmt.allocPrint(
         allocator,
@@ -7741,12 +7741,12 @@ test "acheron_control_plane: workspaceStatus supports explicit project selection
     );
     defer allocator.free(selected_without_token);
     try std.testing.expectError(
-        ControlPlaneError.ProjectAuthFailed,
+        ControlPlaneError.WorkspaceAuthFailed,
         plane.workspaceStatus("agent-selector", selected_without_token),
     );
 
     try std.testing.expectError(
-        ControlPlaneError.ProjectNotFound,
+        ControlPlaneError.WorkspaceNotFound,
         plane.workspaceStatus("agent-selector", "{\"project_id\":\"proj-missing\"}"),
     );
 }
@@ -8279,7 +8279,7 @@ test "acheron_control_plane: workspaceUp requires project_token for existing non
         .{project_id},
     );
     defer allocator.free(bad_token_req);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.workspaceUp("agent-up", bad_token_req));
+    try std.testing.expectError(ControlPlaneError.WorkspaceAuthFailed, plane.workspaceUp("agent-up", bad_token_req));
 
     const missing_token_primary_req = try std.fmt.allocPrint(
         allocator,
@@ -8295,7 +8295,7 @@ test "acheron_control_plane: workspaceUp requires project_token for existing non
         .{project_id},
     );
     defer allocator.free(bad_token_primary_req);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.workspaceUp("default", bad_token_primary_req));
+    try std.testing.expectError(ControlPlaneError.WorkspaceAuthFailed, plane.workspaceUp("default", bad_token_primary_req));
 
     const ok_req = try std.fmt.allocPrint(
         allocator,
@@ -8355,7 +8355,7 @@ test "acheron_control_plane: workspaceUp requires project_token for builtin host
         .{host_workspace_id},
     );
     defer allocator.free(bad_token_req);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.workspaceUp(default_host_actor_id, bad_token_req));
+    try std.testing.expectError(ControlPlaneError.WorkspaceAuthFailed, plane.workspaceUp(default_host_actor_id, bad_token_req));
 
     const ok_req = try std.fmt.allocPrint(
         allocator,
@@ -8519,7 +8519,7 @@ test "acheron_control_plane: default mount migration replaces legacy /workspace-
         .export_name = try allocator.dupe(u8, "legacy-workspace"),
     });
 
-    try std.testing.expect(try ensureDefaultProjectMountsLocked(&plane, project));
+    try std.testing.expect(try ensureDefaultWorkspaceMountsLocked(&plane, project));
     try std.testing.expectEqual(@as(usize, 1), project.mounts.items.len);
     try std.testing.expectEqualStrings("/nodes/local/fs", project.mounts.items[0].mount_path);
     try std.testing.expectEqualStrings(node_id, project.mounts.items[0].node_id);
@@ -8617,7 +8617,7 @@ test "acheron_control_plane: builtin host project seeds mounts service bind" {
     const project = plane.workspaces.get(host_workspace_id) orelse return error.TestExpectedResponse;
     try std.testing.expectEqual(@as(usize, 0), project.template_id.len);
 
-    const payload = try renderProjectPayload(allocator, project, false);
+    const payload = try renderWorkspacePayload(allocator, project, false);
     defer allocator.free(payload);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"bind_path\":\"/services/mounts\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"target_path\":\"/nodes/local/venoms/mounts\"") != null);

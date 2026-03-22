@@ -191,14 +191,14 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
 
     const plane = self.control_plane orelse return error.InvalidPayload;
     _ = plane.setWorkspaceBindWithRole(payload, self.is_admin) catch |err| switch (err) {
-        control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-        control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-        control_plane_mod.ControlPlaneError.ProjectProtected,
-        control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+        control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+        control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+        control_plane_mod.ControlPlaneError.WorkspaceProtected,
+        control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
         => return error.AccessDenied,
         control_plane_mod.ControlPlaneError.MissingField,
         control_plane_mod.ControlPlaneError.InvalidPayload,
-        control_plane_mod.ControlPlaneError.ProjectNotFound,
+        control_plane_mod.ControlPlaneError.WorkspaceNotFound,
         control_plane_mod.ControlPlaneError.BindConflict,
         => return error.InvalidPayload,
         else => return err,

@@ -191,13 +191,13 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             );
             defer self.allocator.free(payload);
             const result = plane.getWorkspaceWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
-                control_plane_mod.ControlPlaneError.ProjectNotFound,
+                control_plane_mod.ControlPlaneError.WorkspaceNotFound,
                 => return error.InvalidPayload,
                 else => return err,
             };
@@ -208,14 +208,14 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             const payload = try renderWorkspaceUpPayload(self, args_obj);
             defer self.allocator.free(payload);
             const result = plane.workspaceUpWithRole(self.agent_id, payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
-                control_plane_mod.ControlPlaneError.ProjectProtected,
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceProtected,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
-                control_plane_mod.ControlPlaneError.ProjectNotFound,
+                control_plane_mod.ControlPlaneError.WorkspaceNotFound,
                 control_plane_mod.ControlPlaneError.NodeNotFound,
                 control_plane_mod.ControlPlaneError.MountConflict,
                 => return error.InvalidPayload,

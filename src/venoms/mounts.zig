@@ -278,10 +278,10 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
             const result = plane.setWorkspaceMountWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectProtected,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceProtected,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -300,10 +300,10 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
             const result = plane.removeWorkspaceMountWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectProtected,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceProtected,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -321,10 +321,10 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
             const result = plane.setWorkspaceBindWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectProtected,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceProtected,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -342,10 +342,10 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
             const result = plane.removeWorkspaceBindWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectProtected,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceProtected,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -401,9 +401,9 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
             defer self.allocator.free(payload);
             const plane = self.control_plane orelse return error.InvalidPayload;
             const result = plane.resolveWorkspacePathWithRole(payload, self.is_admin) catch |err| switch (err) {
-                control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-                control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-                control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+                control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+                control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+                control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
                 => return error.AccessDenied,
                 control_plane_mod.ControlPlaneError.MissingField,
                 control_plane_mod.ControlPlaneError.InvalidPayload,
@@ -604,17 +604,17 @@ fn buildListResultJson(self: anytype, project_id_override: ?[]const u8, project_
     defer self.allocator.free(payload);
 
     const mounts_json = plane.listWorkspaceMountsWithRole(payload, self.is_admin) catch |err| switch (err) {
-        control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-        control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-        control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+        control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+        control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+        control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
         => return error.AccessDenied,
         else => return err,
     };
     defer self.allocator.free(mounts_json);
     const binds_json = plane.listWorkspaceBindsWithRole(payload, self.is_admin) catch |err| switch (err) {
-        control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
-        control_plane_mod.ControlPlaneError.ProjectAuthFailed,
-        control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
+        control_plane_mod.ControlPlaneError.WorkspacePolicyForbidden,
+        control_plane_mod.ControlPlaneError.WorkspaceAuthFailed,
+        control_plane_mod.ControlPlaneError.WorkspaceAssignmentForbidden,
         => return error.AccessDenied,
         else => return err,
     };

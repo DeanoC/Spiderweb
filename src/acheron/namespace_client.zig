@@ -1721,7 +1721,7 @@ fn mapAcheronError(root: std.json.ObjectMap) anyerror {
 
 fn mapRemoteErrorCode(code: []const u8) anyerror {
     if (std.mem.eql(u8, code, "forbidden") or std.mem.eql(u8, code, "access_denied")) return error.PermissionDenied;
-    if (std.mem.eql(u8, code, "agent_not_found") or std.mem.eql(u8, code, "project_not_found")) return error.FileNotFound;
+    if (std.mem.eql(u8, code, "agent_not_found") or std.mem.eql(u8, code, "workspace_not_found")) return error.FileNotFound;
     if (std.mem.eql(u8, code, "project_context_required")) return error.ProjectRequired;
     if (std.mem.eql(u8, code, "missing_field")) return error.MissingField;
     if (std.mem.eql(u8, code, "invalid_payload") or std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;

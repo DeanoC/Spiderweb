@@ -2603,130 +2603,38 @@ pub const ControlPlane = struct {
         const activate = getOptionalBool(obj, "activate", true) catch return ControlPlaneError.InvalidPayload;
         if (requested_project_token) |project_token| try validateSecretToken(project_token, 256);
 
-        var project_ptr: ?*Project = null;
-        var created = false;
+        const resolved_project = try resolveWorkspaceUpTargetLocked(
+            self,
+            requested_project_id,
+            requested_name,
+            requested_vision,
+            requested_status,
+            requested_template_id,
+            requested_access_policy_value,
+            now_ms,
+        );
+        const project = resolved_project.project;
+        const created = resolved_project.created;
         var mounts_replaced = false;
         var binds_replaced = false;
-
-        if (requested_project_id) |project_id| {
-            try validateIdentifier(project_id, 128);
-            project_ptr = self.projects.getPtr(project_id);
-            if (project_ptr == null) return ControlPlaneError.ProjectNotFound;
-        } else if (requested_name) |project_name| {
-            try validateDisplayString(project_name, 128);
-            var project_it = self.projects.valueIterator();
-            while (project_it.next()) |project| {
-                if (std.mem.eql(u8, project.name, project_name)) {
-                    project_ptr = project;
-                    break;
-                }
-            }
-        }
-
-        if (project_ptr == null) {
-            const name_raw = requested_name orelse return ControlPlaneError.MissingField;
-            const vision_raw = requested_vision orelse return ControlPlaneError.MissingField;
-            const status_raw = requested_status orelse "active";
-            const template_id_raw = requested_template_id orelse default_project_template_id;
-            try validateDisplayString(name_raw, 128);
-            try validateDisplayString(vision_raw, 1024);
-            try validateIdentifier(status_raw, 64);
-            _ = resolveProjectTemplateSpec(template_id_raw) orelse return ControlPlaneError.InvalidPayload;
-
-            const project_id = try makeSequentialId(self.allocator, "proj", &self.next_project_id);
-            errdefer self.allocator.free(project_id);
-            const mutation_token = try makeToken(self.allocator, "proj");
-            errdefer self.allocator.free(mutation_token);
-            var access_policy: ProjectAccessPolicy = .{};
-            errdefer access_policy.deinit(self.allocator);
-            if (requested_access_policy_value) |value| {
-                access_policy = try parseProjectAccessPolicyValue(self.allocator, value);
-            }
-
-            const project = Project{
-                .id = project_id,
-                .name = try self.allocator.dupe(u8, name_raw),
-                .vision = try self.allocator.dupe(u8, vision_raw),
-                .status = try self.allocator.dupe(u8, status_raw),
-                .template_id = try self.allocator.dupe(u8, template_id_raw),
-                .token_locked = false,
-                .mutation_token = mutation_token,
-                .access_policy = access_policy,
-                .created_at_ms = now_ms,
-                .updated_at_ms = now_ms,
-            };
-            errdefer {
-                self.allocator.free(project.name);
-                self.allocator.free(project.vision);
-                self.allocator.free(project.status);
-                self.allocator.free(project.template_id);
-                self.allocator.free(project.mutation_token);
-            }
-
-            try self.projects.put(self.allocator, project.id, project);
-            self.project_creates_total +%= 1;
-            project_ptr = self.projects.getPtr(project_id).?;
-            created = true;
-        }
-
-        const project = project_ptr.?;
         if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
         const is_host_actor = self.isHostActor(agent_id);
         if (!created) {
-            const wants_mount_update = obj.get("desired_mounts") != null;
-            const wants_bind_update = obj.get("desired_binds") != null;
-            const wants_admin_update = requested_name != null or
-                requested_vision != null or
-                requested_status != null or
-                requested_template_id != null or
-                requested_access_policy_value != null;
-            if (!is_host_actor) {
-                if (wants_mount_update) {
-                    try requireProjectActionAccess(project, .mount, agent_id, requested_project_token, is_admin);
-                }
-                if (wants_bind_update) {
-                    try requireProjectActionAccess(project, .bind, agent_id, requested_project_token, is_admin);
-                }
-                if (wants_admin_update) {
-                    try requireProjectActionAccess(project, .admin, agent_id, requested_project_token, is_admin);
-                }
-                if (!wants_mount_update and !wants_bind_update and !wants_admin_update) {
-                    try requireProjectActionAccess(project, .read, agent_id, requested_project_token, is_admin);
-                }
-            } else if (requested_project_token) |project_token| {
-                try validateSecretToken(project_token, 256);
-                if (!projectTokenEnabled(project) or !secureTokenEql(project.mutation_token, project_token)) {
-                    return ControlPlaneError.ProjectAuthFailed;
-                }
-            }
-            if (requested_name) |next_name| {
-                try validateDisplayString(next_name, 128);
-                self.allocator.free(project.name);
-                project.name = try self.allocator.dupe(u8, next_name);
-            }
-            if (requested_vision) |next_vision| {
-                try validateDisplayString(next_vision, 1024);
-                self.allocator.free(project.vision);
-                project.vision = try self.allocator.dupe(u8, next_vision);
-            }
-            if (requested_status) |next_status| {
-                try validateIdentifier(next_status, 64);
-                self.allocator.free(project.status);
-                project.status = try self.allocator.dupe(u8, next_status);
-            }
-            if (requested_template_id) |template_id| {
-                _ = resolveProjectTemplateSpec(template_id) orelse return ControlPlaneError.InvalidPayload;
-                if (!std.mem.eql(u8, project.template_id, template_id)) {
-                    self.allocator.free(project.template_id);
-                    project.template_id = try self.allocator.dupe(u8, template_id);
-                }
-            }
-            if (requested_access_policy_value) |value| {
-                var parsed_policy = try parseProjectAccessPolicyValue(self.allocator, value);
-                errdefer parsed_policy.deinit(self.allocator);
-                project.access_policy.deinit(self.allocator);
-                project.access_policy = parsed_policy;
-            }
+            try applyWorkspaceUpMetadataUpdatesLocked(
+                self,
+                project,
+                agent_id,
+                is_admin,
+                is_host_actor,
+                requested_project_token,
+                requested_name,
+                requested_vision,
+                requested_status,
+                requested_template_id,
+                requested_access_policy_value,
+                obj.get("desired_mounts") != null,
+                obj.get("desired_binds") != null,
+            );
         }
 
         if (obj.get("desired_mounts")) |desired_val| {
@@ -2987,6 +2895,159 @@ fn buildWorkspaceActivationPayload(
         "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
         .{ escaped_agent, escaped_project, escaped_root },
     );
+}
+
+const ResolvedWorkspaceUpTarget = struct {
+    project: *Project,
+    created: bool,
+};
+
+fn resolveWorkspaceUpTargetLocked(
+    self: *ControlPlane,
+    requested_project_id: ?[]const u8,
+    requested_name: ?[]const u8,
+    requested_vision: ?[]const u8,
+    requested_status: ?[]const u8,
+    requested_template_id: ?[]const u8,
+    requested_access_policy_value: ?std.json.Value,
+    now_ms: i64,
+) !ResolvedWorkspaceUpTarget {
+    var project_ptr: ?*Project = null;
+
+    if (requested_project_id) |project_id| {
+        try validateIdentifier(project_id, 128);
+        project_ptr = self.projects.getPtr(project_id);
+        if (project_ptr == null) return ControlPlaneError.ProjectNotFound;
+    } else if (requested_name) |workspace_name| {
+        try validateDisplayString(workspace_name, 128);
+        var project_it = self.projects.valueIterator();
+        while (project_it.next()) |project| {
+            if (std.mem.eql(u8, project.name, workspace_name)) {
+                project_ptr = project;
+                break;
+            }
+        }
+    }
+
+    if (project_ptr) |project| {
+        return .{ .project = project, .created = false };
+    }
+
+    const name_raw = requested_name orelse return ControlPlaneError.MissingField;
+    const vision_raw = requested_vision orelse return ControlPlaneError.MissingField;
+    const status_raw = requested_status orelse "active";
+    const template_id_raw = requested_template_id orelse default_project_template_id;
+    try validateDisplayString(name_raw, 128);
+    try validateDisplayString(vision_raw, 1024);
+    try validateIdentifier(status_raw, 64);
+    _ = resolveProjectTemplateSpec(template_id_raw) orelse return ControlPlaneError.InvalidPayload;
+
+    const project_id = try makeSequentialId(self.allocator, "proj", &self.next_project_id);
+    errdefer self.allocator.free(project_id);
+    const mutation_token = try makeToken(self.allocator, "proj");
+    errdefer self.allocator.free(mutation_token);
+    var access_policy: ProjectAccessPolicy = .{};
+    errdefer access_policy.deinit(self.allocator);
+    if (requested_access_policy_value) |value| {
+        access_policy = try parseProjectAccessPolicyValue(self.allocator, value);
+    }
+
+    const project = Project{
+        .id = project_id,
+        .name = try self.allocator.dupe(u8, name_raw),
+        .vision = try self.allocator.dupe(u8, vision_raw),
+        .status = try self.allocator.dupe(u8, status_raw),
+        .template_id = try self.allocator.dupe(u8, template_id_raw),
+        .token_locked = false,
+        .mutation_token = mutation_token,
+        .access_policy = access_policy,
+        .created_at_ms = now_ms,
+        .updated_at_ms = now_ms,
+    };
+    errdefer {
+        self.allocator.free(project.name);
+        self.allocator.free(project.vision);
+        self.allocator.free(project.status);
+        self.allocator.free(project.template_id);
+        self.allocator.free(project.mutation_token);
+    }
+
+    try self.projects.put(self.allocator, project.id, project);
+    self.project_creates_total +%= 1;
+    return .{
+        .project = self.projects.getPtr(project_id).?,
+        .created = true,
+    };
+}
+
+fn applyWorkspaceUpMetadataUpdatesLocked(
+    self: *ControlPlane,
+    project: *Project,
+    agent_id: []const u8,
+    is_admin: bool,
+    is_host_actor: bool,
+    requested_project_token: ?[]const u8,
+    requested_name: ?[]const u8,
+    requested_vision: ?[]const u8,
+    requested_status: ?[]const u8,
+    requested_template_id: ?[]const u8,
+    requested_access_policy_value: ?std.json.Value,
+    wants_mount_update: bool,
+    wants_bind_update: bool,
+) !void {
+    const wants_admin_update = requested_name != null or
+        requested_vision != null or
+        requested_status != null or
+        requested_template_id != null or
+        requested_access_policy_value != null;
+    if (!is_host_actor) {
+        if (wants_mount_update) {
+            try requireProjectActionAccess(project, .mount, agent_id, requested_project_token, is_admin);
+        }
+        if (wants_bind_update) {
+            try requireProjectActionAccess(project, .bind, agent_id, requested_project_token, is_admin);
+        }
+        if (wants_admin_update) {
+            try requireProjectActionAccess(project, .admin, agent_id, requested_project_token, is_admin);
+        }
+        if (!wants_mount_update and !wants_bind_update and !wants_admin_update) {
+            try requireProjectActionAccess(project, .read, agent_id, requested_project_token, is_admin);
+        }
+    } else if (requested_project_token) |project_token| {
+        try validateSecretToken(project_token, 256);
+        if (!projectTokenEnabled(project) or !secureTokenEql(project.mutation_token, project_token)) {
+            return ControlPlaneError.ProjectAuthFailed;
+        }
+    }
+
+    if (requested_name) |next_name| {
+        try validateDisplayString(next_name, 128);
+        self.allocator.free(project.name);
+        project.name = try self.allocator.dupe(u8, next_name);
+    }
+    if (requested_vision) |next_vision| {
+        try validateDisplayString(next_vision, 1024);
+        self.allocator.free(project.vision);
+        project.vision = try self.allocator.dupe(u8, next_vision);
+    }
+    if (requested_status) |next_status| {
+        try validateIdentifier(next_status, 64);
+        self.allocator.free(project.status);
+        project.status = try self.allocator.dupe(u8, next_status);
+    }
+    if (requested_template_id) |template_id| {
+        _ = resolveProjectTemplateSpec(template_id) orelse return ControlPlaneError.InvalidPayload;
+        if (!std.mem.eql(u8, project.template_id, template_id)) {
+            self.allocator.free(project.template_id);
+            project.template_id = try self.allocator.dupe(u8, template_id);
+        }
+    }
+    if (requested_access_policy_value) |value| {
+        var parsed_policy = try parseProjectAccessPolicyValue(self.allocator, value);
+        errdefer parsed_policy.deinit(self.allocator);
+        project.access_policy.deinit(self.allocator);
+        project.access_policy = parsed_policy;
+    }
 }
 
 fn resolveVisibleActiveProjectIdLocked(self: *ControlPlane, agent_id: []const u8) ?[]const u8 {

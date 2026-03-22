@@ -72,6 +72,32 @@ normalize_bool() {
     esac
 }
 
+spiderweb_build_prefix_dir() {
+    if [[ -n "${SPIDERWEB_ZIG_PREFIX:-}" ]]; then
+        printf '%s' "$SPIDERWEB_ZIG_PREFIX"
+    else
+        printf '%s' "zig-out"
+    fi
+}
+
+spiderweb_build_bin_dir() {
+    printf '%s/bin' "$(spiderweb_build_prefix_dir)"
+}
+
+run_spiderweb_zig_build() {
+    local -a cmd=(zig build -Doptimize=ReleaseSafe)
+    if [[ -n "${SPIDERWEB_ZIG_PREFIX:-}" ]]; then
+        cmd+=(--prefix "$SPIDERWEB_ZIG_PREFIX")
+    fi
+    if [[ -n "${SPIDERWEB_ZIG_LOCAL_CACHE_DIR:-}" ]]; then
+        cmd+=(--cache-dir "$SPIDERWEB_ZIG_LOCAL_CACHE_DIR")
+    fi
+    if [[ -n "${SPIDERWEB_ZIG_GLOBAL_CACHE_DIR:-}" ]]; then
+        cmd+=(--global-cache-dir "$SPIDERWEB_ZIG_GLOBAL_CACHE_DIR")
+    fi
+    "${cmd[@]}"
+}
+
 is_env_set() {
     local name="$1"
     [[ -n "${!name+x}" ]]
@@ -617,12 +643,15 @@ install_spiderweb_from_source() {
     cd "$REPO_DIR"
 
     log_info "Building Spiderweb..."
-    zig build -Doptimize=ReleaseSafe
+    run_spiderweb_zig_build
+
+    local build_bin_dir
+    build_bin_dir="$(spiderweb_build_bin_dir)"
 
     log_info "Installing binaries..."
     for bin in "${SPIDERWEB_BINARIES[@]}"; do
-        if [[ ! -x "zig-out/bin/${bin}" ]]; then
-            echo "Error: expected build artifact missing: zig-out/bin/${bin}"
+        if [[ ! -x "${build_bin_dir}/${bin}" ]]; then
+            echo "Error: expected build artifact missing: ${build_bin_dir}/${bin}"
             exit 1
         fi
     done
@@ -630,7 +659,7 @@ install_spiderweb_from_source() {
     local copy_without_sudo=true
     local bin
     for bin in "${SPIDERWEB_BINARIES[@]}"; do
-        if ! cp "zig-out/bin/${bin}" "$INSTALL_DIR/" 2>/dev/null; then
+        if ! cp "${build_bin_dir}/${bin}" "$INSTALL_DIR/" 2>/dev/null; then
             copy_without_sudo=false
             break
         fi
@@ -638,7 +667,7 @@ install_spiderweb_from_source() {
     if [[ "$copy_without_sudo" != "true" ]]; then
         log_info "Need elevated permissions to update binary..."
         for bin in "${SPIDERWEB_BINARIES[@]}"; do
-            sudo cp "zig-out/bin/${bin}" "$INSTALL_DIR/"
+            sudo cp "${build_bin_dir}/${bin}" "$INSTALL_DIR/"
         done
     fi
 

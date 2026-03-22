@@ -240,7 +240,11 @@ RUN_STARTED_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 TEST_TMP_DIR="$(mktemp -d)"
 TEMP_HOME="$TEST_TMP_DIR/home"
-REPO_BUILD_INSTALL_DIR="$ROOT_DIR/zig-out/bin"
+REPO_BUILD_ROOT="$TEST_TMP_DIR/repo-build"
+REPO_BUILD_PREFIX="$REPO_BUILD_ROOT/prefix"
+REPO_BUILD_INSTALL_DIR="$REPO_BUILD_PREFIX/bin"
+REPO_ZIG_LOCAL_CACHE_DIR="$REPO_BUILD_ROOT/zig-cache-local"
+REPO_ZIG_GLOBAL_CACHE_DIR="$REPO_BUILD_ROOT/zig-cache-global"
 SIGNED_APP_RESOURCE_DIR="/Applications/Spiderweb.app/Contents/Resources"
 if is_macos_native_variant; then
     INSTALL_DIR="$REPO_BUILD_INSTALL_DIR"
@@ -253,6 +257,7 @@ mkdir -p "$TEMP_HOME"
 if ! is_macos_native_variant; then
     mkdir -p "$INSTALL_DIR"
 fi
+mkdir -p "$REPO_BUILD_PREFIX" "$REPO_ZIG_LOCAL_CACHE_DIR" "$REPO_ZIG_GLOBAL_CACHE_DIR"
 
 INSTALL_LOG="$OUTPUT_DIR/logs/install.log"
 SPIDERWEB_LOG="$OUTPUT_DIR/logs/spiderweb.log"
@@ -1721,6 +1726,9 @@ run_spiderweb_installer() {
     SPIDERWEB_NON_INTERACTIVE=1 \
     SPIDERWEB_INSTALL_DIR="$INSTALL_DIR" \
     SPIDERWEB_REPO_DIR="$ROOT_DIR" \
+    SPIDERWEB_ZIG_PREFIX="$REPO_BUILD_PREFIX" \
+    SPIDERWEB_ZIG_LOCAL_CACHE_DIR="$REPO_ZIG_LOCAL_CACHE_DIR" \
+    SPIDERWEB_ZIG_GLOBAL_CACHE_DIR="$REPO_ZIG_GLOBAL_CACHE_DIR" \
     SPIDERWEB_INSTALL_ZSS=0 \
     SPIDERWEB_INSTALL_SYSTEMD=0 \
     SPIDERWEB_INSTALL_SOURCE="$install_source" \
@@ -1755,7 +1763,10 @@ install_spiderweb_harness_binaries() {
         log_info "Building Spiderweb binaries from the current checkout for native macOS E2E..."
         (
             cd "$ROOT_DIR"
-            zig build
+            zig build \
+                --prefix "$REPO_BUILD_PREFIX" \
+                --cache-dir "$REPO_ZIG_LOCAL_CACHE_DIR" \
+                --global-cache-dir "$REPO_ZIG_GLOBAL_CACHE_DIR"
         ) >"$INSTALL_LOG" 2>&1 || {
             tail -n 200 "$INSTALL_LOG" || true
             return 1
@@ -1763,7 +1774,7 @@ install_spiderweb_harness_binaries() {
 
         local missing_bin=""
         if missing_bin="$(first_missing_spiderweb_bin_in "$REPO_BUILD_INSTALL_DIR")"; then
-            log_fail "repo build did not produce expected binary in zig-out/bin: $missing_bin"
+            log_fail "repo build did not produce expected binary in $REPO_BUILD_INSTALL_DIR: $missing_bin"
             tail -n 200 "$INSTALL_LOG" || true
             return 1
         fi

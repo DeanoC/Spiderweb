@@ -251,7 +251,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 permissions,
                 "{\"model\":\"filesystem\"}",
                 null,
-                "Project node filesystem export.",
+                "Workspace node filesystem export.",
             );
             try addNodeVenomEntry(
                 session,
@@ -275,7 +275,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 permissions,
                 "{\"model\":\"filesystem\"}",
                 null,
-                "Project node filesystem export.",
+                "Workspace node filesystem export.",
             );
             try view.observe(session.allocator, node.id, "fs", "fs", endpoint, mounts);
             try session.appendVenomIndexEntry(&services_index, &services_index_first, "fs", "fs", "online", endpoint);

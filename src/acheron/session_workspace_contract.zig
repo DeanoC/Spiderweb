@@ -688,7 +688,7 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, project_id: []const u8) ![
         missing_services.items
     else
         "none";
-    const vision_text = "Project vision is tracked by Spiderweb project metadata. Follow future workspace-owned guidance files if they are materialized under .spiderweb/.";
+    const vision_text = "Workspace intent is tracked by Spiderweb workspace metadata. Follow future workspace-owned guidance files if they are materialized under .spiderweb/.";
 
     return std.fmt.allocPrint(
         session.allocator,
@@ -699,9 +699,9 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, project_id: []const u8) ![
         \\
         \\## What This Folder Is
         \\You are in a mounted Spiderweb workspace. The workspace itself is the durable collaboration surface; agents may come and go.
-        \\In the normal interactive flow, the agent starts in this directory, so `.` is the project write root. Spiderweb projects the required bootstrap and service surfaces into `./.spiderweb/` as part of this same mounted workspace contract, so you do not need to climb out of this directory with `..`.
+        \\In the normal interactive flow, the agent starts in this directory, so `.` is the workspace write root. Spiderweb projects the required bootstrap and service surfaces into `./.spiderweb/` as part of this same mounted workspace contract, so you do not need to climb out of this directory with `..`.
         \\
-        \\## Project Vision
+        \\## Workspace Intent
         \\{s}
         \\
         \\## Required Bootstrap Flow
@@ -715,8 +715,8 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, project_id: []const u8) ![
         \\   - `{s}`
         \\3. Use `{s}/*` as the preferred service surface. Only use fallback roots from `agent_bootstrap.json` if a required service is missing.
         \\4. If `{s}` succeeds and `agent_bootstrap_quickref.json` says `all_required_services_present=true`, treat bootstrap as complete immediately and start implementation. Do not keep exploring or re-probing services after that point.
-        \\5. Keep project writes inside the current directory `.` unless the user prompt explicitly says otherwise.
-        \\6. When creating or fixing project files, rewrite the whole target file in one pass. Do not append partial repair fragments to an existing file. If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
+        \\5. Keep workspace writes inside the current directory `.` unless the user prompt explicitly says otherwise.
+        \\6. When creating or fixing workspace files, rewrite the whole target file in one pass. Do not append partial repair fragments to an existing file. If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
         \\7. If `game.py` fails `py_compile` or the walkthrough run, delete and recreate `game.py` from scratch before retrying. If a regenerated `game.py` still fails `py_compile`, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
         \\8. Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless `python3 game.py < walkthrough.txt` or `python3 validate_game.py --workspace . --shared-data {s} --output game_validation.json` exits non-zero.
         \\9. Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated input prompts such as `> `. Treat `python3 validate_game.py --workspace . --shared-data {s} --output game_validation.json` as successful when it exits with code `0`. Do not rerun either command through nested shell wrappers or alternate redirection forms unless the command itself failed.

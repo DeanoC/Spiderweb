@@ -42,7 +42,7 @@ pub fn seedActiveScopedVenomBindings(
             session,
             project_prefix,
             venom_id,
-            "project_binding",
+            "workspace_binding",
             preferred_project_node_id,
             active_project_id,
             session.agent_id,

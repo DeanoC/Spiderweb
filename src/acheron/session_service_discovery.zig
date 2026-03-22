@@ -106,7 +106,7 @@ fn appendMountedServiceBindJson(session: anytype, out: *std.ArrayListUnmanaged(u
         defer session.allocator.free(endpoint_json);
 
         try out.writer(session.allocator).print(
-            "{{\"kind\":\"venom\",\"exposure\":\"project_bind\",\"venom_id\":\"{s}\",\"scope\":\"{s}\",\"path\":\"{s}\",\"target_path\":\"{s}\",\"source_path\":\"{s}\",\"provider_node_id\":{s},\"provider_venom_path\":{s},\"endpoint_path\":{s},\"invoke_path\":{s}}}",
+            "{{\"kind\":\"venom\",\"exposure\":\"workspace_bind\",\"venom_id\":\"{s}\",\"scope\":\"{s}\",\"path\":\"{s}\",\"target_path\":\"{s}\",\"source_path\":\"{s}\",\"provider_node_id\":{s},\"provider_venom_path\":{s},\"endpoint_path\":{s},\"invoke_path\":{s}}}",
             .{
                 escaped_venom_id,
                 escaped_scope,
@@ -123,7 +123,7 @@ fn appendMountedServiceBindJson(session: anytype, out: *std.ArrayListUnmanaged(u
     }
 
     try out.writer(session.allocator).print(
-        "{{\"kind\":\"path_bind\",\"exposure\":\"project_bind\",\"path\":\"{s}\",\"target_path\":\"{s}\"}}",
+        "{{\"kind\":\"path_bind\",\"exposure\":\"workspace_bind\",\"path\":\"{s}\",\"target_path\":\"{s}\"}}",
         .{ escaped_bind, escaped_target },
     );
 }

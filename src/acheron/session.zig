@@ -1345,21 +1345,21 @@ pub const Session = struct {
             "Agents",
             "{\"kind\":\"collection\",\"entries\":\"agent directories\",\"shape\":\"/agents/<agent_id>\"}",
             "{\"read\":true,\"write\":true}",
-            "Agent identities attached to this project namespace.",
+            "Agent identities attached to this workspace namespace.",
         );
         try self.addDirectoryDescriptors(
             projects_root,
-            "Projects",
-            "{\"kind\":\"collection\",\"entries\":\"project directories\",\"shape\":\"/projects/<project_id>/{fs,nodes,agents,meta}\"}",
+            "Workspaces",
+            "{\"kind\":\"collection\",\"entries\":\"workspace directories\",\"shape\":\"/projects/<workspace_id>/{fs,nodes,agents,meta}\"}",
             "{\"read\":true,\"write\":false}",
-            "Attached-session compatibility view for project metadata and links.",
+            "Attached-session compatibility view for workspace metadata and links.",
         );
         try self.addDirectoryDescriptors(
             global_root,
             "Global",
             "{\"kind\":\"collection\",\"entries\":\"global namespaces\",\"shape\":\"/global/<venom_id>\"}",
             "{\"read\":true,\"write\":false}",
-            "System-wide stable namespaces shared across agents/projects.",
+            "System-wide stable namespaces shared across agents/workspaces.",
         );
         self.addNodeDirectoriesFromControlPlane(nodes_root) catch |err| {
             std.log.warn("seedNamespace addNodeDirectoriesFromControlPlane failed: {s}", .{@errorName(err)});
@@ -1375,7 +1375,7 @@ pub const Session = struct {
         };
 
         const active_agent_dir = try self.addDir(agents_root, self.agent_id, false);
-        _ = try self.addFile(active_agent_dir, "README.md", "Active agent identity in this project namespace.\n", false, .none);
+        _ = try self.addFile(active_agent_dir, "README.md", "Active agent identity in this workspace namespace.\n", false, .none);
         const active_agent_venoms_dir = try self.addDir(active_agent_dir, "venoms", false);
         try self.addDirectoryDescriptors(
             active_agent_venoms_dir,
@@ -1397,7 +1397,7 @@ pub const Session = struct {
             "Venoms",
             "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\",\"node-venom-events.ndjson\"],\"roots\":[\"/nodes/<node_id>/venoms/<venom_id>\",\"/global/<venom_id>\"]}",
             "{\"discover\":true,\"invoke_via_paths\":true}",
-            "Project-wide Venom discovery index plus retained node Venom change history.",
+            "Workspace-wide Venom discovery index plus retained node Venom change history.",
         );
         self.agent_venoms_index_id = try self.addFile(
             agent_venoms_dir,
@@ -1432,38 +1432,38 @@ pub const Session = struct {
         const project_venoms_dir = try self.addDir(project_dir, "venoms", false);
         try self.addDirectoryDescriptors(
             project_dir,
-            "Project",
-            "{\"kind\":\"project\",\"children\":[\"fs\",\"nodes\",\"agents\",\"venoms\",\"meta\"]}",
+            "Workspace",
+            "{\"kind\":\"workspace\",\"children\":[\"fs\",\"nodes\",\"agents\",\"venoms\",\"meta\"]}",
             "{\"read\":true,\"write\":false}",
-            "Attached-session compatibility projection for the active project.",
+            "Attached-session compatibility projection for the active workspace.",
         );
         try self.addDirectoryDescriptors(
             project_fs_dir,
-            "Project Mounts",
+            "Workspace Mounts",
             "{\"kind\":\"collection\",\"entries\":\"mount links\",\"source\":\"control.workspace_status mounts\"}",
             "{\"read\":true,\"write\":false}",
-            "Mount links for the active project compatibility view.",
+            "Mount links for the active workspace compatibility view.",
         );
         try self.addDirectoryDescriptors(
             project_nodes_dir,
-            "Project Nodes",
+            "Workspace Nodes",
             "{\"kind\":\"collection\",\"entries\":\"node links\",\"source\":\"control.workspace_status selected mounts\"}",
             "{\"read\":true,\"write\":false}",
-            "Node links for the active project compatibility view.",
+            "Node links for the active workspace compatibility view.",
         );
         try self.addDirectoryDescriptors(
             project_agents_dir,
-            "Project Agents",
-            "{\"kind\":\"collection\",\"entries\":\"agent links\",\"scope\":\"project\",\"targets\":\"/projects/<project_id>/agents/<agent_id>\"}",
+            "Workspace Agents",
+            "{\"kind\":\"collection\",\"entries\":\"agent links\",\"scope\":\"workspace\",\"targets\":\"/projects/<workspace_id>/agents/<agent_id>\"}",
             "{\"read\":true,\"write\":false}",
-            "Agent links visible within this project context.",
+            "Agent links visible within this workspace context.",
         );
         try self.addDirectoryDescriptors(
             project_venoms_dir,
-            "Project Venoms",
-            "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\"],\"roots\":[\"/projects/<project_id>/venoms/<venom_id>\",\"/nodes/<node_id>/venoms/<venom_id>\"]}",
+            "Workspace Venoms",
+            "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\"],\"roots\":[\"/projects/<workspace_id>/venoms/<venom_id>\",\"/nodes/<node_id>/venoms/<venom_id>\"]}",
             "{\"discover\":true,\"invoke_via_paths\":true}",
-            "Project-scoped Venom bindings plus raw node Venom discovery.",
+            "Workspace-scoped Venom bindings plus raw node Venom discovery.",
         );
         self.active_project_venoms_index_id = try self.addFile(
             project_venoms_dir,
@@ -1474,10 +1474,10 @@ pub const Session = struct {
         );
         try self.addDirectoryDescriptors(
             project_meta_dir,
-            "Project Metadata",
+            "Workspace Metadata",
             "{\"kind\":\"metadata\",\"files\":[\"topology.json\",\"nodes.json\",\"agents.json\",\"sources.json\",\"contracts.json\",\"paths.json\",\"summary.json\",\"agent_bootstrap.json\",\"agent_bootstrap_quickref.json\",\"alerts.json\",\"workspace_status.json\",\"mounts.json\",\"desired_mounts.json\",\"actual_mounts.json\",\"binds.json\",\"mounted_services.json\",\"venom_packages.json\",\"drift.json\",\"reconcile.json\",\"availability.json\",\"health.json\"]}",
             "{\"read\":true,\"write\":false}",
-            "Project topology, bootstrap guidance, and availability metadata.",
+            "Workspace topology, bootstrap guidance, and availability metadata.",
         );
 
         const workspace_status_json = try self.loadProjectWorkspaceStatus(policy.project_id);
@@ -1604,31 +1604,31 @@ pub const Session = struct {
             );
         }
 
-        self.registerExistingGlobalVenomBinding(global_root, "events", "project_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(global_root, "events", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(events) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "search_code", "project_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(global_root, "search_code", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(search_code) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "terminal", "project_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(global_root, "terminal", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(terminal) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "mounts", "project_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(global_root, "mounts", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(mounts) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "workers", "project_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(global_root, "workers", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(workers) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "workspaces", "project_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(global_root, "workspaces", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(workspaces) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "git", "project_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(global_root, "git", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(git) failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -3170,8 +3170,8 @@ pub const Session = struct {
         );
         _ = try self.addFile(
             topics_dir,
-            "project-mounts-and-binds.md",
-            defaultGlobalLibraryTopicProjectMountsAndBinds(),
+            "workspace-mounts-and-binds.md",
+            defaultGlobalLibraryTopicWorkspaceMountsAndBinds(),
             false,
             .none,
         );
@@ -7520,13 +7520,13 @@ fn defaultGlobalLibraryIndexMd() []const u8 {
         "- [Search Services](/nodes/local/venoms/library/topics/search-services.md)\n" ++
         "- [Terminal Workflows](/nodes/local/venoms/library/topics/terminal-workflows.md)\n" ++
         "- [Memory Workflows](/nodes/local/venoms/library/topics/memory-workflows.md)\n" ++
-        "- [Project Mounts and Binds](/nodes/local/venoms/library/topics/project-mounts-and-binds.md)\n" ++
+        "- [Workspace Mounts and Binds](/nodes/local/venoms/library/topics/workspace-mounts-and-binds.md)\n" ++
         "- [Agent Management and Sub-Brains](/nodes/local/venoms/library/topics/agent-management-and-sub-brains.md)\n";
 }
 
 fn defaultGlobalLibraryTopicGettingStarted() []const u8 {
     return "# Getting Started\n\n" ++
-        "1. Discover mounted workspace services in `/meta/workspace_services.json` or `/projects/<project_id>/meta/mounted_services.json`.\n" ++
+        "1. Discover mounted workspace services in `/meta/workspace_services.json` or `/projects/<workspace_id>/meta/mounted_services.json`.\n" ++
         "2. Use `/services/<venom_id>` when the workspace binds a service, then fall back to `/nodes/local/venoms/<venom_id>` for local catalog access.\n" ++
         "3. Register external workers through `/services/workers/control/register.json` before expecting worker-owned venoms like memory or sub_brains to appear.\n" ++
         "4. Read each Venom `README.md`, `SCHEMA.json`, `TEMPLATE.json`, `HOST.json`, and `CAPS.json` before using it.\n" ++
@@ -7539,7 +7539,7 @@ fn defaultGlobalLibraryTopicServiceDiscovery() []const u8 {
         "- Local built-in Venoms: `/nodes/local/venoms/<venom_id>`\n" ++
         "- Workspace service namespaces: `/services/<venom_id>`\n" ++
         "- Global shared namespaces: `/global/<venom_id>`\n" ++
-        "- Start with `/meta/workspace_services.json`, `/projects/<project_id>/meta/mounted_services.json`, or `/nodes/local/venoms/VENOMS.json`.\n" ++
+        "- Start with `/meta/workspace_services.json`, `/projects/<workspace_id>/meta/mounted_services.json`, or `/nodes/local/venoms/VENOMS.json`.\n" ++
         "- Service Venoms should expose `TEMPLATE.json` and `HOST.json` alongside `SCHEMA.json`, `OPS.json`, and `STATUS.json`.\n" ++
         "- Common workspace Venoms include: home, mounts, workers, terminal, git, search_code, library, and events.\n";
 }
@@ -7568,11 +7568,11 @@ fn defaultGlobalLibraryTopicMemoryWorkflows() []const u8 {
         "Use `search` before creating duplicate memories.\n";
 }
 
-fn defaultGlobalLibraryTopicProjectMountsAndBinds() []const u8 {
-    return "# Project Mounts and Binds\n\n" ++
-        "Use `/services/mounts/control/mount.json`, `mkdir.json`, and `unmount.json` for project mounts when the workspace binds the mounts service.\n" ++
+fn defaultGlobalLibraryTopicWorkspaceMountsAndBinds() []const u8 {
+    return "# Workspace Mounts and Binds\n\n" ++
+        "Use `/services/mounts/control/mount.json`, `mkdir.json`, and `unmount.json` for workspace mounts when the workspace binds the mounts service.\n" ++
         "The canonical local origin is `/nodes/local/venoms/mounts/*`, with `/global/mounts/*` retained as a compatibility alias.\n" ++
-        "Use `/services/mounts/control/bind.json` and `resolve.json` for stable project paths.\n";
+        "Use `/services/mounts/control/bind.json` and `resolve.json` for stable workspace paths.\n";
 }
 
 fn defaultGlobalLibraryTopicAgentManagementAndSubBrains() []const u8 {
@@ -8476,7 +8476,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     defer if (namespace_agents) |value| allocator.free(value);
     try std.testing.expect(namespace_agents != null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, workspace_agents_managed_begin) != null);
-    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "Project vision is tracked by Spiderweb project metadata") != null);
+    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "Workspace intent is tracked by Spiderweb workspace metadata") != null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "Keep custom lint rules in mind.") != null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/protocol.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/services/home/control/ensure.json") != null);

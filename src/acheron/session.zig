@@ -73,14 +73,14 @@ const SpecialKind = enum {
     event_wait_config,
     event_signal,
     event_next,
-    terminal_v2_invoke,
-    terminal_v2_create,
-    terminal_v2_resume,
-    terminal_v2_close,
-    terminal_v2_exec,
-    terminal_v2_write,
-    terminal_v2_read,
-    terminal_v2_resize,
+    terminal_invoke,
+    terminal_create,
+    terminal_resume,
+    terminal_close,
+    terminal_exec,
+    terminal_write,
+    terminal_read,
+    terminal_resize,
 };
 
 const default_wait_timeout_ms: i64 = events_venom.default_wait_timeout_ms;
@@ -1133,7 +1133,7 @@ pub const Session = struct {
     ) ![]u8 {
         const tag: u16 = @intCast(raw_tag orelse 0);
         return switch (special) {
-            .terminal_v2_invoke => switch (err) {
+            .terminal_invoke => switch (err) {
                 error.InvalidPayload => unified.buildFsrpcError(
                     self.allocator,
                     tag,
@@ -1146,27 +1146,27 @@ pub const Session = struct {
                 error.TerminalPtyUnavailable => unified.buildFsrpcError(self.allocator, tag, "unavailable", "pty backend unavailable: install util-linux script"),
                 else => err,
             },
-            .terminal_v2_create => switch (err) {
+            .terminal_create => switch (err) {
                 error.InvalidPayload => unified.buildFsrpcError(self.allocator, tag, "invalid", "terminal create payload must be a JSON object with optional session_id/label/cwd"),
                 error.UnsupportedPlatform => self.buildUnsupportedInteractiveTerminalError(tag),
                 error.TerminalPtyUnavailable => unified.buildFsrpcError(self.allocator, tag, "unavailable", "pty backend unavailable: install util-linux script"),
                 else => err,
             },
-            .terminal_v2_resume => switch (err) {
+            .terminal_resume => switch (err) {
                 error.InvalidPayload => unified.buildFsrpcError(self.allocator, tag, "invalid", "terminal resume payload must include session_id"),
                 error.TerminalSessionNotFound => unified.buildFsrpcError(self.allocator, tag, "enoent", "terminal session not found"),
                 error.TerminalSessionClosed => unified.buildFsrpcError(self.allocator, tag, "eperm", "terminal session is closed"),
                 error.UnsupportedPlatform => self.buildUnsupportedInteractiveTerminalError(tag),
                 else => err,
             },
-            .terminal_v2_close => switch (err) {
+            .terminal_close => switch (err) {
                 error.InvalidPayload => unified.buildFsrpcError(self.allocator, tag, "invalid", "terminal close payload must include session_id when no current session exists"),
                 error.TerminalSessionNotFound => unified.buildFsrpcError(self.allocator, tag, "enoent", "terminal session not found"),
                 error.TerminalSessionClosed => unified.buildFsrpcError(self.allocator, tag, "eperm", "terminal session is closed"),
                 error.UnsupportedPlatform => self.buildUnsupportedInteractiveTerminalError(tag),
                 else => err,
             },
-            .terminal_v2_exec => switch (err) {
+            .terminal_exec => switch (err) {
                 error.InvalidPayload => unified.buildFsrpcError(self.allocator, tag, "invalid", "terminal exec payload must include command or argv (optional session_id/cwd/timeout_ms)"),
                 error.TerminalSessionNotFound => unified.buildFsrpcError(self.allocator, tag, "enoent", "terminal session not found"),
                 error.TerminalSessionClosed => unified.buildFsrpcError(self.allocator, tag, "eperm", "terminal session is closed"),
@@ -1174,21 +1174,21 @@ pub const Session = struct {
                 error.TerminalPtyUnavailable => unified.buildFsrpcError(self.allocator, tag, "unavailable", "pty backend unavailable: install util-linux script"),
                 else => err,
             },
-            .terminal_v2_write => switch (err) {
+            .terminal_write => switch (err) {
                 error.InvalidPayload => unified.buildFsrpcError(self.allocator, tag, "invalid", "terminal write payload must include input/command/data_b64 (optional session_id)"),
                 error.TerminalSessionNotFound => unified.buildFsrpcError(self.allocator, tag, "enoent", "terminal session not found"),
                 error.TerminalSessionClosed => unified.buildFsrpcError(self.allocator, tag, "eperm", "terminal session is closed"),
                 error.UnsupportedPlatform => self.buildUnsupportedInteractiveTerminalError(tag),
                 else => err,
             },
-            .terminal_v2_read => switch (err) {
+            .terminal_read => switch (err) {
                 error.InvalidPayload => unified.buildFsrpcError(self.allocator, tag, "invalid", "terminal read payload must be object with optional session_id/max_bytes/timeout_ms"),
                 error.TerminalSessionNotFound => unified.buildFsrpcError(self.allocator, tag, "enoent", "terminal session not found"),
                 error.TerminalSessionClosed => unified.buildFsrpcError(self.allocator, tag, "eperm", "terminal session is closed"),
                 error.UnsupportedPlatform => self.buildUnsupportedInteractiveTerminalError(tag),
                 else => err,
             },
-            .terminal_v2_resize => switch (err) {
+            .terminal_resize => switch (err) {
                 error.InvalidPayload => unified.buildFsrpcError(self.allocator, tag, "invalid", "terminal resize payload must include cols and rows (optional session_id)"),
                 error.TerminalSessionNotFound => unified.buildFsrpcError(self.allocator, tag, "enoent", "terminal session not found"),
                 error.TerminalSessionClosed => unified.buildFsrpcError(self.allocator, tag, "eperm", "terminal session is closed"),
@@ -1209,14 +1209,14 @@ pub const Session = struct {
             .venom_packages_invoke, .venom_packages_list, .venom_packages_get, .venom_packages_install, .venom_packages_remove => self.handleVenomPackagesNamespaceWrite(special, node_id, data),
             .projects_invoke, .projects_list, .projects_get, .projects_up => self.handleWorkspacesNamespaceWrite(special, node_id, data),
             .git_invoke, .git_sync_checkout, .git_status, .git_diff_range => self.handleGitNamespaceWrite(special, node_id, data),
-            .terminal_v2_invoke => self.handleTerminalV2InvokeWrite(node_id, data),
-            .terminal_v2_create => self.handleTerminalV2CreateWrite(node_id, data),
-            .terminal_v2_resume => self.handleTerminalV2ResumeWrite(node_id, data),
-            .terminal_v2_close => self.handleTerminalV2CloseWrite(node_id, data),
-            .terminal_v2_exec => self.handleTerminalV2ExecWrite(node_id, data),
-            .terminal_v2_write => self.handleTerminalV2WriteWrite(node_id, data),
-            .terminal_v2_read => self.handleTerminalV2ReadWrite(node_id, data),
-            .terminal_v2_resize => self.handleTerminalV2ResizeWrite(node_id, data),
+            .terminal_invoke => self.handleTerminalInvokeWrite(node_id, data),
+            .terminal_create => self.handleTerminalCreateWrite(node_id, data),
+            .terminal_resume => self.handleTerminalResumeWrite(node_id, data),
+            .terminal_close => self.handleTerminalCloseWrite(node_id, data),
+            .terminal_exec => self.handleTerminalExecWrite(node_id, data),
+            .terminal_write => self.handleTerminalWriteWrite(node_id, data),
+            .terminal_read => self.handleTerminalReadWrite(node_id, data),
+            .terminal_resize => self.handleTerminalResizeWrite(node_id, data),
             .none, .agent_venoms_index, .node_venom_events_log, .event_next => blk: {
                 try self.writeFileContent(node_id, offset, data);
                 break :blk .{ .written = data.len };
@@ -1236,7 +1236,7 @@ pub const Session = struct {
 
         var written: usize = data.len;
 
-        if (isTerminalV2Special(node.special) and !self.canInvokeTerminalNamespace(state.node_id)) {
+        if (isTerminalSpecial(node.special) and !self.canInvokeTerminalNamespace(state.node_id)) {
             return unified.buildFsrpcError(self.allocator, msg.tag, "eperm", "terminal invoke access denied by permissions");
         }
 
@@ -1294,7 +1294,7 @@ pub const Session = struct {
                 const node = self.nodes.get(state.node_id) orelse {
                     return unified.buildFsrpcError(self.allocator, msg.tag, "eio", "missing node");
                 };
-                if (isTerminalV2Special(node.special) and !self.canInvokeTerminalNamespace(state.node_id)) {
+                if (isTerminalSpecial(node.special) and !self.canInvokeTerminalNamespace(state.node_id)) {
                     return unified.buildFsrpcError(self.allocator, msg.tag, "eperm", "terminal invoke access denied by permissions");
                 }
                 _ = self.executeNodeWrite(state.node_id, node.special, 0, payload) catch |err| {
@@ -3184,35 +3184,35 @@ pub const Session = struct {
         );
     }
 
-    fn handleTerminalV2InvokeWrite(self: *Session, invoke_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
+    fn handleTerminalInvokeWrite(self: *Session, invoke_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
         return .{ .written = try terminal_venom.handleInvokeWrite(self, invoke_node_id, raw_input) };
     }
 
-    fn handleTerminalV2CreateWrite(self: *Session, create_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
+    fn handleTerminalCreateWrite(self: *Session, create_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
         return .{ .written = try terminal_venom.handleCreateWrite(self, create_node_id, raw_input) };
     }
 
-    fn handleTerminalV2ResumeWrite(self: *Session, resume_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
+    fn handleTerminalResumeWrite(self: *Session, resume_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
         return .{ .written = try terminal_venom.handleResumeWrite(self, resume_node_id, raw_input) };
     }
 
-    fn handleTerminalV2CloseWrite(self: *Session, close_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
+    fn handleTerminalCloseWrite(self: *Session, close_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
         return .{ .written = try terminal_venom.handleCloseWrite(self, close_node_id, raw_input) };
     }
 
-    fn handleTerminalV2WriteWrite(self: *Session, write_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
+    fn handleTerminalWriteWrite(self: *Session, write_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
         return .{ .written = try terminal_venom.handleWriteWrite(self, write_node_id, raw_input) };
     }
 
-    fn handleTerminalV2ReadWrite(self: *Session, read_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
+    fn handleTerminalReadWrite(self: *Session, read_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
         return .{ .written = try terminal_venom.handleReadWrite(self, read_node_id, raw_input) };
     }
 
-    fn handleTerminalV2ResizeWrite(self: *Session, resize_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
+    fn handleTerminalResizeWrite(self: *Session, resize_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
         return .{ .written = try terminal_venom.handleResizeWrite(self, resize_node_id, raw_input) };
     }
 
-    fn handleTerminalV2ExecWrite(self: *Session, exec_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
+    fn handleTerminalExecWrite(self: *Session, exec_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
         return .{ .written = try terminal_venom.handleExecWrite(self, exec_node_id, raw_input) };
     }
 
@@ -3471,16 +3471,16 @@ pub const Session = struct {
         _ = node_id;
     }
 
-    fn isTerminalV2Special(special: SpecialKind) bool {
+    fn isTerminalSpecial(special: SpecialKind) bool {
         return switch (special) {
-            .terminal_v2_invoke,
-            .terminal_v2_create,
-            .terminal_v2_resume,
-            .terminal_v2_close,
-            .terminal_v2_exec,
-            .terminal_v2_write,
-            .terminal_v2_read,
-            .terminal_v2_resize,
+            .terminal_invoke,
+            .terminal_create,
+            .terminal_resume,
+            .terminal_close,
+            .terminal_exec,
+            .terminal_write,
+            .terminal_read,
+            .terminal_resize,
             => true,
             else => false,
         };

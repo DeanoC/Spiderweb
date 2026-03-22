@@ -8136,7 +8136,7 @@ test "acheron_control_plane: explicit venom bind overrides heuristic provider se
 
     const local_upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal-v2\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal\"}}}}]}}",
         .{ local_node_id, local_node_secret, local_node_id, local_node_id },
     );
     defer allocator.free(local_upsert_req);
@@ -8144,7 +8144,7 @@ test "acheron_control_plane: explicit venom bind overrides heuristic provider se
 
     const app_upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal-v2\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal\"}}}}]}}",
         .{ app_node_id, app_node_secret, app_node_id, app_node_id },
     );
     defer allocator.free(app_upsert_req);
@@ -8183,7 +8183,7 @@ test "acheron_control_plane: scoped venom binds resolve agent before project bef
 
     const local_upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal-v2\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal\"}}}}]}}",
         .{ local_node_id, local_node_secret, local_node_id, local_node_id },
     );
     defer allocator.free(local_upsert_req);
@@ -8191,7 +8191,7 @@ test "acheron_control_plane: scoped venom binds resolve agent before project bef
 
     const app_upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal-v2\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"/nodes/{s}/terminal\"],\"capabilities\":{{\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/terminal\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"]}},\"schema\":{{\"model\":\"namespace-terminal\"}}}}]}}",
         .{ app_node_id, app_node_secret, app_node_id, app_node_id },
     );
     defer allocator.free(app_upsert_req);

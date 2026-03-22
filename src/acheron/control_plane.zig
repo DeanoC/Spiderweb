@@ -2983,45 +2983,17 @@ pub const ControlPlane = struct {
                 now_ms,
             );
         }
-        if (self.active_project_by_agent.get(agent_id)) |active_project_id| {
-            if (active_project_id.len > 0) {
-                if (self.projects.get(active_project_id)) |active_project| {
-                    if (active_project.kind == .host_internal) {
-                        if (clearActiveProjectBindingLocked(self, agent_id)) {
-                            self.persistSnapshotBestEffortLocked();
-                        }
-                    } else {
-                        return try self.renderWorkspaceStatusForProjectLocked(
-                            agent_id,
-                            active_project_id,
-                            null,
-                            is_admin,
-                            now_ms,
-                        );
-                    }
-                }
-            }
+        if (resolveVisibleActiveProjectIdLocked(self, agent_id)) |active_project_id| {
+            return try self.renderWorkspaceStatusForProjectLocked(
+                agent_id,
+                active_project_id,
+                null,
+                is_admin,
+                now_ms,
+            );
         }
 
-        const last_error_json = if (self.reconcile_last_error) |value| blk: {
-            const escaped = try jsonEscape(self.allocator, value);
-            defer self.allocator.free(escaped);
-            break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-        } else try self.allocator.dupe(u8, "null");
-        defer self.allocator.free(last_error_json);
-
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"agent_id\":\"{s}\",\"project_id\":null,\"name\":null,\"workspace_name\":null,\"template_id\":null,\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"{s}\",\"last_reconcile_ms\":{d},\"last_success_ms\":{d},\"last_error\":{s},\"queue_depth\":{d}}}",
-            .{
-                escaped_agent,
-                reconcileStateName(self.reconcile_state),
-                self.reconcile_last_reconcile_ms,
-                self.reconcile_last_success_ms,
-                last_error_json,
-                self.reconcile_queue_depth,
-            },
-        );
+        return buildEmptyWorkspaceStatusPayloadLocked(self, agent_id);
     }
 
 fn requestReconcileLocked(self: *ControlPlane, now_ms: i64) void {
@@ -3045,6 +3017,46 @@ fn buildWorkspaceActivationPayload(
         allocator,
         "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
         .{ escaped_agent, escaped_project, escaped_root },
+    );
+}
+
+fn resolveVisibleActiveProjectIdLocked(self: *ControlPlane, agent_id: []const u8) ?[]const u8 {
+    const active_project_id = self.active_project_by_agent.get(agent_id) orelse return null;
+    if (active_project_id.len == 0) return null;
+    const active_project = self.projects.get(active_project_id) orelse return null;
+    if (active_project.kind == .host_internal) {
+        if (clearActiveProjectBindingLocked(self, agent_id)) {
+            self.persistSnapshotBestEffortLocked();
+        }
+        return null;
+    }
+    return active_project_id;
+}
+
+fn buildEmptyWorkspaceStatusPayloadLocked(
+    self: *ControlPlane,
+    agent_id: []const u8,
+) ![]u8 {
+    const escaped_agent = try jsonEscape(self.allocator, agent_id);
+    defer self.allocator.free(escaped_agent);
+    const last_error_json = if (self.reconcile_last_error) |value| blk: {
+        const escaped = try jsonEscape(self.allocator, value);
+        defer self.allocator.free(escaped);
+        break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
+    } else try self.allocator.dupe(u8, "null");
+    defer self.allocator.free(last_error_json);
+
+    return std.fmt.allocPrint(
+        self.allocator,
+        "{{\"agent_id\":\"{s}\",\"project_id\":null,\"name\":null,\"workspace_name\":null,\"template_id\":null,\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"{s}\",\"last_reconcile_ms\":{d},\"last_success_ms\":{d},\"last_error\":{s},\"queue_depth\":{d}}}",
+        .{
+            escaped_agent,
+            reconcileStateName(self.reconcile_state),
+            self.reconcile_last_reconcile_ms,
+            self.reconcile_last_success_ms,
+            last_error_json,
+            self.reconcile_queue_depth,
+        },
     );
 }
 

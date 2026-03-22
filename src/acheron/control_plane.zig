@@ -2603,7 +2603,7 @@ pub const ControlPlane = struct {
         const activate = getOptionalBool(obj, "activate", true) catch return ControlPlaneError.InvalidPayload;
         if (requested_workspace_token) |workspace_token| try validateSecretToken(workspace_token, 256);
 
-        const resolved_project = try resolveWorkspaceUpTargetLocked(
+        const resolved_workspace = try resolveWorkspaceUpTargetLocked(
             self,
             requested_workspace_id,
             requested_workspace_name,
@@ -2613,16 +2613,16 @@ pub const ControlPlane = struct {
             requested_workspace_access_policy,
             now_ms,
         );
-        const project = resolved_project.project;
-        const created = resolved_project.created;
+        const workspace = resolved_workspace.workspace;
+        const created = resolved_workspace.created;
         var mounts_replaced = false;
         var binds_replaced = false;
-        if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
+        if (workspace.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
         const is_host_actor = self.isHostActor(agent_id);
         if (!created) {
             try applyWorkspaceUpMetadataUpdatesLocked(
                 self,
-                project,
+                workspace,
                 agent_id,
                 is_admin,
                 is_host_actor,
@@ -2637,23 +2637,23 @@ pub const ControlPlane = struct {
             );
         }
 
-        mounts_replaced = try applyWorkspaceUpMountReplacementsLocked(self, project, obj.get("desired_mounts"), created);
-        binds_replaced = try applyWorkspaceUpBindReplacementsLocked(self, project, obj.get("desired_binds"));
+        mounts_replaced = try applyWorkspaceUpMountReplacementsLocked(self, workspace, obj.get("desired_mounts"), created);
+        binds_replaced = try applyWorkspaceUpBindReplacementsLocked(self, workspace, obj.get("desired_binds"));
 
-        if (try ensureProjectTemplateBindsLocked(self, project)) binds_replaced = true;
+        if (try ensureProjectTemplateBindsLocked(self, workspace)) binds_replaced = true;
 
-        project.updated_at_ms = now_ms;
+        workspace.updated_at_ms = now_ms;
         if (!created) self.project_updates_total +%= 1;
         if (mounts_replaced) self.mount_sets_total +%= 1;
 
         if (activate) {
-            if (is_host_actor and !std.mem.eql(u8, project.id, host_project_id)) {
+            if (is_host_actor and !std.mem.eql(u8, workspace.id, host_project_id)) {
                 return ControlPlaneError.ProjectAssignmentForbidden;
             }
-            if (project.kind == .host_internal and !(is_host_actor or is_admin)) {
+            if (workspace.kind == .host_internal and !(is_host_actor or is_admin)) {
                 return ControlPlaneError.ProjectAssignmentForbidden;
             }
-            try upsertActiveProjectBindingLocked(self, agent_id, project.id);
+            try upsertActiveProjectBindingLocked(self, agent_id, workspace.id);
             self.project_activations_total +%= 1;
         }
 
@@ -2664,7 +2664,7 @@ pub const ControlPlane = struct {
         return buildWorkspaceUpResultPayloadLocked(
             self,
             agent_id,
-            project,
+            workspace,
             is_admin,
             now_ms,
             created,
@@ -2708,37 +2708,37 @@ pub const ControlPlane = struct {
         _ = self.reapExpiredLeasesLocked(now_ms);
         _ = try self.runReconcileCycleLocked(now_ms, false);
 
-        var selected_project_id: ?[]const u8 = null;
-        var selected_project_token: ?[]const u8 = null;
+        var selected_workspace_id: ?[]const u8 = null;
+        var selected_workspace_token: ?[]const u8 = null;
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
-        if (getOptionalString(payload.value.object, "project_id")) |project_id| {
-            try validateIdentifier(project_id, 128);
-            selected_project_id = project_id;
+        if (getOptionalString(payload.value.object, "project_id")) |workspace_id| {
+            try validateIdentifier(workspace_id, 128);
+            selected_workspace_id = workspace_id;
         }
-        if (getOptionalString(payload.value.object, "project_token")) |project_token| {
-            try validateSecretToken(project_token, 256);
-            selected_project_token = project_token;
+        if (getOptionalString(payload.value.object, "project_token")) |workspace_token| {
+            try validateSecretToken(workspace_token, 256);
+            selected_workspace_token = workspace_token;
         }
 
         const escaped_agent = try jsonEscape(self.allocator, agent_id);
         defer self.allocator.free(escaped_agent);
-        if (selected_project_id) |project_id| {
-            const project = self.projects.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
-            if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
-            try requireWorkspaceStatusAccessLocked(self, agent_id, &project, project_id, selected_project_token, is_admin);
+        if (selected_workspace_id) |workspace_id| {
+            const workspace = self.projects.get(workspace_id) orelse return ControlPlaneError.ProjectNotFound;
+            if (workspace.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
+            try requireWorkspaceStatusAccessLocked(self, agent_id, &workspace, workspace_id, selected_workspace_token, is_admin);
             return try self.renderWorkspaceStatusForProjectLocked(
                 agent_id,
-                project_id,
-                selected_project_token,
+                workspace_id,
+                selected_workspace_token,
                 is_admin,
                 now_ms,
             );
         }
-        if (resolveVisibleActiveProjectIdLocked(self, agent_id)) |active_project_id| {
+        if (resolveVisibleActiveWorkspaceIdLocked(self, agent_id)) |active_workspace_id| {
             return try self.renderWorkspaceStatusForProjectLocked(
                 agent_id,
-                active_project_id,
+                active_workspace_id,
                 null,
                 is_admin,
                 now_ms,
@@ -2773,49 +2773,49 @@ fn buildWorkspaceActivationPayload(
 }
 
 const ResolvedWorkspaceUpTarget = struct {
-    project: *Project,
+    workspace: *Project,
     created: bool,
 };
 
 fn resolveWorkspaceUpTargetLocked(
     self: *ControlPlane,
-    requested_project_id: ?[]const u8,
-    requested_name: ?[]const u8,
-    requested_vision: ?[]const u8,
-    requested_status: ?[]const u8,
-    requested_template_id: ?[]const u8,
-    requested_access_policy_value: ?std.json.Value,
+    requested_workspace_id: ?[]const u8,
+    requested_workspace_name: ?[]const u8,
+    requested_workspace_vision: ?[]const u8,
+    requested_workspace_status: ?[]const u8,
+    requested_workspace_template_id: ?[]const u8,
+    requested_workspace_access_policy: ?std.json.Value,
     now_ms: i64,
 ) !ResolvedWorkspaceUpTarget {
-    var project_ptr: ?*Project = null;
+    var workspace_ptr: ?*Project = null;
 
-    if (requested_project_id) |project_id| {
-        try validateIdentifier(project_id, 128);
-        project_ptr = self.projects.getPtr(project_id);
-        if (project_ptr == null) return ControlPlaneError.ProjectNotFound;
-    } else if (requested_name) |workspace_name| {
+    if (requested_workspace_id) |workspace_id| {
+        try validateIdentifier(workspace_id, 128);
+        workspace_ptr = self.projects.getPtr(workspace_id);
+        if (workspace_ptr == null) return ControlPlaneError.ProjectNotFound;
+    } else if (requested_workspace_name) |workspace_name| {
         try validateDisplayString(workspace_name, 128);
         var project_it = self.projects.valueIterator();
-        while (project_it.next()) |project| {
-            if (std.mem.eql(u8, project.name, workspace_name)) {
-                project_ptr = project;
+        while (project_it.next()) |workspace| {
+            if (std.mem.eql(u8, workspace.name, workspace_name)) {
+                workspace_ptr = workspace;
                 break;
             }
         }
     }
 
-    if (project_ptr) |project| {
-        return .{ .project = project, .created = false };
+    if (workspace_ptr) |workspace| {
+        return .{ .workspace = workspace, .created = false };
     }
 
-    const name_raw = requested_name orelse return ControlPlaneError.MissingField;
-    const vision_raw = requested_vision orelse return ControlPlaneError.MissingField;
-    const status_raw = requested_status orelse "active";
-    const template_id_raw = requested_template_id orelse default_project_template_id;
-    try validateDisplayString(name_raw, 128);
-    try validateDisplayString(vision_raw, 1024);
-    try validateIdentifier(status_raw, 64);
-    _ = resolveProjectTemplateSpec(template_id_raw) orelse return ControlPlaneError.InvalidPayload;
+    const workspace_name = requested_workspace_name orelse return ControlPlaneError.MissingField;
+    const workspace_vision = requested_workspace_vision orelse return ControlPlaneError.MissingField;
+    const workspace_status = requested_workspace_status orelse "active";
+    const workspace_template_id = requested_workspace_template_id orelse default_project_template_id;
+    try validateDisplayString(workspace_name, 128);
+    try validateDisplayString(workspace_vision, 1024);
+    try validateIdentifier(workspace_status, 64);
+    _ = resolveProjectTemplateSpec(workspace_template_id) orelse return ControlPlaneError.InvalidPayload;
 
     const project_id = try makeSequentialId(self.allocator, "proj", &self.next_project_id);
     errdefer self.allocator.free(project_id);
@@ -2823,16 +2823,16 @@ fn resolveWorkspaceUpTargetLocked(
     errdefer self.allocator.free(mutation_token);
     var access_policy: ProjectAccessPolicy = .{};
     errdefer access_policy.deinit(self.allocator);
-    if (requested_access_policy_value) |value| {
+    if (requested_workspace_access_policy) |value| {
         access_policy = try parseProjectAccessPolicyValue(self.allocator, value);
     }
 
-    const project = Project{
+    const workspace = Project{
         .id = project_id,
-        .name = try self.allocator.dupe(u8, name_raw),
-        .vision = try self.allocator.dupe(u8, vision_raw),
-        .status = try self.allocator.dupe(u8, status_raw),
-        .template_id = try self.allocator.dupe(u8, template_id_raw),
+        .name = try self.allocator.dupe(u8, workspace_name),
+        .vision = try self.allocator.dupe(u8, workspace_vision),
+        .status = try self.allocator.dupe(u8, workspace_status),
+        .template_id = try self.allocator.dupe(u8, workspace_template_id),
         .token_locked = false,
         .mutation_token = mutation_token,
         .access_policy = access_policy,
@@ -2840,17 +2840,17 @@ fn resolveWorkspaceUpTargetLocked(
         .updated_at_ms = now_ms,
     };
     errdefer {
-        self.allocator.free(project.name);
-        self.allocator.free(project.vision);
-        self.allocator.free(project.status);
-        self.allocator.free(project.template_id);
-        self.allocator.free(project.mutation_token);
+        self.allocator.free(workspace.name);
+        self.allocator.free(workspace.vision);
+        self.allocator.free(workspace.status);
+        self.allocator.free(workspace.template_id);
+        self.allocator.free(workspace.mutation_token);
     }
 
-    try self.projects.put(self.allocator, project.id, project);
+    try self.projects.put(self.allocator, workspace.id, workspace);
     self.project_creates_total +%= 1;
     return .{
-        .project = self.projects.getPtr(project_id).?,
+        .workspace = self.projects.getPtr(project_id).?,
         .created = true,
     };
 }
@@ -3088,51 +3088,51 @@ fn buildWorkspaceUpResultPayloadLocked(
     );
 }
 
-fn resolveVisibleActiveProjectIdLocked(self: *ControlPlane, agent_id: []const u8) ?[]const u8 {
-    const active_project_id = self.active_project_by_agent.get(agent_id) orelse return null;
-    if (active_project_id.len == 0) return null;
-    const active_project = self.projects.get(active_project_id) orelse return null;
-    if (active_project.kind == .host_internal) {
+fn resolveVisibleActiveWorkspaceIdLocked(self: *ControlPlane, agent_id: []const u8) ?[]const u8 {
+    const active_workspace_id = self.active_project_by_agent.get(agent_id) orelse return null;
+    if (active_workspace_id.len == 0) return null;
+    const active_workspace = self.projects.get(active_workspace_id) orelse return null;
+    if (active_workspace.kind == .host_internal) {
         if (clearActiveProjectBindingLocked(self, agent_id)) {
             self.persistSnapshotBestEffortLocked();
         }
         return null;
     }
-    return active_project_id;
+    return active_workspace_id;
 }
 
 fn requireWorkspaceStatusAccessLocked(
     self: *ControlPlane,
     agent_id: []const u8,
-    project: *const Project,
-    project_id: []const u8,
-    selected_project_token: ?[]const u8,
+    workspace: *const Project,
+    workspace_id: []const u8,
+    selected_workspace_token: ?[]const u8,
     is_admin: bool,
 ) !void {
     const is_host_actor = self.isHostActor(agent_id);
-    if (is_host_actor and !is_admin and !std.mem.eql(u8, project_id, host_project_id)) {
+    if (is_host_actor and !is_admin and !std.mem.eql(u8, workspace_id, host_project_id)) {
         return ControlPlaneError.ProjectAssignmentForbidden;
     }
     if (is_admin) return;
 
-    switch (resolveProjectActionMode(project, .read, agent_id)) {
+    switch (resolveProjectActionMode(workspace, .read, agent_id)) {
         .admin, .deny => return ControlPlaneError.ProjectPolicyForbidden,
         .token => {
-            if (selected_project_token) |project_token| {
-                try validateSecretToken(project_token, 256);
-                if (!projectTokenEnabled(project) or !secureTokenEql(project.mutation_token, project_token)) {
+            if (selected_workspace_token) |workspace_token| {
+                try validateSecretToken(workspace_token, 256);
+                if (!projectTokenEnabled(workspace) or !secureTokenEql(workspace.mutation_token, workspace_token)) {
                     return ControlPlaneError.ProjectAuthFailed;
                 }
                 return;
             }
             if (is_host_actor) return;
-            const active_project_id = self.active_project_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
-            if (!std.mem.eql(u8, active_project_id, project_id)) return ControlPlaneError.ProjectAuthFailed;
+            const active_workspace_id = self.active_project_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
+            if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.ProjectAuthFailed;
         },
         .open => {
             if (is_host_actor) return;
-            const active_project_id = self.active_project_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
-            if (!std.mem.eql(u8, active_project_id, project_id)) return ControlPlaneError.ProjectAuthFailed;
+            const active_workspace_id = self.active_project_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
+            if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.ProjectAuthFailed;
         },
     }
 }

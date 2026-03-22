@@ -8,6 +8,7 @@ const websocket_transport = @import("websocket_transport.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
 const acheron_session_mod = @import("acheron/session.zig");
 const server_protocol_validation = @import("server_protocol_validation.zig");
+const server_control_scope = @import("server_control_scope.zig");
 const server_local_node_supervisor = @import("server_local_node_supervisor.zig");
 const server_metrics_http = @import("server_metrics_http.zig");
 const server_session_payloads = @import("server_session_payloads.zig");
@@ -676,12 +677,7 @@ const NodeTunnelRegistry = struct {
     }
 };
 
-const ControlMutationScope = enum {
-    none,
-    node,
-    project,
-    operator,
-};
+const ControlMutationScope = server_control_scope.ControlMutationScope;
 
 const AuditRecord = struct {
     id: u64,
@@ -1465,7 +1461,7 @@ const AuthTokenStore = struct {
         const mutex = @constCast(&self.mutex);
         mutex.lock();
         defer mutex.unlock();
-        if (secureTokenEql(self.access_token, token)) return .{ .role = .access, .token_id = "access" };
+        if (server_control_scope.secureTokenEql(self.access_token, token)) return .{ .role = .access, .token_id = "access" };
         return null;
     }
 
@@ -5167,7 +5163,7 @@ fn handleWebSocketConnection(
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const control_agent_id = active_binding.agent_id;
                                 const correlation_id = parsed.correlation_id orelse parsed.id;
-                                const scope = controlMutationScope(control_type);
+                                const scope = server_control_scope.controlMutationScope(control_type);
                                 if (scope != .none and correlation_id == null) {
                                     const response = try buildControlErrorWithCorrelation(
                                         allocator,
@@ -5181,7 +5177,7 @@ fn handleWebSocketConnection(
                                     continue;
                                 }
                                 if (scope != .none) {
-                                    validateControlScopeTokens(allocator, runtime_registry, control_type, parsed.payload_json) catch |err| {
+                                    server_control_scope.validateControlScopeTokens(allocator, runtime_registry, control_type, parsed.payload_json) catch |err| {
                                         const code = switch (err) {
                                             error.MissingField => "missing_field",
                                             error.InvalidPayload => "invalid_payload",
@@ -6280,138 +6276,6 @@ fn appendAvailabilitySnapshotJson(
     try out.appendSlice(allocator, "}");
 }
 
-fn extractNodeIdFromControlPayload(allocator: std.mem.Allocator, payload_json: []const u8) !?[]u8 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return null;
-    const node_id = parsed.value.object.get("node_id") orelse return null;
-    if (node_id != .string or !isValidNodeIdentifier(node_id.string)) return null;
-    const copy = try allocator.dupe(u8, node_id.string);
-    return @as(?[]u8, copy);
-}
-
-fn extractProjectIdFromControlPayload(allocator: std.mem.Allocator, payload_json: []const u8) !?[]u8 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return null;
-    const project_id = parsed.value.object.get("project_id") orelse return null;
-    if (project_id != .string or project_id.string.len == 0) return null;
-    const copy = try allocator.dupe(u8, project_id.string);
-    return @as(?[]u8, copy);
-}
-
-fn extractProjectTokenFromControlPayload(allocator: std.mem.Allocator, payload_json: []const u8) !?[]u8 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload_json, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return null;
-    const project_token = parsed.value.object.get("project_token") orelse return null;
-    if (project_token != .string or project_token.string.len == 0) return null;
-    const copy = try allocator.dupe(u8, project_token.string);
-    return @as(?[]u8, copy);
-}
-
-fn controlMutationScope(control_type: unified.ControlType) ControlMutationScope {
-    return switch (control_type) {
-        .node_invite_create,
-        .node_ensure,
-        .node_delete,
-        .venom_bind,
-        => .node,
-        .node_join_pending_list,
-        .node_join_approve,
-        .node_join_deny,
-        => .operator,
-        .workspace_create,
-        .workspace_update,
-        .workspace_delete,
-        .workspace_bind_set,
-        .workspace_bind_remove,
-        .workspace_mount_set,
-        .workspace_mount_remove,
-        .workspace_token_rotate,
-        .workspace_token_revoke,
-        .workspace_activate,
-        .workspace_up,
-        .project_create,
-        .project_update,
-        .project_delete,
-        .project_mount_set,
-        .project_mount_remove,
-        .project_token_rotate,
-        .project_token_revoke,
-        .project_activate,
-        .project_up,
-        => .project,
-        else => .none,
-    };
-}
-
-fn validateControlScopeTokens(
-    allocator: std.mem.Allocator,
-    runtime_registry: *AgentRuntimeRegistry,
-    control_type: unified.ControlType,
-    payload_json: ?[]const u8,
-) !void {
-    const scope = controlMutationScope(control_type);
-    if (scope == .none) return;
-
-    const raw = payload_json orelse return error.MissingField;
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidPayload;
-    const obj = parsed.value.object;
-
-    if (runtime_registry.control_operator_token) |operator_token| {
-        if (obj.get("operator_token")) |token_value| {
-            if (token_value != .string or token_value.string.len == 0) return error.InvalidPayload;
-            if (!secureTokenEql(operator_token, token_value.string)) return error.OperatorAuthFailed;
-            return;
-        }
-    }
-
-    switch (scope) {
-        .project => {
-            if (runtime_registry.control_project_scope_token) |token| {
-                const field = obj.get("project_scope_token") orelse return error.MissingField;
-                if (field != .string or field.string.len == 0) return error.InvalidPayload;
-                if (!secureTokenEql(token, field.string)) return error.OperatorAuthFailed;
-                return;
-            }
-        },
-        .node => {
-            if (runtime_registry.control_node_scope_token) |token| {
-                const field = obj.get("node_scope_token") orelse return error.MissingField;
-                if (field != .string or field.string.len == 0) return error.InvalidPayload;
-                if (!secureTokenEql(token, field.string)) return error.OperatorAuthFailed;
-                return;
-            }
-        },
-        .operator, .none => {},
-    }
-
-    if (runtime_registry.control_operator_token != null) {
-        return error.MissingField;
-    }
-}
-
-fn secureTokenEql(expected: []const u8, candidate: []const u8) bool {
-    if (expected.len != candidate.len) return false;
-    var diff: u8 = 0;
-    for (expected, candidate) |lhs, rhs| {
-        diff |= lhs ^ rhs;
-    }
-    return diff == 0;
-}
-
-fn controlScopeName(scope: ControlMutationScope) []const u8 {
-    return switch (scope) {
-        .none => "none",
-        .node => "node",
-        .project => "project",
-        .operator => "operator",
-    };
-}
-
 fn appendAuditRecordJson(
     allocator: std.mem.Allocator,
     out: *std.ArrayListUnmanaged(u8),
@@ -6443,7 +6307,7 @@ fn appendAuditRecordJson(
             record.timestamp_ms,
             escaped_agent,
             escaped_type,
-            controlScopeName(record.scope),
+            server_control_scope.controlScopeName(record.scope),
             correlation_json,
             escaped_result,
             error_json,
@@ -7297,7 +7161,7 @@ test "server: workspace namespace stays project-scoped across user session agent
     );
     defer allocator.free(project_up);
 
-    const project_id = (try extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
     defer allocator.free(project_id);
 
     try runtime_registry.auth_tokens.setRememberedTarget(.access, "alice", project_id);
@@ -7499,7 +7363,7 @@ test "server: base websocket supports namespace attach after session_attach" {
         "{\"name\":\"NamespaceAttach\",\"vision\":\"NamespaceAttach\"}",
     );
     defer allocator.free(project_created);
-    const project_id = (try extractProjectIdFromControlPayload(allocator, project_created)) orelse return error.TestExpectedResponse;
+    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_created)) orelse return error.TestExpectedResponse;
     defer allocator.free(project_id);
 
     const mount_payload = try std.fmt.allocPrint(
@@ -7861,7 +7725,7 @@ test "server: user connect stays minimal even when another project is active" {
         true,
     );
     defer allocator.free(project_up);
-    const project_id = (try extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
     defer allocator.free(project_id);
 
     const activate_payload = try std.fmt.allocPrint(
@@ -8574,29 +8438,29 @@ test "server: extract project payload helpers parse id and token" {
     const allocator = std.testing.allocator;
     const payload = "{\"project_id\":\"proj-7\",\"project_token\":\"proj-token-7\"}";
 
-    const project_id = try extractProjectIdFromControlPayload(allocator, payload);
+    const project_id = try server_control_scope.extractProjectIdFromControlPayload(allocator, payload);
     defer if (project_id) |value| allocator.free(value);
     try std.testing.expect(project_id != null);
     try std.testing.expectEqualStrings("proj-7", project_id.?);
 
-    const project_token = try extractProjectTokenFromControlPayload(allocator, payload);
+    const project_token = try server_control_scope.extractProjectTokenFromControlPayload(allocator, payload);
     defer if (project_token) |value| allocator.free(value);
     try std.testing.expect(project_token != null);
     try std.testing.expectEqualStrings("proj-token-7", project_token.?);
 
-    const token_missing = try extractProjectTokenFromControlPayload(allocator, "{\"project_id\":\"proj-7\"}");
+    const token_missing = try server_control_scope.extractProjectTokenFromControlPayload(allocator, "{\"project_id\":\"proj-7\"}");
     try std.testing.expect(token_missing == null);
 }
 
 test "server: extract node id helper parses valid payload" {
     const allocator = std.testing.allocator;
     const payload = "{\"node_id\":\"node-7\",\"venom_delta\":{\"changed\":true}}";
-    const node_id = try extractNodeIdFromControlPayload(allocator, payload);
+    const node_id = try server_control_scope.extractNodeIdFromControlPayload(allocator, payload);
     defer if (node_id) |value| allocator.free(value);
     try std.testing.expect(node_id != null);
     try std.testing.expectEqualStrings("node-7", node_id.?);
 
-    const missing = try extractNodeIdFromControlPayload(allocator, "{\"venom_delta\":{}}");
+    const missing = try server_control_scope.extractNodeIdFromControlPayload(allocator, "{\"venom_delta\":{}}");
     try std.testing.expect(missing == null);
 }
 
@@ -8620,7 +8484,7 @@ test "server: user node service visibility is project mounted-node scoped" {
         "{\"name\":\"ScopedProject\",\"vision\":\"ScopedProject\",\"access_policy\":{\"actions\":{\"observe\":\"open\"}}}",
     );
     defer allocator.free(project_created);
-    const project_id = try extractProjectIdFromControlPayload(allocator, project_created);
+    const project_id = try server_control_scope.extractProjectIdFromControlPayload(allocator, project_created);
     defer if (project_id) |value| allocator.free(value);
     try std.testing.expect(project_id != null);
 
@@ -8838,7 +8702,7 @@ test "server: mount attach and mount file read control operations are supported 
         true,
     );
     defer allocator.free(project_up);
-    const project_id = (try extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
     defer allocator.free(project_id);
 
     var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
@@ -8937,7 +8801,7 @@ test "server: mount file read can read projected workspace managed files after s
         true,
     );
     defer allocator.free(project_up);
-    const project_id = (try extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
+    const project_id = (try server_control_scope.extractProjectIdFromControlPayload(allocator, project_up)) orelse return error.TestExpectedResult;
     defer allocator.free(project_id);
 
     var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });

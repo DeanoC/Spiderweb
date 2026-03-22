@@ -14,6 +14,7 @@ const server_mount_graph_io = @import("server_mount_graph_io.zig");
 const server_local_node_supervisor = @import("server_local_node_supervisor.zig");
 const server_metrics_http = @import("server_metrics_http.zig");
 const server_runtime_workers = @import("server_runtime_workers.zig");
+const server_session_bindings = @import("server_session_bindings.zig");
 const server_session_payloads = @import("server_session_payloads.zig");
 const server_workspace_status = @import("server_workspace_status.zig");
 const fs_protocol = @import("spiderweb_fs").fs_protocol;
@@ -22,8 +23,6 @@ const unified = @import("spider-protocol").unified;
 const default_max_agent_runtimes: usize = 64;
 const max_agent_id_len: usize = 64;
 const max_project_id_len: usize = 128;
-const max_actor_type_len: usize = 64;
-const max_actor_id_len: usize = 128;
 const node_venom_event_history_max_default: usize = 1024;
 const local_node_export_path_env = "SPIDERWEB_LOCAL_NODE_EXPORT_PATH";
 const local_node_export_name_env = "SPIDERWEB_LOCAL_NODE_EXPORT_NAME";
@@ -1302,23 +1301,6 @@ const RuntimeWarmupState = struct {
     }
 };
 
-const SessionBinding = struct {
-    agent_id: []u8,
-    actor_type: []u8,
-    actor_id: []u8,
-    project_id: ?[]u8 = null,
-    project_token: ?[]u8 = null,
-
-    fn deinit(self: *SessionBinding, allocator: std.mem.Allocator) void {
-        allocator.free(self.agent_id);
-        allocator.free(self.actor_type);
-        allocator.free(self.actor_id);
-        if (self.project_id) |value| allocator.free(value);
-        if (self.project_token) |value| allocator.free(value);
-        self.* = undefined;
-    }
-};
-
 const VenomPresenceDispatchJob = struct {
     agent_id: []u8,
     project_id: ?[]u8 = null,
@@ -2453,7 +2435,7 @@ const AgentRuntimeRegistry = struct {
                 if (chosen_agent) |agent_id| {
                     return .{
                         .agent_id = agent_id,
-                        .actor_type = try self.allocator.dupe(u8, defaultActorTypeForRole(role)),
+                        .actor_type = try self.allocator.dupe(u8, server_session_bindings.defaultActorTypeForRole(role)),
                         .actor_id = try self.allocator.dupe(u8, connectionRoleName(role)),
                         .project_id = try self.allocator.dupe(u8, remembered.project_id),
                         .project_token = null,
@@ -2477,7 +2459,7 @@ const AgentRuntimeRegistry = struct {
         return .{
             .binding = .{
                 .agent_id = try self.allocator.dupe(u8, self.default_agent_id),
-                .actor_type = try self.allocator.dupe(u8, defaultActorTypeForRole(role)),
+                .actor_type = try self.allocator.dupe(u8, server_session_bindings.defaultActorTypeForRole(role)),
                 .actor_id = try self.allocator.dupe(u8, connectionRoleName(role)),
                 .project_id = null,
                 .project_token = null,
@@ -3623,17 +3605,17 @@ fn handleWebSocketConnection(
     };
 
     var session_bindings: std.StringHashMapUnmanaged(SessionBinding) = .{};
-    defer deinitSessionBindings(allocator, &session_bindings);
+    defer server_session_bindings.deinitSessionBindings(allocator, &session_bindings);
 
     var initial_binding = try runtime_registry.buildInitialSessionBinding(principal.role);
     defer initial_binding.binding.deinit(allocator);
-    try upsertSessionBinding(
+    try server_session_bindings.upsertSessionBinding(
         allocator,
         &session_bindings,
         "main",
         initial_binding.binding.agent_id,
-        defaultActorTypeForRole(principal.role),
-        defaultActorIdForPrincipal(principal),
+        server_session_bindings.defaultActorTypeForRole(principal.role),
+        server_session_bindings.defaultActorIdForPrincipal(principal),
         initial_binding.binding.project_id,
         initial_binding.binding.project_token,
     );
@@ -4017,9 +3999,9 @@ fn handleWebSocketConnection(
                                 };
                                 var attach_project_token = getOptionalStringField(payload.value.object, "project_token");
                                 const current_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                var previous_active_binding = try cloneSessionBinding(allocator, current_binding);
+                                var previous_active_binding = try server_session_bindings.cloneSessionBinding(allocator, current_binding);
                                 defer previous_active_binding.deinit(allocator);
-                                if (!isValidSessionKey(session_key)) {
+                                if (!server_session_bindings.isValidSessionKey(session_key)) {
                                     const response = try unified.buildControlError(
                                         allocator,
                                         parsed.id,
@@ -4086,13 +4068,13 @@ fn handleWebSocketConnection(
 
                                 const previous_session_key = try allocator.dupe(u8, active_session_key);
                                 defer allocator.free(previous_session_key);
-                                try upsertSessionBinding(
+                                try server_session_bindings.upsertSessionBinding(
                                     allocator,
                                     &session_bindings,
                                     session_key,
                                     attach_agent_id,
-                                    defaultActorTypeForRole(principal.role),
-                                    defaultActorIdForPrincipal(principal),
+                                    server_session_bindings.defaultActorTypeForRole(principal.role),
+                                    server_session_bindings.defaultActorIdForPrincipal(principal),
                                     attach_project_id,
                                     attach_project_token,
                                 );
@@ -4965,7 +4947,7 @@ fn handleWebSocketConnection(
                                 defer if (previous_active_session_key) |value| allocator.free(value);
                                 if (control_service_attached and std.mem.eql(u8, active_session_key, session_key)) {
                                     const active_binding_before_close = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                                    previous_active_binding = try cloneSessionBinding(allocator, active_binding_before_close);
+                                    previous_active_binding = try server_session_bindings.cloneSessionBinding(allocator, active_binding_before_close);
                                     previous_active_session_key = try allocator.dupe(u8, active_session_key);
                                 }
                                 if (session_bindings.fetchRemove(session_key)) |removed| {
@@ -5263,17 +5245,6 @@ fn handleWebSocketConnection(
     }
 }
 
-fn deinitSessionBindings(allocator: std.mem.Allocator, map: *std.StringHashMapUnmanaged(SessionBinding)) void {
-    var it = map.iterator();
-    while (it.next()) |entry| {
-        allocator.free(entry.key_ptr.*);
-        var binding = entry.value_ptr.*;
-        binding.deinit(allocator);
-    }
-    map.deinit(allocator);
-    map.* = .{};
-}
-
 fn resetNamespaceSession(namespace_session: *?acheron_session_mod.Session) void {
     if (namespace_session.*) |*session| {
         session.deinit();
@@ -5352,105 +5323,6 @@ fn initNamespaceSessionForBinding(
             .is_admin = is_admin,
         },
     );
-}
-
-fn cloneSessionBinding(allocator: std.mem.Allocator, binding: SessionBinding) !SessionBinding {
-    var out = SessionBinding{
-        .agent_id = try allocator.dupe(u8, binding.agent_id),
-        .actor_type = try allocator.dupe(u8, binding.actor_type),
-        .actor_id = try allocator.dupe(u8, binding.actor_id),
-        .project_id = null,
-        .project_token = null,
-    };
-    errdefer out.deinit(allocator);
-    if (binding.project_id) |value| out.project_id = try allocator.dupe(u8, value);
-    if (binding.project_token) |value| out.project_token = try allocator.dupe(u8, value);
-    return out;
-}
-
-fn upsertSessionBinding(
-    allocator: std.mem.Allocator,
-    map: *std.StringHashMapUnmanaged(SessionBinding),
-    session_key: []const u8,
-    agent_id: []const u8,
-    actor_type: []const u8,
-    actor_id: []const u8,
-    project_id: ?[]const u8,
-    project_token: ?[]const u8,
-) !void {
-    if (map.getPtr(session_key)) |existing| {
-        const next_agent_id = try allocator.dupe(u8, agent_id);
-        errdefer allocator.free(next_agent_id);
-        const next_actor_type = try allocator.dupe(u8, actor_type);
-        errdefer allocator.free(next_actor_type);
-        const next_actor_id = try allocator.dupe(u8, actor_id);
-        errdefer allocator.free(next_actor_id);
-        const next_project_id: ?[]u8 = if (project_id) |value| try allocator.dupe(u8, value) else null;
-        errdefer if (next_project_id) |value| allocator.free(value);
-        const next_project_token: ?[]u8 = if (project_token) |value| try allocator.dupe(u8, value) else null;
-        errdefer if (next_project_token) |value| allocator.free(value);
-
-        existing.deinit(allocator);
-        existing.* = .{
-            .agent_id = next_agent_id,
-            .actor_type = next_actor_type,
-            .actor_id = next_actor_id,
-            .project_id = next_project_id,
-            .project_token = next_project_token,
-        };
-        return;
-    }
-
-    try map.put(
-        allocator,
-        try allocator.dupe(u8, session_key),
-        .{
-            .agent_id = try allocator.dupe(u8, agent_id),
-            .actor_type = try allocator.dupe(u8, actor_type),
-            .actor_id = try allocator.dupe(u8, actor_id),
-            .project_id = if (project_id) |value| try allocator.dupe(u8, value) else null,
-            .project_token = if (project_token) |value| try allocator.dupe(u8, value) else null,
-        },
-    );
-}
-
-fn isValidSessionKey(value: []const u8) bool {
-    if (value.len == 0 or value.len > 128) return false;
-    for (value) |char| {
-        if (std.ascii.isAlphanumeric(char)) continue;
-        if (char == '-' or char == '_' or char == '.' or char == ':') continue;
-        return false;
-    }
-    return true;
-}
-
-fn isValidActorType(value: []const u8) bool {
-    if (value.len == 0 or value.len > max_actor_type_len) return false;
-    for (value) |char| {
-        if (std.ascii.isAlphanumeric(char)) continue;
-        if (char == '_' or char == '-') continue;
-        return false;
-    }
-    return true;
-}
-
-fn isValidActorId(value: []const u8) bool {
-    if (value.len == 0 or value.len > max_actor_id_len) return false;
-    for (value) |char| {
-        if (std.ascii.isAlphanumeric(char)) continue;
-        if (char == '_' or char == '-' or char == '.') continue;
-        return false;
-    }
-    return true;
-}
-
-fn defaultActorTypeForRole(role: ConnectionRole) []const u8 {
-    _ = role;
-    return "host_control";
-}
-
-fn defaultActorIdForPrincipal(principal: ConnectionPrincipal) []const u8 {
-    return principal.token_id;
 }
 
 fn parseControlPayloadObject(allocator: std.mem.Allocator, payload_json: ?[]const u8) !std.json.Parsed(std.json.Value) {
@@ -8730,3 +8602,4 @@ test "server: mount file read can read projected workspace managed files after s
 
     try std.testing.expect(server_ctx.err_name == null);
 }
+const SessionBinding = server_session_bindings.SessionBinding;

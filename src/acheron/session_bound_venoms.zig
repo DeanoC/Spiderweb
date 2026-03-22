@@ -178,7 +178,7 @@ fn isBoundVenomNodeAllowed(
 ) bool {
     const scoped_workspace_id = workspace_id orelse return true;
     const plane = session.control_plane orelse return false;
-    return plane.projectAllowsNodeVenomEvent(
+    return plane.workspaceAllowsNodeVenomEvent(
         scoped_workspace_id,
         if (agent_id) |value| value else session.agent_id,
         session.workspace_token,

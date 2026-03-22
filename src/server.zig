@@ -2428,7 +2428,7 @@ const AgentRuntimeRegistry = struct {
         defer self.allocator.free(escaped_workspace);
         const payload = std.fmt.allocPrint(self.allocator, "{{\"workspace_id\":\"{s}\"}}", .{escaped_workspace}) catch return false;
         defer self.allocator.free(payload);
-        const result = self.control_plane.getProjectWithRole(payload, is_admin) catch return false;
+        const result = self.control_plane.getWorkspaceWithRole(payload, is_admin) catch return false;
         self.allocator.free(result);
         return true;
     }
@@ -5020,7 +5020,7 @@ fn seedRememberedTargetForTests(
     agent_id: []const u8,
 ) !void {
     const allocator = runtime_registry.allocator;
-    const project_up = try runtime_registry.control_plane.projectUp(
+    const project_up = try runtime_registry.control_plane.workspaceUp(
         agent_id,
         "{\"name\":\"Access Seed Workspace\",\"vision\":\"Access Seed Workspace\",\"activate\":true}",
     );
@@ -5078,7 +5078,7 @@ test "server: workspace bind control ops rewrite workspace payload and response 
     }, null);
     defer runtime_registry.deinit();
 
-    const project_json = try runtime_registry.control_plane.createProject(
+    const project_json = try runtime_registry.control_plane.createWorkspace(
         "{\"name\":\"WorkspaceBind\",\"vision\":\"WorkspaceBind\"}",
     );
     defer allocator.free(project_json);
@@ -5156,7 +5156,7 @@ test "server: admin initial binding prefers remembered workspace target" {
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "access-secret");
 
-    const project_up = try runtime_registry.control_plane.projectUpWithRole(
+    const project_up = try runtime_registry.control_plane.workspaceUpWithRole(
         host_actor_id,
         "{\"name\":\"Admin Remembered\",\"vision\":\"Remembered target test\",\"activate\":false}",
         true,
@@ -5513,7 +5513,7 @@ test "server: workspace namespace stays project-scoped across user session agent
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "access-secret");
 
-    const project_up = try runtime_registry.control_plane.projectUpWithRole(
+    const project_up = try runtime_registry.control_plane.workspaceUpWithRole(
         host_actor_id,
         "{\"name\":\"Scope Test\",\"vision\":\"Workspace-scoped namespace\",\"activate\":false}",
         true,
@@ -5718,7 +5718,7 @@ test "server: base websocket supports namespace attach after session_attach" {
         allocator.free(node_registration.node_secret);
     }
 
-    const project_created = try runtime_registry.control_plane.createProject(
+    const project_created = try runtime_registry.control_plane.createWorkspace(
         "{\"name\":\"NamespaceAttach\",\"vision\":\"NamespaceAttach\"}",
     );
     defer allocator.free(project_created);
@@ -5731,7 +5731,7 @@ test "server: base websocket supports namespace attach after session_attach" {
         .{ project_id, node_registration.node_id, node_registration.node_id },
     );
     defer allocator.free(mount_payload);
-    const mount_result = try runtime_registry.control_plane.setProjectMountWithRole(mount_payload, true);
+    const mount_result = try runtime_registry.control_plane.setWorkspaceMountWithRole(mount_payload, true);
     defer allocator.free(mount_result);
 
     var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
@@ -6078,7 +6078,7 @@ test "server: user connect stays minimal even when another project is active" {
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "access-secret");
 
-    const project_up = try runtime_registry.control_plane.projectUpWithRole(
+    const project_up = try runtime_registry.control_plane.workspaceUpWithRole(
         host_actor_id,
         "{\"name\":\"Needs Attach\",\"vision\":\"Needs Attach\",\"activate\":false}",
         true,
@@ -6093,7 +6093,7 @@ test "server: user connect stays minimal even when another project is active" {
         .{project_id},
     );
     defer allocator.free(activate_payload);
-    const activated = try runtime_registry.control_plane.activateProjectWithRole("alice", activate_payload, true);
+    const activated = try runtime_registry.control_plane.activateWorkspaceWithRole("alice", activate_payload, true);
     defer allocator.free(activated);
 
     var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
@@ -6839,7 +6839,7 @@ test "server: user node service visibility is project mounted-node scoped" {
         allocator.free(node_registration.node_secret);
     }
 
-    const project_created = try runtime_registry.control_plane.createProject(
+    const project_created = try runtime_registry.control_plane.createWorkspace(
         "{\"name\":\"ScopedProject\",\"vision\":\"ScopedProject\",\"access_policy\":{\"actions\":{\"observe\":\"open\"}}}",
     );
     defer allocator.free(project_created);
@@ -6852,24 +6852,24 @@ test "server: user node service visibility is project mounted-node scoped" {
         .{ project_id, node_registration.node_id },
     );
     defer allocator.free(mount_payload);
-    const mount_result = try runtime_registry.control_plane.setProjectMountWithRole(mount_payload, false);
+    const mount_result = try runtime_registry.control_plane.setWorkspaceMountWithRole(mount_payload, false);
     defer allocator.free(mount_result);
 
-    try std.testing.expect(runtime_registry.control_plane.projectAllowsNodeVenomEvent(
+    try std.testing.expect(runtime_registry.control_plane.workspaceAllowsNodeVenomEvent(
         project_id.?,
         "bob",
         null,
         node_registration.node_id,
         false,
     ));
-    try std.testing.expect(!runtime_registry.control_plane.projectAllowsNodeVenomEvent(
+    try std.testing.expect(!runtime_registry.control_plane.workspaceAllowsNodeVenomEvent(
         project_id.?,
         "bob",
         null,
         "node-missing",
         false,
     ));
-    try std.testing.expect(!runtime_registry.control_plane.projectAllowsNodeVenomEvent(
+    try std.testing.expect(!runtime_registry.control_plane.workspaceAllowsNodeVenomEvent(
         project_id.?,
         "bob",
         null,
@@ -7120,7 +7120,7 @@ test "server: mount attach and mount file read control operations are supported 
     defer runtime_registry.deinit();
     try setAuthTokensForTests(&runtime_registry, "access-secret");
 
-    const project_up = try runtime_registry.control_plane.projectUpWithRole(
+    const project_up = try runtime_registry.control_plane.workspaceUpWithRole(
         "mount-agent",
         "{\"name\":\"MountAttach\",\"vision\":\"MountAttach\",\"activate\":false}",
         true,
@@ -7215,7 +7215,7 @@ test "server: mount file read can read projected workspace managed files after s
         allocator.free(node_registration.node_secret);
     }
 
-    const project_up = try runtime_registry.control_plane.projectUpWithRole(
+    const project_up = try runtime_registry.control_plane.workspaceUpWithRole(
         "mount-agent",
         try std.fmt.allocPrint(
             allocator,

@@ -1991,7 +1991,7 @@ pub const Session = struct {
         } else try std.fmt.allocPrint(self.allocator, "{{\"workspace_id\":\"{s}\"}}", .{escaped_project});
         defer self.allocator.free(payload);
 
-        const binds_json = plane.listProjectBindsWithRole(payload, self.is_admin) catch return;
+        const binds_json = plane.listWorkspaceBindsWithRole(payload, self.is_admin) catch return;
         defer self.allocator.free(binds_json);
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, binds_json, .{}) catch return;
         defer parsed.deinit();
@@ -4460,7 +4460,7 @@ pub const Session = struct {
     ) bool {
         const scoped_project_id = project_id orelse return true;
         const plane = self.control_plane orelse return false;
-        return plane.projectAllowsNodeVenomEvent(
+        return plane.workspaceAllowsNodeVenomEvent(
             scoped_project_id,
             if (agent_id) |value| value else self.agent_id,
             self.workspace_token,
@@ -8364,7 +8364,7 @@ test "acheron_session: preferred service paths use workspace bindings when avail
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const project_json = try control_plane.createProject(
+    const project_json = try control_plane.createWorkspace(
         "{\"name\":\"SessionServicePaths\",\"vision\":\"SessionServicePaths\"}",
     );
     defer allocator.free(project_json);
@@ -8438,7 +8438,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const project_json = try control_plane.createProject(
+    const project_json = try control_plane.createWorkspace(
         "{\"name\":\"AgentsSeeded\",\"vision\":\"Deliver the mounted workspace contract\"}",
     );
     defer allocator.free(project_json);
@@ -8568,7 +8568,7 @@ test "acheron_session: workspace mount aliases project live mounts into the name
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -8666,7 +8666,7 @@ test "acheron_session: workspace bind overrides the host local fs path" {
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -8732,7 +8732,7 @@ test "acheron_session: admin namespace sessions retain workspace mount auth toke
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -8792,7 +8792,7 @@ test "acheron_session: mounted workspace proxy routers prefer routed Spiderweb n
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -8854,7 +8854,7 @@ test "acheron_session: server-internal mounted export routers prefer direct node
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -8922,7 +8922,7 @@ test "acheron_session: workspace mount aliases still apply when the namespace pa
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_json = try control_plane.createProject(
+    const project_json = try control_plane.createWorkspace(
         "{\"name\":\"WorkspaceAliasCollision\",\"vision\":\"Workspace aliases should override existing namespace paths\"}",
     );
     defer allocator.free(project_json);
@@ -9001,7 +9001,7 @@ test "acheron_session: bound venom proxy refresh ignores dot entries" {
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const project_json = try control_plane.createProject(
+    const project_json = try control_plane.createWorkspace(
         "{\"name\":\"BoundProxyDotEntries\",\"vision\":\"Ignore protocol dot entries when materializing routed listings\"}",
     );
     defer allocator.free(project_json);
@@ -9093,7 +9093,7 @@ test "acheron_session: mount graph snapshots resolve projected workspace mount r
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -9269,7 +9269,7 @@ test "acheron_session: mount graph snapshots honor workspace bind overrides for 
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -9378,7 +9378,7 @@ test "acheron_session: projected workspace .spiderweb snapshot keeps protocol fi
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -9470,7 +9470,7 @@ test "acheron_session: projected managed .spiderweb survives broader workspace m
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -9572,7 +9572,7 @@ test "acheron_session: projected managed services keep bind-only children under 
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -9649,7 +9649,7 @@ test "acheron_session: workspace mount proxy roots preserve mounted export names
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -9740,7 +9740,7 @@ test "acheron_session: workspace AGENTS contract strips repeated heading noise" 
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const project_json = try control_plane.createProject(
+    const project_json = try control_plane.createWorkspace(
         "{\"name\":\"AgentsHeadingNoise\",\"vision\":\"Keep generated headers singular\"}",
     );
     defer allocator.free(project_json);
@@ -9801,7 +9801,7 @@ test "acheron_session: mount graph snapshot keeps synthetic file contents remote
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const project_json = try control_plane.createProject(
+    const project_json = try control_plane.createWorkspace(
         "{\"name\":\"MountGraphContentMode\",\"vision\":\"Keep mount attach structural and fast\"}",
     );
     defer allocator.free(project_json);
@@ -9890,7 +9890,7 @@ test "acheron_session: mount graph snapshot preserves alias directory and file k
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const project_json = try control_plane.createProject(
+    const project_json = try control_plane.createWorkspace(
         "{\"name\":\"MountGraphAliasKinds\",\"vision\":\"Keep alias nodes traversable\"}",
     );
     defer allocator.free(project_json);
@@ -9973,7 +9973,7 @@ test "acheron_session: mount graph snapshot projects managed .spiderweb children
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const project_json = try control_plane.createProject(
+    const project_json = try control_plane.createWorkspace(
         "{\"name\":\"MountGraphManagedEntrypoint\",\"vision\":\"Keep project-local managed bootstrap visible\"}",
     );
     defer allocator.free(project_json);
@@ -10071,7 +10071,7 @@ test "acheron_session: projected workspace managed files remain readable through
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -10192,7 +10192,7 @@ test "acheron_session: projected managed shared_data snapshot preserves proxy at
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -10295,7 +10295,7 @@ test "acheron_session: rebound workspace parents can walk projected managed shar
     defer remote_parsed.deinit();
     const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
 
-    const project_up = try control_plane.projectUp(
+    const project_up = try control_plane.workspaceUp(
         "codex",
         try std.fmt.allocPrint(
             allocator,
@@ -10442,7 +10442,7 @@ test "acheron_session: services terminal exec updates live service status and re
     var control_plane = control_plane_mod.ControlPlane.init(allocator);
     defer control_plane.deinit();
 
-    const project_json = try control_plane.createProject(
+    const project_json = try control_plane.createWorkspace(
         "{\"name\":\"ServiceTerminalExec\",\"vision\":\"ServiceTerminalExec\",\"template_id\":\"dev\"}",
     );
     defer allocator.free(project_json);

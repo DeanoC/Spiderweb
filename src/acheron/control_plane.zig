@@ -736,7 +736,7 @@ pub const ControlPlane = struct {
         return true;
     }
 
-    pub fn projectAllowsNodeVenomEvent(
+    pub fn workspaceAllowsNodeVenomEvent(
         self: *ControlPlane,
         project_id: []const u8,
         agent_id: ?[]const u8,
@@ -819,7 +819,7 @@ pub const ControlPlane = struct {
             if (!is_admin) {
                 const visible_project_id = project_id orelse continue;
                 const visible_agent_id = agent_id orelse continue;
-                if (!self.projectAllowsNodeVenomEvent(
+                if (!self.workspaceAllowsNodeVenomEvent(
                     visible_project_id,
                     visible_agent_id,
                     project_token,
@@ -1774,7 +1774,7 @@ pub const ControlPlane = struct {
         try self.deleteNodeByIdLocked(node_id, std.time.milliTimestamp());
     }
 
-    pub fn createProject(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+    pub fn createWorkspace(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -1845,11 +1845,11 @@ pub const ControlPlane = struct {
         return renderProjectPayload(self.allocator, stored_project.*, true);
     }
 
-    pub fn updateProject(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.updateProjectWithRole(payload_json, false);
+    pub fn updateWorkspace(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.updateWorkspaceWithRole(payload_json, false);
     }
 
-    pub fn updateProjectWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn updateWorkspaceWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -1895,11 +1895,11 @@ pub const ControlPlane = struct {
         return renderProjectPayload(self.allocator, project.*, false);
     }
 
-    pub fn deleteProject(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.deleteProjectWithRole(payload_json, false);
+    pub fn deleteWorkspace(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.deleteWorkspaceWithRole(payload_json, false);
     }
 
-    pub fn deleteProjectWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn deleteWorkspaceWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -1933,7 +1933,7 @@ pub const ControlPlane = struct {
         return std.fmt.allocPrint(self.allocator, "{{\"deleted\":true,\"workspace_id\":\"{s}\"}}", .{escaped});
     }
 
-    pub fn listProjects(self: *ControlPlane) ![]u8 {
+    pub fn listWorkspaces(self: *ControlPlane) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2101,11 +2101,11 @@ pub const ControlPlane = struct {
         return bindings.toOwnedSlice(allocator);
     }
 
-    pub fn getProject(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.getProjectWithRole(payload_json, false);
+    pub fn getWorkspace(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.getWorkspaceWithRole(payload_json, false);
     }
 
-    pub fn getProjectWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn getWorkspaceWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2121,11 +2121,11 @@ pub const ControlPlane = struct {
         return renderProjectPayload(self.allocator, project, false);
     }
 
-    pub fn setProjectMount(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.setProjectMountWithRole(payload_json, false);
+    pub fn setWorkspaceMount(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.setWorkspaceMountWithRole(payload_json, false);
     }
 
-    pub fn setProjectMountWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn setWorkspaceMountWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2180,11 +2180,11 @@ pub const ControlPlane = struct {
         return renderProjectPayload(self.allocator, project.*, false);
     }
 
-    pub fn removeProjectMount(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.removeProjectMountWithRole(payload_json, false);
+    pub fn removeWorkspaceMount(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.removeWorkspaceMountWithRole(payload_json, false);
     }
 
-    pub fn removeProjectMountWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn removeWorkspaceMountWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2222,11 +2222,11 @@ pub const ControlPlane = struct {
         return renderProjectPayload(self.allocator, project.*, false);
     }
 
-    pub fn listProjectMounts(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.listProjectMountsWithRole(payload_json, false);
+    pub fn listWorkspaceMounts(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.listWorkspaceMountsWithRole(payload_json, false);
     }
 
-    pub fn listProjectMountsWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn listWorkspaceMountsWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2252,11 +2252,11 @@ pub const ControlPlane = struct {
         return out.toOwnedSlice(self.allocator);
     }
 
-    pub fn setProjectBind(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.setProjectBindWithRole(payload_json, false);
+    pub fn setWorkspaceBind(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.setWorkspaceBindWithRole(payload_json, false);
     }
 
-    pub fn setProjectBindWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn setWorkspaceBindWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2310,11 +2310,11 @@ pub const ControlPlane = struct {
         return renderProjectPayload(self.allocator, project.*, false);
     }
 
-    pub fn removeProjectBind(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.removeProjectBindWithRole(payload_json, false);
+    pub fn removeWorkspaceBind(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.removeWorkspaceBindWithRole(payload_json, false);
     }
 
-    pub fn removeProjectBindWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn removeWorkspaceBindWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2352,11 +2352,11 @@ pub const ControlPlane = struct {
         return renderProjectPayload(self.allocator, project.*, false);
     }
 
-    pub fn listProjectBinds(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.listProjectBindsWithRole(payload_json, false);
+    pub fn listWorkspaceBinds(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.listWorkspaceBindsWithRole(payload_json, false);
     }
 
-    pub fn listProjectBindsWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn listWorkspaceBindsWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2382,11 +2382,11 @@ pub const ControlPlane = struct {
         return out.toOwnedSlice(self.allocator);
     }
 
-    pub fn resolveProjectPath(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.resolveProjectPathWithRole(payload_json, false);
+    pub fn resolveWorkspacePath(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.resolveWorkspacePathWithRole(payload_json, false);
     }
 
-    pub fn resolveProjectPathWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn resolveWorkspacePathWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2422,11 +2422,11 @@ pub const ControlPlane = struct {
         );
     }
 
-    pub fn rotateProjectToken(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.rotateProjectTokenWithRole(payload_json, false);
+    pub fn rotateWorkspaceToken(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.rotateWorkspaceTokenWithRole(payload_json, false);
     }
 
-    pub fn rotateProjectTokenWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn rotateWorkspaceTokenWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2458,11 +2458,11 @@ pub const ControlPlane = struct {
         );
     }
 
-    pub fn revokeProjectToken(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
-        return self.revokeProjectTokenWithRole(payload_json, false);
+    pub fn revokeWorkspaceToken(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        return self.revokeWorkspaceTokenWithRole(payload_json, false);
     }
 
-    pub fn revokeProjectTokenWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
+    pub fn revokeWorkspaceTokenWithRole(self: *ControlPlane, payload_json: ?[]const u8, is_admin: bool) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
@@ -2490,8 +2490,8 @@ pub const ControlPlane = struct {
         );
     }
 
-    pub fn activateProject(self: *ControlPlane, agent_id: []const u8, payload_json: ?[]const u8) ![]u8 {
-        return self.activateProjectWithRole(agent_id, payload_json, false);
+    pub fn activateWorkspace(self: *ControlPlane, agent_id: []const u8, payload_json: ?[]const u8) ![]u8 {
+        return self.activateWorkspaceWithRole(agent_id, payload_json, false);
     }
 
     pub fn activateHostWorkspace(self: *ControlPlane) ![]u8 {
@@ -2510,7 +2510,7 @@ pub const ControlPlane = struct {
         return buildWorkspaceActivationPayload(self.allocator, self.host_actor_id, host_workspace_id);
     }
 
-    pub fn activateProjectWithRole(
+    pub fn activateWorkspaceWithRole(
         self: *ControlPlane,
         agent_id: []const u8,
         payload_json: ?[]const u8,
@@ -2574,11 +2574,11 @@ pub const ControlPlane = struct {
         return try self.buildReconcileStatusPayloadLocked(payload_json, true);
     }
 
-    pub fn projectUp(self: *ControlPlane, agent_id: []const u8, payload_json: ?[]const u8) ![]u8 {
-        return self.projectUpWithRole(agent_id, payload_json, false);
+    pub fn workspaceUp(self: *ControlPlane, agent_id: []const u8, payload_json: ?[]const u8) ![]u8 {
+        return self.workspaceUpWithRole(agent_id, payload_json, false);
     }
 
-    pub fn projectUpWithRole(
+    pub fn workspaceUpWithRole(
         self: *ControlPlane,
         agent_id: []const u8,
         payload_json: ?[]const u8,
@@ -6580,18 +6580,18 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const projects_json = try plane.listProjects();
+    const projects_json = try plane.listWorkspaces();
     defer allocator.free(projects_json);
     try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"project_id\":\"system\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, projects_json, "\"kind\":\"host_internal\"") == null);
 
     try std.testing.expectError(
         ControlPlaneError.ProjectNotFound,
-        plane.deleteProject("{\"project_id\":\"system\",\"project_token\":\"token\"}"),
+        plane.deleteWorkspace("{\"project_id\":\"system\",\"project_token\":\"token\"}"),
     );
     try std.testing.expectError(
         ControlPlaneError.ProjectNotFound,
-        plane.getProject("{\"project_id\":\"system\"}"),
+        plane.getWorkspace("{\"project_id\":\"system\"}"),
     );
     const state_json = try plane.dumpState();
     defer allocator.free(state_json);
@@ -6620,11 +6620,11 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     defer allocator.free(update_req);
     try std.testing.expectError(
         ControlPlaneError.ProjectNotFound,
-        plane.updateProject(update_req),
+        plane.updateWorkspace(update_req),
     );
     try std.testing.expectError(
         ControlPlaneError.ProjectNotFound,
-        plane.activateProject("agent-worker", "{\"project_id\":\"system\",\"project_token\":\"token\"}"),
+        plane.activateWorkspace("agent-worker", "{\"project_id\":\"system\",\"project_token\":\"token\"}"),
     );
     try std.testing.expectError(
         ControlPlaneError.ProjectNotFound,
@@ -6639,7 +6639,7 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     defer allocator.free(activate_missing_token);
     try std.testing.expectError(
         ControlPlaneError.ProjectNotFound,
-        plane.activateProject(default_host_actor_id, activate_missing_token),
+        plane.activateWorkspace(default_host_actor_id, activate_missing_token),
     );
 
     const activated = try plane.activateHostWorkspace();
@@ -6655,7 +6655,7 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     defer allocator.free(generic_status);
     try std.testing.expect(std.mem.indexOf(u8, generic_status, "\"project_id\":null") != null);
 
-    const non_system = try plane.createProject("{\"name\":\"Product\",\"vision\":\"Ship product milestones\"}");
+    const non_system = try plane.createWorkspace("{\"name\":\"Product\",\"vision\":\"Ship product milestones\"}");
     defer allocator.free(non_system);
     var parsed_non_system = try std.json.parseFromSlice(std.json.Value, allocator, non_system, .{});
     defer parsed_non_system.deinit();
@@ -6664,12 +6664,12 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     defer allocator.free(activate_non_system);
     try std.testing.expectError(
         ControlPlaneError.ProjectAssignmentForbidden,
-        plane.activateProject(default_host_actor_id, activate_non_system),
+        plane.activateWorkspace(default_host_actor_id, activate_non_system),
     );
 
     try std.testing.expectError(
         ControlPlaneError.ProjectAssignmentForbidden,
-        plane.activateProjectWithRole(default_host_actor_id, activate_non_system, true),
+        plane.activateWorkspaceWithRole(default_host_actor_id, activate_non_system, true),
     );
     const admin_status = try plane.workspaceStatusWithRole(default_host_actor_id, activate_non_system, true);
     defer allocator.free(admin_status);
@@ -6864,7 +6864,7 @@ test "acheron_control_plane: project mount conflict is rejected" {
     defer parsed_join.deinit();
     const node_id = parsed_join.value.object.get("node_id").?.string;
 
-    const create_json = try plane.createProject("{\"name\":\"Demo\",\"vision\":\"Demo\"}");
+    const create_json = try plane.createWorkspace("{\"name\":\"Demo\",\"vision\":\"Demo\"}");
     defer allocator.free(create_json);
     var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, create_json, .{});
     defer parsed_project.deinit();
@@ -6877,7 +6877,7 @@ test "acheron_control_plane: project mount conflict is rejected" {
         .{ project_id, project_token, node_id },
     );
     defer allocator.free(mount_a);
-    const first = try plane.setProjectMount(mount_a);
+    const first = try plane.setWorkspaceMount(mount_a);
     defer allocator.free(first);
 
     const mount_b = try std.fmt.allocPrint(
@@ -6886,7 +6886,7 @@ test "acheron_control_plane: project mount conflict is rejected" {
         .{ project_id, project_token, node_id },
     );
     defer allocator.free(mount_b);
-    try std.testing.expectError(ControlPlaneError.MountConflict, plane.setProjectMount(mount_b));
+    try std.testing.expectError(ControlPlaneError.MountConflict, plane.setWorkspaceMount(mount_b));
 }
 
 test "acheron_control_plane: project bind lifecycle resolves bound paths" {
@@ -6900,7 +6900,7 @@ test "acheron_control_plane: project bind lifecycle resolves bound paths" {
     defer joined_parsed.deinit();
     const node_id = joined_parsed.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"Bindings\",\"vision\":\"Bindings\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"Bindings\",\"vision\":\"Bindings\"}");
     defer allocator.free(project_json);
     var project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer project.deinit();
@@ -6913,7 +6913,7 @@ test "acheron_control_plane: project bind lifecycle resolves bound paths" {
         .{ project_id, project_token, node_id },
     );
     defer allocator.free(mount_req);
-    const mounted = try plane.setProjectMount(mount_req);
+    const mounted = try plane.setWorkspaceMount(mount_req);
     defer allocator.free(mounted);
 
     const bind_req = try std.fmt.allocPrint(
@@ -6922,7 +6922,7 @@ test "acheron_control_plane: project bind lifecycle resolves bound paths" {
         .{ project_id, project_token },
     );
     defer allocator.free(bind_req);
-    const bound = try plane.setProjectBind(bind_req);
+    const bound = try plane.setWorkspaceBind(bind_req);
     defer allocator.free(bound);
     try std.testing.expect(std.mem.indexOf(u8, bound, "\"bind_path\":\"/repo\"") != null);
 
@@ -6932,7 +6932,7 @@ test "acheron_control_plane: project bind lifecycle resolves bound paths" {
         .{ project_id, project_token },
     );
     defer allocator.free(list_req);
-    const listed = try plane.listProjectBinds(list_req);
+    const listed = try plane.listWorkspaceBinds(list_req);
     defer allocator.free(listed);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"target_path\":\"/nodes/local/fs\"") != null);
 
@@ -6942,7 +6942,7 @@ test "acheron_control_plane: project bind lifecycle resolves bound paths" {
         .{ project_id, project_token },
     );
     defer allocator.free(resolve_req);
-    const resolved = try plane.resolveProjectPath(resolve_req);
+    const resolved = try plane.resolveWorkspacePath(resolve_req);
     defer allocator.free(resolved);
     try std.testing.expect(std.mem.indexOf(u8, resolved, "\"matched\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, resolved, "\"resolved_path\":\"/nodes/local/fs/src\"") != null);
@@ -6953,7 +6953,7 @@ test "acheron_control_plane: project bind lifecycle resolves bound paths" {
         .{ project_id, project_token },
     );
     defer allocator.free(unbind_req);
-    const unbound = try plane.removeProjectBind(unbind_req);
+    const unbound = try plane.removeWorkspaceBind(unbind_req);
     defer allocator.free(unbound);
     try std.testing.expect(std.mem.indexOf(u8, unbound, "\"bind_path\":\"/repo\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, unbound, "\"bind_path\":\"/services/mounts\"") != null);
@@ -6970,7 +6970,7 @@ test "acheron_control_plane: bind conflicts with existing mount path" {
     defer joined_parsed.deinit();
     const node_id = joined_parsed.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"BindConflict\",\"vision\":\"BindConflict\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"BindConflict\",\"vision\":\"BindConflict\"}");
     defer allocator.free(project_json);
     var project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer project.deinit();
@@ -6983,7 +6983,7 @@ test "acheron_control_plane: bind conflicts with existing mount path" {
         .{ project_id, project_token, node_id },
     );
     defer allocator.free(mount_req);
-    const mounted = try plane.setProjectMount(mount_req);
+    const mounted = try plane.setWorkspaceMount(mount_req);
     defer allocator.free(mounted);
 
     const bind_req = try std.fmt.allocPrint(
@@ -6992,7 +6992,7 @@ test "acheron_control_plane: bind conflicts with existing mount path" {
         .{ project_id, project_token, node_id },
     );
     defer allocator.free(bind_req);
-    try std.testing.expectError(ControlPlaneError.BindConflict, plane.setProjectBind(bind_req));
+    try std.testing.expectError(ControlPlaneError.BindConflict, plane.setWorkspaceBind(bind_req));
 }
 
 test "acheron_control_plane: bind target must remain within mounted authority" {
@@ -7006,7 +7006,7 @@ test "acheron_control_plane: bind target must remain within mounted authority" {
     defer joined_parsed.deinit();
     const node_id = joined_parsed.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"BindAuthority\",\"vision\":\"BindAuthority\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"BindAuthority\",\"vision\":\"BindAuthority\"}");
     defer allocator.free(project_json);
     var project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer project.deinit();
@@ -7019,7 +7019,7 @@ test "acheron_control_plane: bind target must remain within mounted authority" {
         .{ project_id, project_token, node_id },
     );
     defer allocator.free(mount_req);
-    const mounted = try plane.setProjectMount(mount_req);
+    const mounted = try plane.setWorkspaceMount(mount_req);
     defer allocator.free(mounted);
 
     const bind_req = try std.fmt.allocPrint(
@@ -7028,7 +7028,7 @@ test "acheron_control_plane: bind target must remain within mounted authority" {
         .{ project_id, project_token },
     );
     defer allocator.free(bind_req);
-    try std.testing.expectError(ControlPlaneError.BindConflict, plane.setProjectBind(bind_req));
+    try std.testing.expectError(ControlPlaneError.BindConflict, plane.setWorkspaceBind(bind_req));
 }
 
 test "acheron_control_plane: project mutation requires valid project_token" {
@@ -7054,7 +7054,7 @@ test "acheron_control_plane: project mutation requires valid project_token" {
     defer parsed_join.deinit();
     const node_id = parsed_join.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"Secure\",\"vision\":\"Secure\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"Secure\",\"vision\":\"Secure\"}");
     defer allocator.free(project_json);
     var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer parsed_project.deinit();
@@ -7066,7 +7066,7 @@ test "acheron_control_plane: project mutation requires valid project_token" {
         .{ project_id, node_id },
     );
     defer allocator.free(bad_mount_req);
-    const mounted = try plane.setProjectMount(bad_mount_req);
+    const mounted = try plane.setWorkspaceMount(bad_mount_req);
     defer allocator.free(mounted);
     try std.testing.expect(std.mem.indexOf(u8, mounted, "\"mount_path\":\"/src\"") != null);
 }
@@ -7082,7 +7082,7 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
     defer ensured_parsed.deinit();
     const node_id = ensured_parsed.value.object.get("node_id").?.string;
 
-    const create_project = try plane.createProject(
+    const create_project = try plane.createWorkspace(
         "{\"name\":\"PolicyOps\",\"vision\":\"PolicyOps\",\"access_policy\":{\"actions\":{\"mount\":\"deny\"}}}",
     );
     defer allocator.free(create_project);
@@ -7097,7 +7097,7 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
         .{ project_id, node_id },
     );
     defer allocator.free(denied_mount_req);
-    try std.testing.expectError(ControlPlaneError.ProjectPolicyForbidden, plane.setProjectMount(denied_mount_req));
+    try std.testing.expectError(ControlPlaneError.ProjectPolicyForbidden, plane.setWorkspaceMount(denied_mount_req));
     try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .bind, null, false));
 
     const denied_bind_req = try std.fmt.allocPrint(
@@ -7106,7 +7106,7 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
         .{project_id},
     );
     defer allocator.free(denied_bind_req);
-    try std.testing.expectError(ControlPlaneError.ProjectPolicyForbidden, plane.setProjectBind(denied_bind_req));
+    try std.testing.expectError(ControlPlaneError.ProjectPolicyForbidden, plane.setWorkspaceBind(denied_bind_req));
 
     const update_policy_req = try std.fmt.allocPrint(
         allocator,
@@ -7114,7 +7114,7 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
         .{project_id},
     );
     defer allocator.free(update_policy_req);
-    const updated = try plane.updateProject(update_policy_req);
+    const updated = try plane.updateWorkspace(update_policy_req);
     defer allocator.free(updated);
     try std.testing.expect(std.mem.indexOf(u8, updated, "\"access_policy\"") != null);
 
@@ -7131,14 +7131,14 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
         .{ project_id, node_id },
     );
     defer allocator.free(mounted_req);
-    const mounted_json = try plane.setProjectMount(mounted_req);
+    const mounted_json = try plane.setWorkspaceMount(mounted_req);
     defer allocator.free(mounted_json);
-    try std.testing.expect(plane.projectAllowsNodeVenomEvent(project_id, "bob", null, node_id, false));
-    try std.testing.expect(!plane.projectAllowsNodeVenomEvent(project_id, "alice", null, node_id, false));
+    try std.testing.expect(plane.workspaceAllowsNodeVenomEvent(project_id, "bob", null, node_id, false));
+    try std.testing.expect(!plane.workspaceAllowsNodeVenomEvent(project_id, "alice", null, node_id, false));
 
     const rotate_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(rotate_req);
-    const rotated = try plane.rotateProjectToken(rotate_req);
+    const rotated = try plane.rotateWorkspaceToken(rotate_req);
     defer allocator.free(rotated);
     var rotated_parsed = try std.json.parseFromSlice(std.json.Value, allocator, rotated, .{});
     defer rotated_parsed.deinit();
@@ -7149,8 +7149,8 @@ test "acheron_control_plane: access policy enforces action modes and per-agent o
     try std.testing.expect(!plane.workspaceAllowsAction(project_id, "bob", .observe, null, false));
     try std.testing.expect(plane.workspaceAllowsAction(project_id, "bob", .observe, project_token, false));
     try std.testing.expect(!plane.workspaceAllowsAction(project_id, "alice", .mount, project_token, false));
-    try std.testing.expect(plane.projectAllowsNodeVenomEvent(project_id, "bob", project_token, node_id, false));
-    try std.testing.expect(!plane.projectAllowsNodeVenomEvent(project_id, "bob", null, node_id, false));
+    try std.testing.expect(plane.workspaceAllowsNodeVenomEvent(project_id, "bob", project_token, node_id, false));
+    try std.testing.expect(!plane.workspaceAllowsNodeVenomEvent(project_id, "bob", null, node_id, false));
 }
 
 test "acheron_control_plane: access policy action matrix honors token admin and per-agent override" {
@@ -7158,7 +7158,7 @@ test "acheron_control_plane: access policy action matrix honors token admin and 
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const project_json = try plane.createProject(
+    const project_json = try plane.createWorkspace(
         "{\"name\":\"PolicyMatrix\",\"vision\":\"PolicyMatrix\",\"access_policy\":{\"actions\":{\"read\":\"open\",\"observe\":\"token\",\"invoke\":\"admin\",\"mount\":\"deny\",\"bind\":\"deny\",\"admin\":\"token\"},\"agents\":{\"worker\":{\"invoke\":\"open\",\"mount\":\"token\",\"bind\":\"token\"}}}}",
     );
     defer allocator.free(project_json);
@@ -7229,7 +7229,7 @@ test "acheron_control_plane: workspace status filters invoke service mounts when
     const upserted = try plane.nodeVenomUpsert(upsert_req);
     defer allocator.free(upserted);
 
-    const project_json = try plane.createProject(
+    const project_json = try plane.createWorkspace(
         "{\"name\":\"InvokeFilteredWorkspace\",\"vision\":\"InvokeFilteredWorkspace\",\"access_policy\":{\"actions\":{\"invoke\":\"open\"},\"agents\":{\"default\":{\"invoke\":\"deny\"}}}}",
     );
     defer allocator.free(project_json);
@@ -7244,7 +7244,7 @@ test "acheron_control_plane: workspace status filters invoke service mounts when
         .{ project_id, node_id, node_id },
     );
     defer allocator.free(mount_fs_req);
-    const mount_fs = try plane.setProjectMount(mount_fs_req);
+    const mount_fs = try plane.setWorkspaceMount(mount_fs_req);
     defer allocator.free(mount_fs);
 
     const mount_tool_req = try std.fmt.allocPrint(
@@ -7253,7 +7253,7 @@ test "acheron_control_plane: workspace status filters invoke service mounts when
         .{ project_id, node_id, node_id },
     );
     defer allocator.free(mount_tool_req);
-    const mount_tool = try plane.setProjectMount(mount_tool_req);
+    const mount_tool = try plane.setWorkspaceMount(mount_tool_req);
     defer allocator.free(mount_tool);
 
     const selected_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
@@ -7277,7 +7277,7 @@ test "acheron_control_plane: invalid access policy payload is rejected" {
 
     try std.testing.expectError(
         ControlPlaneError.InvalidPayload,
-        plane.createProject("{\"name\":\"BadPolicy\",\"vision\":\"BadPolicy\",\"access_policy\":{\"actions\":{\"read\":true}}}"),
+        plane.createWorkspace("{\"name\":\"BadPolicy\",\"vision\":\"BadPolicy\",\"access_policy\":{\"actions\":{\"read\":true}}}"),
     );
 }
 
@@ -7322,7 +7322,7 @@ test "acheron_control_plane: identical mount path can be used for failover nodes
     defer join_b.deinit();
     const node_b = join_b.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"Failover\",\"vision\":\"Failover\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"Failover\",\"vision\":\"Failover\"}");
     defer allocator.free(project_json);
     var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer parsed_project.deinit();
@@ -7335,7 +7335,7 @@ test "acheron_control_plane: identical mount path can be used for failover nodes
         .{ project_id, project_token, node_a },
     );
     defer allocator.free(mount_a);
-    const first = try plane.setProjectMount(mount_a);
+    const first = try plane.setWorkspaceMount(mount_a);
     defer allocator.free(first);
 
     const mount_b = try std.fmt.allocPrint(
@@ -7344,14 +7344,14 @@ test "acheron_control_plane: identical mount path can be used for failover nodes
         .{ project_id, project_token, node_b },
     );
     defer allocator.free(mount_b);
-    const second = try plane.setProjectMount(mount_b);
+    const second = try plane.setWorkspaceMount(mount_b);
     defer allocator.free(second);
 
     try std.testing.expect(std.mem.indexOf(u8, second, "\"node_id\":\"node-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, second, "\"node_id\":\"node-2\"") != null);
 }
 
-test "acheron_control_plane: removeProjectMount supports path-wide and targeted failover removal" {
+test "acheron_control_plane: removeWorkspaceMount supports path-wide and targeted failover removal" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -7392,7 +7392,7 @@ test "acheron_control_plane: removeProjectMount supports path-wide and targeted 
     defer join_b.deinit();
     const node_b = join_b.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"FailoverRemove\",\"vision\":\"FailoverRemove\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"FailoverRemove\",\"vision\":\"FailoverRemove\"}");
     defer allocator.free(project_json);
     var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer parsed_project.deinit();
@@ -7405,7 +7405,7 @@ test "acheron_control_plane: removeProjectMount supports path-wide and targeted 
         .{ project_id, project_token, node_a },
     );
     defer allocator.free(mount_a);
-    const first = try plane.setProjectMount(mount_a);
+    const first = try plane.setWorkspaceMount(mount_a);
     defer allocator.free(first);
 
     const mount_b = try std.fmt.allocPrint(
@@ -7414,7 +7414,7 @@ test "acheron_control_plane: removeProjectMount supports path-wide and targeted 
         .{ project_id, project_token, node_b },
     );
     defer allocator.free(mount_b);
-    const second = try plane.setProjectMount(mount_b);
+    const second = try plane.setWorkspaceMount(mount_b);
     defer allocator.free(second);
 
     const remove_targeted = try std.fmt.allocPrint(
@@ -7423,7 +7423,7 @@ test "acheron_control_plane: removeProjectMount supports path-wide and targeted 
         .{ project_id, project_token, node_a },
     );
     defer allocator.free(remove_targeted);
-    const targeted_removed = try plane.removeProjectMount(remove_targeted);
+    const targeted_removed = try plane.removeWorkspaceMount(remove_targeted);
     defer allocator.free(targeted_removed);
     const node_a_entry = try std.fmt.allocPrint(allocator, "\"node_id\":\"{s}\"", .{node_a});
     defer allocator.free(node_a_entry);
@@ -7438,7 +7438,7 @@ test "acheron_control_plane: removeProjectMount supports path-wide and targeted 
         .{ project_id, project_token },
     );
     defer allocator.free(remove_all);
-    const all_removed = try plane.removeProjectMount(remove_all);
+    const all_removed = try plane.removeWorkspaceMount(remove_all);
     defer allocator.free(all_removed);
     try std.testing.expect(std.mem.indexOf(u8, all_removed, "\"mounts\":[]") != null);
 }
@@ -7466,7 +7466,7 @@ test "acheron_control_plane: lease reaper removes expired nodes and project moun
     defer join.deinit();
     const node_id = join.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"Lease GC\",\"vision\":\"Lease GC\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"Lease GC\",\"vision\":\"Lease GC\"}");
     defer allocator.free(project_json);
     var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer parsed_project.deinit();
@@ -7479,7 +7479,7 @@ test "acheron_control_plane: lease reaper removes expired nodes and project moun
         .{ project_id, project_token, node_id },
     );
     defer allocator.free(mount_req);
-    const mounted = try plane.setProjectMount(mount_req);
+    const mounted = try plane.setWorkspaceMount(mount_req);
     defer allocator.free(mounted);
 
     plane.mutex.lock();
@@ -7499,7 +7499,7 @@ test "acheron_control_plane: lease reaper removes expired nodes and project moun
         .{project_id},
     );
     defer allocator.free(get_project_req);
-    const project_after = try plane.getProject(get_project_req);
+    const project_after = try plane.getWorkspace(get_project_req);
     defer allocator.free(project_after);
     try std.testing.expect(std.mem.indexOf(u8, project_after, "\"mounts\":[]") != null);
 }
@@ -7547,7 +7547,7 @@ test "acheron_control_plane: metricsJson reports mutation counters" {
     defer join.deinit();
     const node_id = join.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"Metrics\",\"vision\":\"Metrics\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"Metrics\",\"vision\":\"Metrics\"}");
     defer allocator.free(project_json);
     var project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer project.deinit();
@@ -7560,7 +7560,7 @@ test "acheron_control_plane: metricsJson reports mutation counters" {
         .{ project_id, project_token, node_id },
     );
     defer allocator.free(mount_req);
-    const mounted = try plane.setProjectMount(mount_req);
+    const mounted = try plane.setWorkspaceMount(mount_req);
     defer allocator.free(mounted);
 
     const activate_req = try std.fmt.allocPrint(
@@ -7569,7 +7569,7 @@ test "acheron_control_plane: metricsJson reports mutation counters" {
         .{ project_id, project_token },
     );
     defer allocator.free(activate_req);
-    const activated = try plane.activateProject("agent-metrics", activate_req);
+    const activated = try plane.activateWorkspace("agent-metrics", activate_req);
     defer allocator.free(activated);
 
     const metrics_json = try plane.metricsJson();
@@ -7603,7 +7603,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
     defer join.deinit();
     const node_id = join.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"TokenOps\",\"vision\":\"TokenOps\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"TokenOps\",\"vision\":\"TokenOps\"}");
     defer allocator.free(project_json);
     var project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer project.deinit();
@@ -7616,7 +7616,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
         .{ project_id, token_1 },
     );
     defer allocator.free(rotate_req);
-    const rotate_json = try plane.rotateProjectToken(rotate_req);
+    const rotate_json = try plane.rotateWorkspaceToken(rotate_req);
     defer allocator.free(rotate_json);
     var rotate = try std.json.parseFromSlice(std.json.Value, allocator, rotate_json, .{});
     defer rotate.deinit();
@@ -7629,7 +7629,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
         .{ project_id, token_1, node_id },
     );
     defer allocator.free(mount_old_token);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.setProjectMount(mount_old_token));
+    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.setWorkspaceMount(mount_old_token));
 
     const mount_new_token = try std.fmt.allocPrint(
         allocator,
@@ -7637,7 +7637,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
         .{ project_id, token_2, node_id },
     );
     defer allocator.free(mount_new_token);
-    const mounted = try plane.setProjectMount(mount_new_token);
+    const mounted = try plane.setWorkspaceMount(mount_new_token);
     defer allocator.free(mounted);
 
     const revoke_req = try std.fmt.allocPrint(
@@ -7646,7 +7646,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
         .{ project_id, token_2 },
     );
     defer allocator.free(revoke_req);
-    const revoke_json = try plane.revokeProjectToken(revoke_req);
+    const revoke_json = try plane.revokeWorkspaceToken(revoke_req);
     defer allocator.free(revoke_json);
     var revoke = try std.json.parseFromSlice(std.json.Value, allocator, revoke_json, .{});
     defer revoke.deinit();
@@ -7659,7 +7659,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
         .{ project_id, token_2 },
     );
     defer allocator.free(remove_old_token);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.removeProjectMount(remove_old_token));
+    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.removeWorkspaceMount(remove_old_token));
 
     const remove_new_token = try std.fmt.allocPrint(
         allocator,
@@ -7667,7 +7667,7 @@ test "acheron_control_plane: rotate and revoke project tokens invalidate previou
         .{ project_id, token_3 },
     );
     defer allocator.free(remove_new_token);
-    const removed = try plane.removeProjectMount(remove_new_token);
+    const removed = try plane.removeWorkspaceMount(remove_new_token);
     defer allocator.free(removed);
 }
 
@@ -7694,7 +7694,7 @@ test "acheron_control_plane: workspaceStatus supports explicit project selection
     defer join.deinit();
     const node_id = join.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"Selector\",\"vision\":\"Selector\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"Selector\",\"vision\":\"Selector\"}");
     defer allocator.free(project_json);
     var project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer project.deinit();
@@ -7707,7 +7707,7 @@ test "acheron_control_plane: workspaceStatus supports explicit project selection
         .{ project_id, project_token, node_id },
     );
     defer allocator.free(mount_req);
-    const mounted = try plane.setProjectMount(mount_req);
+    const mounted = try plane.setWorkspaceMount(mount_req);
     defer allocator.free(mounted);
 
     const no_selection = try plane.workspaceStatus("agent-selector", null);
@@ -7768,7 +7768,7 @@ test "acheron_control_plane: workspace topology prefers best available candidate
     defer node_b_payload.deinit();
     const node_b_id = node_b_payload.value.object.get("node_id").?.string;
 
-    const project_json = try plane.createProject("{\"name\":\"Failover Select\",\"vision\":\"Failover Select\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"Failover Select\",\"vision\":\"Failover Select\"}");
     defer allocator.free(project_json);
     var project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer project.deinit();
@@ -7781,7 +7781,7 @@ test "acheron_control_plane: workspace topology prefers best available candidate
         .{ project_id, project_token, node_a_id },
     );
     defer allocator.free(mount_primary);
-    const mounted_primary = try plane.setProjectMount(mount_primary);
+    const mounted_primary = try plane.setWorkspaceMount(mount_primary);
     defer allocator.free(mounted_primary);
 
     const mount_failover = try std.fmt.allocPrint(
@@ -7790,7 +7790,7 @@ test "acheron_control_plane: workspace topology prefers best available candidate
         .{ project_id, project_token, node_b_id },
     );
     defer allocator.free(mount_failover);
-    const mounted_failover = try plane.setProjectMount(mount_failover);
+    const mounted_failover = try plane.setWorkspaceMount(mount_failover);
     defer allocator.free(mounted_failover);
 
     const stale_now = std.time.milliTimestamp();
@@ -8253,12 +8253,12 @@ test "acheron_control_plane: node ensure allows empty fs_url for app-local nodes
     try std.testing.expect(std.mem.indexOf(u8, ensured, "\"node_secret\":\"") != null);
 }
 
-test "acheron_control_plane: projectUp requires project_token for existing non-builtin project" {
+test "acheron_control_plane: workspaceUp requires project_token for existing non-builtin project" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const project_json = try plane.createProject("{\"name\":\"UpAuth\",\"vision\":\"UpAuth\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"UpAuth\",\"vision\":\"UpAuth\"}");
     defer allocator.free(project_json);
     var project = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer project.deinit();
@@ -8271,7 +8271,7 @@ test "acheron_control_plane: projectUp requires project_token for existing non-b
         .{project_id},
     );
     defer allocator.free(missing_token_req);
-    try std.testing.expectError(ControlPlaneError.MissingField, plane.projectUp("agent-up", missing_token_req));
+    try std.testing.expectError(ControlPlaneError.MissingField, plane.workspaceUp("agent-up", missing_token_req));
 
     const bad_token_req = try std.fmt.allocPrint(
         allocator,
@@ -8279,7 +8279,7 @@ test "acheron_control_plane: projectUp requires project_token for existing non-b
         .{project_id},
     );
     defer allocator.free(bad_token_req);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.projectUp("agent-up", bad_token_req));
+    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.workspaceUp("agent-up", bad_token_req));
 
     const missing_token_primary_req = try std.fmt.allocPrint(
         allocator,
@@ -8287,7 +8287,7 @@ test "acheron_control_plane: projectUp requires project_token for existing non-b
         .{project_id},
     );
     defer allocator.free(missing_token_primary_req);
-    try std.testing.expectError(ControlPlaneError.MissingField, plane.projectUp("default", missing_token_primary_req));
+    try std.testing.expectError(ControlPlaneError.MissingField, plane.workspaceUp("default", missing_token_primary_req));
 
     const bad_token_primary_req = try std.fmt.allocPrint(
         allocator,
@@ -8295,7 +8295,7 @@ test "acheron_control_plane: projectUp requires project_token for existing non-b
         .{project_id},
     );
     defer allocator.free(bad_token_primary_req);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.projectUp("default", bad_token_primary_req));
+    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.workspaceUp("default", bad_token_primary_req));
 
     const ok_req = try std.fmt.allocPrint(
         allocator,
@@ -8303,19 +8303,19 @@ test "acheron_control_plane: projectUp requires project_token for existing non-b
         .{ project_id, project_token },
     );
     defer allocator.free(ok_req);
-    const ok_json = try plane.projectUp("agent-up", ok_req);
+    const ok_json = try plane.workspaceUp("agent-up", ok_req);
     defer allocator.free(ok_json);
     try std.testing.expect(std.mem.indexOf(u8, ok_json, "\"created\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, ok_json, "\"activated\":false") != null);
 
     const get_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(get_req);
-    const get_json = try plane.getProject(get_req);
+    const get_json = try plane.getWorkspace(get_req);
     defer allocator.free(get_json);
     try std.testing.expect(std.mem.indexOf(u8, get_json, "\"status\":\"paused\"") != null);
 }
 
-test "acheron_control_plane: projectUp requires project_token for builtin host project activation" {
+test "acheron_control_plane: workspaceUp requires project_token for builtin host project activation" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -8347,7 +8347,7 @@ test "acheron_control_plane: projectUp requires project_token for builtin host p
         .{host_workspace_id},
     );
     defer allocator.free(missing_token_req);
-    try std.testing.expectError(ControlPlaneError.MissingField, plane.projectUp(default_host_actor_id, missing_token_req));
+    try std.testing.expectError(ControlPlaneError.MissingField, plane.workspaceUp(default_host_actor_id, missing_token_req));
 
     const bad_token_req = try std.fmt.allocPrint(
         allocator,
@@ -8355,7 +8355,7 @@ test "acheron_control_plane: projectUp requires project_token for builtin host p
         .{host_workspace_id},
     );
     defer allocator.free(bad_token_req);
-    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.projectUp(default_host_actor_id, bad_token_req));
+    try std.testing.expectError(ControlPlaneError.ProjectAuthFailed, plane.workspaceUp(default_host_actor_id, bad_token_req));
 
     const ok_req = try std.fmt.allocPrint(
         allocator,
@@ -8363,7 +8363,7 @@ test "acheron_control_plane: projectUp requires project_token for builtin host p
         .{ host_workspace_id, spider_token.? },
     );
     defer allocator.free(ok_req);
-    const ok_json = try plane.projectUp(default_host_actor_id, ok_req);
+    const ok_json = try plane.workspaceUp(default_host_actor_id, ok_req);
     defer allocator.free(ok_json);
     try std.testing.expect(std.mem.indexOf(u8, ok_json, "\"created\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, ok_json, "\"activated\":true") != null);
@@ -8374,10 +8374,10 @@ test "acheron_control_plane: host actor can upsert existing non-host project by 
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const project_json = try plane.createProject("{\"name\":\"ZiggyPR\",\"vision\":\"Initial\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"ZiggyPR\",\"vision\":\"Initial\"}");
     defer allocator.free(project_json);
 
-    const upsert_json = try plane.projectUp(
+    const upsert_json = try plane.workspaceUp(
         default_host_actor_id,
         "{\"name\":\"ZiggyPR\",\"vision\":\"Help review PRs\",\"activate\":false}",
     );
@@ -8390,7 +8390,7 @@ test "acheron_control_plane: host actor can upsert existing non-host project by 
     const project_id = parsed_project.value.object.get("project_id").?.string;
     const get_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(get_req);
-    const get_json = try plane.getProject(get_req);
+    const get_json = try plane.getWorkspace(get_req);
     defer allocator.free(get_json);
     try std.testing.expect(std.mem.indexOf(u8, get_json, "\"vision\":\"Help review PRs\"") != null);
 }
@@ -8403,7 +8403,7 @@ test "acheron_control_plane: primary agent bypasses project invoke token gates" 
     try std.testing.expect(!plane.workspaceAllowsAction(host_workspace_id, "worker", .invoke, null, false));
     try std.testing.expect(plane.workspaceAllowsAction(host_workspace_id, default_host_actor_id, .invoke, null, false));
 
-    const created = try plane.createProject("{\"name\":\"InvokeGate\",\"vision\":\"InvokeGate\"}");
+    const created = try plane.createWorkspace("{\"name\":\"InvokeGate\",\"vision\":\"InvokeGate\"}");
     defer allocator.free(created);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, created, .{});
     defer parsed.deinit();
@@ -8420,7 +8420,7 @@ test "acheron_control_plane: project create/up require non-empty vision" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const created = try plane.createProject("{\"name\":\"Visionless\",\"vision\":\"Visionless\"}");
+    const created = try plane.createWorkspace("{\"name\":\"Visionless\",\"vision\":\"Visionless\"}");
     defer allocator.free(created);
     try std.testing.expect(std.mem.indexOf(u8, created, "\"vision\":\"Visionless\"") != null);
 
@@ -8431,7 +8431,7 @@ test "acheron_control_plane: project create/up require non-empty vision" {
 
     try std.testing.expectError(
         ControlPlaneError.MissingField,
-        plane.createProject("{\"name\":\"MissingVision\"}"),
+        plane.createWorkspace("{\"name\":\"MissingVision\"}"),
     );
 
     const clear_req = try std.fmt.allocPrint(
@@ -8440,25 +8440,25 @@ test "acheron_control_plane: project create/up require non-empty vision" {
         .{ project_id, project_token },
     );
     defer allocator.free(clear_req);
-    try std.testing.expectError(ControlPlaneError.InvalidPayload, plane.projectUp("agent-vision", clear_req));
+    try std.testing.expectError(ControlPlaneError.InvalidPayload, plane.workspaceUp("agent-vision", clear_req));
 
     const get_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(get_req);
-    const fetched = try plane.getProject(get_req);
+    const fetched = try plane.getWorkspace(get_req);
     defer allocator.free(fetched);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"vision\":\"Visionless\"") != null);
 
-    const up_created = try plane.projectUp("agent-vision", "{\"name\":\"UpNoVision\",\"vision\":\"UpNoVision\"}");
+    const up_created = try plane.workspaceUp("agent-vision", "{\"name\":\"UpNoVision\",\"vision\":\"UpNoVision\"}");
     defer allocator.free(up_created);
     try std.testing.expect(std.mem.indexOf(u8, up_created, "\"created\":true") != null);
 
     try std.testing.expectError(
         ControlPlaneError.MissingField,
-        plane.projectUp("agent-vision", "{\"name\":\"StillNoVision\"}"),
+        plane.workspaceUp("agent-vision", "{\"name\":\"StillNoVision\"}"),
     );
 }
 
-test "acheron_control_plane: projectUp auto-provisions default /nodes/local/fs mount for new projects" {
+test "acheron_control_plane: workspaceUp auto-provisions default /nodes/local/fs mount for new projects" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -8471,7 +8471,7 @@ test "acheron_control_plane: projectUp auto-provisions default /nodes/local/fs m
 
     try plane.ensureSpiderWebMount(node_id, "bootstrap-workspace");
 
-    const up_json = try plane.projectUp(
+    const up_json = try plane.workspaceUp(
         default_host_actor_id,
         "{\"name\":\"BootstrapProject\",\"vision\":\"BootstrapProject\",\"activate\":false}",
     );
@@ -8482,7 +8482,7 @@ test "acheron_control_plane: projectUp auto-provisions default /nodes/local/fs m
 
     const get_req = try std.fmt.allocPrint(allocator, "{{\"project_id\":\"{s}\"}}", .{project_id});
     defer allocator.free(get_req);
-    const get_json = try plane.getProject(get_req);
+    const get_json = try plane.getWorkspace(get_req);
     defer allocator.free(get_json);
 
     try std.testing.expect(std.mem.indexOf(u8, get_json, "\"mount_path\":\"/nodes/local/fs\"") != null);
@@ -8501,7 +8501,7 @@ test "acheron_control_plane: default mount migration replaces legacy /workspace-
     defer parsed_node.deinit();
     const node_id = parsed_node.value.object.get("node_id").?.string;
 
-    const up_json = try plane.projectUp(
+    const up_json = try plane.workspaceUp(
         default_host_actor_id,
         "{\"name\":\"LegacyMountProject\",\"vision\":\"LegacyMountProject\",\"activate\":false}",
     );
@@ -8552,12 +8552,12 @@ test "acheron_control_plane: builtin ensure prunes legacy workspace alias when c
     try std.testing.expectEqualStrings("node-canonical", project.mounts.items[0].node_id);
 }
 
-test "acheron_control_plane: createProject defaults to minimum template and seeds service binds" {
+test "acheron_control_plane: createWorkspace defaults to minimum template and seeds service binds" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const project_json = try plane.createProject("{\"name\":\"TemplateMinimum\",\"vision\":\"TemplateMinimum\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"TemplateMinimum\",\"vision\":\"TemplateMinimum\"}");
     defer allocator.free(project_json);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"template_id\":\"minimum\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/mounts\"") != null);
@@ -8577,7 +8577,7 @@ test "acheron_control_plane: createProject defaults to minimum template and seed
         .{ project_id, project_token },
     );
     defer allocator.free(resolve_req);
-    const resolved = try plane.resolveProjectPath(resolve_req);
+    const resolved = try plane.resolveWorkspacePath(resolve_req);
     defer allocator.free(resolved);
     try std.testing.expect(std.mem.indexOf(u8, resolved, "\"matched\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, resolved, "\"resolved_path\":\"/nodes/local/venoms/mounts/control/invoke.json\"") != null);
@@ -8628,7 +8628,7 @@ test "acheron_control_plane: dev template seeds development service binds" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
-    const project_json = try plane.createProject("{\"name\":\"TemplateDev\",\"vision\":\"TemplateDev\",\"template_id\":\"dev\"}");
+    const project_json = try plane.createWorkspace("{\"name\":\"TemplateDev\",\"vision\":\"TemplateDev\",\"template_id\":\"dev\"}");
     defer allocator.free(project_json);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"template_id\":\"dev\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/mounts\"") != null);
@@ -8694,7 +8694,7 @@ test "acheron_control_plane: persistence restores nodes projects mounts and acti
         defer join_parsed.deinit();
         expected_node_id = try allocator.dupe(u8, join_parsed.value.object.get("node_id").?.string);
 
-        const project_json = try plane.createProject("{\"name\":\"Demo\",\"vision\":\"dist fs\"}");
+        const project_json = try plane.createWorkspace("{\"name\":\"Demo\",\"vision\":\"dist fs\"}");
         defer allocator.free(project_json);
         var project_parsed = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
         defer project_parsed.deinit();
@@ -8708,7 +8708,7 @@ test "acheron_control_plane: persistence restores nodes projects mounts and acti
             .{ expected_project_id.?, project_token, expected_node_id.? },
         );
         defer allocator.free(mount_req);
-        const mounted = try plane.setProjectMount(mount_req);
+        const mounted = try plane.setWorkspaceMount(mount_req);
         defer allocator.free(mounted);
 
         const activate_req = try std.fmt.allocPrint(
@@ -8717,7 +8717,7 @@ test "acheron_control_plane: persistence restores nodes projects mounts and acti
             .{ expected_project_id.?, project_token },
         );
         defer allocator.free(activate_req);
-        const activated = try plane.activateProject("agent-alpha", activate_req);
+        const activated = try plane.activateWorkspace("agent-alpha", activate_req);
         defer allocator.free(activated);
     }
 
@@ -8735,7 +8735,7 @@ test "acheron_control_plane: persistence restores nodes projects mounts and acti
             .{expected_project_id.?},
         );
         defer allocator.free(project_req);
-        const project_json = try plane.getProject(project_req);
+        const project_json = try plane.getWorkspace(project_req);
         defer allocator.free(project_json);
         try std.testing.expect(std.mem.indexOf(u8, project_json, "\"mount_path\":\"/src\"") != null);
 
@@ -8745,7 +8745,7 @@ test "acheron_control_plane: persistence restores nodes projects mounts and acti
             .{ expected_project_id.?, expected_project_token.?, expected_node_id.? },
         );
         defer allocator.free(remount_req);
-        const remounted = try plane.setProjectMount(remount_req);
+        const remounted = try plane.setWorkspaceMount(remount_req);
         defer allocator.free(remounted);
         try std.testing.expect(std.mem.indexOf(u8, remounted, "\"mount_path\":\"/restored\"") != null);
 
@@ -9091,7 +9091,7 @@ test "acheron_control_plane: persistence keeps primary active project override" 
         var plane = ControlPlane.initWithPersistence(allocator, dir, "control-plane.db");
         defer plane.deinit();
 
-        const project_json = try plane.createProject("{\"name\":\"PrimaryPersist\",\"vision\":\"PrimaryPersist\"}");
+        const project_json = try plane.createWorkspace("{\"name\":\"PrimaryPersist\",\"vision\":\"PrimaryPersist\"}");
         defer allocator.free(project_json);
         var project_parsed = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
         defer project_parsed.deinit();
@@ -9105,7 +9105,7 @@ test "acheron_control_plane: persistence keeps primary active project override" 
             .{ project_id, project_token },
         );
         defer allocator.free(activate_req);
-        const activated = try plane.activateProjectWithRole(default_host_actor_id, activate_req, true);
+        const activated = try plane.activateWorkspaceWithRole(default_host_actor_id, activate_req, true);
         defer allocator.free(activated);
         try std.testing.expect(std.mem.indexOf(u8, activated, expected_project_id.?) != null);
     }

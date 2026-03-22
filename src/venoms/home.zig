@@ -190,7 +190,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
     defer self.allocator.free(payload);
 
     const plane = self.control_plane orelse return error.InvalidPayload;
-    _ = plane.setProjectBindWithRole(payload, self.is_admin) catch |err| switch (err) {
+    _ = plane.setWorkspaceBindWithRole(payload, self.is_admin) catch |err| switch (err) {
         control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
         control_plane_mod.ControlPlaneError.ProjectAuthFailed,
         control_plane_mod.ControlPlaneError.ProjectProtected,

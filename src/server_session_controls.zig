@@ -113,7 +113,7 @@ pub fn handleSessionAttachControl(
 
     const activate_payload = try server_workspace_status.buildWorkspaceAccessPayload(allocator, attach_workspace_id, attach_workspace_token);
     defer allocator.free(activate_payload);
-    _ = runtime_registry.control_plane.activateProjectWithRole(
+    _ = runtime_registry.control_plane.activateWorkspaceWithRole(
         attach_agent_id,
         activate_payload,
         principal.role == .access,

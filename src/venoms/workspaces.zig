@@ -190,7 +190,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
                 .{ escaped_project, token_fragment },
             );
             defer self.allocator.free(payload);
-            const result = plane.getProjectWithRole(payload, self.is_admin) catch |err| switch (err) {
+            const result = plane.getWorkspaceWithRole(payload, self.is_admin) catch |err| switch (err) {
                 control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
                 control_plane_mod.ControlPlaneError.ProjectAuthFailed,
                 control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
@@ -207,7 +207,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
         .up => blk: {
             const payload = try renderWorkspaceUpPayload(self, args_obj);
             defer self.allocator.free(payload);
-            const result = plane.projectUpWithRole(self.agent_id, payload, self.is_admin) catch |err| switch (err) {
+            const result = plane.workspaceUpWithRole(self.agent_id, payload, self.is_admin) catch |err| switch (err) {
                 control_plane_mod.ControlPlaneError.ProjectPolicyForbidden,
                 control_plane_mod.ControlPlaneError.ProjectAuthFailed,
                 control_plane_mod.ControlPlaneError.ProjectAssignmentForbidden,
@@ -249,7 +249,7 @@ fn renderWorkspaceUpPayload(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
 
 fn buildListResultJson(self: anytype) ![]u8 {
     const plane = self.control_plane orelse return buildSuccessResultJson(self, .list, "{\"workspaces\":[]}");
-    const result = try plane.listProjects();
+    const result = try plane.listWorkspaces();
     defer self.allocator.free(result);
     const workspaces_array = try extractObjectArrayJson(self.allocator, result, "workspaces");
     defer self.allocator.free(workspaces_array);

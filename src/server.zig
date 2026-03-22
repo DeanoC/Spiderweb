@@ -2844,13 +2844,13 @@ const AgentRuntimeRegistry = struct {
     ) ![]u8 {
         _ = agent_id;
         if (requested_workspace_id) |workspace_id| {
-            if (!isValidWorkspaceId(workspace_id)) return error.InvalidProjectId;
+            if (!isValidWorkspaceId(workspace_id)) return error.InvalidWorkspaceId;
             if (!self.control_plane.workspaceHasMounts(workspace_id)) {
-                return error.ProjectMountsMissing;
+                return error.WorkspaceMountsMissing;
             }
             return self.allocator.dupe(u8, workspace_id);
         }
-        return error.ProjectRequired;
+        return error.WorkspaceRequired;
     }
 
     fn isValidAgentId(agent_id: []const u8) bool {
@@ -2933,8 +2933,8 @@ const AgentRuntimeRegistry = struct {
                 .mount_ready = false,
                 .updated_at_ms = std.time.milliTimestamp(),
             };
-            snapshot.error_code = self.allocator.dupe(u8, "project_mounts_missing") catch null;
-            snapshot.error_message = self.allocator.dupe(u8, "project has no workspace mounts configured") catch null;
+            snapshot.error_code = self.allocator.dupe(u8, "workspace_mounts_missing") catch null;
+            snapshot.error_message = self.allocator.dupe(u8, "workspace has no mounts configured") catch null;
             return snapshot;
         }
         return .{
@@ -2942,8 +2942,8 @@ const AgentRuntimeRegistry = struct {
             .runtime_ready = false,
             .mount_ready = false,
             .updated_at_ms = std.time.milliTimestamp(),
-            .error_code = self.allocator.dupe(u8, "project_required") catch null,
-            .error_message = self.allocator.dupe(u8, "workspace attach requires a project binding") catch null,
+            .error_code = self.allocator.dupe(u8, "workspace_required") catch null,
+            .error_message = self.allocator.dupe(u8, "workspace attach requires a workspace binding") catch null,
         };
     }
 
@@ -2956,16 +2956,16 @@ const AgentRuntimeRegistry = struct {
             } else {
                 self.markRuntimeWarmupError(
                     binding_key,
-                    "project_mounts_missing",
-                    "project has no workspace mounts configured",
+                    "workspace_mounts_missing",
+                    "workspace has no mounts configured",
                 );
             }
             return;
         }
         self.markRuntimeWarmupError(
             binding_key,
-            "project_required",
-            "workspace attach requires a project binding",
+            "workspace_required",
+            "workspace attach requires a workspace binding",
         );
     }
 
@@ -2980,25 +2980,25 @@ const AgentRuntimeRegistry = struct {
                 .code = "invalid_payload",
                 .message = "invalid agent_id",
             },
-            error.InvalidProjectId => .{
+            error.InvalidWorkspaceId => .{
                 .code = "invalid_payload",
-                .message = "invalid project_id",
+                .message = "invalid workspace_id",
             },
             error.RuntimeLimitReached => .{
                 .code = "queue_saturated",
-                .message = "project runtime limit reached",
+                .message = "workspace runtime limit reached",
             },
             error.ProcessFdQuotaExceeded => .{
                 .code = "runtime_resource_exhausted",
                 .message = "runtime hit process fd quota",
             },
-            error.ProjectRequired => .{
-                .code = "project_required",
-                .message = "workspace attach requires a project binding",
+            error.WorkspaceRequired => .{
+                .code = "workspace_required",
+                .message = "workspace attach requires a workspace binding",
             },
-            error.ProjectMountsMissing => .{
-                .code = "project_mounts_missing",
-                .message = "project has no workspace mounts configured",
+            error.WorkspaceMountsMissing => .{
+                .code = "workspace_mounts_missing",
+                .message = "workspace has no mounts configured",
             },
             error.SandboxMountUnavailable => .{
                 .code = "sandbox_mount_unavailable",
@@ -3203,8 +3203,8 @@ const AgentRuntimeRegistry = struct {
                 defer self.allocator.free(binding_key);
                 self.markRuntimeWarmupError(
                     binding_key,
-                    "project_mounts_missing",
-                    "project has no workspace mounts configured",
+                    "workspace_mounts_missing",
+                    "workspace has no mounts configured",
                 );
                 return self.runtimeAttachSnapshotByKey(binding_key);
             }
@@ -3217,8 +3217,8 @@ const AgentRuntimeRegistry = struct {
         defer self.allocator.free(binding_key);
         self.markRuntimeWarmupError(
             binding_key,
-            "project_required",
-            "workspace attach requires a project binding",
+            "workspace_required",
+            "workspace attach requires a workspace binding",
         );
         return self.runtimeAttachSnapshotByKey(binding_key);
     }

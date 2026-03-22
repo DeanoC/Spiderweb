@@ -131,7 +131,7 @@ pub fn main() !void {
         else if (connect_info.workspace_id) |connected_workspace_id|
             try allocator.dupe(u8, connected_workspace_id)
         else
-            return error.ProjectRequired;
+            return error.WorkspaceRequired;
         defer allocator.free(resolved_workspace_id);
 
         var state_store = try mount_state.ClientStateStore.init(allocator);
@@ -177,7 +177,7 @@ pub fn main() !void {
         else if (connect_info.workspace_id) |connected_workspace_id|
             try allocator.dupe(u8, connected_workspace_id)
         else
-            return error.ProjectRequired;
+            return error.WorkspaceRequired;
         defer allocator.free(resolved_workspace_id);
 
         var state_store = try mount_state.ClientStateStore.init(allocator);
@@ -999,7 +999,7 @@ fn makeNativeNamespaceBinding(
     return .{
         .namespace_url = namespace_status.namespace_url orelse return error.NativeNamespaceBindingRequired,
         .auth_token = auth_token,
-        .workspace_id = namespace_status.workspace_id orelse return error.ProjectRequired,
+        .workspace_id = namespace_status.workspace_id orelse return error.WorkspaceRequired,
         .project_id = namespace_status.workspace_id,
         .agent_id = namespace_status.agent_id orelse return error.InvalidResponse,
         .session_key = namespace_status.session_key orelse return error.InvalidResponse,
@@ -1026,7 +1026,7 @@ fn buildNativeNamespaceStatusFromWorkspace(
     else if (connect_info.workspace_id) |connected_workspace_id|
         try allocator.dupe(u8, connected_workspace_id)
     else
-        return error.ProjectRequired;
+        return error.WorkspaceRequired;
     errdefer allocator.free(resolved_workspace_id);
 
     var state_store = try mount_state.ClientStateStore.init(allocator);

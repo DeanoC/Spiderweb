@@ -1722,7 +1722,7 @@ fn mapAcheronError(root: std.json.ObjectMap) anyerror {
 fn mapRemoteErrorCode(code: []const u8) anyerror {
     if (std.mem.eql(u8, code, "forbidden") or std.mem.eql(u8, code, "access_denied")) return error.PermissionDenied;
     if (std.mem.eql(u8, code, "agent_not_found") or std.mem.eql(u8, code, "workspace_not_found")) return error.FileNotFound;
-    if (std.mem.eql(u8, code, "project_context_required")) return error.ProjectRequired;
+    if (std.mem.eql(u8, code, "workspace_context_required")) return error.WorkspaceRequired;
     if (std.mem.eql(u8, code, "missing_field")) return error.MissingField;
     if (std.mem.eql(u8, code, "invalid_payload") or std.mem.eql(u8, code, "invalid")) return error.InvalidPayload;
     if (std.mem.eql(u8, code, "einval")) return error.InvalidPayload;
@@ -1741,7 +1741,7 @@ fn mapRemoteErrorCode(code: []const u8) anyerror {
     if (std.mem.eql(u8, code, "unsupported")) return error.OperationNotSupported;
     if (std.mem.eql(u8, code, "runtime_warming")) return error.RuntimeWarming;
     if (std.mem.eql(u8, code, "runtime_unavailable")) return error.RuntimeUnavailable;
-    if (std.mem.eql(u8, code, "project_mounts_missing")) return error.ProjectMountsMissing;
+    if (std.mem.eql(u8, code, "workspace_mounts_missing")) return error.WorkspaceMountsMissing;
     if (std.mem.eql(u8, code, "sandbox_mount_unavailable")) return error.SandboxMountUnavailable;
     if (std.mem.eql(u8, code, "sandbox_invalid_config")) return error.InvalidSandboxConfig;
     if (std.mem.eql(u8, code, "runtime_resource_exhausted")) return error.ProcessFdQuotaExceeded;

@@ -5185,7 +5185,7 @@ test "server: workspace template control ops expose dev catalog entries" {
     defer allocator.free(listed);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"minimum\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"dev\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"github\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"github\"") == null);
 
     const fetched = try server_control_plane_controls.handleControlPlaneCommand(
         &runtime_registry,

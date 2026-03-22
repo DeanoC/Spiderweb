@@ -311,7 +311,7 @@ const ProjectTemplateSpec = struct {
     bind_specs: []const ProjectTemplateBindSpec,
 };
 
-const minimum_template_bind_specs = [_]ProjectTemplateBindSpec{
+const core_project_bind_specs = [_]ProjectTemplateBindSpec{
     .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/services/home", .venom_id = "home" },
     .{ .bind_path = "/services/workers", .venom_id = "workers" },
@@ -320,40 +320,18 @@ const minimum_template_bind_specs = [_]ProjectTemplateBindSpec{
     .{ .bind_path = "/services/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
     .{ .bind_path = "/services/library", .venom_id = "library" },
     .{ .bind_path = "/services/events", .venom_id = "events" },
-};
-
-const host_project_bind_specs = [_]ProjectTemplateBindSpec{
-    .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
-    .{ .bind_path = "/services/home", .venom_id = "home" },
-    .{ .bind_path = "/services/workers", .venom_id = "workers" },
-    .{ .bind_path = "/services/terminal", .venom_id = "terminal", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/git", .venom_id = "git", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/library", .venom_id = "library" },
-    .{ .bind_path = "/services/events", .venom_id = "events" },
-};
-
-const dev_template_bind_specs = [_]ProjectTemplateBindSpec{
-    .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
-    .{ .bind_path = "/services/home", .venom_id = "home" },
-    .{ .bind_path = "/services/workers", .venom_id = "workers" },
-    .{ .bind_path = "/services/terminal", .venom_id = "terminal", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/git", .venom_id = "git", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/events", .venom_id = "events" },
-    .{ .bind_path = "/services/library", .venom_id = "library" },
 };
 
 const builtin_project_templates = [_]ProjectTemplateSpec{
     .{
         .id = default_project_template_id,
         .description = "Minimal external-agent workspace with the core services bound into /services.",
-        .bind_specs = minimum_template_bind_specs[0..],
+        .bind_specs = core_project_bind_specs[0..],
     },
     .{
         .id = "dev",
         .description = "Development workspace with the same external-agent core services bound into /services.",
-        .bind_specs = dev_template_bind_specs[0..],
+        .bind_specs = core_project_bind_specs[0..],
     },
 };
 
@@ -6119,7 +6097,7 @@ fn ensureProjectTemplateBindsLocked(self: *ControlPlane, project: *Project) !boo
 }
 
 fn ensureHostProjectBindsLocked(self: *ControlPlane, project: *Project) !bool {
-    return ensureBindSpecsLocked(self, project, host_project_bind_specs[0..]);
+    return ensureBindSpecsLocked(self, project, core_project_bind_specs[0..]);
 }
 
 fn ensureBindSpecsLocked(

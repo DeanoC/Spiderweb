@@ -265,7 +265,7 @@ Operator notes:
 - `test-env/test-external-codex-cli-matrix.sh` is the fast way to compare pinned Codex CLI versions and PTY/JSON launch modes against the same Spiderweb scenario
 - `test-env/test-external-codex-repeatability.sh` is the fast way to prove the new `workspace_bootstrap_ok` milestone stays green across multiple live runs on the same machine
 - `test-env/package-external-codex-repro.sh` collects the matrix outputs into a single upstream-ready repro pack with a generated bug report
-- custom launch templates may use `{codex_bin}`, `{workspace_root}`, `{namespace_root}`, `{namespace_meta_dir}`, `{project_meta_dir}`, `{shared_data_dir}`, `{prompt_file}`, and `{artifact_dir}`
+- custom launch templates may use `{codex_bin}`, `{workspace_root}`, `{namespace_root}`, `{namespace_meta_dir}`, `{workspace_meta_dir}`, `{shared_data_dir}`, `{prompt_file}`, and `{artifact_dir}`
 - the default artifact directory is now outside the repo checkout so the harness does not create false host-repo leakage by itself
 - the current milestone is `workspace_bootstrap_ok`; plain Codex still cannot fully clear `codex_home`, `terminal_runtime`, and `git_runtime` under the no-launch-hook rule, so `machine_independence_ok` remains the follow-on milestone
 - if you still want to override the launcher, a working template is:
@@ -274,7 +274,7 @@ Operator notes:
 CODEX_MODE=live \
 CODEX_AUTH_MODE=api_key \
 OPENAI_API_KEY=... \
-CODEX_LAUNCH_CMD='cat {prompt_file} | {codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --add-dir {namespace_meta_dir} --add-dir {project_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -' \
+CODEX_LAUNCH_CMD='cat {prompt_file} | {codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --add-dir {namespace_meta_dir} --add-dir {workspace_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -' \
 bash test-env/test-external-codex-workspace.sh
 ```
 

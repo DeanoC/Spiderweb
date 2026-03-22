@@ -663,7 +663,7 @@ Optional custom launch templates may use these placeholders:
 - \`{workspace_root}\`
 - \`{namespace_root}\`
 - \`{namespace_meta_dir}\`
-- \`{project_meta_dir}\`
+- \`{workspace_meta_dir}\`
 - \`{shared_data_dir}\`
 - \`{prompt_file}\`
 - \`{artifact_dir}\`
@@ -1467,7 +1467,7 @@ setup_codex_auth() {
 }
 
 default_codex_launch_cmd() {
-    printf '%s' '{codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --color never --add-dir {namespace_meta_dir} --add-dir {project_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -'
+    printf '%s' '{codex_bin} exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --ephemeral --color never --add-dir {namespace_meta_dir} --add-dir {workspace_meta_dir} --add-dir {shared_data_dir} --add-dir {artifact_dir} -C {workspace_root} -o {artifact_dir}/codex_last_message.txt -'
 }
 
 render_codex_launch_command() {
@@ -1486,7 +1486,7 @@ render_codex_launch_command() {
     cmd="${cmd//\{workspace_root\}/$(shell_quote "$MOUNT_WORKSPACE_PATH")}"
     cmd="${cmd//\{namespace_root\}/$(shell_quote "$MOUNT_POINT")}"
     cmd="${cmd//\{namespace_meta_dir\}/$(shell_quote "$MOUNT_POINT/meta")}"
-    cmd="${cmd//\{project_meta_dir\}/$(shell_quote "$MOUNT_POINT/projects/$PROJECT_ID/meta")}"
+    cmd="${cmd//\{workspace_meta_dir\}/$(shell_quote "$MOUNT_POINT/projects/$PROJECT_ID/meta")}"
     cmd="${cmd//\{shared_data_dir\}/$(shell_quote "$MOUNT_POINT/shared_data")}"
     cmd="${cmd//\{prompt_file\}/$(shell_quote "$PROMPT_FILE")}"
     cmd="${cmd//\{artifact_dir\}/$(shell_quote "$artifact_dir")}"

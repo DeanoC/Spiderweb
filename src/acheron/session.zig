@@ -28,6 +28,7 @@ const session_service_discovery = @import("session_service_discovery.zig");
 const session_project_status = @import("session_project_status.zig");
 const session_node_venoms = @import("session_node_venoms.zig");
 const session_worker_venoms = @import("session_worker_venoms.zig");
+const session_bound_venoms = @import("session_bound_venoms.zig");
 
 var direct_builtin_shell_exec_mutex: std.Thread.Mutex = .{};
 
@@ -3408,7 +3409,7 @@ pub const Session = struct {
         return session_node_venoms.addNodeVenoms(self, node_dir, node);
     }
 
-    fn copyOptionalServiceFile(self: *Session, source_dir_id: u32, target_dir_id: u32, name: []const u8) !void {
+    pub fn copyOptionalServiceFile(self: *Session, source_dir_id: u32, target_dir_id: u32, name: []const u8) !void {
         const source_id = self.lookupChild(source_dir_id, name) orelse return;
         const source_node = self.nodes.get(source_id) orelse return;
         if (source_node.kind != .file) return;
@@ -3459,44 +3460,12 @@ pub const Session = struct {
         project_venoms_dir: u32,
         active_project_id: []const u8,
     ) !void {
-        const agent_prefix = try std.fmt.allocPrint(self.allocator, "/agents/{s}/venoms", .{self.agent_id});
-        defer self.allocator.free(agent_prefix);
-        const project_prefix = try std.fmt.allocPrint(self.allocator, "/projects/{s}/venoms", .{active_project_id});
-        defer self.allocator.free(project_prefix);
-
-        inline for ([_][]const u8{ "events", "fs" }) |venom_id| {
-            const preferred_agent_node_id = try self.resolvePreferredBoundVenomNodeIdForContext(
-                venom_id,
-                active_project_id,
-                self.agent_id,
-            );
-            defer if (preferred_agent_node_id) |value| self.allocator.free(value);
-            _ = try self.addDir(active_agent_venoms_dir, venom_id, false);
-            _ = try self.registerBoundVenomAliasOnly(
-                agent_prefix,
-                venom_id,
-                "agent_binding",
-                preferred_agent_node_id,
-                active_project_id,
-                self.agent_id,
-            );
-
-            const preferred_project_node_id = try self.resolvePreferredBoundVenomNodeIdForContext(
-                venom_id,
-                active_project_id,
-                null,
-            );
-            defer if (preferred_project_node_id) |value| self.allocator.free(value);
-            _ = try self.addDir(project_venoms_dir, venom_id, false);
-            _ = try self.registerBoundVenomAliasOnly(
-                project_prefix,
-                venom_id,
-                "project_binding",
-                preferred_project_node_id,
-                active_project_id,
-                self.agent_id,
-            );
-        }
+        return session_bound_venoms.seedActiveScopedVenomBindings(
+            self,
+            active_agent_venoms_dir,
+            project_venoms_dir,
+            active_project_id,
+        );
     }
 
     fn seedBoundNodeVenomNamespace(
@@ -3505,7 +3474,7 @@ pub const Session = struct {
         venom_id: []const u8,
         preferred_node_id: []const u8,
     ) !bool {
-        return self.seedBoundNodeVenomNamespaceAt(global_root, "/global", venom_id, "global_binding", preferred_node_id);
+        return session_bound_venoms.seedBoundNodeVenomNamespace(self, global_root, venom_id, preferred_node_id);
     }
 
     fn seedBoundNodeVenomNamespaceAt(
@@ -3516,82 +3485,18 @@ pub const Session = struct {
         scope: []const u8,
         preferred_node_id: ?[]const u8,
     ) !bool {
-        const nodes_root = self.lookupChild(self.root_id, "nodes") orelse return false;
-
-        var selected_node_id: ?[]const u8 = null;
-        var selected_venom_dir_id: ?u32 = null;
-
-        if (preferred_node_id) |selected| {
-            const preferred_node_dir_id = self.lookupChild(nodes_root, selected);
-            if (preferred_node_dir_id) |node_dir_id| {
-                if (self.lookupChild(node_dir_id, "venoms")) |venoms_root_id| {
-                    if (self.lookupChild(venoms_root_id, venom_id)) |venom_dir_id| {
-                        selected_node_id = selected;
-                        selected_venom_dir_id = venom_dir_id;
-                    }
-                }
-            }
-        }
-
-        if (selected_venom_dir_id == null) {
-            const nodes_root_node = self.nodes.get(nodes_root) orelse return false;
-            var node_it = nodes_root_node.children.iterator();
-            while (node_it.next()) |entry| {
-                const node_name = entry.key_ptr.*;
-                const node_dir_id = entry.value_ptr.*;
-                const venoms_root_id = self.lookupChild(node_dir_id, "venoms") orelse continue;
-                const venom_dir_id = self.lookupChild(venoms_root_id, venom_id) orelse continue;
-                selected_node_id = node_name;
-                selected_venom_dir_id = venom_dir_id;
-                break;
-            }
-        }
-
-        const provider_node_id = selected_node_id orelse return false;
-        const provider_dir_id = selected_venom_dir_id orelse return false;
-
-        const alias_dir_id = try self.addDir(alias_root, venom_id, false);
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "README.md");
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "SCHEMA.json");
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "CAPS.json");
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "MOUNTS.json");
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "OPS.json");
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "RUNTIME.json");
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "TEMPLATE.json");
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "HOST.json");
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "PERMISSIONS.json");
-        try self.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "STATUS.json");
-
-        const venom_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ alias_base_path, venom_id });
-        defer self.allocator.free(venom_path);
-        const provider_venom_path = try std.fmt.allocPrint(
-            self.allocator,
-            "/nodes/{s}/venoms/{s}",
-            .{ provider_node_id, venom_id },
-        );
-        defer self.allocator.free(provider_venom_path);
-        const endpoint_path = blk: {
-            if (try self.firstVenomMountPath(provider_dir_id)) |value| break :blk value;
-            break :blk try self.venomEndpointPath(provider_dir_id);
-        };
-        defer if (endpoint_path) |value| self.allocator.free(value);
-        const invoke_path = try self.deriveVenomInvokePath(provider_node_id, venom_id, provider_dir_id);
-        defer if (invoke_path) |value| self.allocator.free(value);
-
-        try self.registerScopedVenomBinding(
+        return session_bound_venoms.seedBoundNodeVenomNamespaceAt(
+            self,
+            alias_root,
+            alias_base_path,
             venom_id,
             scope,
-            venom_path,
-            provider_node_id,
-            provider_venom_path,
-            endpoint_path,
-            invoke_path,
+            preferred_node_id,
         );
-        return true;
     }
 
     fn resolvePreferredBoundVenomNodeId(self: *Session, venom_id: []const u8) !?[]u8 {
-        return self.resolvePreferredBoundVenomNodeIdForContext(venom_id, null, null);
+        return session_bound_venoms.resolvePreferredBoundVenomNodeId(self, venom_id);
     }
 
     fn resolvePreferredBoundVenomNodeIdForContext(
@@ -3600,16 +3505,12 @@ pub const Session = struct {
         project_id: ?[]const u8,
         agent_id: ?[]const u8,
     ) !?[]u8 {
-        const plane = self.control_plane orelse return null;
-        var provider = (try plane.resolvePreferredVenomProviderForContext(
-            self.allocator,
+        return session_bound_venoms.resolvePreferredBoundVenomNodeIdForContext(
+            self,
             venom_id,
-            &.{ "spiderapp-default", "spiderweb-local", "local" },
             project_id,
             agent_id,
-        )) orelse return null;
-        defer provider.deinit(self.allocator);
-        return try self.allocator.dupe(u8, provider.node_id);
+        );
     }
 
     pub fn addDir(self: *Session, parent: ?u32, name: []const u8, writable: bool) !u32 {
@@ -4471,68 +4372,15 @@ pub const Session = struct {
         project_id: ?[]const u8,
         agent_id: ?[]const u8,
     ) !bool {
-        const nodes_root = self.lookupChild(self.root_id, "nodes") orelse return false;
-
-        var selected_node_id: ?[]const u8 = null;
-        var selected_venom_dir_id: ?u32 = null;
-
-        if (preferred_node_id) |selected| {
-            const preferred_node_dir_id = self.lookupChild(nodes_root, selected);
-            if (preferred_node_dir_id) |node_dir_id| {
-                if (self.lookupChild(node_dir_id, "venoms")) |venoms_root_id| {
-                    if (self.lookupChild(venoms_root_id, venom_id)) |venom_dir_id| {
-                        if (self.isBoundVenomNodeAllowed(project_id, agent_id, selected)) {
-                            selected_node_id = selected;
-                            selected_venom_dir_id = venom_dir_id;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (selected_venom_dir_id == null) {
-            const nodes_root_node = self.nodes.get(nodes_root) orelse return false;
-            var node_it = nodes_root_node.children.iterator();
-            while (node_it.next()) |entry| {
-                const node_name = entry.key_ptr.*;
-                const node_dir_id = entry.value_ptr.*;
-                const venoms_root_id = self.lookupChild(node_dir_id, "venoms") orelse continue;
-                const venom_dir_id = self.lookupChild(venoms_root_id, venom_id) orelse continue;
-                if (!self.isBoundVenomNodeAllowed(project_id, agent_id, node_name)) continue;
-                selected_node_id = node_name;
-                selected_venom_dir_id = venom_dir_id;
-                break;
-            }
-        }
-
-        const provider_node_id = selected_node_id orelse return false;
-        const provider_dir_id = selected_venom_dir_id orelse return false;
-        const venom_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ alias_base_path, venom_id });
-        defer self.allocator.free(venom_path);
-        const provider_venom_path = try std.fmt.allocPrint(
-            self.allocator,
-            "/nodes/{s}/venoms/{s}",
-            .{ provider_node_id, venom_id },
-        );
-        defer self.allocator.free(provider_venom_path);
-        const endpoint_path = blk: {
-            if (try self.firstVenomMountPath(provider_dir_id)) |value| break :blk value;
-            break :blk try self.venomEndpointPath(provider_dir_id);
-        };
-        defer if (endpoint_path) |value| self.allocator.free(value);
-        const invoke_path = try self.deriveVenomInvokePath(provider_node_id, venom_id, provider_dir_id);
-        defer if (invoke_path) |value| self.allocator.free(value);
-
-        try self.registerScopedVenomBinding(
+        return session_bound_venoms.registerBoundVenomAliasOnly(
+            self,
+            alias_base_path,
             venom_id,
             scope,
-            venom_path,
-            provider_node_id,
-            provider_venom_path,
-            endpoint_path,
-            invoke_path,
+            preferred_node_id,
+            project_id,
+            agent_id,
         );
-        return true;
     }
 
     pub fn renderJsonValueToWriter(self: *Session, writer: anytype, value: std.json.Value) !void {
@@ -7548,7 +7396,7 @@ pub const Session = struct {
         }
     }
 
-    fn registerScopedVenomBinding(
+    pub fn registerScopedVenomBinding(
         self: *Session,
         venom_id: []const u8,
         scope: []const u8,
@@ -7722,7 +7570,7 @@ pub const Session = struct {
         return self.allocator.dupe(u8, default_target);
     }
 
-    fn firstVenomMountPath(self: *Session, venom_dir_id: u32) !?[]u8 {
+    pub fn firstVenomMountPath(self: *Session, venom_dir_id: u32) !?[]u8 {
         const mounts_id = self.lookupChild(venom_dir_id, "MOUNTS.json") orelse return null;
         const mounts_node = self.nodes.get(mounts_id) orelse return null;
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, mounts_node.content, .{}) catch return null;
@@ -7738,7 +7586,7 @@ pub const Session = struct {
         return null;
     }
 
-    fn venomEndpointPath(self: *Session, venom_dir_id: u32) !?[]u8 {
+    pub fn venomEndpointPath(self: *Session, venom_dir_id: u32) !?[]u8 {
         const status_id = self.lookupChild(venom_dir_id, "STATUS.json") orelse return null;
         const status_node = self.nodes.get(status_id) orelse return null;
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, status_node.content, .{}) catch return null;

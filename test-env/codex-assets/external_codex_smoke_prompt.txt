@@ -1,0 +1,55 @@
+You are working in a Spiderweb-mounted folder.
+
+Rules:
+- Read `./AGENTS.md` first and follow it as mandatory workspace rules.
+- Then do the task below using this mounted workspace.
+- After the required reads listed in `AGENTS.md`, stop exploring and start implementation immediately unless a required service is genuinely missing.
+- Treat the current working directory as the mounted project write root.
+- Use only relative paths from the current directory.
+- Write project files only in the current directory.
+- Keep the task small and deterministic. This is a fast Spiderweb smoke test, not a game-building task.
+- Preserve `./validate_smoke.py`.
+
+Task:
+Create a minimal Spiderweb smoke result in the current directory.
+
+Required output files:
+- `smoke_result.json`
+- `smoke_notes.txt`
+- `README.md`
+
+Content requirements:
+- `smoke_result.json` must be valid JSON and include:
+  - `project_id`
+  - `workspace_root`
+  - `service_root`
+  - `shared_data_inputs`
+  - `required_services`
+  - `bootstrap_complete`
+- `shared_data_inputs` must list exactly:
+  - `./.spiderweb/shared_data/world_seed.json`
+  - `./.spiderweb/shared_data/items_seed.json`
+  - `./.spiderweb/shared_data/puzzle_seed.json`
+- `required_services` must include:
+  - `home`
+  - `mounts`
+  - `workers`
+  - `terminal`
+  - `git`
+  - `search_code`
+  - `library`
+  - `events`
+- `bootstrap_complete` must be `true`
+- `smoke_notes.txt` should briefly state which Spiderweb bootstrap files you read and that you wrote the smoke outputs inside the mounted workspace.
+- `README.md` should briefly describe the smoke outputs and how to rerun the validator.
+
+Before you finish:
+1. Run `python3 validate_smoke.py --workspace . --shared-data ./.spiderweb/shared_data --output smoke_validation.json`
+2. If validation fails, fix only the smoke output files and rerun the validator
+3. In your final note, summarize which Spiderweb bootstrap actions you performed and which mounted paths you used
+
+Important:
+- Do not keep reading extra Spiderweb metadata once bootstrap is complete.
+- Do not inspect unrelated files or wander the namespace before writing the required outputs.
+- Do not use `find`, `rg --files`, or recursive `ls` on `services/`, `projects/`, or `meta/`.
+- Finish only after `smoke_validation.json` has been written successfully.

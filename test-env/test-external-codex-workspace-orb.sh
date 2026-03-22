@@ -21,6 +21,7 @@ build_orb_env_list() {
         SPIDERWEB_PORT
         LOCAL_WORKSPACE_NODE_PORT
         REMOTE_NODE_PORT
+        SPIDERWEB_E2E_SCENARIO
         CODEX_MODE
         CODEX_LAUNCH_CMD
         TRACE_BACKEND

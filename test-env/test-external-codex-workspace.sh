@@ -20,6 +20,7 @@ LOCAL_WORKSPACE_NODE_PORT="${LOCAL_WORKSPACE_NODE_PORT-}"
 REMOTE_NODE_PORT="${REMOTE_NODE_PORT-}"
 
 SPIDERWEB_E2E_VARIANT="${SPIDERWEB_E2E_VARIANT:-linux}"
+SPIDERWEB_E2E_SCENARIO="${SPIDERWEB_E2E_SCENARIO:-game}"
 CODEX_MODE="${CODEX_MODE:-auto}"
 CODEX_LAUNCH_CMD="${CODEX_LAUNCH_CMD:-}"
 TRACE_BACKEND="${TRACE_BACKEND:-}"
@@ -308,6 +309,31 @@ CODEX_BRIDGE_NODE="$CODEX_BRIDGE_DIR/node"
 CODEX_BRIDGE_SETSID="$CODEX_BRIDGE_DIR/setsid"
 CODEX_BRIDGE_LSB_RELEASE="$CODEX_BRIDGE_DIR/lsb_release"
 CODEX_BRIDGE_GETCONF="$CODEX_BRIDGE_DIR/getconf"
+
+case "$SPIDERWEB_E2E_SCENARIO" in
+    game)
+        SCENARIO_NAME="game"
+        PROMPT_TEMPLATE="$ASSET_DIR/external_codex_game_prompt.txt"
+        VALIDATOR_SRC="$ASSET_DIR/validate_text_adventure.py"
+        WORKSPACE_VALIDATOR_BASENAME="validate_game.py"
+        VALIDATION_OUTPUT="$OUTPUT_DIR/game_validation.json"
+        PROJECT_UP_NAME="External Codex Text Adventure"
+        PROJECT_UP_VISION="Installer-first external Codex workspace validation"
+        ;;
+    smoke)
+        SCENARIO_NAME="smoke"
+        PROMPT_TEMPLATE="$ASSET_DIR/external_codex_smoke_prompt.txt"
+        VALIDATOR_SRC="$ASSET_DIR/validate_workspace_smoke.py"
+        WORKSPACE_VALIDATOR_BASENAME="validate_smoke.py"
+        VALIDATION_OUTPUT="$OUTPUT_DIR/smoke_validation.json"
+        PROJECT_UP_NAME="External Codex Smoke"
+        PROJECT_UP_VISION="Fast external Codex bootstrap and write smoke validation"
+        ;;
+    *)
+        log_fail "unsupported SPIDERWEB_E2E_SCENARIO: $SPIDERWEB_E2E_SCENARIO"
+        exit 1
+        ;;
+esac
 CODEX_EXEC_PATH=""
 AGENT_HOME_TARGET_ROOT="$WORKSPACE_EXPORT_ROOT/.spiderweb/agents/$EXTERNAL_AGENT_ID/home"
 AGENT_HOME_MOUNT_ROOT="$MOUNT_WORKSPACE_PATH/.spiderweb/agents/$EXTERNAL_AGENT_ID/home"
@@ -451,13 +477,13 @@ PY
 }
 
 workspace_first_write_info() {
-    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" <<'PY'
+    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
 workspace = Path(sys.argv[1])
-skip = {"AGENTS.md", "validate_game.py"}
+skip = {"AGENTS.md", sys.argv[2]}
 best = None
 
 if workspace.exists():
@@ -859,12 +885,12 @@ PY
 
 assert_seeded_workspace_layout() {
     local path="$1"
-    python3 - "$path" <<'PY'
+    python3 - "$path" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 import sys
 from pathlib import Path
 
 workspace = Path(sys.argv[1])
-expected = [".spiderweb", "AGENTS.md", "validate_game.py"]
+expected = [".spiderweb", "AGENTS.md", sys.argv[2]]
 entries = sorted(item.name for item in workspace.iterdir())
 if entries != expected:
     raise SystemExit(f"expected clean workspace entries {expected}, found {entries}")
@@ -873,12 +899,12 @@ PY
 
 assert_attached_workspace_layout() {
     local path="$1"
-    python3 - "$path" <<'PY'
+    python3 - "$path" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 import sys
 from pathlib import Path
 
 workspace = Path(sys.argv[1])
-expected = [".spiderweb", "AGENTS.md", "validate_game.py"]
+expected = [".spiderweb", "AGENTS.md", sys.argv[2]]
 entries = sorted(item.name for item in workspace.iterdir())
 if entries != expected:
     raise SystemExit(f"expected attached workspace entries {expected}, found {entries}")
@@ -929,7 +955,7 @@ inject_codex_cli_workarounds() {
 }
 
 render_prompt() {
-    python3 - "$ASSET_DIR/external_codex_game_prompt.txt" "$PROMPT_FILE" \
+    python3 - "$PROMPT_TEMPLATE" "$PROMPT_FILE" \
         "$PROJECT_ID" \
         "$MOUNT_POINT" \
         "$MOUNT_POINT/services" \
@@ -960,17 +986,44 @@ PY
 }
 
 write_workspace_seed_files() {
-    cp "$VALIDATOR_SRC" "$WORKSPACE_EXPORT_ROOT/validate_game.py"
-    chmod +x "$WORKSPACE_EXPORT_ROOT/validate_game.py"
+    cp "$VALIDATOR_SRC" "$WORKSPACE_EXPORT_ROOT/$WORKSPACE_VALIDATOR_BASENAME"
+    chmod +x "$WORKSPACE_EXPORT_ROOT/$WORKSPACE_VALIDATOR_BASENAME"
 }
 
 write_workspace_agents_file() {
-    python3 - "$WORKSPACE_EXPORT_ROOT/AGENTS.md" "$PROJECT_ID" <<'PY'
+    python3 - "$WORKSPACE_EXPORT_ROOT/AGENTS.md" "$PROJECT_ID" "$SCENARIO_NAME" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 from pathlib import Path
 import sys
 
 output_path = Path(sys.argv[1])
 project_id = sys.argv[2]
+scenario = sys.argv[3]
+validator_name = sys.argv[4]
+
+if scenario == "game":
+    task_block = f"""- If the user asks for the standard text-adventure task, completion means:
+  - write `game.py`, `game_manifest.json`, `walkthrough.txt`, and `README.md` in the current directory
+  - keep the lantern behind all seeded puzzle gates and do not leave alternate exits or shortcuts that bypass a required seeded puzzle
+  - run `python3 -m py_compile game.py`
+  - run `python3 game.py < walkthrough.txt`
+  - run `python3 {validator_name} --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json`
+  - if a validation step fails, fix the project files and rerun only the failed step
+  - if a file-write command times out or fails partway through, check exactly which target files landed and then rewrite only the missing or incomplete files cleanly
+  - a `0` exit code from the walkthrough or validator means the step succeeded, even if stdout contains prompts like `> `
+  - do not stop after partial outputs; finish when all required files exist and validation succeeds"""
+    rewrite_rules = """- If `game.py` fails compile or walkthrough validation, delete and recreate `game.py` from scratch before retrying. If a regenerated `game.py` still fails compile, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
+- Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless the walkthrough or validator exits non-zero.
+- Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated input prompts such as `> `.
+- Treat `python3 {validator_name} --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json` as successful when it exits with code `0`.""".replace("{validator_name}", validator_name)
+else:
+    task_block = f"""- If the user asks for the fast Spiderweb smoke task, completion means:
+  - write `smoke_result.json`, `smoke_notes.txt`, and `README.md` in the current directory
+  - include the exact shared-data input paths in `smoke_result.json`
+  - keep the writes small and deterministic; this is a bootstrap/write smoke, not a game task
+  - run `python3 {validator_name} --workspace . --shared-data ./.spiderweb/shared_data --output smoke_validation.json`
+  - if validation fails, fix only the required output files and rerun the validator
+  - finish when all required files exist and validation succeeds"""
+    rewrite_rules = f"""- Treat `python3 {validator_name} --workspace . --shared-data ./.spiderweb/shared_data --output smoke_validation.json` as successful when it exits with code `0`."""
 
 managed = f"""# AGENTS.md
 
@@ -997,12 +1050,9 @@ Bootstrap rules:
 - Keep project writes inside the current directory `.` unless the user explicitly asks otherwise.
 - When creating or fixing a project file, rewrite the whole file in one pass instead of appending partial repair fragments.
 - If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
-- If `game.py` fails compile or walkthrough validation, delete and recreate `game.py` from scratch before retrying. If a regenerated `game.py` still fails compile, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
-- Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless the walkthrough or validator exits non-zero.
-- Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated input prompts such as `> `.
-- Treat `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json` as successful when it exits with code `0`.
+{rewrite_rules}
 - Do not rerun either validation command through nested shell wrappers or alternate redirection forms unless the command itself failed.
-- Preserve existing workspace support files such as `./validate_game.py`.
+- Preserve existing workspace support files such as `./{validator_name}`.
 - Do not run broad scans such as `find`, `rg --files`, or recursive `ls` across `services/`, `projects/`, or `meta/`. Read only the exact listed files directly.
 - Do not climb out of this directory with `..` to discover Spiderweb paths. Use the local Spiderweb-managed `./.spiderweb/` projection instead.
 
@@ -1022,16 +1072,7 @@ Namespace facts:
 Task source:
 - The concrete task comes from the user prompt, not from `TASK.md`.
 - After the required reads above, begin implementation and validation immediately unless a required service is genuinely missing.
-- If the user asks for the standard text-adventure task, completion means:
-  - write `game.py`, `game_manifest.json`, `walkthrough.txt`, and `README.md` in the current directory
-  - keep the lantern behind all seeded puzzle gates and do not leave alternate exits or shortcuts that bypass a required seeded puzzle
-  - run `python3 -m py_compile game.py`
-  - run `python3 game.py < walkthrough.txt`
-  - run `python3 validate_game.py --workspace . --shared-data ./.spiderweb/shared_data --output game_validation.json`
-  - if a validation step fails, fix the project files and rerun only the failed step
-  - if a file-write command times out or fails partway through, check exactly which target files landed and then rewrite only the missing or incomplete files cleanly
-  - a `0` exit code from the walkthrough or validator means the step succeeded, even if stdout contains prompts like `> `
-  - do not stop after partial outputs; finish when all required files exist and validation succeeds
+{task_block}
 
 Do not:
 - Invent old metadata field names when the current JSON already defines the contract.
@@ -1451,7 +1492,7 @@ render_codex_launch_command() {
 }
 
 progress_fingerprint() {
-    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" "$CODEX_STDOUT_LOG" "$CODEX_STDERR_LOG" "$CODEX_PTY_LOG" <<'PY'
+    python3 - "$CODEX_PROGRESS_WORKSPACE_PATH" "$CODEX_STDOUT_LOG" "$CODEX_STDERR_LOG" "$CODEX_PTY_LOG" "$WORKSPACE_VALIDATOR_BASENAME" <<'PY'
 from pathlib import Path
 import sys
 import os
@@ -1460,7 +1501,7 @@ workspace = Path(sys.argv[1])
 stdout_log = Path(sys.argv[2])
 stderr_log = Path(sys.argv[3])
 pty_log = Path(sys.argv[4])
-skip_files = {"AGENTS.md", "validate_game.py"}
+skip_files = {"AGENTS.md", sys.argv[5]}
 
 count = 0
 latest = 0
@@ -1891,8 +1932,8 @@ fi
 log_pass "remote shared-data node joined as $REMOTE_NODE_ID"
 
 PROJECT_UP_PAYLOAD="$(jq -cn \
-    --arg name "External Codex Text Adventure" \
-    --arg vision "Installer-first external Codex workspace validation" \
+    --arg name "$PROJECT_UP_NAME" \
+    --arg vision "$PROJECT_UP_VISION" \
     --arg template_id "dev" \
     --arg local_node "$LOCAL_WORKSPACE_NODE_ID" \
     --arg remote_node "$REMOTE_NODE_ID" \
@@ -2002,7 +2043,7 @@ run_live_codex
 
 VALIDATION_STARTED_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 write_codex_progress_timeline
-python3 "$MOUNT_WORKSPACE_PATH/validate_game.py" \
+python3 "$MOUNT_WORKSPACE_PATH/$WORKSPACE_VALIDATOR_BASENAME" \
     --workspace "$MOUNT_WORKSPACE_PATH" \
     --shared-data "$MOUNT_POINT/shared_data" \
     --output "$VALIDATION_OUTPUT"
@@ -2010,8 +2051,8 @@ python3 "$MOUNT_WORKSPACE_PATH/validate_game.py" \
 build_usage_report
 
 if ! jq -e '.ok == true' "$VALIDATION_OUTPUT" >/dev/null 2>&1; then
-    write_handoff_bundle "game_validation_failed"
-    log_fail "game validation failed"
+    write_handoff_bundle "${SCENARIO_NAME}_validation_failed"
+    log_fail "$SCENARIO_NAME validation failed"
     cat "$VALIDATION_OUTPUT"
     exit 1
 fi

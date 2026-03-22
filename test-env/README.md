@@ -105,11 +105,24 @@ Run the Linux harness directly from the repo root:
 bash test-env/test-external-codex-workspace.sh
 ```
 
+For a faster smoke iteration that still exercises bootstrap, mount, external
+Codex launch, and mounted writes, use the light scenario:
+
+```bash
+bash test-env/test-external-codex-workspace-light.sh
+```
+
 On macOS with OrbStack installed, use the Orb wrapper so the exact same Linux
 harness runs inside Orb:
 
 ```bash
 bash test-env/test-external-codex-workspace-orb.sh
+```
+
+Light Orb smoke variant:
+
+```bash
+bash test-env/test-external-codex-workspace-orb-light.sh
 ```
 
 Use `ORB_MACHINE=<name>` or `ORB_USER=<user>` if you need a non-default Orb
@@ -123,10 +136,17 @@ current Spiderweb app build has been installed with
 bash test-env/test-external-codex-workspace-macos.sh
 ```
 
+Light native macOS smoke variant:
+
+```bash
+bash test-env/test-external-codex-workspace-macos-light.sh
+```
+
 Or through `make`:
 
 ```bash
 cd test-env && make test-external-codex-workspace
+cd test-env && make test-external-codex-workspace-light
 ```
 
 Repeatability runner:

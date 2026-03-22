@@ -1429,7 +1429,7 @@ pub const Session = struct {
         const project_nodes_dir = try self.addDir(project_dir, "nodes", false);
         const project_agents_dir = try self.addDir(project_dir, "agents", false);
         const project_meta_dir = try self.addDir(project_dir, "meta", false);
-        const project_venoms_dir = try self.addDir(project_dir, "venoms", false);
+        const workspace_venoms_dir = try self.addDir(project_dir, "venoms", false);
         try self.addDirectoryDescriptors(
             project_dir,
             "Workspace",
@@ -1459,14 +1459,14 @@ pub const Session = struct {
             "Agent links visible within this workspace context.",
         );
         try self.addDirectoryDescriptors(
-            project_venoms_dir,
+            workspace_venoms_dir,
             "Workspace Venoms",
             "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\"],\"roots\":[\"/projects/<workspace_id>/venoms/<venom_id>\",\"/nodes/<node_id>/venoms/<venom_id>\"]}",
             "{\"discover\":true,\"invoke_via_paths\":true}",
             "Workspace-scoped Venom bindings plus raw node Venom discovery.",
         );
         self.active_project_venoms_index_id = try self.addFile(
-            project_venoms_dir,
+            workspace_venoms_dir,
             "VENOMS.json",
             "[]",
             false,
@@ -1642,7 +1642,7 @@ pub const Session = struct {
             std.log.warn("seedNamespace seedBoundGlobalFsNamespace failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.seedActiveScopedVenomBindings(active_agent_venoms_dir, project_venoms_dir, policy.workspace_id) catch |err| {
+        self.seedActiveScopedVenomBindings(active_agent_venoms_dir, workspace_venoms_dir, policy.workspace_id) catch |err| {
             std.log.warn("seedNamespace seedActiveScopedVenomBindings failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -1787,25 +1787,25 @@ pub const Session = struct {
         _ = try self.addFile(project_meta_dir, "health.json", "{\"state\":\"unknown\",\"availability\":{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0},\"drift_count\":0,\"reconcile_state\":\"unknown\",\"queue_depth\":0}", false, .none);
     }
 
-    fn addWorkspaceServiceDiscoveryFiles(self: *Session, meta_root: u32, project_meta_dir: u32, project_id: []const u8) !void {
-        const quickref_json = try self.buildAgentBootstrapQuickrefJson(project_id, self.agent_id);
+    fn addWorkspaceServiceDiscoveryFiles(self: *Session, meta_root: u32, workspace_meta_dir: u32, workspace_id: []const u8) !void {
+        const quickref_json = try self.buildAgentBootstrapQuickrefJson(workspace_id, self.agent_id);
         defer self.allocator.free(quickref_json);
-        _ = try self.addFile(project_meta_dir, "agent_bootstrap_quickref.json", quickref_json, false, .none);
+        _ = try self.addFile(workspace_meta_dir, "agent_bootstrap_quickref.json", quickref_json, false, .none);
         _ = try self.addFile(meta_root, "agent_bootstrap_quickref.json", quickref_json, false, .none);
 
-        const binds_json = try self.buildProjectBindsArrayJson();
+        const binds_json = try self.buildWorkspaceBindsArrayJson();
         defer self.allocator.free(binds_json);
-        _ = try self.addFile(project_meta_dir, "binds.json", binds_json, false, .none);
+        _ = try self.addFile(workspace_meta_dir, "binds.json", binds_json, false, .none);
         _ = try self.addFile(meta_root, "workspace_binds.json", binds_json, false, .none);
 
         const services_json = try self.buildMountedServicesJson();
         defer self.allocator.free(services_json);
-        _ = try self.addFile(project_meta_dir, "mounted_services.json", services_json, false, .none);
+        _ = try self.addFile(workspace_meta_dir, "mounted_services.json", services_json, false, .none);
         _ = try self.addFile(meta_root, "workspace_services.json", services_json, false, .none);
 
         const packages_json = try self.buildVenomPackagesJson();
         defer self.allocator.free(packages_json);
-        _ = try self.addFile(project_meta_dir, "venom_packages.json", packages_json, false, .none);
+        _ = try self.addFile(workspace_meta_dir, "venom_packages.json", packages_json, false, .none);
         _ = try self.addFile(meta_root, "venom_packages.json", packages_json, false, .none);
     }
 
@@ -1814,16 +1814,16 @@ pub const Session = struct {
         const projects_root = self.lookupChild(self.root_id, "projects") orelse return;
         const active_project_id = self.active_namespace_project_id orelse self.project_id orelse return;
         const project_dir = self.lookupChild(projects_root, active_project_id) orelse return;
-        const project_meta_dir = self.lookupChild(project_dir, "meta") orelse return;
-        return self.addWorkspaceServiceDiscoveryFiles(meta_root, project_meta_dir, active_project_id);
+        const workspace_meta_dir = self.lookupChild(project_dir, "meta") orelse return;
+        return self.addWorkspaceServiceDiscoveryFiles(meta_root, workspace_meta_dir, active_project_id);
     }
 
     fn buildVenomPackagesJson(self: *Session) ![]u8 {
         return session_service_discovery.buildVenomPackagesJson(self);
     }
 
-    fn buildProjectBindsArrayJson(self: *Session) ![]u8 {
-        return session_service_discovery.buildProjectBindsArrayJson(self);
+    fn buildWorkspaceBindsArrayJson(self: *Session) ![]u8 {
+        return session_service_discovery.buildWorkspaceBindsArrayJson(self);
     }
 
     pub fn hasProjectBindPath(self: *Session, bind_path: []const u8) bool {
@@ -3563,14 +3563,14 @@ pub const Session = struct {
     fn seedActiveScopedVenomBindings(
         self: *Session,
         active_agent_venoms_dir: u32,
-        project_venoms_dir: u32,
-        active_project_id: []const u8,
+        workspace_venoms_dir: u32,
+        active_workspace_id: []const u8,
     ) !void {
         return session_bound_venoms.seedActiveScopedVenomBindings(
             self,
             active_agent_venoms_dir,
-            project_venoms_dir,
-            active_project_id,
+            workspace_venoms_dir,
+            active_workspace_id,
         );
     }
 
@@ -3608,13 +3608,13 @@ pub const Session = struct {
     fn resolvePreferredBoundVenomNodeIdForContext(
         self: *Session,
         venom_id: []const u8,
-        project_id: ?[]const u8,
+        workspace_id: ?[]const u8,
         agent_id: ?[]const u8,
     ) !?[]u8 {
         return session_bound_venoms.resolvePreferredBoundVenomNodeIdForContext(
             self,
             venom_id,
-            project_id,
+            workspace_id,
             agent_id,
         );
     }

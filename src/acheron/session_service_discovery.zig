@@ -9,7 +9,7 @@ pub fn buildVenomPackagesJson(session: anytype) ![]u8 {
     return venom_packages.buildPackagesJson(session.allocator);
 }
 
-pub fn buildProjectBindsArrayJson(session: anytype) ![]u8 {
+pub fn buildWorkspaceBindsArrayJson(session: anytype) ![]u8 {
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(session.allocator);
     try out.append(session.allocator, '[');

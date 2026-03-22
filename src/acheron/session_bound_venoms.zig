@@ -3,19 +3,19 @@ const std = @import("std");
 pub fn seedActiveScopedVenomBindings(
     session: anytype,
     active_agent_venoms_dir: u32,
-    project_venoms_dir: u32,
-    active_project_id: []const u8,
+    workspace_venoms_dir: u32,
+    active_workspace_id: []const u8,
 ) !void {
     const agent_prefix = try std.fmt.allocPrint(session.allocator, "/agents/{s}/venoms", .{session.agent_id});
     defer session.allocator.free(agent_prefix);
-    const project_prefix = try std.fmt.allocPrint(session.allocator, "/projects/{s}/venoms", .{active_project_id});
-    defer session.allocator.free(project_prefix);
+    const workspace_prefix = try std.fmt.allocPrint(session.allocator, "/projects/{s}/venoms", .{active_workspace_id});
+    defer session.allocator.free(workspace_prefix);
 
     inline for ([_][]const u8{ "events", "fs" }) |venom_id| {
         const preferred_agent_node_id = try resolvePreferredBoundVenomNodeIdForContext(
             session,
             venom_id,
-            active_project_id,
+            active_workspace_id,
             session.agent_id,
         );
         defer if (preferred_agent_node_id) |value| session.allocator.free(value);
@@ -26,25 +26,25 @@ pub fn seedActiveScopedVenomBindings(
             venom_id,
             "agent_binding",
             preferred_agent_node_id,
-            active_project_id,
+            active_workspace_id,
             session.agent_id,
         );
 
-        const preferred_project_node_id = try resolvePreferredBoundVenomNodeIdForContext(
+        const preferred_workspace_node_id = try resolvePreferredBoundVenomNodeIdForContext(
             session,
             venom_id,
-            active_project_id,
+            active_workspace_id,
             null,
         );
-        defer if (preferred_project_node_id) |value| session.allocator.free(value);
-        _ = try session.addDir(project_venoms_dir, venom_id, false);
+        defer if (preferred_workspace_node_id) |value| session.allocator.free(value);
+        _ = try session.addDir(workspace_venoms_dir, venom_id, false);
         _ = try registerBoundVenomAliasOnly(
             session,
-            project_prefix,
+            workspace_prefix,
             venom_id,
             "workspace_binding",
-            preferred_project_node_id,
-            active_project_id,
+            preferred_workspace_node_id,
+            active_workspace_id,
             session.agent_id,
         );
     }
@@ -155,7 +155,7 @@ pub fn resolvePreferredBoundVenomNodeId(session: anytype, venom_id: []const u8) 
 pub fn resolvePreferredBoundVenomNodeIdForContext(
     session: anytype,
     venom_id: []const u8,
-    project_id: ?[]const u8,
+    workspace_id: ?[]const u8,
     agent_id: ?[]const u8,
 ) !?[]u8 {
     const plane = session.control_plane orelse return null;
@@ -163,7 +163,7 @@ pub fn resolvePreferredBoundVenomNodeIdForContext(
         session.allocator,
         venom_id,
         &.{ "spiderapp-default", "spiderweb-local", "local" },
-        project_id,
+        workspace_id,
         agent_id,
     )) orelse return null;
     defer provider.deinit(session.allocator);
@@ -172,14 +172,14 @@ pub fn resolvePreferredBoundVenomNodeIdForContext(
 
 fn isBoundVenomNodeAllowed(
     session: anytype,
-    project_id: ?[]const u8,
+    workspace_id: ?[]const u8,
     agent_id: ?[]const u8,
     node_id: []const u8,
 ) bool {
-    const scoped_project_id = project_id orelse return true;
+    const scoped_workspace_id = workspace_id orelse return true;
     const plane = session.control_plane orelse return false;
     return plane.projectAllowsNodeVenomEvent(
-        scoped_project_id,
+        scoped_workspace_id,
         if (agent_id) |value| value else session.agent_id,
         session.project_token,
         node_id,
@@ -193,7 +193,7 @@ pub fn registerBoundVenomAliasOnly(
     venom_id: []const u8,
     scope: []const u8,
     preferred_node_id: ?[]const u8,
-    project_id: ?[]const u8,
+    workspace_id: ?[]const u8,
     agent_id: ?[]const u8,
 ) !bool {
     const nodes_root = session.lookupChild(session.root_id, "nodes") orelse return false;
@@ -206,7 +206,7 @@ pub fn registerBoundVenomAliasOnly(
         if (preferred_node_dir_id) |node_dir_id| {
             if (session.lookupChild(node_dir_id, "venoms")) |venoms_root_id| {
                 if (session.lookupChild(venoms_root_id, venom_id)) |venom_dir_id| {
-                    if (isBoundVenomNodeAllowed(session, project_id, agent_id, selected)) {
+                    if (isBoundVenomNodeAllowed(session, workspace_id, agent_id, selected)) {
                         selected_node_id = selected;
                         selected_venom_dir_id = venom_dir_id;
                     }
@@ -223,7 +223,7 @@ pub fn registerBoundVenomAliasOnly(
             const node_dir_id = entry.value_ptr.*;
             const venoms_root_id = session.lookupChild(node_dir_id, "venoms") orelse continue;
             const venom_dir_id = session.lookupChild(venoms_root_id, venom_id) orelse continue;
-            if (!isBoundVenomNodeAllowed(session, project_id, agent_id, node_name)) continue;
+            if (!isBoundVenomNodeAllowed(session, workspace_id, agent_id, node_name)) continue;
             selected_node_id = node_name;
             selected_venom_dir_id = venom_dir_id;
             break;

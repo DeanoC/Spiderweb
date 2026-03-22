@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Distributed workspace drift scenario:
 # - start spiderweb + one node
-# - bootstrap project_up with an intentionally unusual export
+# - bootstrap workspace_up with an intentionally unusual export
 # - assert workspace drift metadata is present and well-formed
 
 set -euo pipefail
@@ -225,7 +225,7 @@ PROJECT_UP_RESP="$(control_call workspace_up "$PROJECT_UP_PAYLOAD")"
 PROJECT_ID="$(json_query "$PROJECT_UP_RESP" "payload.workspace_id")"
 
 if [[ -z "$PROJECT_ID" ]]; then
-    log_fail "project_up response missing project id"
+    log_fail "workspace_up response missing workspace id"
     echo "$PROJECT_UP_RESP"
     exit 1
 fi
@@ -235,7 +235,7 @@ RECONCILE_STATE="$(json_query "$PROJECT_UP_RESP" "payload.workspace.reconcile_st
 LAST_ERROR="$(json_query "$PROJECT_UP_RESP" "payload.workspace.last_error")"
 STATUS_RESP=""
 for _ in $(seq 1 5); do
-    if ! STATUS_RESP="$(run_with_timeout 3 "$CONTROL_BIN" "${CONTROL_ARGS[@]}" workspace_status "$(printf '{"project_id":"%s"}' "$PROJECT_ID")" 2>/dev/null)"; then
+    if ! STATUS_RESP="$(run_with_timeout 3 "$CONTROL_BIN" "${CONTROL_ARGS[@]}" workspace_status "$(printf '{"workspace_id":"%s"}' "$PROJECT_ID")" 2>/dev/null)"; then
         sleep 0.25
         continue
     fi

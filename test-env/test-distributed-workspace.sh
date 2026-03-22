@@ -488,17 +488,17 @@ try:
     if ok.get("type") != "control.workspace_create":
         raise RuntimeError(f"correct token was rejected: {json.dumps(ok)}")
     payload = ok.get("payload") or {}
-    project_id = payload.get("project_id")
-    project_token = payload.get("project_token") or ""
-    if not project_id:
-        raise RuntimeError(f"project_create payload missing project_id: {json.dumps(ok)}")
+    workspace_id = payload.get("workspace_id")
+    workspace_token = payload.get("workspace_token") or ""
+    if not workspace_id:
+        raise RuntimeError(f"workspace_create payload missing workspace_id: {json.dumps(ok)}")
 
     delete_payload = {
-        "project_id": project_id,
+        "workspace_id": workspace_id,
         "operator_token": operator_token,
     }
-    if project_token:
-        delete_payload["project_token"] = project_token
+    if workspace_token:
+        delete_payload["workspace_token"] = workspace_token
 
     deleted = call(
         sock,
@@ -796,29 +796,29 @@ try:
         "name": "Distributed Workspace",
         "vision": "multi-node fs mount graph",
     }, "project-create")
-    project_id = project["workspace_id"]
-    project_token = project.get("workspace_token") or ""
+    workspace_id = project["workspace_id"]
+    workspace_token = project.get("workspace_token") or ""
 
-    def with_project_scope(payload):
+    def with_workspace_scope(payload):
         scoped = dict(payload)
-        if project_token:
-            scoped["project_token"] = project_token
+        if workspace_token:
+            scoped["workspace_token"] = workspace_token
         return scoped
 
-    call(sock, "workspace_mount_set", with_project_scope({
-        "project_id": project_id,
+    call(sock, "workspace_mount_set", with_workspace_scope({
+        "workspace_id": workspace_id,
         "node_id": node_a["node_id"],
         "export_name": "work",
         "mount_path": "/src",
     }), "mount-a")
-    call(sock, "workspace_mount_set", with_project_scope({
-        "project_id": project_id,
+    call(sock, "workspace_mount_set", with_workspace_scope({
+        "workspace_id": workspace_id,
         "node_id": node_b["node_id"],
         "export_name": "work",
         "mount_path": "/src",
     }), "mount-b")
-    call(sock, "workspace_activate", with_project_scope({
-        "project_id": project_id,
+    call(sock, "workspace_activate", with_workspace_scope({
+        "workspace_id": workspace_id,
     }), "activate")
     status_payload = call(sock, "workspace_status", {}, "workspace-status")
 
@@ -836,8 +836,8 @@ try:
 
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump({
-            "project_id": project_id,
-            "project_token": project_token,
+            "workspace_id": workspace_id,
+            "workspace_token": workspace_token,
             "node_a_id": node_a["node_id"],
             "node_b_id": node_b["node_id"],
             "mounts": mounts,
@@ -877,7 +877,7 @@ import json
 import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-print(data["project_id"])
+print(data["workspace_id"])
 PY
 )"
 PROJECT_TOKEN="$(python3 - "$CONTROL_SUMMARY" <<'PY'
@@ -885,7 +885,7 @@ import json
 import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     data = json.load(f)
-print(data.get("project_token", ""))
+print(data.get("workspace_token", ""))
 PY
 )"
 NODE_A_ID="$(python3 - "$CONTROL_SUMMARY" <<'PY'
@@ -937,7 +937,7 @@ import sys
 
 host = sys.argv[1]
 port = int(sys.argv[2])
-expected_project_id = sys.argv[3]
+expected_workspace_id = sys.argv[3]
 
 def read_exact(sock, n):
     out = bytearray()
@@ -1054,8 +1054,8 @@ try:
     call(sock, "version", {"protocol": "spiderweb-control"}, "restart-version")
     call(sock, "connect", {}, "restart-connect")
     workspace = call(sock, "workspace_status", {}, "restart-status")
-    if workspace.get("project_id") != expected_project_id:
-        raise RuntimeError(f"project mismatch after restart: {workspace}")
+    if workspace.get("workspace_id") != expected_workspace_id:
+        raise RuntimeError(f"workspace mismatch after restart: {workspace}")
     mounts = [m for m in workspace.get("mounts", []) if m.get("mount_path") == "/src"]
     desired_mounts = [m for m in workspace.get("desired_mounts", []) if m.get("mount_path") == "/src"]
     if len(desired_mounts) < 2:
@@ -1138,16 +1138,16 @@ import sys
 
 host = sys.argv[1]
 port = int(sys.argv[2])
-project_id = sys.argv[3]
-project_token = sys.argv[4]
+workspace_id = sys.argv[3]
+workspace_token = sys.argv[4]
 node_a = sys.argv[5]
 node_b = sys.argv[6]
 status_path = sys.argv[7]
 
-def with_project_scope(payload):
+def with_workspace_scope(payload):
     scoped = dict(payload)
-    if project_token:
-        scoped["project_token"] = project_token
+    if workspace_token:
+        scoped["workspace_token"] = workspace_token
     return scoped
 
 def read_exact(sock, n):
@@ -1264,10 +1264,10 @@ try:
 
     call(sock, "version", {"protocol": "spiderweb-control"}, "version-live")
     call(sock, "connect", {}, "connect-live")
-    call(sock, "workspace_mount_remove", with_project_scope({"project_id": project_id, "mount_path": "/src"}), "rm-src")
-    call(sock, "workspace_mount_set", with_project_scope({"project_id": project_id, "node_id": node_a, "export_name": "work", "mount_path": "/live"}), "add-live-a")
-    call(sock, "workspace_mount_set", with_project_scope({"project_id": project_id, "node_id": node_b, "export_name": "work", "mount_path": "/live"}), "add-live-b")
-    call(sock, "workspace_activate", with_project_scope({"project_id": project_id}), "activate-live")
+    call(sock, "workspace_mount_remove", with_workspace_scope({"workspace_id": workspace_id, "mount_path": "/src"}), "rm-src")
+    call(sock, "workspace_mount_set", with_workspace_scope({"workspace_id": workspace_id, "node_id": node_a, "export_name": "work", "mount_path": "/live"}), "add-live-a")
+    call(sock, "workspace_mount_set", with_workspace_scope({"workspace_id": workspace_id, "node_id": node_b, "export_name": "work", "mount_path": "/live"}), "add-live-b")
+    call(sock, "workspace_activate", with_workspace_scope({"workspace_id": workspace_id}), "activate-live")
     workspace = call(sock, "workspace_status", {}, "status-live")
     with open(status_path, "w", encoding="utf-8") as f:
         json.dump(workspace, f)
@@ -1412,17 +1412,17 @@ import sys
 
 host = sys.argv[1]
 port = int(sys.argv[2])
-project_id = sys.argv[3]
-project_token = sys.argv[4]
+workspace_id = sys.argv[3]
+workspace_token = sys.argv[4]
 node_host = sys.argv[5]
 node_port = int(sys.argv[6])
 node_label = sys.argv[7]
 node_url = f"ws://{node_host}:{node_port}/fs"
 
-def with_project_scope(payload):
+def with_workspace_scope(payload):
     scoped = dict(payload)
-    if project_token:
-        scoped["project_token"] = project_token
+    if workspace_token:
+        scoped["workspace_token"] = workspace_token
     return scoped
 
 def read_exact(sock, n):
@@ -1545,8 +1545,8 @@ try:
         "node_name": f"node-{node_label.lower()}-rejoin",
         "fs_url": node_url,
     }, "rejoin-join")
-    call(sock, "workspace_mount_set", with_project_scope({
-        "project_id": project_id,
+    call(sock, "workspace_mount_set", with_workspace_scope({
+        "workspace_id": workspace_id,
         "node_id": joined["node_id"],
         "export_name": "work",
         "mount_path": "/live",

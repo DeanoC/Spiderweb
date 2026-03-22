@@ -251,17 +251,17 @@ WORKSPACE_DESIRED_JSON="$(json_query "$PROJECT_UP_RESP" "payload.workspace.desir
 WORKSPACE_ACTUAL_JSON="$(json_query "$PROJECT_UP_RESP" "payload.workspace.actual_mounts")"
 
 if [[ -z "$PROJECT_ID" ]]; then
-    log_fail "project_up response missing project id"
+    log_fail "workspace_up response missing workspace id"
     echo "$PROJECT_UP_RESP"
     exit 1
 fi
 if [[ "$CREATED" != "true" && "$CREATED" != "false" ]]; then
-    log_fail "project_up response missing created flag"
+    log_fail "workspace_up response missing created flag"
     echo "$PROJECT_UP_RESP"
     exit 1
 fi
 if [[ "$ACTIVATED" != "true" ]]; then
-    log_fail "project_up did not activate project"
+    log_fail "workspace_up did not activate workspace"
     echo "$PROJECT_UP_RESP"
     exit 1
 fi
@@ -282,16 +282,16 @@ PY
 STATUS_PROJECT_ID=""
 STATUS_DRIFT_COUNT=""
 STATUS_RESP=""
-if STATUS_RESP="$(run_with_timeout 3 "$CONTROL_BIN" "${CONTROL_ARGS[@]}" workspace_status "$(printf '{"project_id":"%s"}' "$PROJECT_ID")" 2>/dev/null)"; then
-    STATUS_PROJECT_ID="$(json_query "$STATUS_RESP" "payload.project_id")"
+if STATUS_RESP="$(run_with_timeout 3 "$CONTROL_BIN" "${CONTROL_ARGS[@]}" workspace_status "$(printf '{"workspace_id":"%s"}' "$PROJECT_ID")" 2>/dev/null)"; then
+    STATUS_PROJECT_ID="$(json_query "$STATUS_RESP" "payload.workspace_id")"
     STATUS_DRIFT_COUNT="$(json_query "$STATUS_RESP" "payload.drift.count")"
 else
-    log_info "workspace_status timed out after project_up; validating from project_up payload"
+    log_info "workspace_status timed out after workspace_up; validating from workspace_up payload"
     STATUS_PROJECT_ID="$PROJECT_ID"
     STATUS_DRIFT_COUNT="$(json_query "$PROJECT_UP_RESP" "payload.workspace.drift.count")"
 fi
 if [[ "$STATUS_PROJECT_ID" != "$PROJECT_ID" ]]; then
-    log_fail "workspace_status project mismatch"
+    log_fail "workspace_status workspace mismatch"
     echo "$STATUS_RESP"
     exit 1
 fi
@@ -301,4 +301,4 @@ if [[ -z "$STATUS_DRIFT_COUNT" ]]; then
     exit 1
 fi
 
-log_pass "bootstrap scenario validated project_up + workspace desired/actual/drift payload"
+log_pass "bootstrap scenario validated workspace_up + workspace desired/actual/drift payload"

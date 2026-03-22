@@ -289,7 +289,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
                 else => return err,
             };
             defer self.allocator.free(result);
-            try self.refreshProjectBindsFromControlPlane();
+            try self.refreshWorkspaceBindsFromControlPlane();
             return buildSuccessResultJson(self, op, result);
         },
         .unmount => {
@@ -333,7 +333,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
                 else => return err,
             };
             defer self.allocator.free(result);
-            try self.refreshProjectBindsFromControlPlane();
+            try self.refreshWorkspaceBindsFromControlPlane();
             return buildSuccessResultJson(self, op, result);
         },
         .unbind => {
@@ -354,7 +354,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
                 else => return err,
             };
             defer self.allocator.free(result);
-            try self.refreshProjectBindsFromControlPlane();
+            try self.refreshWorkspaceBindsFromControlPlane();
             return buildSuccessResultJson(self, op, result);
         },
         .mkdir => {
@@ -588,8 +588,8 @@ fn statusToolName(op: Op) []const u8 {
 
 fn buildListResultJson(self: anytype, project_id_override: ?[]const u8, project_token_override: ?[]const u8) ![]u8 {
     const plane = self.control_plane orelse return buildSuccessResultJson(self, .list, "{\"workspace_id\":null,\"mounts\":[],\"binds\":[]}");
-    const project_id = project_id_override orelse self.project_id orelse return buildSuccessResultJson(self, .list, "{\"workspace_id\":null,\"mounts\":[],\"binds\":[]}");
-    const project_token = if (project_token_override) |value| value else self.project_token;
+    const project_id = project_id_override orelse self.workspace_id orelse return buildSuccessResultJson(self, .list, "{\"workspace_id\":null,\"mounts\":[],\"binds\":[]}");
+    const project_token = if (project_token_override) |value| value else self.workspace_token;
     const escaped_project = try unified.jsonEscape(self.allocator, project_id);
     defer self.allocator.free(escaped_project);
     const payload = if (project_token) |token| blk: {

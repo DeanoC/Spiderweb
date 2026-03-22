@@ -181,7 +181,7 @@ fn isBoundVenomNodeAllowed(
     return plane.projectAllowsNodeVenomEvent(
         scoped_workspace_id,
         if (agent_id) |value| value else session.agent_id,
-        session.project_token,
+        session.workspace_token,
         node_id,
         session.is_admin,
     );

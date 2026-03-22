@@ -342,7 +342,7 @@ pub fn loadWorkspaceStatus(session: anytype, workspace_id: []const u8) !?[]u8 {
     const plane = session.control_plane orelse return null;
     const escaped_workspace_id = try unified.jsonEscape(session.allocator, workspace_id);
     defer session.allocator.free(escaped_workspace_id);
-    const request_json = if (session.project_token) |token| blk: {
+    const request_json = if (session.workspace_token) |token| blk: {
         const escaped_token = try unified.jsonEscape(session.allocator, token);
         defer session.allocator.free(escaped_token);
         break :blk try std.fmt.allocPrint(

@@ -178,7 +178,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
                 const escaped = try unified.jsonEscape(self.allocator, token);
                 defer self.allocator.free(escaped);
                 break :blk2 try std.fmt.allocPrint(self.allocator, ",\"workspace_token\":\"{s}\"", .{escaped});
-            } else if (self.project_token) |token| blk2: {
+            } else if (self.workspace_token) |token| blk2: {
                 const escaped = try unified.jsonEscape(self.allocator, token);
                 defer self.allocator.free(escaped);
                 break :blk2 try std.fmt.allocPrint(self.allocator, ",\"workspace_token\":\"{s}\"", .{escaped});

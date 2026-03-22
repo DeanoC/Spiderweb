@@ -419,9 +419,9 @@ pub const Session = struct {
     agent_id: []u8,
     actor_type: []u8,
     actor_id: []u8,
-    project_id: ?[]u8 = null,
+    workspace_id: ?[]u8 = null,
     active_namespace_workspace_id: ?[]u8 = null,
-    project_token: ?[]u8 = null,
+    workspace_token: ?[]u8 = null,
     namespace_mount_url: ?[]u8 = null,
     namespace_session_key: ?[]u8 = null,
     agents_dir: []u8,
@@ -582,8 +582,8 @@ pub const Session = struct {
             .agent_id = owned_agent,
             .actor_type = owned_actor_type,
             .actor_id = owned_actor_id,
-            .project_id = owned_project,
-            .project_token = owned_project_token,
+            .workspace_id = owned_project,
+            .workspace_token = owned_project_token,
             .namespace_mount_url = owned_namespace_mount_url,
             .namespace_session_key = owned_namespace_session_key,
             .agents_dir = owned_agents_dir,
@@ -606,7 +606,7 @@ pub const Session = struct {
         self.clearWaitSources();
         self.clearSignalEvents();
         self.clearTerminalSessions();
-        self.clearProjectBinds();
+        self.clearWorkspaceBinds();
         self.clearScopedVenomBindings();
         self.clearWorkerPresence();
         self.clearLocalFsLockFiles();
@@ -629,9 +629,9 @@ pub const Session = struct {
         self.allocator.free(self.agent_id);
         self.allocator.free(self.actor_type);
         self.allocator.free(self.actor_id);
-        if (self.project_id) |value| self.allocator.free(value);
+        if (self.workspace_id) |value| self.allocator.free(value);
         if (self.active_namespace_workspace_id) |value| self.allocator.free(value);
-        if (self.project_token) |value| self.allocator.free(value);
+        if (self.workspace_token) |value| self.allocator.free(value);
         if (self.namespace_mount_url) |value| self.allocator.free(value);
         if (self.namespace_session_key) |value| self.allocator.free(value);
         self.allocator.free(self.agents_dir);
@@ -663,7 +663,7 @@ pub const Session = struct {
 
     fn canUseNamespaceShellExec(self: *const Session) bool {
         return self.terminalSupportsInteractiveSessions() and
-            self.project_id != null and
+            self.workspace_id != null and
             self.namespace_mount_url != null and
             self.namespace_session_key != null and
             self.sandbox_mounts_root != null and
@@ -730,8 +730,8 @@ pub const Session = struct {
             runtime_handle,
             agent_id,
             .{
-                .project_id = self.project_id,
-                .project_token = self.project_token,
+                .project_id = self.workspace_id,
+                .project_token = self.workspace_token,
                 .namespace_mount_url = self.namespace_mount_url,
                 .namespace_session_key = self.namespace_session_key,
                 .agents_dir = self.agents_dir,
@@ -780,9 +780,9 @@ pub const Session = struct {
         const plane = self.control_plane orelse return;
         const snapshot = try plane.snapshotNodeVenomEvents(
             self.allocator,
-            self.project_id,
+            self.workspace_id,
             self.agent_id,
-            self.project_token,
+            self.workspace_token,
             self.is_admin,
             0,
         );
@@ -824,7 +824,7 @@ pub const Session = struct {
         const fid = msg.fid orelse return unified.buildFsrpcError(self.allocator, msg.tag, "invalid", "fid is required");
         try self.fids.put(self.allocator, fid, .{ .node_id = self.root_id });
 
-        const escaped_project_id = if (self.project_id) |project_id|
+        const escaped_project_id = if (self.workspace_id) |project_id|
             try unified.jsonEscape(self.allocator, project_id)
         else
             null;
@@ -1314,7 +1314,7 @@ pub const Session = struct {
             self.allocator,
             .{
                 .agent_id = self.agent_id,
-                .workspace_id = self.project_id,
+                .workspace_id = self.workspace_id,
                 .agents_dir = self.agents_dir,
                 .projects_dir = self.projects_dir,
             },
@@ -1580,8 +1580,8 @@ pub const Session = struct {
             _ = try self.addFile(meta_root, "workspace_alerts.json", "[]", false, .none);
         }
 
-        self.refreshProjectBindsFromControlPlane() catch |err| {
-            std.log.warn("seedNamespace refreshProjectBindsFromControlPlane failed: {s}", .{@errorName(err)});
+        self.refreshWorkspaceBindsFromControlPlane() catch |err| {
+            std.log.warn("seedNamespace refreshWorkspaceBindsFromControlPlane failed: {s}", .{@errorName(err)});
             return err;
         };
         if (workspace_status_json) |status_json| {
@@ -1812,7 +1812,7 @@ pub const Session = struct {
     pub fn refreshWorkspaceServiceDiscoveryFiles(self: *Session) !void {
         const meta_root = self.lookupChild(self.root_id, "meta") orelse return;
         const projects_root = self.lookupChild(self.root_id, "projects") orelse return;
-        const active_workspace_id = self.active_namespace_workspace_id orelse self.project_id orelse return;
+        const active_workspace_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return;
         const project_dir = self.lookupChild(projects_root, active_workspace_id) orelse return;
         const workspace_meta_dir = self.lookupChild(project_dir, "meta") orelse return;
         return self.addWorkspaceServiceDiscoveryFiles(meta_root, workspace_meta_dir, active_workspace_id);
@@ -1826,7 +1826,7 @@ pub const Session = struct {
         return session_service_discovery.buildWorkspaceBindsArrayJson(self);
     }
 
-    pub fn hasProjectBindPath(self: *Session, bind_path: []const u8) bool {
+    pub fn hasWorkspaceBindPath(self: *Session, bind_path: []const u8) bool {
         for (self.workspace_binds.items) |bind| {
             if (bind.kind != .workspace) continue;
             if (std.mem.eql(u8, bind.bind_path, bind_path)) return true;
@@ -1974,13 +1974,13 @@ pub const Session = struct {
         return try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ bind_path, suffix });
     }
 
-    pub fn refreshProjectBindsFromControlPlane(self: *Session) !void {
-        self.clearProjectBinds();
+    pub fn refreshWorkspaceBindsFromControlPlane(self: *Session) !void {
+        self.clearWorkspaceBinds();
         const plane = self.control_plane orelse return;
-        const project_id = self.project_id orelse return;
-        const escaped_project = try unified.jsonEscape(self.allocator, project_id);
+        const workspace_id = self.workspace_id orelse return;
+        const escaped_project = try unified.jsonEscape(self.allocator, workspace_id);
         defer self.allocator.free(escaped_project);
-        const payload = if (self.project_token) |token| blk: {
+        const payload = if (self.workspace_token) |token| blk: {
             const escaped_token = try unified.jsonEscape(self.allocator, token);
             defer self.allocator.free(escaped_token);
             break :blk try std.fmt.allocPrint(
@@ -2027,7 +2027,7 @@ pub const Session = struct {
     }
 
     fn appendManagedWorkspaceEntrypointBinds(self: *Session) !void {
-        const workspace_id = self.active_namespace_workspace_id orelse self.project_id orelse return;
+        const workspace_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return;
 
         const quickref_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{workspace_id});
         defer self.allocator.free(quickref_target);
@@ -3357,8 +3357,8 @@ pub const Session = struct {
 
     fn workspaceAllowsAction(self: *Session, action: control_plane_mod.ProjectAction) bool {
         const plane = self.control_plane orelse return true;
-        const project_id = self.project_id orelse return true;
-        return plane.workspaceAllowsAction(project_id, self.agent_id, action, self.project_token, self.is_admin);
+        const workspace_id = self.workspace_id orelse return true;
+        return plane.workspaceAllowsAction(workspace_id, self.agent_id, action, self.workspace_token, self.is_admin);
     }
 
     pub fn canAccessVenomWithPermissions(self: *Session, permissions_json: []const u8) bool {
@@ -3381,7 +3381,7 @@ pub const Session = struct {
             }
             break :blk false;
         };
-        if (require_project_token and self.project_token == null) return false;
+        if (require_project_token and self.workspace_token == null) return false;
 
         if (obj.get("allow_roles")) |roles| {
             if (roles == .array) {
@@ -4116,7 +4116,7 @@ pub const Session = struct {
             return .{
                 .venom_id = "fs",
                 .remote_path = try self.allocator.dupe(u8, value.remote_path),
-                .project_id = self.active_namespace_workspace_id orelse self.project_id,
+                .project_id = self.active_namespace_workspace_id orelse self.workspace_id,
                 .provider_node_id = value.node_id,
                 .provider_export_name = null,
             };
@@ -4180,7 +4180,7 @@ pub const Session = struct {
         return .{
             .venom_id = "fs",
             .remote_path = remote_path,
-            .project_id = self.active_namespace_workspace_id orelse self.project_id,
+            .project_id = self.active_namespace_workspace_id orelse self.workspace_id,
             .provider_node_id = proxy_match.node_id,
             .provider_export_name = proxy_match.export_name,
         };
@@ -4234,7 +4234,7 @@ pub const Session = struct {
     fn boundVenomRouterForProxy(self: *Session, proxy: BoundVenomProxyPath, route_mode: BoundVenomRouteMode) !?acheron_router.Router {
         if (proxy.provider_node_id) |node_id| {
             if (proxy.provider_export_name == null) {
-                const scoped_project_id = proxy.project_id orelse self.active_namespace_workspace_id orelse self.project_id;
+                const scoped_project_id = proxy.project_id orelse self.active_namespace_workspace_id orelse self.workspace_id;
                 if (scoped_project_id != null and !self.isBoundVenomNodeAllowed(scoped_project_id, proxy.agent_id, node_id)) {
                     return null;
                 }
@@ -4463,7 +4463,7 @@ pub const Session = struct {
         return plane.projectAllowsNodeVenomEvent(
             scoped_project_id,
             if (agent_id) |value| value else self.agent_id,
-            self.project_token,
+            self.workspace_token,
             node_id,
             self.is_admin,
         );
@@ -4848,7 +4848,7 @@ pub const Session = struct {
         self.cleanupNamespaceMount();
 
         const sandbox_mounts_root = self.sandbox_mounts_root orelse return error.InvalidState;
-        const project_id = self.project_id orelse return error.InvalidState;
+        const workspace_id = self.workspace_id orelse return error.InvalidState;
         const namespace_mount_url = self.namespace_mount_url orelse return error.InvalidState;
         const namespace_session_key = self.namespace_session_key orelse return error.InvalidState;
         const sandbox_fs_mount_bin = self.sandbox_fs_mount_bin orelse return error.InvalidState;
@@ -4857,7 +4857,7 @@ pub const Session = struct {
         const probe_session_key = try self.buildTerminalProbeSessionKey(namespace_session_key);
         defer self.allocator.free(probe_session_key);
 
-        const project_component = try sanitizePathComponent(self.allocator, project_id);
+        const project_component = try sanitizePathComponent(self.allocator, workspace_id);
         defer self.allocator.free(project_component);
         const agent_component = try sanitizePathComponent(self.allocator, self.agent_id);
         defer self.allocator.free(agent_component);
@@ -4879,8 +4879,8 @@ pub const Session = struct {
         try argv.append(self.allocator, "--namespace-url");
         try argv.append(self.allocator, namespace_mount_url);
         try argv.append(self.allocator, "--workspace-id");
-        try argv.append(self.allocator, project_id);
-        if (self.namespace_auth_token orelse self.control_operator_token orelse self.project_token) |token| {
+        try argv.append(self.allocator, workspace_id);
+        if (self.namespace_auth_token orelse self.control_operator_token orelse self.workspace_token) |token| {
             try argv.append(self.allocator, "--auth-token");
             try argv.append(self.allocator, token);
         }
@@ -4932,7 +4932,7 @@ pub const Session = struct {
     fn probeNamespaceMountReady(self: *Session, probe_session_key: []const u8) !bool {
         const sandbox_fs_mount_bin = self.sandbox_fs_mount_bin orelse return error.InvalidState;
         const namespace_mount_url = self.namespace_mount_url orelse return error.InvalidState;
-        const project_id = self.project_id orelse return error.InvalidState;
+        const workspace_id = self.workspace_id orelse return error.InvalidState;
 
         var argv = std.ArrayListUnmanaged([]const u8){};
         defer argv.deinit(self.allocator);
@@ -4940,8 +4940,8 @@ pub const Session = struct {
         try argv.append(self.allocator, "--namespace-url");
         try argv.append(self.allocator, namespace_mount_url);
         try argv.append(self.allocator, "--workspace-id");
-        try argv.append(self.allocator, project_id);
-        if (self.namespace_auth_token orelse self.control_operator_token orelse self.project_token) |token| {
+        try argv.append(self.allocator, workspace_id);
+        if (self.namespace_auth_token orelse self.control_operator_token orelse self.workspace_token) |token| {
             try argv.append(self.allocator, "--auth-token");
             try argv.append(self.allocator, token);
         }
@@ -7272,7 +7272,7 @@ pub const Session = struct {
         return events_venom.clearSignalEvents(self);
     }
 
-    fn clearProjectBinds(self: *Session) void {
+    fn clearWorkspaceBinds(self: *Session) void {
         for (self.workspace_binds.items) |*bind| bind.deinit(self.allocator);
         self.workspace_binds.deinit(self.allocator);
         self.workspace_binds = .{};
@@ -7696,7 +7696,7 @@ fn parseEntityScopedVenomAliasPrefix(
 }
 
 fn parseServiceScopedVenomAliasPrefix(self: *Session, path: []const u8) ?ParsedServiceScopedVenomAlias {
-    const project_id = self.active_namespace_workspace_id orelse self.project_id orelse return null;
+    const project_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return null;
     const parsed = parseScopedVenomAliasPrefix(path, "/services/") orelse
         parseScopedVenomAliasPrefix(path, workspace_managed_services_absolute_prefix) orelse
         return null;

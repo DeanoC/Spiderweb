@@ -169,8 +169,8 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
     _ = op;
     const agent_id = extractOptionalStringByNames(args_obj, &[_][]const u8{"agent_id"}) orelse self.agent_id;
     if (!isValidIdentifier(agent_id)) return error.InvalidPayload;
-    const project_id = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_id"}) orelse self.project_id orelse return error.InvalidPayload;
-    const project_token = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_token"}) orelse self.project_token;
+    const project_id = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_id"}) orelse self.workspace_id orelse return error.InvalidPayload;
+    const project_token = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_token"}) orelse self.workspace_token;
 
     const bind_path = if (extractOptionalStringByNames(args_obj, &[_][]const u8{ "bind_path", "home_path" })) |value| blk: {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
@@ -204,14 +204,14 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
         else => return err,
     };
 
-    try self.refreshProjectBindsFromControlPlane();
+    try self.refreshWorkspaceBindsFromControlPlane();
     return buildEnsureResultJson(self, agent_id, project_id, bind_path, target_path);
 }
 
 fn buildEnsureTemplateJson(self: anytype) ![]u8 {
     const escaped_agent_id = try unified.jsonEscape(self.allocator, self.agent_id);
     defer self.allocator.free(escaped_agent_id);
-    const project_id = self.project_id orelse "";
+    const project_id = self.workspace_id orelse "";
     const escaped_project_id = try unified.jsonEscape(self.allocator, project_id);
     defer self.allocator.free(escaped_project_id);
     return std.fmt.allocPrint(

@@ -631,7 +631,7 @@ fn writeBootstrapRequiredServices(session: anytype, jw: *std.json.Stringify) !us
         const bind_path = try namespacePathToEntrypointRelative(session.allocator, bind_namespace_path);
         defer session.allocator.free(bind_path);
 
-        const present = session.hasProjectBindPath(bind_namespace_path);
+        const present = session.hasWorkspaceBindPath(bind_namespace_path);
         if (present) present_count += 1;
 
         const ensure_path = if (service.ensure_path) |value|
@@ -675,7 +675,7 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, workspace_id: []const u8) 
     for (bootstrap_required_services) |service| {
         const bind_path = try std.fmt.allocPrint(session.allocator, "/services/{s}", .{service.venom_id});
         defer session.allocator.free(bind_path);
-        const target = if (session.hasProjectBindPath(bind_path)) &available_services else &missing_services;
+        const target = if (session.hasWorkspaceBindPath(bind_path)) &available_services else &missing_services;
         if (target.items.len != 0) try target.appendSlice(session.allocator, ", ");
         try target.appendSlice(session.allocator, service.venom_id);
     }

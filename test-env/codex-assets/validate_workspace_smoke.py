@@ -88,9 +88,9 @@ def main() -> int:
     checks.extend(
         [
             {
-                "check": "project_id_present",
-                "ok": isinstance(payload.get("project_id"), str) and len(payload["project_id"]) > 0,
-                "detail": payload.get("project_id"),
+                "check": "workspace_id_present",
+                "ok": isinstance(payload.get("workspace_id"), str) and len(payload["workspace_id"]) > 0,
+                "detail": payload.get("workspace_id"),
             },
             {
                 "check": "workspace_root",

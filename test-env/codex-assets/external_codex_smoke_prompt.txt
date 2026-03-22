@@ -40,6 +40,7 @@ Content requirements:
   - `library`
   - `events`
 - `bootstrap_complete` must be `true`
+- Do not use legacy `project_id` or `project_token` keys in `smoke_result.json`
 - `smoke_notes.txt` should briefly state which Spiderweb bootstrap files you read and that you wrote the smoke outputs inside the mounted workspace.
 - `README.md` should briefly describe the smoke outputs and how to rerun the validator.
 

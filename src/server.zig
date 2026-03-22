@@ -11,6 +11,7 @@ const server_protocol_validation = @import("server_protocol_validation.zig");
 const server_control_scope = @import("server_control_scope.zig");
 const server_local_node_supervisor = @import("server_local_node_supervisor.zig");
 const server_metrics_http = @import("server_metrics_http.zig");
+const server_runtime_workers = @import("server_runtime_workers.zig");
 const server_session_payloads = @import("server_session_payloads.zig");
 const server_workspace_status = @import("server_workspace_status.zig");
 const fs_protocol = @import("spiderweb_fs").fs_protocol;
@@ -2530,7 +2531,7 @@ const AgentRuntimeRegistry = struct {
         self.reconcile_worker_mutex.unlock();
         self.reconcile_worker_thread = try std.Thread.spawn(
             .{},
-            reconcileWorkerMain,
+            server_runtime_workers.reconcileWorkerMain,
             .{self},
         );
     }
@@ -2541,7 +2542,7 @@ const AgentRuntimeRegistry = struct {
         self.venom_presence_worker_mutex.unlock();
         self.venom_presence_worker_thread = try std.Thread.spawn(
             .{},
-            servicePresenceWorkerMain,
+            server_runtime_workers.servicePresenceWorkerMain,
             .{self},
         );
     }
@@ -2567,6 +2568,24 @@ const AgentRuntimeRegistry = struct {
         self.reconcile_worker_mutex.lock();
         defer self.reconcile_worker_mutex.unlock();
         return self.reconcile_worker_stop;
+    }
+
+    pub fn runReconcileWorkerLoop(self: *AgentRuntimeRegistry) void {
+        while (true) {
+            if (self.shouldStopReconcileWorker()) return;
+
+            const maybe_payload = self.control_plane.runReconcileCycle(false) catch |err| {
+                std.log.warn("control-plane reconcile worker error: {s}", .{@errorName(err)});
+                if (self.shouldStopReconcileWorker()) return;
+                std.Thread.sleep(self.reconcile_worker_interval_ms * std.time.ns_per_ms);
+                continue;
+            };
+            if (maybe_payload) |payload| {
+                defer self.allocator.free(payload);
+            }
+
+            std.Thread.sleep(self.reconcile_worker_interval_ms * std.time.ns_per_ms);
+        }
     }
 
     fn requestRuntimeResidencyWorkerStop(self: *AgentRuntimeRegistry) void {
@@ -3144,14 +3163,14 @@ const AgentRuntimeRegistry = struct {
         self.emitSessionAttachStateDebugEvent(binding_key, snapshot);
     }
 
-    fn beginRuntimeWarmupThread(self: *AgentRuntimeRegistry) !void {
+    pub fn beginRuntimeWarmupThread(self: *AgentRuntimeRegistry) !void {
         self.runtime_warmup_lifecycle_mutex.lock();
         defer self.runtime_warmup_lifecycle_mutex.unlock();
         if (self.runtime_warmup_stopping) return error.ShuttingDown;
         self.runtime_warmup_inflight += 1;
     }
 
-    fn finishRuntimeWarmupThread(self: *AgentRuntimeRegistry) void {
+    pub fn finishRuntimeWarmupThread(self: *AgentRuntimeRegistry) void {
         self.runtime_warmup_lifecycle_mutex.lock();
         if (self.runtime_warmup_inflight > 0) {
             self.runtime_warmup_inflight -= 1;
@@ -3171,31 +3190,13 @@ const AgentRuntimeRegistry = struct {
         project_id: ?[]const u8,
         project_token: ?[]const u8,
     ) !void {
-        try self.beginRuntimeWarmupThread();
-        errdefer self.finishRuntimeWarmupThread();
-
-        const ctx = try self.allocator.create(RuntimeWarmupThreadContext);
-        ctx.* = .{
-            .allocator = self.allocator,
-            .runtime_registry = self,
-            .binding_key = null,
-            .agent_id = null,
-            .project_id = null,
-            .project_token = null,
-        };
-        errdefer ctx.deinit();
-
-        ctx.binding_key = try self.allocator.dupe(u8, binding_key);
-        ctx.agent_id = try self.allocator.dupe(u8, agent_id);
-        if (project_id) |value| {
-            ctx.project_id = try self.allocator.dupe(u8, value);
-        }
-        if (project_token) |value| {
-            ctx.project_token = try self.allocator.dupe(u8, value);
-        }
-
-        const thread = try std.Thread.spawn(.{}, runtimeWarmupThreadMain, .{ctx});
-        thread.detach();
+        try server_runtime_workers.spawnRuntimeWarmupThread(
+            self,
+            binding_key,
+            agent_id,
+            project_id,
+            project_token,
+        );
     }
 
     fn ensureRuntimeWarmup(
@@ -3448,51 +3449,27 @@ const AgentRuntimeRegistry = struct {
         }
     }
 
-};
+    pub fn runRuntimeWarmupThread(
+        self: *AgentRuntimeRegistry,
+        binding_key: []const u8,
+        agent_id: []const u8,
+        project_id: ?[]const u8,
+        project_token: ?[]const u8,
+    ) void {
+        defer self.finishRuntimeWarmupThread();
 
-fn sessionAttachStateName(state: SessionAttachState) []const u8 {
-    return switch (state) {
-        .warming => "warming",
-        .ready => "ready",
-        .err => "error",
-    };
-}
-
-const RuntimeWarmupThreadContext = struct {
-    allocator: std.mem.Allocator,
-    runtime_registry: *AgentRuntimeRegistry,
-    binding_key: ?[]u8 = null,
-    agent_id: ?[]u8 = null,
-    project_id: ?[]u8 = null,
-    project_token: ?[]u8 = null,
-
-    fn deinit(self: *RuntimeWarmupThreadContext) void {
-        if (self.binding_key) |value| self.allocator.free(value);
-        if (self.agent_id) |value| self.allocator.free(value);
-        if (self.project_id) |value| self.allocator.free(value);
-        if (self.project_token) |value| self.allocator.free(value);
-        self.allocator.destroy(self);
-    }
-};
-
-fn runtimeWarmupThreadMain(ctx: *RuntimeWarmupThreadContext) void {
-    defer ctx.deinit();
-    defer ctx.runtime_registry.finishRuntimeWarmupThread();
-    const binding_key = ctx.binding_key orelse return;
-    const agent_id = ctx.agent_id orelse return;
-
-    const runtime = ctx.runtime_registry.getOrCreate(
+        const runtime = self.getOrCreate(
         agent_id,
-        ctx.project_id,
-        ctx.project_token,
+        project_id,
+        project_token,
     ) catch |err| {
         std.log.warn("runtime warmup thread failed: agent={s} project={s} err={s}", .{
             agent_id,
-            ctx.project_id orelse "__auto__",
+            project_id orelse "__auto__",
             @errorName(err),
         });
         const info = AgentRuntimeRegistry.mapRuntimeWarmupError(err);
-        ctx.runtime_registry.markRuntimeWarmupError(
+        self.markRuntimeWarmupError(
             binding_key,
             info.code,
             info.message,
@@ -3501,42 +3478,24 @@ fn runtimeWarmupThreadMain(ctx: *RuntimeWarmupThreadContext) void {
     };
     runtime.release();
 
-    ctx.runtime_registry.markRuntimeWarmupReady(binding_key);
-}
-
-fn reconcileWorkerMain(runtime_registry: *AgentRuntimeRegistry) void {
-    while (true) {
-        if (runtime_registry.shouldStopReconcileWorker()) return;
-
-        const maybe_payload = runtime_registry.control_plane.runReconcileCycle(false) catch |err| {
-            std.log.warn("control-plane reconcile worker error: {s}", .{@errorName(err)});
-            if (runtime_registry.shouldStopReconcileWorker()) return;
-            std.Thread.sleep(runtime_registry.reconcile_worker_interval_ms * std.time.ns_per_ms);
-            continue;
-        };
-        if (maybe_payload) |payload| {
-            defer runtime_registry.allocator.free(payload);
-        }
-
-        std.Thread.sleep(runtime_registry.reconcile_worker_interval_ms * std.time.ns_per_ms);
+        self.markRuntimeWarmupReady(binding_key);
     }
-}
 
-fn servicePresenceWorkerMain(runtime_registry: *AgentRuntimeRegistry) void {
-    while (true) {
-        runtime_registry.venom_presence_worker_mutex.lock();
-        while (runtime_registry.venom_presence_jobs.items.len == 0 and !runtime_registry.venom_presence_worker_stop) {
-            runtime_registry.venom_presence_worker_cond.wait(&runtime_registry.venom_presence_worker_mutex);
-        }
-        if (runtime_registry.venom_presence_worker_stop and runtime_registry.venom_presence_jobs.items.len == 0) {
-            runtime_registry.venom_presence_worker_mutex.unlock();
-            return;
-        }
-        var job = runtime_registry.venom_presence_jobs.orderedRemove(0);
-        runtime_registry.venom_presence_worker_mutex.unlock();
-        defer job.deinit(runtime_registry.allocator);
+    pub fn runServicePresenceWorkerLoop(self: *AgentRuntimeRegistry) void {
+        while (true) {
+            self.venom_presence_worker_mutex.lock();
+            while (self.venom_presence_jobs.items.len == 0 and !self.venom_presence_worker_stop) {
+                self.venom_presence_worker_cond.wait(&self.venom_presence_worker_mutex);
+            }
+            if (self.venom_presence_worker_stop and self.venom_presence_jobs.items.len == 0) {
+                self.venom_presence_worker_mutex.unlock();
+                return;
+            }
+            var job = self.venom_presence_jobs.orderedRemove(0);
+            self.venom_presence_worker_mutex.unlock();
+            defer job.deinit(self.allocator);
 
-        runtime_registry.dispatchRuntimeAgentControlForTarget(
+            self.dispatchRuntimeAgentControlForTarget(
             job.agent_id,
             job.project_id,
             "venom.event",
@@ -3551,8 +3510,18 @@ fn servicePresenceWorkerMain(runtime_registry: *AgentRuntimeRegistry) void {
                     @errorName(err),
                 },
             );
-        };
+            };
+        }
     }
+
+};
+
+fn sessionAttachStateName(state: SessionAttachState) []const u8 {
+    return switch (state) {
+        .warming => "warming",
+        .ready => "ready",
+        .err => "error",
+    };
 }
 
 pub fn run(

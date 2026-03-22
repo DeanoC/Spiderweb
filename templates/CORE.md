@@ -124,7 +124,7 @@ For `file_*` tool args, prefer workspace-relative paths (for example `global/...
   - `/global/library/topics/terminal-workflows.md`
   - `/global/library/topics/memory-management.md`
   - `/global/library/topics/memory-workflows.md`
-  - `/global/library/topics/project-mounts-and-binds.md`
+  - `/global/library/topics/workspace-mounts-and-binds.md`
   - `/global/library/topics/agent-management-and-sub-brains.md`
   - `/global/library/Index.md`
 

@@ -15,7 +15,7 @@ Each entry provides:
 
 Scope guidance:
 
-- `project_namespace`: project-shared services under `/global/*`
+- `project_namespace`: workspace-shared services under `/global/*`
 - `node`: node/device Venoms under `/nodes/<node_id>/venoms/*`
 - `global_namespace`: shared global resources under `/global/*`
 

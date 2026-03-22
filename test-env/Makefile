@@ -115,7 +115,7 @@ package-external-codex-repro: ## Build a ready-to-share Codex stall repro bundle
 test-distributed-workspace: ## Run distributed workspace failover integration test
 	@bash ./test-distributed-workspace.sh
 
-test-distributed-workspace-bootstrap: ## Run distributed workspace project_up bootstrap scenario
+test-distributed-workspace-bootstrap: ## Run distributed workspace workspace_up bootstrap scenario
 	@bash ./test-distributed-workspace-bootstrap.sh
 
 test-distributed-workspace-drift: ## Run distributed workspace drift/reconcile scenario

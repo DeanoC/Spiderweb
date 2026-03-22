@@ -4662,21 +4662,9 @@ fn handleWebSocketConnection(
                             .workspace_token_rotate,
                             .workspace_token_revoke,
                             .workspace_activate,
-                            .project_create,
-                            .project_update,
-                            .project_delete,
-                            .project_list,
-                            .project_get,
-                            .project_mount_set,
-                            .project_mount_remove,
-                            .project_mount_list,
-                            .project_token_rotate,
-                            .project_token_revoke,
-                            .project_activate,
                             .workspace_status,
                             .reconcile_status,
                             .workspace_up,
-                            .project_up,
                             .audit_tail,
                             => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
@@ -4911,13 +4899,6 @@ fn isWorkspaceTopologyMutation(control_type: unified.ControlType) bool {
         .workspace_mount_remove,
         .workspace_activate,
         .workspace_up,
-        .project_create,
-        .project_update,
-        .project_delete,
-        .project_mount_set,
-        .project_mount_remove,
-        .project_activate,
-        .project_up,
         => true,
         else => false,
     };
@@ -5651,13 +5632,13 @@ test "server: operator token gate protects control mutations" {
     defer connect_ack.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.project_create\",\"id\":\"p-missing\",\"payload\":{\"name\":\"NoToken\",\"vision\":\"NoToken\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.workspace_create\",\"id\":\"p-missing\",\"payload\":{\"name\":\"NoToken\",\"vision\":\"NoToken\"}}");
     var missing_token = try readServerFrame(allocator, &client);
     defer missing_token.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, missing_token.payload, "\"type\":\"control.error\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, missing_token.payload, "\"code\":\"missing_field\"") != null);
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.project_create\",\"id\":\"p-bad\",\"payload\":{\"name\":\"BadToken\",\"vision\":\"BadToken\",\"operator_token\":\"wrong\"}}");
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.workspace_create\",\"id\":\"p-bad\",\"payload\":{\"name\":\"BadToken\",\"vision\":\"BadToken\",\"operator_token\":\"wrong\"}}");
     var bad_token = try readServerFrame(allocator, &client);
     defer bad_token.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, bad_token.payload, "\"type\":\"control.error\"") != null);

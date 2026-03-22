@@ -149,19 +149,12 @@ fn isWorkspaceTopologyMutation(control_type: unified.ControlType) bool {
         .workspace_mount_remove,
         .workspace_activate,
         .workspace_up,
-        .project_create,
-        .project_update,
-        .project_delete,
-        .project_mount_set,
-        .project_mount_remove,
-        .project_activate,
-        .project_up,
         => true,
         else => false,
     };
 }
 
-fn isWorkspaceAliasControlType(control_type: unified.ControlType) bool {
+fn isWorkspaceApiControlType(control_type: unified.ControlType) bool {
     return switch (control_type) {
         .workspace_create,
         .workspace_update,
@@ -183,24 +176,6 @@ fn isWorkspaceAliasControlType(control_type: unified.ControlType) bool {
         .workspace_up,
         => true,
         else => false,
-    };
-}
-
-fn canonicalProjectControlType(control_type: unified.ControlType) unified.ControlType {
-    return switch (control_type) {
-        .workspace_create => .project_create,
-        .workspace_update => .project_update,
-        .workspace_delete => .project_delete,
-        .workspace_list => .project_list,
-        .workspace_get => .project_get,
-        .workspace_mount_set => .project_mount_set,
-        .workspace_mount_remove => .project_mount_remove,
-        .workspace_mount_list => .project_mount_list,
-        .workspace_token_rotate => .project_token_rotate,
-        .workspace_token_revoke => .project_token_revoke,
-        .workspace_activate => .project_activate,
-        .workspace_up => .project_up,
-        else => control_type,
     };
 }
 
@@ -277,15 +252,14 @@ pub fn handleControlPlaneCommand(
     payload_json: ?[]const u8,
     connection_workspace_url: ?[]const u8,
 ) ![]u8 {
-    const control_type_canonical = canonicalProjectControlType(control_type);
-    const request_json = if (isWorkspaceAliasControlType(control_type) or control_type == .workspace_status)
+    const request_json = if (isWorkspaceApiControlType(control_type) or control_type == .workspace_status)
         try rewriteJsonFieldAliases(runtime_registry.allocator, payload_json, &workspace_to_project_aliases)
     else
         null;
     defer if (request_json) |value| runtime_registry.allocator.free(value);
 
     const effective_payload = if (request_json) |value| @as(?[]const u8, value) else payload_json;
-    const raw_response_json = switch (control_type_canonical) {
+    const raw_response_json = switch (control_type) {
         .node_invite_create => try runtime_registry.control_plane.createNodeInvite(effective_payload),
         .node_join_request => try runtime_registry.control_plane.nodeJoinRequest(effective_payload),
         .node_join_pending_list => try runtime_registry.control_plane.listPendingNodeJoins(effective_payload),
@@ -300,32 +274,32 @@ pub fn handleControlPlaneCommand(
         .node_list => try runtime_registry.control_plane.listNodes(),
         .node_get => try runtime_registry.control_plane.getNode(effective_payload),
         .node_delete => try runtime_registry.control_plane.deleteNode(effective_payload),
-        .project_create => try runtime_registry.control_plane.createProject(effective_payload),
-        .project_update => try runtime_registry.control_plane.updateProjectWithRole(effective_payload, is_admin),
-        .project_delete => try runtime_registry.control_plane.deleteProjectWithRole(effective_payload, is_admin),
-        .project_list => try runtime_registry.control_plane.listProjects(),
-        .project_get => try runtime_registry.control_plane.getProjectWithRole(effective_payload, is_admin),
+        .workspace_create => try runtime_registry.control_plane.createProject(effective_payload),
+        .workspace_update => try runtime_registry.control_plane.updateProjectWithRole(effective_payload, is_admin),
+        .workspace_delete => try runtime_registry.control_plane.deleteProjectWithRole(effective_payload, is_admin),
+        .workspace_list => try runtime_registry.control_plane.listProjects(),
+        .workspace_get => try runtime_registry.control_plane.getProjectWithRole(effective_payload, is_admin),
         .workspace_template_list => try runtime_registry.control_plane.listWorkspaceTemplates(),
         .workspace_template_get => try runtime_registry.control_plane.getWorkspaceTemplate(effective_payload),
-        .project_mount_set => try runtime_registry.control_plane.setProjectMountWithRole(effective_payload, is_admin),
-        .project_mount_remove => try runtime_registry.control_plane.removeProjectMountWithRole(effective_payload, is_admin),
-        .project_mount_list => try runtime_registry.control_plane.listProjectMountsWithRole(effective_payload, is_admin),
+        .workspace_mount_set => try runtime_registry.control_plane.setProjectMountWithRole(effective_payload, is_admin),
+        .workspace_mount_remove => try runtime_registry.control_plane.removeProjectMountWithRole(effective_payload, is_admin),
+        .workspace_mount_list => try runtime_registry.control_plane.listProjectMountsWithRole(effective_payload, is_admin),
         .workspace_bind_set => try runtime_registry.control_plane.setProjectBindWithRole(effective_payload, is_admin),
         .workspace_bind_remove => try runtime_registry.control_plane.removeProjectBindWithRole(effective_payload, is_admin),
         .workspace_bind_list => try runtime_registry.control_plane.listProjectBindsWithRole(effective_payload, is_admin),
-        .project_token_rotate => try runtime_registry.control_plane.rotateProjectTokenWithRole(effective_payload, is_admin),
-        .project_token_revoke => try runtime_registry.control_plane.revokeProjectTokenWithRole(effective_payload, is_admin),
-        .project_activate => try runtime_registry.control_plane.activateProjectWithRole(agent_id, effective_payload, is_admin),
+        .workspace_token_rotate => try runtime_registry.control_plane.rotateProjectTokenWithRole(effective_payload, is_admin),
+        .workspace_token_revoke => try runtime_registry.control_plane.revokeProjectTokenWithRole(effective_payload, is_admin),
+        .workspace_activate => try runtime_registry.control_plane.activateProjectWithRole(agent_id, effective_payload, is_admin),
         .workspace_status => try runtime_registry.control_plane.workspaceStatusWithRole(agent_id, effective_payload, is_admin),
         .reconcile_status => try runtime_registry.control_plane.reconcileStatus(effective_payload),
-        .project_up => try runtime_registry.control_plane.projectUpWithRole(agent_id, effective_payload, is_admin),
+        .workspace_up => try runtime_registry.control_plane.projectUpWithRole(agent_id, effective_payload, is_admin),
         .audit_tail => try runtime_registry.buildAuditTailPayload(effective_payload),
         else => return error.UnsupportedControlPlaneOperation,
     };
     errdefer runtime_registry.allocator.free(raw_response_json);
 
     const response_json = blk: {
-        if (control_type_canonical == .workspace_status) {
+        if (control_type == .workspace_status) {
             break :blk try server_workspace_status.rewriteWorkspaceStatusFsUrls(
                 runtime_registry.allocator,
                 raw_response_json,
@@ -337,7 +311,7 @@ pub fn handleControlPlaneCommand(
     if (response_json.ptr != raw_response_json.ptr) runtime_registry.allocator.free(raw_response_json);
     errdefer runtime_registry.allocator.free(response_json);
 
-    if (isWorkspaceAliasControlType(control_type) or control_type == .workspace_status) {
+    if (isWorkspaceApiControlType(control_type) or control_type == .workspace_status) {
         const rewritten = try rewriteJsonFieldAliases(runtime_registry.allocator, response_json, &project_to_workspace_aliases);
         const rewritten_value = rewritten orelse return response_json;
         runtime_registry.allocator.free(response_json);

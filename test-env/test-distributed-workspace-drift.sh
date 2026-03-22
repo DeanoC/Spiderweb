@@ -221,8 +221,8 @@ NODE_ID="$(json_query "$JOIN_RESP" "payload.node_id")"
 PROJECT_NAME="Drift Matrix $(date +%s)"
 # Use export_name=missing to exercise desired/actual drift metadata paths.
 PROJECT_UP_PAYLOAD="$(printf '{"name":"%s","vision":"%s","activate":true,"desired_mounts":[{"mount_path":"/broken","node_id":"%s","export_name":"missing"}]}' "$PROJECT_NAME" "$PROJECT_NAME" "$NODE_ID")"
-PROJECT_UP_RESP="$(control_call project_up "$PROJECT_UP_PAYLOAD")"
-PROJECT_ID="$(json_query "$PROJECT_UP_RESP" "payload.project_id")"
+PROJECT_UP_RESP="$(control_call workspace_up "$PROJECT_UP_PAYLOAD")"
+PROJECT_ID="$(json_query "$PROJECT_UP_RESP" "payload.workspace_id")"
 
 if [[ -z "$PROJECT_ID" ]]; then
     log_fail "project_up response missing project id"

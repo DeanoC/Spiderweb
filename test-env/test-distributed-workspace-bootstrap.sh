@@ -2,7 +2,7 @@
 # Distributed workspace bootstrap scenario:
 # - start spiderweb + two nodes
 # - join nodes through control-plane
-# - run control.project_up with desired mounts
+# - run control.workspace_up with desired mounts
 # - verify workspace desired/actual/drift shape
 
 set -euo pipefail
@@ -240,10 +240,10 @@ NODE_B_ID="$(json_query "$JOIN_B" "payload.node_id")"
 
 PROJECT_NAME="Bootstrap Matrix $(date +%s)"
 PROJECT_UP_PAYLOAD="$(printf '{"name":"%s","vision":"%s","activate":true,"desired_mounts":[{"mount_path":"/nodes/local/fs","node_id":"%s","export_name":"work"},{"mount_path":"/nodes/local/fs","node_id":"%s","export_name":"work"}]}' "$PROJECT_NAME" "$PROJECT_NAME" "$NODE_A_ID" "$NODE_B_ID")"
-PROJECT_UP_RESP="$(control_call project_up "$PROJECT_UP_PAYLOAD")"
+PROJECT_UP_RESP="$(control_call workspace_up "$PROJECT_UP_PAYLOAD")"
 
-PROJECT_ID="$(json_query "$PROJECT_UP_RESP" "payload.project_id")"
-PROJECT_TOKEN="$(json_query "$PROJECT_UP_RESP" "payload.project_token")"
+PROJECT_ID="$(json_query "$PROJECT_UP_RESP" "payload.workspace_id")"
+PROJECT_TOKEN="$(json_query "$PROJECT_UP_RESP" "payload.workspace_token")"
 CREATED="$(json_query "$PROJECT_UP_RESP" "payload.created")"
 ACTIVATED="$(json_query "$PROJECT_UP_RESP" "payload.activated")"
 WORKSPACE_MOUNTS_JSON="$(json_query "$PROJECT_UP_RESP" "payload.workspace.mounts")"

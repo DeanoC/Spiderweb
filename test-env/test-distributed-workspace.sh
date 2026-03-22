@@ -452,7 +452,7 @@ try:
 
     missing = call(
         sock,
-        "project_create",
+        "workspace_create",
         {"name": "Gate Missing", "vision": "operator gate check"},
         "gate-missing",
     )
@@ -461,7 +461,7 @@ try:
 
     wrong = call(
         sock,
-        "project_create",
+        "workspace_create",
         {
             "name": "Gate Wrong",
             "vision": "operator gate check",
@@ -477,7 +477,7 @@ try:
 
     ok = call(
         sock,
-        "project_create",
+        "workspace_create",
         {
             "name": "Gate Allowed",
             "vision": "operator gate check",
@@ -485,7 +485,7 @@ try:
         },
         "gate-good",
     )
-    if ok.get("type") != "control.project_create":
+    if ok.get("type") != "control.workspace_create":
         raise RuntimeError(f"correct token was rejected: {json.dumps(ok)}")
     payload = ok.get("payload") or {}
     project_id = payload.get("project_id")
@@ -502,11 +502,11 @@ try:
 
     deleted = call(
         sock,
-        "project_delete",
+        "workspace_delete",
         delete_payload,
         "gate-delete",
     )
-    if deleted.get("type") != "control.project_delete":
+    if deleted.get("type") != "control.workspace_delete":
         raise RuntimeError(f"cleanup delete failed: {json.dumps(deleted)}")
 finally:
     try:
@@ -722,14 +722,14 @@ def call(sock, op, payload, request_id):
     protected_ops = {
         "node_invite_create",
         "node_delete",
-        "project_create",
-        "project_update",
-        "project_delete",
-        "project_activate",
-        "project_mount_set",
-        "project_mount_remove",
-        "project_token_rotate",
-        "project_token_revoke",
+        "workspace_create",
+        "workspace_update",
+        "workspace_delete",
+        "workspace_activate",
+        "workspace_mount_set",
+        "workspace_mount_remove",
+        "workspace_token_rotate",
+        "workspace_token_revoke",
     }
     if payload is not None:
         msg["payload"] = dict(payload)
@@ -792,12 +792,12 @@ try:
         "fs_url": node2_url,
     }, "join-b")
 
-    project = call(sock, "project_create", {
+    project = call(sock, "workspace_create", {
         "name": "Distributed Workspace",
         "vision": "multi-node fs mount graph",
     }, "project-create")
-    project_id = project["project_id"]
-    project_token = project.get("project_token") or ""
+    project_id = project["workspace_id"]
+    project_token = project.get("workspace_token") or ""
 
     def with_project_scope(payload):
         scoped = dict(payload)
@@ -805,19 +805,19 @@ try:
             scoped["project_token"] = project_token
         return scoped
 
-    call(sock, "project_mount_set", with_project_scope({
+    call(sock, "workspace_mount_set", with_project_scope({
         "project_id": project_id,
         "node_id": node_a["node_id"],
         "export_name": "work",
         "mount_path": "/src",
     }), "mount-a")
-    call(sock, "project_mount_set", with_project_scope({
+    call(sock, "workspace_mount_set", with_project_scope({
         "project_id": project_id,
         "node_id": node_b["node_id"],
         "export_name": "work",
         "mount_path": "/src",
     }), "mount-b")
-    call(sock, "project_activate", with_project_scope({
+    call(sock, "workspace_activate", with_project_scope({
         "project_id": project_id,
     }), "activate")
     status_payload = call(sock, "workspace_status", {}, "workspace-status")
@@ -1002,14 +1002,14 @@ def call(sock, op, payload, request_id):
     protected_ops = {
         "node_invite_create",
         "node_delete",
-        "project_create",
-        "project_update",
-        "project_delete",
-        "project_activate",
-        "project_mount_set",
-        "project_mount_remove",
-        "project_token_rotate",
-        "project_token_revoke",
+        "workspace_create",
+        "workspace_update",
+        "workspace_delete",
+        "workspace_activate",
+        "workspace_mount_set",
+        "workspace_mount_remove",
+        "workspace_token_rotate",
+        "workspace_token_revoke",
     }
     if payload is not None:
         msg["payload"] = dict(payload)
@@ -1213,14 +1213,14 @@ def call(sock, op, payload, request_id):
     protected_ops = {
         "node_invite_create",
         "node_delete",
-        "project_create",
-        "project_update",
-        "project_delete",
-        "project_activate",
-        "project_mount_set",
-        "project_mount_remove",
-        "project_token_rotate",
-        "project_token_revoke",
+        "workspace_create",
+        "workspace_update",
+        "workspace_delete",
+        "workspace_activate",
+        "workspace_mount_set",
+        "workspace_mount_remove",
+        "workspace_token_rotate",
+        "workspace_token_revoke",
     }
     if payload is not None:
         msg["payload"] = dict(payload)
@@ -1264,10 +1264,10 @@ try:
 
     call(sock, "version", {"protocol": "spiderweb-control"}, "version-live")
     call(sock, "connect", {}, "connect-live")
-    call(sock, "project_mount_remove", with_project_scope({"project_id": project_id, "mount_path": "/src"}), "rm-src")
-    call(sock, "project_mount_set", with_project_scope({"project_id": project_id, "node_id": node_a, "export_name": "work", "mount_path": "/live"}), "add-live-a")
-    call(sock, "project_mount_set", with_project_scope({"project_id": project_id, "node_id": node_b, "export_name": "work", "mount_path": "/live"}), "add-live-b")
-    call(sock, "project_activate", with_project_scope({"project_id": project_id}), "activate-live")
+    call(sock, "workspace_mount_remove", with_project_scope({"project_id": project_id, "mount_path": "/src"}), "rm-src")
+    call(sock, "workspace_mount_set", with_project_scope({"project_id": project_id, "node_id": node_a, "export_name": "work", "mount_path": "/live"}), "add-live-a")
+    call(sock, "workspace_mount_set", with_project_scope({"project_id": project_id, "node_id": node_b, "export_name": "work", "mount_path": "/live"}), "add-live-b")
+    call(sock, "workspace_activate", with_project_scope({"project_id": project_id}), "activate-live")
     workspace = call(sock, "workspace_status", {}, "status-live")
     with open(status_path, "w", encoding="utf-8") as f:
         json.dump(workspace, f)
@@ -1488,14 +1488,14 @@ def call(sock, op, payload, request_id):
     protected_ops = {
         "node_invite_create",
         "node_delete",
-        "project_create",
-        "project_update",
-        "project_delete",
-        "project_activate",
-        "project_mount_set",
-        "project_mount_remove",
-        "project_token_rotate",
-        "project_token_revoke",
+        "workspace_create",
+        "workspace_update",
+        "workspace_delete",
+        "workspace_activate",
+        "workspace_mount_set",
+        "workspace_mount_remove",
+        "workspace_token_rotate",
+        "workspace_token_revoke",
     }
     if payload is not None:
         msg["payload"] = dict(payload)
@@ -1545,7 +1545,7 @@ try:
         "node_name": f"node-{node_label.lower()}-rejoin",
         "fs_url": node_url,
     }, "rejoin-join")
-    call(sock, "project_mount_set", with_project_scope({
+    call(sock, "workspace_mount_set", with_project_scope({
         "project_id": project_id,
         "node_id": joined["node_id"],
         "export_name": "work",

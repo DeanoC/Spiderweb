@@ -310,7 +310,7 @@ Useful env vars:
 This test exercises the control-plane + mount integration flow end-to-end:
 - starts `spiderweb`
 - starts two `embed-multi-service-node` filesystem nodes
-- negotiates `control.version` (`spiderweb-control`) then runs `control.node_invite_create`, `control.node_join`, `control.project_create`, `control.project_mount_set`, and `control.project_activate` with project mutation auth (`project_token`)
+- negotiates `control.version` (`spiderweb-control`) then runs `control.node_invite_create`, `control.node_join`, `control.workspace_create`, `control.workspace_mount_set`, and `control.workspace_activate` with project mutation auth (`project_token`)
 - restarts `spiderweb` and verifies control-plane state is recovered from persisted LTM snapshot
 - updates mounts live (`/src` -> `/live`) and validates the mount client converges to the new path
 - mounts both nodes at the same project mount path (`/src`) as a failover group
@@ -318,7 +318,7 @@ This test exercises the control-plane + mount integration flow end-to-end:
 - restarts the stopped node, rejoins/remounts it, then kills the surviving node to verify second failover convergence
 
 Additional focused scenarios:
-- `test-distributed-workspace-bootstrap.sh`: validates `control.project_up` bootstrap output and workspace desired/actual/drift schema.
+- `test-distributed-workspace-bootstrap.sh`: validates `control.workspace_up` bootstrap output and workspace desired/actual/drift schema.
 - `test-distributed-workspace-drift.sh`: forces a desired/actual mismatch and verifies drift + reconcile diagnostics.
 - `test-distributed-workspace-matrix.sh`: runs failover/reconnect/bootstrap/drift as one matrix entrypoint.
 

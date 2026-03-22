@@ -1959,10 +1959,10 @@ PROJECT_UP_PAYLOAD="$(jq -cn \
         ]
     }'
 )"
-PROJECT_UP_RESP="$(control_call project_up "$PROJECT_UP_PAYLOAD")"
-PROJECT_ID="$(json_field "$PROJECT_UP_RESP" '.payload.project_id')"
-PROJECT_TOKEN="$(jq -r '.payload.project_token // empty' <<<"$PROJECT_UP_RESP")"
-printf '%s\n' "$PROJECT_UP_RESP" > "$OUTPUT_DIR/snapshots/project_up.json"
+PROJECT_UP_RESP="$(control_call workspace_up "$PROJECT_UP_PAYLOAD")"
+PROJECT_ID="$(json_field "$PROJECT_UP_RESP" '.payload.workspace_id')"
+PROJECT_TOKEN="$(jq -r '.payload.workspace_token // empty' <<<"$PROJECT_UP_RESP")"
+printf '%s\n' "$PROJECT_UP_RESP" > "$OUTPUT_DIR/snapshots/workspace_up.json"
 write_workspace_agents_file
 assert_seeded_workspace_layout "$WORKSPACE_EXPORT_ROOT"
 log_pass "seeded workspace AGENTS contract for project $PROJECT_ID"

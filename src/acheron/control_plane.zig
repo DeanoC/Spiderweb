@@ -2943,38 +2943,7 @@ pub const ControlPlane = struct {
         if (selected_project_id) |project_id| {
             const project = self.projects.get(project_id) orelse return ControlPlaneError.ProjectNotFound;
             if (project.kind == .host_internal) return ControlPlaneError.ProjectNotFound;
-            const is_host_actor = self.isHostActor(agent_id);
-            if (is_host_actor and !is_admin and !std.mem.eql(u8, project_id, host_project_id)) {
-                return ControlPlaneError.ProjectAssignmentForbidden;
-            }
-            if (!is_admin) {
-                switch (resolveProjectActionMode(&project, .read, agent_id)) {
-                    .admin, .deny => return ControlPlaneError.ProjectPolicyForbidden,
-                    .token => {
-                        if (selected_project_token) |project_token| {
-                            try validateSecretToken(project_token, 256);
-                            if (!projectTokenEnabled(&project) or !secureTokenEql(project.mutation_token, project_token)) {
-                                return ControlPlaneError.ProjectAuthFailed;
-                            }
-                        } else if (self.active_project_by_agent.get(agent_id)) |active_project_id| {
-                            if (!std.mem.eql(u8, active_project_id, project_id) and !is_host_actor) {
-                                return ControlPlaneError.ProjectAuthFailed;
-                            }
-                        } else if (!is_host_actor) {
-                            return ControlPlaneError.ProjectAuthFailed;
-                        }
-                    },
-                    .open => {
-                        if (self.active_project_by_agent.get(agent_id)) |active_project_id| {
-                            if (!std.mem.eql(u8, active_project_id, project_id) and !is_host_actor) {
-                                return ControlPlaneError.ProjectAuthFailed;
-                            }
-                        } else if (!is_host_actor) {
-                            return ControlPlaneError.ProjectAuthFailed;
-                        }
-                    },
-                }
-            }
+            try requireWorkspaceStatusAccessLocked(self, agent_id, &project, project_id, selected_project_token, is_admin);
             return try self.renderWorkspaceStatusForProjectLocked(
                 agent_id,
                 project_id,
@@ -3031,6 +3000,42 @@ fn resolveVisibleActiveProjectIdLocked(self: *ControlPlane, agent_id: []const u8
         return null;
     }
     return active_project_id;
+}
+
+fn requireWorkspaceStatusAccessLocked(
+    self: *ControlPlane,
+    agent_id: []const u8,
+    project: *const Project,
+    project_id: []const u8,
+    selected_project_token: ?[]const u8,
+    is_admin: bool,
+) !void {
+    const is_host_actor = self.isHostActor(agent_id);
+    if (is_host_actor and !is_admin and !std.mem.eql(u8, project_id, host_project_id)) {
+        return ControlPlaneError.ProjectAssignmentForbidden;
+    }
+    if (is_admin) return;
+
+    switch (resolveProjectActionMode(project, .read, agent_id)) {
+        .admin, .deny => return ControlPlaneError.ProjectPolicyForbidden,
+        .token => {
+            if (selected_project_token) |project_token| {
+                try validateSecretToken(project_token, 256);
+                if (!projectTokenEnabled(project) or !secureTokenEql(project.mutation_token, project_token)) {
+                    return ControlPlaneError.ProjectAuthFailed;
+                }
+                return;
+            }
+            if (is_host_actor) return;
+            const active_project_id = self.active_project_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
+            if (!std.mem.eql(u8, active_project_id, project_id)) return ControlPlaneError.ProjectAuthFailed;
+        },
+        .open => {
+            if (is_host_actor) return;
+            const active_project_id = self.active_project_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
+            if (!std.mem.eql(u8, active_project_id, project_id)) return ControlPlaneError.ProjectAuthFailed;
+        },
+    }
 }
 
 fn buildEmptyWorkspaceStatusPayloadLocked(

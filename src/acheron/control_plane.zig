@@ -311,7 +311,7 @@ const ProjectTemplateSpec = struct {
     bind_specs: []const ProjectTemplateBindSpec,
 };
 
-const core_project_bind_specs = [_]ProjectTemplateBindSpec{
+const core_workspace_bind_specs = [_]ProjectTemplateBindSpec{
     .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/services/home", .venom_id = "home" },
     .{ .bind_path = "/services/workers", .venom_id = "workers" },
@@ -326,12 +326,12 @@ const builtin_project_templates = [_]ProjectTemplateSpec{
     .{
         .id = default_project_template_id,
         .description = "Minimal external-agent workspace with the core services bound into /services.",
-        .bind_specs = core_project_bind_specs[0..],
+        .bind_specs = core_workspace_bind_specs[0..],
     },
     .{
         .id = "dev",
         .description = "Development workspace with the same external-agent core services bound into /services.",
-        .bind_specs = core_project_bind_specs[0..],
+        .bind_specs = core_workspace_bind_specs[0..],
     },
 };
 
@@ -3645,7 +3645,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
 
         return std.fmt.allocPrint(
             self.allocator,
-            "{{\"invites\":{{\"active\":{d},\"created_total\":{d},\"redeemed_total\":{d}}},\"nodes\":{{\"online\":{d},\"total\":{d},\"joins_total\":{d},\"lease_refresh_total\":{d},\"ensured_total\":{d},\"deletes_total\":{d},\"reaped_total\":{d}}},\"projects\":{{\"total\":{d},\"active_bindings\":{d},\"creates_total\":{d},\"updates_total\":{d},\"deletes_total\":{d},\"token_rotates_total\":{d},\"token_revokes_total\":{d},\"activations_total\":{d},\"mounts_total\":{d},\"mount_sets_total\":{d},\"mount_removes_total\":{d}}}}}",
+            "{{\"invites\":{{\"active\":{d},\"created_total\":{d},\"redeemed_total\":{d}}},\"nodes\":{{\"online\":{d},\"total\":{d},\"joins_total\":{d},\"lease_refresh_total\":{d},\"ensured_total\":{d},\"deletes_total\":{d},\"reaped_total\":{d}}},\"workspaces\":{{\"total\":{d},\"active_bindings\":{d},\"creates_total\":{d},\"updates_total\":{d},\"deletes_total\":{d},\"token_rotates_total\":{d},\"token_revokes_total\":{d},\"activations_total\":{d},\"mounts_total\":{d},\"mount_sets_total\":{d},\"mount_removes_total\":{d}}}}}",
             .{
                 snapshot.invites_active,
                 self.invites_created_total,
@@ -3657,8 +3657,8 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 self.nodes_ensured_total,
                 self.node_deletes_total,
                 self.lease_reap_nodes_total,
-                snapshot.projects_total,
-                snapshot.active_project_bindings,
+                snapshot.workspaces_total,
+                snapshot.active_workspace_bindings,
                 self.project_creates_total,
                 self.project_updates_total,
                 self.project_deletes_total,
@@ -3701,24 +3701,24 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             \\spiderweb_node_deletes_total {d}
             \\# TYPE spiderweb_lease_reap_nodes_total counter
             \\spiderweb_lease_reap_nodes_total {d}
-            \\# TYPE spiderweb_projects_total gauge
-            \\spiderweb_projects_total {d}
-            \\# TYPE spiderweb_active_project_bindings gauge
-            \\spiderweb_active_project_bindings {d}
-            \\# TYPE spiderweb_project_creates_total counter
-            \\spiderweb_project_creates_total {d}
-            \\# TYPE spiderweb_project_updates_total counter
-            \\spiderweb_project_updates_total {d}
-            \\# TYPE spiderweb_project_deletes_total counter
-            \\spiderweb_project_deletes_total {d}
-            \\# TYPE spiderweb_project_token_rotates_total counter
-            \\spiderweb_project_token_rotates_total {d}
-            \\# TYPE spiderweb_project_token_revokes_total counter
-            \\spiderweb_project_token_revokes_total {d}
-            \\# TYPE spiderweb_project_activations_total counter
-            \\spiderweb_project_activations_total {d}
-            \\# TYPE spiderweb_project_mounts_total gauge
-            \\spiderweb_project_mounts_total {d}
+            \\# TYPE spiderweb_workspaces_total gauge
+            \\spiderweb_workspaces_total {d}
+            \\# TYPE spiderweb_active_workspace_bindings gauge
+            \\spiderweb_active_workspace_bindings {d}
+            \\# TYPE spiderweb_workspace_creates_total counter
+            \\spiderweb_workspace_creates_total {d}
+            \\# TYPE spiderweb_workspace_updates_total counter
+            \\spiderweb_workspace_updates_total {d}
+            \\# TYPE spiderweb_workspace_deletes_total counter
+            \\spiderweb_workspace_deletes_total {d}
+            \\# TYPE spiderweb_workspace_token_rotates_total counter
+            \\spiderweb_workspace_token_rotates_total {d}
+            \\# TYPE spiderweb_workspace_token_revokes_total counter
+            \\spiderweb_workspace_token_revokes_total {d}
+            \\# TYPE spiderweb_workspace_activations_total counter
+            \\spiderweb_workspace_activations_total {d}
+            \\# TYPE spiderweb_workspace_mounts_total gauge
+            \\spiderweb_workspace_mounts_total {d}
             \\# TYPE spiderweb_mount_sets_total counter
             \\spiderweb_mount_sets_total {d}
             \\# TYPE spiderweb_mount_removes_total counter
@@ -3736,8 +3736,8 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 self.nodes_ensured_total,
                 self.node_deletes_total,
                 self.lease_reap_nodes_total,
-                snapshot.projects_total,
-                snapshot.active_project_bindings,
+                snapshot.workspaces_total,
+                snapshot.active_workspace_bindings,
                 self.project_creates_total,
                 self.project_updates_total,
                 self.project_deletes_total,
@@ -3755,8 +3755,8 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         invites_active: usize,
         nodes_online: usize,
         nodes_total: usize,
-        projects_total: usize,
-        active_project_bindings: usize,
+        workspaces_total: usize,
+        active_workspace_bindings: usize,
         mounts_total: usize,
     };
 
@@ -3882,8 +3882,8 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             .invites_active = self.invites.count(),
             .nodes_online = online_nodes,
             .nodes_total = self.nodes.count(),
-            .projects_total = self.projects.count(),
-            .active_project_bindings = self.active_project_by_agent.count(),
+            .workspaces_total = self.projects.count(),
+            .active_workspace_bindings = self.active_project_by_agent.count(),
             .mounts_total = mounts_total,
         };
     }
@@ -6201,7 +6201,7 @@ fn ensureProjectTemplateBindsLocked(self: *ControlPlane, project: *Project) !boo
 }
 
 fn ensureHostProjectBindsLocked(self: *ControlPlane, project: *Project) !bool {
-    return ensureBindSpecsLocked(self, project, core_project_bind_specs[0..]);
+    return ensureBindSpecsLocked(self, project, core_workspace_bind_specs[0..]);
 }
 
 fn ensureBindSpecsLocked(

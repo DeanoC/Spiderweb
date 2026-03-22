@@ -30,6 +30,7 @@ const session_node_venoms = @import("session_node_venoms.zig");
 const session_worker_venoms = @import("session_worker_venoms.zig");
 const session_bound_venoms = @import("session_bound_venoms.zig");
 const session_scoped_venom_index = @import("session_scoped_venom_index.zig");
+const session_catalog_bindings = @import("session_catalog_bindings.zig");
 
 var direct_builtin_shell_exec_mutex: std.Thread.Mutex = .{};
 
@@ -2208,35 +2209,7 @@ pub const Session = struct {
     }
 
     fn registerLocalCatalogVenomBinding(self: *Session, venom_id: []const u8, scope: []const u8) !void {
-        const local_venoms_root = self.lookupLocalNodeVenomsRoot() orelse return;
-        const venom_dir_id = self.lookupChild(local_venoms_root, venom_id) orelse return;
-        const venom_path = try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/{s}", .{venom_id});
-        defer self.allocator.free(venom_path);
-        const endpoint_path = blk: {
-            if (try self.firstVenomMountPath(venom_dir_id)) |value| break :blk value;
-            break :blk try self.venomEndpointPath(venom_dir_id);
-        };
-        defer if (endpoint_path) |value| self.allocator.free(value);
-        const preferred_provider_node_id = try self.resolvePreferredLocalCatalogProviderNodeId(venom_id);
-        defer if (preferred_provider_node_id) |value| self.allocator.free(value);
-        const provider_node_id = preferred_provider_node_id orelse "local";
-        const provider_venom_path = if (preferred_provider_node_id) |value|
-            try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ value, venom_id })
-        else
-            try self.allocator.dupe(u8, venom_path);
-        defer self.allocator.free(provider_venom_path);
-        const invoke_path = try self.deriveVenomInvokePath(provider_node_id, venom_id, venom_dir_id);
-        defer if (invoke_path) |value| self.allocator.free(value);
-
-        try self.registerScopedVenomBinding(
-            venom_id,
-            scope,
-            venom_path,
-            provider_node_id,
-            provider_venom_path,
-            endpoint_path,
-            invoke_path,
-        );
+        return session_catalog_bindings.registerLocalCatalogVenomBinding(self, venom_id, scope);
     }
 
     fn cloneLocalCatalogVenomAlias(self: *Session, source_dir: u32, global_root: u32, venom_id: []const u8) !u32 {
@@ -7260,65 +7233,7 @@ pub const Session = struct {
         venom_id: []const u8,
         scope: []const u8,
     ) !void {
-        const venom_dir_id = self.lookupChild(global_root, venom_id) orelse return;
-        const venom_dir = self.nodes.get(venom_dir_id) orelse return;
-        if (venom_dir.kind != .dir) return;
-
-        const venom_path = try std.fmt.allocPrint(self.allocator, "/global/{s}", .{venom_id});
-        defer self.allocator.free(venom_path);
-        const invoke_path = if (self.venomCapsInvoke(venom_dir_id)) blk: {
-            const invoke_target = try self.resolveNodeVenomInvokeTarget(venom_dir_id);
-            defer self.allocator.free(invoke_target);
-            break :blk try self.pathWithInvokeTarget(venom_path, invoke_target);
-        } else null;
-        defer if (invoke_path) |value| self.allocator.free(value);
-
-        const local_provider_dir_id = blk: {
-            const local_venoms_root = self.lookupLocalNodeVenomsRoot() orelse break :blk null;
-            break :blk self.lookupChild(local_venoms_root, venom_id);
-        };
-
-        var explicit_provider = if (local_provider_dir_id == null) blk: {
-            const plane = self.control_plane orelse break :blk null;
-            break :blk try plane.resolveExplicitPreferredVenomProvider(self.allocator, venom_id);
-        } else null;
-        defer if (explicit_provider) |*value| value.deinit(self.allocator);
-
-        const provider_node_id = if (local_provider_dir_id != null)
-            if (try self.resolvePreferredLocalCatalogProviderNodeId(venom_id)) |resolved|
-                resolved
-            else
-                try self.allocator.dupe(u8, "local")
-        else if (explicit_provider) |provider|
-            try self.allocator.dupe(u8, provider.node_id)
-        else
-            null;
-        defer if (provider_node_id) |value| self.allocator.free(value);
-        const provider_venom_path = if (provider_node_id) |node_id|
-            try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ node_id, venom_id })
-        else
-            null;
-        defer if (provider_venom_path) |value| self.allocator.free(value);
-        const provider_invoke_path = if (local_provider_dir_id) |provider_dir_id|
-            try self.deriveVenomInvokePath(provider_node_id orelse "local", venom_id, provider_dir_id)
-        else if (explicit_provider) |provider| blk: {
-            const nodes_root = self.lookupChild(self.root_id, "nodes") orelse break :blk null;
-            const node_dir_id = self.lookupChild(nodes_root, provider.node_id) orelse break :blk null;
-            const venoms_root_id = self.lookupChild(node_dir_id, "venoms") orelse break :blk null;
-            const provider_dir_id = self.lookupChild(venoms_root_id, venom_id) orelse break :blk null;
-            break :blk try self.deriveVenomInvokePath(provider.node_id, venom_id, provider_dir_id);
-        } else null;
-        defer if (provider_invoke_path) |value| self.allocator.free(value);
-
-        try self.registerScopedVenomBinding(
-            venom_id,
-            scope,
-            venom_path,
-            provider_node_id,
-            provider_venom_path,
-            if (provider_venom_path != null) provider_venom_path else venom_path,
-            if (provider_invoke_path != null) provider_invoke_path else invoke_path,
-        );
+        return session_catalog_bindings.registerExistingGlobalVenomBinding(self, global_root, venom_id, scope);
     }
 
     pub fn deriveVenomInvokePath(
@@ -7434,7 +7349,7 @@ pub const Session = struct {
         return try self.allocator.dupe(u8, endpoint_value.string);
     }
 
-    fn venomCapsInvoke(self: *Session, venom_dir_id: u32) bool {
+    pub fn venomCapsInvoke(self: *Session, venom_dir_id: u32) bool {
         const caps_id = self.lookupChild(venom_dir_id, "CAPS.json") orelse return false;
         const caps_node = self.nodes.get(caps_id) orelse return false;
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, caps_node.content, .{}) catch return false;

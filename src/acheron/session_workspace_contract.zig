@@ -50,8 +50,8 @@ const BootstrapContractPaths = struct {
     local_venoms_root: []const u8,
     target_template: []const u8,
 
-    fn init(allocator: std.mem.Allocator, project_id: []const u8) !BootstrapContractPaths {
-        _ = project_id;
+    fn init(allocator: std.mem.Allocator, workspace_id: []const u8) !BootstrapContractPaths {
+        _ = workspace_id;
         return .{
             .protocol_path = try workspaceManagedPath(allocator, "protocol.json"),
             .workspace_meta_dir = try workspaceManagedPath(allocator, null),
@@ -94,16 +94,16 @@ const BootstrapContractPaths = struct {
     }
 };
 
-pub fn buildProjectContractsJson(session: anytype, project_id: []const u8) ![]u8 {
-    const workspace_binds = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/binds.json", .{project_id});
+pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) ![]u8 {
+    const workspace_binds = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/binds.json", .{workspace_id});
     defer session.allocator.free(workspace_binds);
-    const workspace_services = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/mounted_services.json", .{project_id});
+    const workspace_services = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/mounted_services.json", .{workspace_id});
     defer session.allocator.free(workspace_services);
-    const venom_packages_path = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/venom_packages.json", .{project_id});
+    const venom_packages_path = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/venom_packages.json", .{workspace_id});
     defer session.allocator.free(venom_packages_path);
-    const agent_bootstrap = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{project_id});
+    const agent_bootstrap = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{workspace_id});
     defer session.allocator.free(agent_bootstrap);
-    const agent_bootstrap_quickref = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{project_id});
+    const agent_bootstrap_quickref = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{workspace_id});
     defer session.allocator.free(agent_bootstrap_quickref);
 
     const workspace_metadata_files = [_][]const u8{
@@ -138,7 +138,7 @@ pub fn buildProjectContractsJson(session: anytype, project_id: []const u8) ![]u8
     try jw.objectField("version");
     try jw.write("acheron-namespace-workspace-contract");
     try jw.objectField("workspace_id");
-    try jw.write(project_id);
+    try jw.write(workspace_id);
     try jw.objectField("top_level_roots");
     try jw.write(.{ "/nodes", "/agents", "/global", "/services" });
     try jw.objectField("workspace_metadata_files");
@@ -176,14 +176,14 @@ pub fn buildProjectContractsJson(session: anytype, project_id: []const u8) ![]u8
     return try out.toOwnedSlice();
 }
 
-pub fn buildProjectPathsJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-    const mounted_services_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/mounted_services.json", .{policy.project_id});
+pub fn buildWorkspacePathsJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
+    const mounted_services_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/mounted_services.json", .{policy.workspace_id});
     defer session.allocator.free(mounted_services_meta);
-    const packages_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/venom_packages.json", .{policy.project_id});
+    const packages_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/venom_packages.json", .{policy.workspace_id});
     defer session.allocator.free(packages_meta);
-    const bootstrap_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{policy.project_id});
+    const bootstrap_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{policy.workspace_id});
     defer session.allocator.free(bootstrap_meta);
-    const bootstrap_quickref = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{policy.project_id});
+    const bootstrap_quickref = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{policy.workspace_id});
     defer session.allocator.free(bootstrap_quickref);
 
     var out = std.io.Writer.Allocating.init(session.allocator);
@@ -192,7 +192,7 @@ pub fn buildProjectPathsJson(session: anytype, policy: workspace_policy.Workspac
     var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
     try jw.beginObject();
     try jw.objectField("workspace_id");
-    try jw.write(policy.project_id);
+    try jw.write(policy.workspace_id);
     try jw.objectField("nodes_root");
     try jw.write("/nodes");
     try jw.objectField("agents_root");
@@ -238,8 +238,8 @@ pub fn buildProjectPathsJson(session: anytype, policy: workspace_policy.Workspac
     return try out.toOwnedSlice();
 }
 
-pub fn buildAgentBootstrapQuickrefJson(session: anytype, project_id: []const u8, agent_id: []const u8) ![]u8 {
-    const paths = try BootstrapContractPaths.init(session.allocator, project_id);
+pub fn buildAgentBootstrapQuickrefJson(session: anytype, workspace_id: []const u8, agent_id: []const u8) ![]u8 {
+    const paths = try BootstrapContractPaths.init(session.allocator, workspace_id);
     defer paths.deinit(session.allocator);
 
     const discovery_order = [_][]const u8{
@@ -260,7 +260,7 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, project_id: []const u8,
     try jw.objectField("version");
     try jw.write("spiderweb-agent-bootstrap-quickref-v1");
     try jw.objectField("workspace_id");
-    try jw.write(project_id);
+    try jw.write(workspace_id);
     try jw.objectField("agent_id");
     try jw.write(agent_id);
     try jw.objectField("workspace_write_root");
@@ -343,8 +343,8 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, project_id: []const u8,
     return try out.toOwnedSlice();
 }
 
-pub fn buildAgentBootstrapJson(session: anytype, project_id: []const u8, agent_id: []const u8) ![]u8 {
-    const paths = try BootstrapContractPaths.init(session.allocator, project_id);
+pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent_id: []const u8) ![]u8 {
+    const paths = try BootstrapContractPaths.init(session.allocator, workspace_id);
     defer paths.deinit(session.allocator);
 
     const required_reads = [_][]const u8{
@@ -373,7 +373,7 @@ pub fn buildAgentBootstrapJson(session: anytype, project_id: []const u8, agent_i
     try jw.objectField("version");
     try jw.write("spiderweb-agent-bootstrap-v1");
     try jw.objectField("workspace_id");
-    try jw.write(project_id);
+    try jw.write(workspace_id);
     try jw.objectField("agent_id");
     try jw.write(agent_id);
     try jw.objectField("workspace_write_root");
@@ -441,7 +441,7 @@ pub fn buildAgentBootstrapJson(session: anytype, project_id: []const u8, agent_i
     try jw.objectField("agent_id");
     try jw.write(agent_id);
     try jw.objectField("workspace_id");
-    try jw.write(project_id);
+    try jw.write(workspace_id);
     try jw.endObject();
     try jw.objectField("required");
     try jw.write(true);
@@ -501,8 +501,8 @@ pub fn buildAgentBootstrapJson(session: anytype, project_id: []const u8, agent_i
     return try out.toOwnedSlice();
 }
 
-pub fn seedWorkspaceAgentsContract(session: anytype, project_id: []const u8, local_fs_world_prefix: []const u8) !void {
-    const managed_block = try buildWorkspaceAgentsManagedBlock(session, project_id);
+pub fn seedWorkspaceAgentsContract(session: anytype, workspace_id: []const u8, local_fs_world_prefix: []const u8) !void {
+    const managed_block = try buildWorkspaceAgentsManagedBlock(session, workspace_id);
     defer session.allocator.free(managed_block);
 
     const existing = try readExistingWorkspaceAgentsContract(session);
@@ -663,8 +663,8 @@ fn writeBootstrapRequiredServices(session: anytype, jw: *std.json.Stringify) !us
     return present_count;
 }
 
-fn buildWorkspaceAgentsManagedBlock(session: anytype, project_id: []const u8) ![]u8 {
-    const paths = try BootstrapContractPaths.init(session.allocator, project_id);
+fn buildWorkspaceAgentsManagedBlock(session: anytype, workspace_id: []const u8) ![]u8 {
+    const paths = try BootstrapContractPaths.init(session.allocator, workspace_id);
     defer paths.deinit(session.allocator);
 
     var available_services = std.ArrayListUnmanaged(u8){};

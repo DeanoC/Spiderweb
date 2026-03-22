@@ -1314,7 +1314,7 @@ pub const Session = struct {
             self.allocator,
             .{
                 .agent_id = self.agent_id,
-                .project_id = self.project_id,
+                .workspace_id = self.project_id,
                 .agents_dir = self.agents_dir,
                 .projects_dir = self.projects_dir,
             },
@@ -1324,7 +1324,7 @@ pub const Session = struct {
         };
         defer policy.deinit(self.allocator);
         if (self.active_namespace_project_id) |value| self.allocator.free(value);
-        self.active_namespace_project_id = try self.allocator.dupe(u8, policy.project_id);
+        self.active_namespace_project_id = try self.allocator.dupe(u8, policy.workspace_id);
         self.root_id = try self.addDir(null, "/", false);
         const nodes_root = try self.addDir(self.root_id, "nodes", false);
         self.nodes_root_id = nodes_root;
@@ -1424,7 +1424,7 @@ pub const Session = struct {
             _ = try self.addFile(agent_dir, "LINK.txt", link, false, .none);
         }
 
-        const project_dir = try self.addDir(projects_root, policy.project_id, false);
+        const project_dir = try self.addDir(projects_root, policy.workspace_id, false);
         const project_fs_dir = try self.addDir(project_dir, "fs", false);
         const project_nodes_dir = try self.addDir(project_dir, "nodes", false);
         const project_agents_dir = try self.addDir(project_dir, "agents", false);
@@ -1480,7 +1480,7 @@ pub const Session = struct {
             "Workspace topology, bootstrap guidance, and availability metadata.",
         );
 
-        const workspace_status_json = try self.loadProjectWorkspaceStatus(policy.project_id);
+        const workspace_status_json = try self.loadWorkspaceStatus(policy.workspace_id);
         defer if (workspace_status_json) |value| self.allocator.free(value);
         const loaded_live_mounts = if (workspace_status_json) |json|
             try self.addProjectFsLinksFromWorkspaceStatus(project_fs_dir, nodes_root, policy, json)
@@ -1496,7 +1496,7 @@ pub const Session = struct {
         const active_agent_target = try std.fmt.allocPrint(
             self.allocator,
             "/projects/{s}/agents/{s}\n",
-            .{ policy.project_id, self.agent_id },
+            .{ policy.workspace_id, self.agent_id },
         );
         defer self.allocator.free(active_agent_target);
         _ = try self.addFile(project_agents_dir, self.agent_id, active_agent_target, false, .none);
@@ -1506,7 +1506,7 @@ pub const Session = struct {
             const target = try std.fmt.allocPrint(
                 self.allocator,
                 "/projects/{s}/agents/{s}\n",
-                .{ policy.project_id, agent_name },
+                .{ policy.workspace_id, agent_name },
             );
             defer self.allocator.free(target);
             _ = try self.addFile(project_agents_dir, agent_name, target, false, .none);
@@ -1533,22 +1533,22 @@ pub const Session = struct {
         _ = try self.addFile(meta_root, "protocol.json", acheron_protocol_json, false, .none);
         const escaped_agent = try unified.jsonEscape(self.allocator, self.agent_id);
         defer self.allocator.free(escaped_agent);
-        const escaped_project = try unified.jsonEscape(self.allocator, policy.project_id);
-        defer self.allocator.free(escaped_project);
+        const escaped_workspace = try unified.jsonEscape(self.allocator, policy.workspace_id);
+        defer self.allocator.free(escaped_workspace);
         const view_json = try std.fmt.allocPrint(
             self.allocator,
             "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"nodes\":{d},\"visible_agents\":{d},\"workspace_links\":{d}}}",
             .{
                 escaped_agent,
-                escaped_project,
+                escaped_workspace,
                 policy.nodes.items.len,
                 policy.visible_agents.items.len,
-                policy.project_links.items.len,
+                policy.workspace_links.items.len,
             },
         );
         defer self.allocator.free(view_json);
         _ = try self.addFile(meta_root, "view.json", view_json, false, .none);
-        const agent_bootstrap_json = try self.buildAgentBootstrapJson(policy.project_id, self.agent_id);
+        const agent_bootstrap_json = try self.buildAgentBootstrapJson(policy.workspace_id, self.agent_id);
         defer self.allocator.free(agent_bootstrap_json);
         _ = try self.addFile(meta_root, "agent_bootstrap.json", agent_bootstrap_json, false, .none);
         if (workspace_status_json) |status_json| {
@@ -1642,7 +1642,7 @@ pub const Session = struct {
             std.log.warn("seedNamespace seedBoundGlobalFsNamespace failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.seedActiveScopedVenomBindings(active_agent_venoms_dir, project_venoms_dir, policy.project_id) catch |err| {
+        self.seedActiveScopedVenomBindings(active_agent_venoms_dir, project_venoms_dir, policy.workspace_id) catch |err| {
             std.log.warn("seedNamespace seedActiveScopedVenomBindings failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -1650,11 +1650,11 @@ pub const Session = struct {
             std.log.warn("seedNamespace refreshScopedVenomIndexes failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.addWorkspaceServiceDiscoveryFiles(meta_root, project_meta_dir, policy.project_id) catch |err| {
+        self.addWorkspaceServiceDiscoveryFiles(meta_root, project_meta_dir, policy.workspace_id) catch |err| {
             std.log.warn("seedNamespace addWorkspaceServiceDiscoveryFiles failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.seedWorkspaceAgentsContract(policy.project_id) catch |err| {
+        self.seedWorkspaceAgentsContract(policy.workspace_id) catch |err| {
             std.log.warn("seedNamespace seedWorkspaceAgentsContract failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -1668,19 +1668,19 @@ pub const Session = struct {
         loaded_live_mounts: bool,
         loaded_live_nodes: bool,
     ) anyerror!void {
-        const topology_json = try self.buildProjectTopologyJson(policy);
+        const topology_json = try self.buildWorkspaceTopologyJson(policy);
         defer self.allocator.free(topology_json);
         _ = try self.addFile(project_meta_dir, "topology.json", topology_json, false, .none);
-        const agents_json = try self.buildProjectAgentsJson(policy);
+        const agents_json = try self.buildWorkspaceAgentsJson(policy);
         defer self.allocator.free(agents_json);
         _ = try self.addFile(project_meta_dir, "agents.json", agents_json, false, .none);
-        const contracts_json = try self.buildProjectContractsJson(policy.project_id);
+        const contracts_json = try self.buildWorkspaceContractsJson(policy.workspace_id);
         defer self.allocator.free(contracts_json);
         _ = try self.addFile(project_meta_dir, "contracts.json", contracts_json, false, .none);
-        const paths_json = try self.buildProjectPathsJson(policy);
+        const paths_json = try self.buildWorkspacePathsJson(policy);
         defer self.allocator.free(paths_json);
         _ = try self.addFile(project_meta_dir, "paths.json", paths_json, false, .none);
-        const agent_bootstrap_json = try self.buildAgentBootstrapJson(policy.project_id, self.agent_id);
+        const agent_bootstrap_json = try self.buildAgentBootstrapJson(policy.workspace_id, self.agent_id);
         defer self.allocator.free(agent_bootstrap_json);
         _ = try self.addFile(project_meta_dir, "agent_bootstrap.json", agent_bootstrap_json, false, .none);
 
@@ -1691,12 +1691,12 @@ pub const Session = struct {
                 _ = try self.addFile(project_meta_dir, "nodes.json", nodes_json, false, .none);
                 nodes_from_workspace = true;
             } else {
-                const fallback_nodes = try self.buildFallbackProjectNodesJson(policy);
+                const fallback_nodes = try self.buildFallbackWorkspaceNodesJson(policy);
                 defer self.allocator.free(fallback_nodes);
                 _ = try self.addFile(project_meta_dir, "nodes.json", fallback_nodes, false, .none);
             }
-            const sources_json = try self.buildProjectSourcesJson(
-                policy.project_id,
+            const sources_json = try self.buildWorkspaceSourcesJson(
+                policy.workspace_id,
                 true,
                 loaded_live_mounts,
                 loaded_live_nodes,
@@ -1704,7 +1704,7 @@ pub const Session = struct {
             );
             defer self.allocator.free(sources_json);
             _ = try self.addFile(project_meta_dir, "sources.json", sources_json, false, .none);
-            const summary_json = try self.buildProjectSummaryJson(
+            const summary_json = try self.buildWorkspaceSummaryJson(
                 policy,
                 status_json,
                 loaded_live_mounts,
@@ -1767,13 +1767,13 @@ pub const Session = struct {
 
         const fallback_status = try self.buildFallbackWorkspaceStatusJson(policy);
         defer self.allocator.free(fallback_status);
-        const fallback_nodes = try self.buildFallbackProjectNodesJson(policy);
+        const fallback_nodes = try self.buildFallbackWorkspaceNodesJson(policy);
         defer self.allocator.free(fallback_nodes);
         _ = try self.addFile(project_meta_dir, "nodes.json", fallback_nodes, false, .none);
-        const fallback_sources = try self.buildProjectSourcesJson(policy.project_id, false, false, false, false);
+        const fallback_sources = try self.buildWorkspaceSourcesJson(policy.workspace_id, false, false, false, false);
         defer self.allocator.free(fallback_sources);
         _ = try self.addFile(project_meta_dir, "sources.json", fallback_sources, false, .none);
-        const fallback_summary = try self.buildProjectSummaryJson(policy, null, false, false, false);
+        const fallback_summary = try self.buildWorkspaceSummaryJson(policy, null, false, false, false);
         defer self.allocator.free(fallback_summary);
         _ = try self.addFile(project_meta_dir, "summary.json", fallback_summary, false, .none);
         _ = try self.addFile(project_meta_dir, "alerts.json", "[]", false, .none);
@@ -2425,7 +2425,7 @@ pub const Session = struct {
         project_fs_dir: u32,
         policy: workspace_policy.WorkspacePolicy,
     ) anyerror!void {
-        for (policy.project_links.items) |link| {
+        for (policy.workspace_links.items) |link| {
             const target = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/{s}\n", .{ link.node_id, link.resource });
             defer self.allocator.free(target);
             _ = try self.addFile(project_fs_dir, link.name, target, false, .none);
@@ -3243,57 +3243,57 @@ pub const Session = struct {
         return jsonObjectOptionalU64(obj, key);
     }
 
-    fn buildProjectTopologyJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-        return session_project_status.buildProjectTopologyJson(self, policy);
+    fn buildWorkspaceTopologyJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
+        return session_project_status.buildWorkspaceTopologyJson(self, policy);
     }
 
-    fn buildFallbackProjectNodesJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-        return session_project_status.buildFallbackProjectNodesJson(self, policy);
+    fn buildFallbackWorkspaceNodesJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
+        return session_project_status.buildFallbackWorkspaceNodesJson(self, policy);
     }
 
-    fn buildProjectAgentsJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-        return session_project_status.buildProjectAgentsJson(self, policy);
+    fn buildWorkspaceAgentsJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
+        return session_project_status.buildWorkspaceAgentsJson(self, policy);
     }
 
-    fn buildProjectContractsJson(self: *Session, project_id: []const u8) ![]u8 {
-        return session_workspace_contract.buildProjectContractsJson(self, project_id);
+    fn buildWorkspaceContractsJson(self: *Session, workspace_id: []const u8) ![]u8 {
+        return session_workspace_contract.buildWorkspaceContractsJson(self, workspace_id);
     }
 
-    fn buildProjectPathsJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-        return session_workspace_contract.buildProjectPathsJson(self, policy);
+    fn buildWorkspacePathsJson(self: *Session, policy: workspace_policy.WorkspacePolicy) ![]u8 {
+        return session_workspace_contract.buildWorkspacePathsJson(self, policy);
     }
 
-    fn buildAgentBootstrapQuickrefJson(self: *Session, project_id: []const u8, agent_id: []const u8) ![]u8 {
-        return session_workspace_contract.buildAgentBootstrapQuickrefJson(self, project_id, agent_id);
+    fn buildAgentBootstrapQuickrefJson(self: *Session, workspace_id: []const u8, agent_id: []const u8) ![]u8 {
+        return session_workspace_contract.buildAgentBootstrapQuickrefJson(self, workspace_id, agent_id);
     }
 
-    fn buildAgentBootstrapJson(self: *Session, project_id: []const u8, agent_id: []const u8) ![]u8 {
-        return session_workspace_contract.buildAgentBootstrapJson(self, project_id, agent_id);
+    fn buildAgentBootstrapJson(self: *Session, workspace_id: []const u8, agent_id: []const u8) ![]u8 {
+        return session_workspace_contract.buildAgentBootstrapJson(self, workspace_id, agent_id);
     }
 
-    fn seedWorkspaceAgentsContract(self: *Session, project_id: []const u8) !void {
-        return session_workspace_contract.seedWorkspaceAgentsContract(self, project_id, local_fs_world_prefix);
+    fn seedWorkspaceAgentsContract(self: *Session, workspace_id: []const u8) !void {
+        return session_workspace_contract.seedWorkspaceAgentsContract(self, workspace_id, local_fs_world_prefix);
     }
 
-    fn buildProjectSourcesJson(
+    fn buildWorkspaceSourcesJson(
         self: *Session,
-        project_id: []const u8,
+        workspace_id: []const u8,
         has_workspace_status: bool,
         fs_from_workspace: bool,
-        project_nodes_from_workspace: bool,
+        workspace_nodes_from_workspace: bool,
         nodes_meta_from_workspace: bool,
     ) ![]u8 {
-        return session_project_status.buildProjectSourcesJson(
+        return session_project_status.buildWorkspaceSourcesJson(
             self,
-            project_id,
+            workspace_id,
             has_workspace_status,
             fs_from_workspace,
-            project_nodes_from_workspace,
+            workspace_nodes_from_workspace,
             nodes_meta_from_workspace,
         );
     }
 
-    fn buildProjectSummaryJson(
+    fn buildWorkspaceSummaryJson(
         self: *Session,
         policy: workspace_policy.WorkspacePolicy,
         workspace_status_json: ?[]const u8,
@@ -3301,7 +3301,7 @@ pub const Session = struct {
         loaded_live_nodes: bool,
         nodes_meta_from_workspace: bool,
     ) ![]u8 {
-        return session_project_status.buildProjectSummaryJson(
+        return session_project_status.buildWorkspaceSummaryJson(
             self,
             policy,
             workspace_status_json,
@@ -3315,8 +3315,8 @@ pub const Session = struct {
         return session_project_status.extractWorkspaceAlerts(self, workspace_status_json);
     }
 
-    fn loadProjectWorkspaceStatus(self: *Session, project_id: []const u8) !?[]u8 {
-        return session_project_status.loadProjectWorkspaceStatus(self, project_id);
+    fn loadWorkspaceStatus(self: *Session, workspace_id: []const u8) !?[]u8 {
+        return session_project_status.loadWorkspaceStatus(self, workspace_id);
     }
 
     fn extractWorkspaceAvailability(self: *Session, workspace_status_json: []const u8) !?[]u8 {

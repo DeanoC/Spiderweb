@@ -2,9 +2,9 @@ const std = @import("std");
 const unified = @import("spider-protocol").unified;
 const workspace_policy = @import("../workspaces/policy.zig");
 
-pub fn buildProjectTopologyJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-    const escaped_project = try unified.jsonEscape(session.allocator, policy.project_id);
-    defer session.allocator.free(escaped_project);
+pub fn buildWorkspaceTopologyJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
+    const escaped_workspace = try unified.jsonEscape(session.allocator, policy.workspace_id);
+    defer session.allocator.free(escaped_workspace);
     const escaped_agent = try unified.jsonEscape(session.allocator, session.agent_id);
     defer session.allocator.free(escaped_agent);
 
@@ -12,7 +12,7 @@ pub fn buildProjectTopologyJson(session: anytype, policy: workspace_policy.Works
     errdefer out.deinit(session.allocator);
     try out.writer(session.allocator).print(
         "{{\"workspace_id\":\"{s}\",\"agent_id\":\"{s}\",\"nodes\":[",
-        .{ escaped_project, escaped_agent },
+        .{ escaped_workspace, escaped_agent },
     );
     for (policy.nodes.items, 0..) |node, idx| {
         if (idx != 0) try out.append(session.allocator, ',');
@@ -37,7 +37,7 @@ pub fn buildProjectTopologyJson(session: anytype, policy: workspace_policy.Works
         try out.appendSlice(session.allocator, "]}");
     }
     try out.appendSlice(session.allocator, "],\"workspace_links\":[");
-    for (policy.project_links.items, 0..) |link, idx| {
+    for (policy.workspace_links.items, 0..) |link, idx| {
         if (idx != 0) try out.append(session.allocator, ',');
         const target = try std.fmt.allocPrint(session.allocator, "/nodes/{s}/{s}", .{ link.node_id, link.resource });
         defer session.allocator.free(target);
@@ -58,7 +58,7 @@ pub fn buildProjectTopologyJson(session: anytype, policy: workspace_policy.Works
     return out.toOwnedSlice(session.allocator);
 }
 
-pub fn buildFallbackProjectNodesJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
+pub fn buildFallbackWorkspaceNodesJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(session.allocator);
     try out.appendSlice(session.allocator, "[");
@@ -75,7 +75,7 @@ pub fn buildFallbackProjectNodesJson(session: anytype, policy: workspace_policy.
     return out.toOwnedSlice(session.allocator);
 }
 
-pub fn buildProjectAgentsJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
+pub fn buildWorkspaceAgentsJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(session.allocator);
     try out.appendSlice(session.allocator, "[");
@@ -107,30 +107,30 @@ pub fn buildProjectAgentsJson(session: anytype, policy: workspace_policy.Workspa
     return out.toOwnedSlice(session.allocator);
 }
 
-pub fn buildProjectSourcesJson(
+pub fn buildWorkspaceSourcesJson(
     session: anytype,
-    project_id: []const u8,
+    workspace_id: []const u8,
     has_workspace_status: bool,
     fs_from_workspace: bool,
-    project_nodes_from_workspace: bool,
+    workspace_nodes_from_workspace: bool,
     nodes_meta_from_workspace: bool,
 ) ![]u8 {
-    const escaped_project_id = try unified.jsonEscape(session.allocator, project_id);
-    defer session.allocator.free(escaped_project_id);
+    const escaped_workspace_id = try unified.jsonEscape(session.allocator, workspace_id);
+    defer session.allocator.free(escaped_workspace_id);
     return std.fmt.allocPrint(
         session.allocator,
         "{{\"workspace_id\":\"{s}\",\"workspace_status\":\"{s}\",\"workspace_fs\":\"{s}\",\"workspace_nodes\":\"{s}\",\"nodes_meta\":\"{s}\",\"workspace_binds\":\"control_plane\",\"mounted_services\":\"namespace_projection\"}}",
         .{
-            escaped_project_id,
+            escaped_workspace_id,
             if (has_workspace_status) "control_plane" else "policy",
             if (fs_from_workspace) "workspace_mounts" else "policy_links",
-            if (project_nodes_from_workspace) "workspace_mounts" else "policy_nodes",
+            if (workspace_nodes_from_workspace) "workspace_mounts" else "policy_nodes",
             if (nodes_meta_from_workspace) "workspace_mounts" else "policy_nodes",
         },
     );
 }
 
-pub fn buildProjectSummaryJson(
+pub fn buildWorkspaceSummaryJson(
     session: anytype,
     policy: workspace_policy.WorkspacePolicy,
     workspace_status_json: ?[]const u8,
@@ -138,8 +138,8 @@ pub fn buildProjectSummaryJson(
     loaded_live_nodes: bool,
     nodes_meta_from_workspace: bool,
 ) ![]u8 {
-    const escaped_project_id = try unified.jsonEscape(session.allocator, policy.project_id);
-    defer session.allocator.free(escaped_project_id);
+    const escaped_workspace_id = try unified.jsonEscape(session.allocator, policy.workspace_id);
+    defer session.allocator.free(escaped_workspace_id);
 
     var policy_agent_links: usize = 1;
     for (policy.visible_agents.items) |agent_name| {
@@ -225,7 +225,7 @@ pub fn buildProjectSummaryJson(
     const source_workspace_fs = if (loaded_live_mounts) "workspace_mounts" else "policy_links";
     const source_workspace_nodes = if (loaded_live_nodes) "workspace_mounts" else "policy_nodes";
     const source_nodes_meta = if (nodes_meta_from_workspace) "workspace_mounts" else "policy_nodes";
-    const effective_workspace_mount_links = if (loaded_live_mounts and workspace_mount_links > 0) workspace_mount_links else policy.project_links.items.len;
+    const effective_workspace_mount_links = if (loaded_live_mounts and workspace_mount_links > 0) workspace_mount_links else policy.workspace_links.items.len;
     const effective_workspace_node_links = if (loaded_live_nodes and workspace_node_links > 0) workspace_node_links else policy.nodes.items.len;
 
     const escaped_health_state = try unified.jsonEscape(session.allocator, health_state);
@@ -237,13 +237,13 @@ pub fn buildProjectSummaryJson(
         session.allocator,
         "{{\"workspace_id\":\"{s}\",\"sources\":{{\"workspace_status\":\"{s}\",\"workspace_fs\":\"{s}\",\"workspace_nodes\":\"{s}\",\"nodes_meta\":\"{s}\"}},\"counts\":{{\"policy_nodes\":{d},\"policy_links\":{d},\"visible_agents\":{d},\"workspace_agent_links\":{d},\"workspace_node_links\":{d},\"workspace_mount_links\":{d}}},\"health\":{{\"state\":\"{s}\",\"reconcile_state\":\"{s}\",\"queue_depth\":{d}}}}}",
         .{
-            escaped_project_id,
+            escaped_workspace_id,
             source_workspace_status,
             source_workspace_fs,
             source_workspace_nodes,
             source_nodes_meta,
             policy.nodes.items.len,
-            policy.project_links.items.len,
+            policy.workspace_links.items.len,
             policy.visible_agents.items.len,
             policy_agent_links,
             effective_workspace_node_links,
@@ -338,34 +338,34 @@ pub fn extractWorkspaceAlerts(session: anytype, workspace_status_json: []const u
     return rendered;
 }
 
-pub fn loadProjectWorkspaceStatus(session: anytype, project_id: []const u8) !?[]u8 {
+pub fn loadWorkspaceStatus(session: anytype, workspace_id: []const u8) !?[]u8 {
     const plane = session.control_plane orelse return null;
-    const escaped_project_id = try unified.jsonEscape(session.allocator, project_id);
-    defer session.allocator.free(escaped_project_id);
+    const escaped_workspace_id = try unified.jsonEscape(session.allocator, workspace_id);
+    defer session.allocator.free(escaped_workspace_id);
     const request_json = if (session.project_token) |token| blk: {
         const escaped_token = try unified.jsonEscape(session.allocator, token);
         defer session.allocator.free(escaped_token);
         break :blk try std.fmt.allocPrint(
             session.allocator,
             "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
-            .{ escaped_project_id, escaped_token },
+            .{ escaped_workspace_id, escaped_token },
         );
     } else try std.fmt.allocPrint(
         session.allocator,
         "{{\"workspace_id\":\"{s}\"}}",
-        .{escaped_project_id},
+        .{escaped_workspace_id},
     );
     defer session.allocator.free(request_json);
 
     if (plane.workspaceStatusWithRole(session.agent_id, request_json, session.is_admin) catch null) |status_json| {
-        if (try workspaceStatusMatchesProject(session, status_json, project_id)) {
+        if (try workspaceStatusMatchesWorkspace(session, status_json, workspace_id)) {
             return status_json;
         }
         session.allocator.free(status_json);
     }
 
     if (plane.workspaceStatusWithRole(session.agent_id, null, session.is_admin) catch null) |status_json| {
-        if (try workspaceStatusMatchesProject(session, status_json, project_id)) {
+        if (try workspaceStatusMatchesWorkspace(session, status_json, workspace_id)) {
             return status_json;
         }
         session.allocator.free(status_json);
@@ -374,17 +374,17 @@ pub fn loadProjectWorkspaceStatus(session: anytype, project_id: []const u8) !?[]
     return null;
 }
 
-fn workspaceStatusMatchesProject(
+fn workspaceStatusMatchesWorkspace(
     session: anytype,
     workspace_status_json: []const u8,
-    expected_project_id: []const u8,
+    expected_workspace_id: []const u8,
 ) !bool {
     var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, workspace_status_json, .{}) catch return false;
     defer parsed.deinit();
     if (parsed.value != .object) return false;
     const workspace_id_value = parsed.value.object.get("workspace_id") orelse return false;
     if (workspace_id_value != .string) return false;
-    return std.mem.eql(u8, workspace_id_value.string, expected_project_id);
+    return std.mem.eql(u8, workspace_id_value.string, expected_workspace_id);
 }
 
 pub fn extractWorkspaceAvailability(session: anytype, workspace_status_json: []const u8) !?[]u8 {
@@ -629,12 +629,12 @@ pub fn extractWorkspaceHealth(session: anytype, workspace_status_json: []const u
 pub fn buildFallbackWorkspaceStatusJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
     const escaped_agent = try unified.jsonEscape(session.allocator, session.agent_id);
     defer session.allocator.free(escaped_agent);
-    const escaped_project = try unified.jsonEscape(session.allocator, policy.project_id);
-    defer session.allocator.free(escaped_project);
+    const escaped_workspace = try unified.jsonEscape(session.allocator, policy.workspace_id);
+    defer session.allocator.free(escaped_workspace);
 
     return std.fmt.allocPrint(
         session.allocator,
         "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"template_id\":null,\"source\":\"policy\",\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"unknown\",\"last_reconcile_ms\":0,\"last_success_ms\":0,\"last_error\":null,\"queue_depth\":0}}",
-        .{ escaped_agent, escaped_project },
+        .{ escaped_agent, escaped_workspace },
     );
 }

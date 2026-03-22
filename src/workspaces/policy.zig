@@ -22,12 +22,12 @@ pub const WorkspaceNodePolicy = struct {
     }
 };
 
-pub const WorkspaceProjectLink = struct {
+pub const WorkspaceLink = struct {
     name: []u8,
     node_id: []u8,
     resource: []u8,
 
-    fn deinit(self: *WorkspaceProjectLink, allocator: std.mem.Allocator) void {
+    fn deinit(self: *WorkspaceLink, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.node_id);
         allocator.free(self.resource);
@@ -36,26 +36,26 @@ pub const WorkspaceProjectLink = struct {
 };
 
 pub const WorkspacePolicy = struct {
-    project_id: []u8,
+    workspace_id: []u8,
     nodes: std.ArrayListUnmanaged(WorkspaceNodePolicy) = .{},
     visible_agents: std.ArrayListUnmanaged([]u8) = .{},
-    project_links: std.ArrayListUnmanaged(WorkspaceProjectLink) = .{},
+    workspace_links: std.ArrayListUnmanaged(WorkspaceLink) = .{},
 
     pub fn deinit(self: *WorkspacePolicy, allocator: std.mem.Allocator) void {
-        allocator.free(self.project_id);
+        allocator.free(self.workspace_id);
         for (self.nodes.items) |*node| node.deinit(allocator);
         self.nodes.deinit(allocator);
         for (self.visible_agents.items) |agent| allocator.free(agent);
         self.visible_agents.deinit(allocator);
-        for (self.project_links.items) |*link| link.deinit(allocator);
-        self.project_links.deinit(allocator);
+        for (self.workspace_links.items) |*link| link.deinit(allocator);
+        self.workspace_links.deinit(allocator);
         self.* = undefined;
     }
 };
 
 pub const LoadOptions = struct {
     agent_id: []const u8,
-    project_id: ?[]const u8 = null,
+    workspace_id: ?[]const u8 = null,
     agents_dir: []const u8 = "agents",
     projects_dir: []const u8 = "projects",
 };
@@ -71,9 +71,9 @@ pub fn loadWorkspacePolicy(allocator: std.mem.Allocator, options: LoadOptions) !
     // then re-apply it last so agent-specific restrictions remain authoritative.
     try applyWorkspacePolicyFile(allocator, &policy, options.agent_id, agent_policy_path);
 
-    const project_policy_path = try std.fs.path.join(allocator, &.{ options.projects_dir, policy.project_id, "project_policy.json" });
-    defer allocator.free(project_policy_path);
-    try applyWorkspacePolicyFile(allocator, &policy, options.agent_id, project_policy_path);
+    const workspace_policy_path = try std.fs.path.join(allocator, &.{ options.projects_dir, policy.workspace_id, "project_policy.json" });
+    defer allocator.free(workspace_policy_path);
+    try applyWorkspacePolicyFile(allocator, &policy, options.agent_id, workspace_policy_path);
 
     try applyWorkspacePolicyFile(allocator, &policy, options.agent_id, agent_policy_path);
 
@@ -82,15 +82,15 @@ pub fn loadWorkspacePolicy(allocator: std.mem.Allocator, options: LoadOptions) !
 }
 
 fn initDefaults(allocator: std.mem.Allocator, options: LoadOptions) !WorkspacePolicy {
-    const project_seed = options.project_id orelse "workspace";
+    const workspace_seed = options.workspace_id orelse "workspace";
     var policy = WorkspacePolicy{
-        .project_id = try allocator.dupe(u8, project_seed),
+        .workspace_id = try allocator.dupe(u8, workspace_seed),
     };
     errdefer policy.deinit(allocator);
 
     try policy.visible_agents.append(allocator, try allocator.dupe(u8, options.agent_id));
     try appendDefaultLocalNode(allocator, &policy.nodes);
-    try appendDefaultProjectLinks(allocator, &policy);
+    try appendDefaultWorkspaceLinks(allocator, &policy);
     return policy;
 }
 
@@ -112,18 +112,18 @@ fn appendDefaultLocalNode(
     try nodes.append(allocator, node);
 }
 
-fn appendDefaultProjectLinks(allocator: std.mem.Allocator, policy: *WorkspacePolicy) !void {
+fn appendDefaultWorkspaceLinks(allocator: std.mem.Allocator, policy: *WorkspacePolicy) !void {
     for (policy.nodes.items) |node| {
         if (!node.resources.fs) continue;
         const link_name = try std.fmt.allocPrint(allocator, "{s}::fs", .{node.id});
         errdefer allocator.free(link_name);
-        var link = WorkspaceProjectLink{
+        var link = WorkspaceLink{
             .name = link_name,
             .node_id = try allocator.dupe(u8, node.id),
             .resource = try allocator.dupe(u8, "fs"),
         };
         errdefer link.deinit(allocator);
-        try policy.project_links.append(allocator, link);
+        try policy.workspace_links.append(allocator, link);
     }
 }
 
@@ -144,20 +144,20 @@ fn ensureDefaults(
         try policy.visible_agents.append(allocator, try allocator.dupe(u8, agent_id));
     }
 
-    if (policy.project_links.items.len == 0) {
-        try appendDefaultProjectLinks(allocator, policy);
+    if (policy.workspace_links.items.len == 0) {
+        try appendDefaultWorkspaceLinks(allocator, policy);
     }
 
-    if (policy.project_links.items.len == 0 and policy.nodes.items.len > 0) {
+    if (policy.workspace_links.items.len == 0 and policy.nodes.items.len > 0) {
         const link_name = try std.fmt.allocPrint(allocator, "{s}::fs", .{policy.nodes.items[0].id});
         errdefer allocator.free(link_name);
-        var link = WorkspaceProjectLink{
+        var link = WorkspaceLink{
             .name = link_name,
             .node_id = try allocator.dupe(u8, policy.nodes.items[0].id),
             .resource = try allocator.dupe(u8, "fs"),
         };
         errdefer link.deinit(allocator);
-        try policy.project_links.append(allocator, link);
+        try policy.workspace_links.append(allocator, link);
     }
 }
 
@@ -190,8 +190,8 @@ fn applyWorkspacePolicyFile(
 
     if (obj.get("project_id")) |raw_value| {
         if (raw_value == .string and raw_value.string.len > 0) {
-            allocator.free(policy.project_id);
-            policy.project_id = try allocator.dupe(u8, raw_value.string);
+            allocator.free(policy.workspace_id);
+            policy.workspace_id = try allocator.dupe(u8, raw_value.string);
         }
     }
 
@@ -204,7 +204,7 @@ fn applyWorkspacePolicyFile(
     }
 
     if (obj.get("project_links")) |raw_links| {
-        try replaceWorkspaceProjectLinksFromValue(allocator, &policy.project_links, raw_links);
+        try replaceWorkspaceLinksFromValue(allocator, &policy.workspace_links, raw_links);
     }
 
     if (!sliceListContains(policy.visible_agents.items, agent_id)) {
@@ -284,15 +284,15 @@ fn replaceVisibleAgentsFromValue(
     }
 }
 
-fn replaceWorkspaceProjectLinksFromValue(
+fn replaceWorkspaceLinksFromValue(
     allocator: std.mem.Allocator,
-    project_links: *std.ArrayListUnmanaged(WorkspaceProjectLink),
+    workspace_links: *std.ArrayListUnmanaged(WorkspaceLink),
     value: std.json.Value,
 ) !void {
     if (value != .array) return;
 
-    for (project_links.items) |*link| link.deinit(allocator);
-    project_links.clearRetainingCapacity();
+    for (workspace_links.items) |*link| link.deinit(allocator);
+    workspace_links.clearRetainingCapacity();
 
     for (value.array.items) |item| {
         if (item != .object) continue;
@@ -314,13 +314,13 @@ fn replaceWorkspaceProjectLinksFromValue(
             try std.fmt.allocPrint(allocator, "{s}::{s}", .{ raw_node_id.string, resource });
         errdefer allocator.free(resolved_name);
 
-        var link = WorkspaceProjectLink{
+        var link = WorkspaceLink{
             .name = resolved_name,
             .node_id = try allocator.dupe(u8, raw_node_id.string),
             .resource = try allocator.dupe(u8, resource),
         };
         errdefer link.deinit(allocator);
-        try project_links.append(allocator, link);
+        try workspace_links.append(allocator, link);
     }
 }
 
@@ -337,16 +337,16 @@ test "workspace_policy: defaults provide a usable workspace view" {
         allocator,
         .{
             .agent_id = "spider-monkey",
-            .project_id = "workspace-demo",
+            .workspace_id = "workspace-demo",
             .agents_dir = ".does-not-exist",
             .projects_dir = ".does-not-exist",
         },
     );
     defer policy.deinit(allocator);
 
-    try std.testing.expectEqualStrings("workspace-demo", policy.project_id);
+    try std.testing.expectEqualStrings("workspace-demo", policy.workspace_id);
     try std.testing.expect(policy.nodes.items.len > 0);
-    try std.testing.expect(policy.project_links.items.len > 0);
+    try std.testing.expect(policy.workspace_links.items.len > 0);
     try std.testing.expect(policy.visible_agents.items.len > 0);
 }
 
@@ -409,19 +409,19 @@ test "workspace_policy: load reapplies agent policy after project policy" {
         allocator,
         .{
             .agent_id = agent_id,
-            .project_id = project_id,
+            .workspace_id = project_id,
             .agents_dir = agents_dir,
             .projects_dir = projects_dir,
         },
     );
     defer policy.deinit(allocator);
 
-    try std.testing.expectEqualStrings(project_id, policy.project_id);
+    try std.testing.expectEqualStrings(project_id, policy.workspace_id);
     try std.testing.expectEqual(@as(usize, 1), policy.nodes.items.len);
     try std.testing.expectEqualStrings("agent-node", policy.nodes.items[0].id);
     try std.testing.expect(!sliceListContains(policy.visible_agents.items, "project-only"));
     try std.testing.expect(sliceListContains(policy.visible_agents.items, agent_id));
     try std.testing.expect(sliceListContains(policy.visible_agents.items, "agent-only"));
-    try std.testing.expectEqual(@as(usize, 1), policy.project_links.items.len);
-    try std.testing.expectEqualStrings("agent-node", policy.project_links.items[0].node_id);
+    try std.testing.expectEqual(@as(usize, 1), policy.workspace_links.items.len);
+    try std.testing.expectEqualStrings("agent-node", policy.workspace_links.items[0].node_id);
 }

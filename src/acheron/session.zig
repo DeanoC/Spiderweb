@@ -4054,7 +4054,10 @@ pub const Session = struct {
 
         try router.truncate(proxy.remote_path, data.len);
         if (data.len != 0) {
-            const open_file = try router.open(proxy.remote_path, 2);
+            const open_file = router.open(proxy.remote_path, 2) catch |err| return switch (err) {
+                error.OperationNotSupported => false,
+                else => err,
+            };
             defer router.close(open_file) catch {};
             const written = try router.write(open_file, 0, data);
             if (written != data.len) return error.InvalidPayload;

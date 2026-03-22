@@ -404,7 +404,7 @@ pub const ControlPlane = struct {
     pending_joins: std.StringHashMapUnmanaged(PendingJoin) = .{},
     projects: std.StringHashMapUnmanaged(Project) = .{},
     installed_venom_packages: std.ArrayListUnmanaged(venom_package_model.VenomPackage) = .{},
-    active_project_by_agent: std.StringHashMapUnmanaged([]u8) = .{},
+    active_workspace_by_agent: std.StringHashMapUnmanaged([]u8) = .{},
     preferred_venom_provider_by_scope_venom: std.StringHashMapUnmanaged([]u8) = .{},
     node_venom_event_history: std.ArrayListUnmanaged(NodeVenomEventRecord) = .{},
 
@@ -593,7 +593,7 @@ pub const ControlPlane = struct {
             changed = true;
         }
 
-        var active_it = self.active_project_by_agent.iterator();
+        var active_it = self.active_workspace_by_agent.iterator();
         while (active_it.next()) |entry| {
             if (!std.mem.eql(u8, entry.value_ptr.*, host_workspace_id)) continue;
             self.allocator.free(entry.value_ptr.*);
@@ -890,13 +890,13 @@ pub const ControlPlane = struct {
 
         venom_package_model.deinitPackages(self.allocator, &self.installed_venom_packages);
 
-        var active_it = self.active_project_by_agent.iterator();
+        var active_it = self.active_workspace_by_agent.iterator();
         while (active_it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
             self.allocator.free(entry.value_ptr.*);
         }
-        self.active_project_by_agent.deinit(self.allocator);
-        self.active_project_by_agent = .{};
+        self.active_workspace_by_agent.deinit(self.allocator);
+        self.active_workspace_by_agent = .{};
 
         var preferred_venom_it = self.preferred_venom_provider_by_scope_venom.iterator();
         while (preferred_venom_it.next()) |entry| {
@@ -1918,7 +1918,7 @@ pub const ControlPlane = struct {
         var project = removed.value;
         defer project.deinit(self.allocator);
 
-        var active_it = self.active_project_by_agent.iterator();
+        var active_it = self.active_workspace_by_agent.iterator();
         while (active_it.next()) |entry| {
             if (std.mem.eql(u8, entry.value_ptr.*, workspace_id)) {
                 self.allocator.free(entry.value_ptr.*);
@@ -2029,7 +2029,7 @@ pub const ControlPlane = struct {
         if (!self.projects.contains(project_id)) return ControlPlaneError.ProjectNotFound;
 
         var selected: ?[]const u8 = null;
-        var it = self.active_project_by_agent.iterator();
+        var it = self.active_workspace_by_agent.iterator();
         while (it.next()) |entry| {
             const agent_id = entry.key_ptr.*;
             const active_project = entry.value_ptr.*;
@@ -2050,7 +2050,7 @@ pub const ControlPlane = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
-        const active_project_id = self.active_project_by_agent.get(agent_id) orelse return false;
+        const active_project_id = self.active_workspace_by_agent.get(agent_id) orelse return false;
         return std.mem.eql(u8, active_project_id, project_id);
     }
 
@@ -2084,7 +2084,7 @@ pub const ControlPlane = struct {
             bindings.deinit(allocator);
         }
 
-        var it = self.active_project_by_agent.iterator();
+        var it = self.active_workspace_by_agent.iterator();
         while (it.next()) |entry| {
             const agent_id = entry.key_ptr.*;
             const project_id = entry.value_ptr.*;
@@ -3089,7 +3089,7 @@ fn buildWorkspaceUpResultPayloadLocked(
 }
 
 fn resolveVisibleActiveWorkspaceIdLocked(self: *ControlPlane, agent_id: []const u8) ?[]const u8 {
-    const active_workspace_id = self.active_project_by_agent.get(agent_id) orelse return null;
+    const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return null;
     if (active_workspace_id.len == 0) return null;
     const active_workspace = self.projects.get(active_workspace_id) orelse return null;
     if (active_workspace.kind == .host_internal) {
@@ -3126,12 +3126,12 @@ fn requireWorkspaceStatusAccessLocked(
                 return;
             }
             if (is_host_actor) return;
-            const active_workspace_id = self.active_project_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
+            const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
             if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.ProjectAuthFailed;
         },
         .open => {
             if (is_host_actor) return;
-            const active_workspace_id = self.active_project_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
+            const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.ProjectAuthFailed;
             if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.ProjectAuthFailed;
         },
     }
@@ -3883,7 +3883,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             .nodes_online = online_nodes,
             .nodes_total = self.nodes.count(),
             .workspaces_total = self.projects.count(),
-            .active_workspace_bindings = self.active_project_by_agent.count(),
+            .active_workspace_bindings = self.active_workspace_by_agent.count(),
             .mounts_total = mounts_total,
         };
     }
@@ -4600,7 +4600,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         errdefer out.deinit(self.allocator);
 
         try out.writer(self.allocator).print(
-            "{{\"schema\":1,\"next\":{{\"invite_id\":{d},\"node_id\":{d},\"pending_join_id\":{d},\"project_id\":{d}}},\"metrics\":{{\"invites_created_total\":{d},\"invites_redeemed_total\":{d},\"node_joins_total\":{d},\"node_lease_refresh_total\":{d},\"nodes_ensured_total\":{d},\"node_deletes_total\":{d},\"workspace_creates_total\":{d},\"workspace_updates_total\":{d},\"workspace_deletes_total\":{d},\"workspace_token_rotates_total\":{d},\"workspace_token_revokes_total\":{d},\"mount_sets_total\":{d},\"mount_removes_total\":{d},\"workspace_activations_total\":{d},\"lease_reap_nodes_total\":{d}}},\"invites\":[",
+            "{{\"schema\":1,\"next\":{{\"invite_id\":{d},\"node_id\":{d},\"pending_join_id\":{d},\"workspace_id\":{d}}},\"metrics\":{{\"invites_created_total\":{d},\"invites_redeemed_total\":{d},\"node_joins_total\":{d},\"node_lease_refresh_total\":{d},\"nodes_ensured_total\":{d},\"node_deletes_total\":{d},\"workspace_creates_total\":{d},\"workspace_updates_total\":{d},\"workspace_deletes_total\":{d},\"workspace_token_rotates_total\":{d},\"workspace_token_revokes_total\":{d},\"mount_sets_total\":{d},\"mount_removes_total\":{d},\"workspace_activations_total\":{d},\"lease_reap_nodes_total\":{d}}},\"invites\":[",
             .{
                 self.next_invite_id,
                 self.next_node_id,
@@ -4735,7 +4735,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             );
         }
 
-        try out.appendSlice(self.allocator, "],\"projects\":[");
+        try out.appendSlice(self.allocator, "],\"workspaces\":[");
         first = true;
         var project_it = self.projects.valueIterator();
         while (project_it.next()) |project| {
@@ -4809,19 +4809,19 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             try venom_package_model.appendPackageJson(self.allocator, &out, package);
         }
 
-        try out.appendSlice(self.allocator, "],\"active_project_by_agent\":[");
+        try out.appendSlice(self.allocator, "],\"active_workspace_by_agent\":[");
         first = true;
-        var active_it = self.active_project_by_agent.iterator();
+        var active_it = self.active_workspace_by_agent.iterator();
         while (active_it.next()) |entry| {
             if (!first) try out.append(self.allocator, ',');
             first = false;
             const escaped_agent = try jsonEscape(self.allocator, entry.key_ptr.*);
             defer self.allocator.free(escaped_agent);
-            const escaped_project = try jsonEscape(self.allocator, entry.value_ptr.*);
-            defer self.allocator.free(escaped_project);
+            const escaped_workspace = try jsonEscape(self.allocator, entry.value_ptr.*);
+            defer self.allocator.free(escaped_workspace);
             try out.writer(self.allocator).print(
-                "{{\"agent_id\":\"{s}\",\"project_id\":\"{s}\"}}",
-                .{ escaped_agent, escaped_project },
+                "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\"}}",
+                .{ escaped_agent, escaped_workspace },
             );
         }
 
@@ -4846,12 +4846,12 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             self.next_invite_id = try getOptionalU64(next_val.object, "invite_id", 1);
             self.next_node_id = try getOptionalU64(next_val.object, "node_id", 1);
             self.next_pending_join_id = try getOptionalU64(next_val.object, "pending_join_id", 1);
-            self.next_project_id = try getOptionalU64(next_val.object, "project_id", 1);
+            self.next_project_id = try getOptionalU64ByNames(next_val.object, &.{ "workspace_id", "project_id" }, 1);
         } else {
             self.next_invite_id = try getOptionalU64(root, "next_invite_id", 1);
             self.next_node_id = try getOptionalU64(root, "next_node_id", 1);
             self.next_pending_join_id = try getOptionalU64(root, "next_pending_join_id", 1);
-            self.next_project_id = try getOptionalU64(root, "next_project_id", 1);
+            self.next_project_id = try getOptionalU64ByNames(root, &.{ "next_workspace_id", "next_project_id" }, 1);
         }
 
         if (root.get("metrics")) |metrics_val| {
@@ -4982,9 +4982,10 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             }
         }
 
-        if (root.get("projects")) |projects_val| {
-            if (projects_val != .array) return error.InvalidSnapshot;
-            for (projects_val.array.items) |item| {
+        const workspaces_val = root.get("workspaces") orelse root.get("projects");
+        if (workspaces_val) |items_val| {
+            if (items_val != .array) return error.InvalidSnapshot;
+            for (items_val.array.items) |item| {
                 if (item != .object) return error.InvalidSnapshot;
                 const kind = if (item.object.get("kind")) |kind_val| blk: {
                     if (kind_val != .string) return error.InvalidSnapshot;
@@ -5070,21 +5071,22 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             venom_package_model.replacePackagesFromJsonValue(self.allocator, &self.installed_venom_packages, packages_val) catch return error.InvalidSnapshot;
         }
 
-        if (root.get("active_project_by_agent")) |active_val| {
+        const active_workspace_bindings_val = root.get("active_workspace_by_agent") orelse root.get("active_project_by_agent");
+        if (active_workspace_bindings_val) |active_val| {
             if (active_val != .array) return error.InvalidSnapshot;
             for (active_val.array.items) |item| {
                 if (item != .object) return error.InvalidSnapshot;
                 const agent_id = try dupeRequiredString(self.allocator, item.object, "agent_id");
                 errdefer self.allocator.free(agent_id);
-                const project_id = try dupeRequiredString(self.allocator, item.object, "project_id");
-                errdefer self.allocator.free(project_id);
-                if (self.active_project_by_agent.contains(agent_id)) return error.InvalidSnapshot;
-                try self.active_project_by_agent.put(self.allocator, agent_id, project_id);
+                const workspace_id = if (item.object.get("workspace_id")) |_| try dupeRequiredString(self.allocator, item.object, "workspace_id") else try dupeRequiredString(self.allocator, item.object, "project_id");
+                errdefer self.allocator.free(workspace_id);
+                if (self.active_workspace_by_agent.contains(agent_id)) return error.InvalidSnapshot;
+                try self.active_workspace_by_agent.put(self.allocator, agent_id, workspace_id);
             }
         }
 
         // Normalize stale pointers from historic snapshots.
-        var normalize_it = self.active_project_by_agent.iterator();
+        var normalize_it = self.active_workspace_by_agent.iterator();
         while (normalize_it.next()) |entry| {
             if (entry.value_ptr.*.len == 0) continue;
             if (self.projects.get(entry.value_ptr.*)) |project| {
@@ -6065,14 +6067,14 @@ fn getHostProjectPtrLocked(self: *ControlPlane) !*Project {
 }
 
 fn upsertActiveProjectBindingLocked(self: *ControlPlane, agent_id: []const u8, project_id: []const u8) !void {
-    if (self.active_project_by_agent.getPtr(agent_id)) |existing| {
+    if (self.active_workspace_by_agent.getPtr(agent_id)) |existing| {
         if (std.mem.eql(u8, existing.*, project_id)) return;
         self.allocator.free(existing.*);
         existing.* = try self.allocator.dupe(u8, project_id);
         return;
     }
 
-    try self.active_project_by_agent.put(
+    try self.active_workspace_by_agent.put(
         self.allocator,
         try self.allocator.dupe(u8, agent_id),
         try self.allocator.dupe(u8, project_id),
@@ -6080,7 +6082,7 @@ fn upsertActiveProjectBindingLocked(self: *ControlPlane, agent_id: []const u8, p
 }
 
 fn clearActiveProjectBindingLocked(self: *ControlPlane, agent_id: []const u8) bool {
-    const removed = self.active_project_by_agent.fetchRemove(agent_id) orelse return false;
+    const removed = self.active_workspace_by_agent.fetchRemove(agent_id) orelse return false;
     self.allocator.free(removed.key);
     self.allocator.free(removed.value);
     return true;
@@ -6595,10 +6597,10 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     defer allocator.free(state_json);
     var parsed_state = try std.json.parseFromSlice(std.json.Value, allocator, state_json, .{});
     defer parsed_state.deinit();
-    const projects_val = parsed_state.value.object.get("projects").?;
-    try std.testing.expect(projects_val == .array);
+    const workspaces_val = parsed_state.value.object.get("workspaces").?;
+    try std.testing.expect(workspaces_val == .array);
     var spider_token: ?[]const u8 = null;
-    for (projects_val.array.items) |item| {
+    for (workspaces_val.array.items) |item| {
         if (item != .object) continue;
         const id_val = item.object.get("id") orelse continue;
         if (id_val != .string) continue;
@@ -6643,7 +6645,7 @@ test "acheron_control_plane: builtin host project is protected and hidden from l
     const activated = try plane.activateHostWorkspace();
     defer allocator.free(activated);
     try std.testing.expect(std.mem.indexOf(u8, activated, "\"project_id\":\"system\"") != null);
-    try std.testing.expect(plane.active_project_by_agent.get(default_host_actor_id) == null);
+    try std.testing.expect(plane.active_workspace_by_agent.get(default_host_actor_id) == null);
 
     const status = try plane.hostWorkspaceStatus();
     defer allocator.free(status);
@@ -8322,11 +8324,11 @@ test "acheron_control_plane: projectUp requires project_token for builtin host p
     defer allocator.free(state_json);
     var parsed_state = try std.json.parseFromSlice(std.json.Value, allocator, state_json, .{});
     defer parsed_state.deinit();
-    const projects_val = parsed_state.value.object.get("projects").?;
-    try std.testing.expect(projects_val == .array);
+    const workspaces_val = parsed_state.value.object.get("workspaces").?;
+    try std.testing.expect(workspaces_val == .array);
 
     var spider_token: ?[]const u8 = null;
-    for (projects_val.array.items) |item| {
+    for (workspaces_val.array.items) |item| {
         if (item != .object) continue;
         const id_val = item.object.get("id") orelse continue;
         if (id_val != .string) continue;

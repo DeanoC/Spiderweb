@@ -537,7 +537,7 @@ def run_source_guard(root_dir: str) -> None:
         ("src/acheron/namespace_client.zig", 'try self.writeControlRequest("control.workspace_status", request_id, payload);'),
         ("src/acheron/mount_main.zig", "var connect_info = try client.controlConnect();"),
         ("src/acheron/mount_main.zig", "var attach_info = try client.controlSessionAttach(.{"),
-        ("src/acheron/mount_main.zig", "const payload_json = try client.controlWorkspaceStatus(effective_project_id, workspace_token);"),
+        ("src/acheron/mount_main.zig", "const payload_json = try client.controlWorkspaceStatus(effective_workspace_id, workspace_token);"),
         ("src/venoms/fs/shared/fs_node_main.zig", 'const node = @import("spiderweb_node").fs_node_main;'),
         ("../SpiderNode/src/spiderweb_node/fs_node_main.zig", '\\"channel\\":\\"control\\",\\"type\\":\\"control.version\\"'),
         ("../SpiderNode/src/spiderweb_node/fs_node_main.zig", '\\"channel\\":\\"control\\",\\"type\\":\\"control.connect\\"'),

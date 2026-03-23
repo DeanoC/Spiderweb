@@ -2144,13 +2144,13 @@ pub const Session = struct {
         const global_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/_compat/global/{s}", .{venom_id});
         defer self.allocator.free(global_path);
         if (self.resolveAbsolutePathNoBinds(global_path) != null) {
-            return self.allocator.dupe(u8, global_path);
+            return try self.allocator.dupe(u8, global_path);
         }
 
         const local_path = try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/{s}", .{venom_id});
         defer self.allocator.free(local_path);
         if (self.resolveAbsolutePathNoBinds(local_path) != null) {
-            return self.allocator.dupe(u8, local_path);
+            return try self.allocator.dupe(u8, local_path);
         }
 
         const preferred_node_id = try self.resolvePreferredBoundVenomNodeId(venom_id);

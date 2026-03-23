@@ -22,42 +22,42 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
     defer self.allocator.free(escaped_base_path);
     const shape_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"kind\":\"venom\",\"venom_id\":\"workers\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,PERMISSIONS.json,STATUS.json,status.json,result.json,control/*}}\"}}",
+        "{{\"kind\":\"control_substrate\",\"surface_id\":\"runtimes\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,PERMISSIONS.json,STATUS.json,status.json,result.json,control/*}}\"}}",
         .{escaped_base_path},
     );
     defer self.allocator.free(shape_json);
     try self.addDirectoryDescriptors(
         workers_dir,
-        "Worker Nodes",
+        "Runtimes",
         shape_json,
-        "{\"invoke\":true,\"operations\":[\"workers_register\",\"workers_heartbeat\",\"workers_detach\"],\"discoverable\":true,\"project_scope\":true}",
-        "Register an attached external worker, heartbeat its lease, detach it, and project its private loopback venoms into /nodes/<worker_id>/venoms/*.",
+        "{\"invoke\":true,\"operations\":[\"runtime_attach\",\"runtime_heartbeat\",\"runtime_detach\"],\"discoverable\":true,\"workspace_scope\":true}",
+        "Attach an external runtime, heartbeat its lease, detach it, and project its private loopback venoms into /nodes/<runtime_id>/venoms/*.",
     );
     _ = try self.addFile(
         workers_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"register\":\"control/register.json\",\"heartbeat\":\"control/heartbeat.json\",\"detach\":\"control/detach.json\"},\"operations\":{\"register\":\"workers_register\",\"heartbeat\":\"workers_heartbeat\",\"detach\":\"workers_detach\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"register\":\"control/register.json\",\"heartbeat\":\"control/heartbeat.json\",\"detach\":\"control/detach.json\"},\"operations\":{\"register\":\"runtime_attach\",\"heartbeat\":\"runtime_heartbeat\",\"detach\":\"runtime_detach\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         workers_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"worker_nodes\"}",
+        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"runtime_attach_registry\"}",
         false,
         .none,
     );
     _ = try self.addFile(
         workers_dir,
         "PERMISSIONS.json",
-        "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"project\",\"project_token_required\":false}",
+        "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"workspace\",\"workspace_token_required\":false}",
         false,
         .none,
     );
     _ = try self.addFile(
         workers_dir,
         "STATUS.json",
-        "{\"venom_id\":\"workers\",\"state\":\"namespace\",\"has_invoke\":true}",
+        "{\"surface_id\":\"runtimes\",\"state\":\"namespace\",\"has_invoke\":true}",
         false,
         .none,
     );
@@ -86,7 +86,7 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Write registration or heartbeat payloads here to maintain a live worker node lease inside the mounted workspace.\n",
+        "Write attach or heartbeat payloads here to maintain a live runtime lease inside the mounted workspace.\n",
         false,
         .none,
     );
@@ -140,17 +140,17 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
 
 fn parseOp(raw: []const u8) ?Op {
     const value = std.mem.trim(u8, raw, " \t\r\n");
-    if (std.mem.eql(u8, value, "register") or std.mem.eql(u8, value, "workers_register")) return .register;
-    if (std.mem.eql(u8, value, "heartbeat") or std.mem.eql(u8, value, "workers_heartbeat")) return .heartbeat;
-    if (std.mem.eql(u8, value, "detach") or std.mem.eql(u8, value, "workers_detach")) return .detach;
+    if (std.mem.eql(u8, value, "register") or std.mem.eql(u8, value, "attach") or std.mem.eql(u8, value, "workers_register") or std.mem.eql(u8, value, "runtime_attach")) return .register;
+    if (std.mem.eql(u8, value, "heartbeat") or std.mem.eql(u8, value, "workers_heartbeat") or std.mem.eql(u8, value, "runtime_heartbeat")) return .heartbeat;
+    if (std.mem.eql(u8, value, "detach") or std.mem.eql(u8, value, "workers_detach") or std.mem.eql(u8, value, "runtime_detach")) return .detach;
     return null;
 }
 
 fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, written: usize) !usize {
     const tool_name = switch (op) {
-        .register => "workers_register",
-        .heartbeat => "workers_heartbeat",
-        .detach => "workers_detach",
+        .register => "runtime_attach",
+        .heartbeat => "runtime_heartbeat",
+        .detach => "runtime_detach",
     };
     const running_status = try self.buildServiceInvokeStatusJson("running", tool_name, null);
     defer self.allocator.free(running_status);

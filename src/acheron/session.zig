@@ -8702,6 +8702,71 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/global/git\"") == null);
 }
 
+test "acheron_session: control substrate surfaces expose runtime and package operations canonically" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const workspace_json = try control_plane.createWorkspace(
+        "{\"name\":\"ControlSurface\",\"vision\":\"Validate canonical control substrate names\"}",
+    );
+    defer allocator.free(workspace_json);
+
+    var parsed_workspace = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed_workspace.deinit();
+    const workspace_id = parsed_workspace.value.object.get("workspace_id").?.string;
+    const workspace_token = parsed_workspace.value.object.get("workspace_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const runtimes_ops = try session.tryReadInternalPath("/nodes/local/fs/.spiderweb/control/runtimes/OPS.json");
+    defer if (runtimes_ops) |value| allocator.free(value);
+    try std.testing.expect(runtimes_ops != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtimes_ops.?, "\"runtime_attach\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtimes_ops.?, "\"runtime_heartbeat\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtimes_ops.?, "\"runtime_detach\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtimes_ops.?, "\"workers_register\"") == null);
+
+    const runtimes_status = try session.tryReadInternalPath("/nodes/local/fs/.spiderweb/control/runtimes/STATUS.json");
+    defer if (runtimes_status) |value| allocator.free(value);
+    try std.testing.expect(runtimes_status != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtimes_status.?, "\"surface_id\":\"runtimes\"") != null);
+
+    const packages_ops = try session.tryReadInternalPath("/nodes/local/fs/.spiderweb/control/packages/OPS.json");
+    defer if (packages_ops) |value| allocator.free(value);
+    try std.testing.expect(packages_ops != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_list\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_install\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"venom_packages_list\"") == null);
+
+    const packages_status = try session.tryReadInternalPath("/nodes/local/fs/.spiderweb/control/packages/STATUS.json");
+    defer if (packages_status) |value| allocator.free(value);
+    try std.testing.expect(packages_status != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_status.?, "\"surface_id\":\"packages\"") != null);
+}
+
 test "acheron_session: workspace mount aliases project live mounts into the namespace" {
     const allocator = std.testing.allocator;
 

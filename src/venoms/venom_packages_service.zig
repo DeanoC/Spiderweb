@@ -19,28 +19,28 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     defer self.allocator.free(escaped_base_path);
     const shape_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"kind\":\"venom\",\"venom_id\":\"venom_packages\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,PERMISSIONS.json,STATUS.json,status.json,result.json,control/*}}\"}}",
+        "{{\"kind\":\"control_substrate\",\"surface_id\":\"packages\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,PERMISSIONS.json,STATUS.json,status.json,result.json,control/*}}\"}}",
         .{escaped_base_path},
     );
     defer self.allocator.free(shape_json);
     try self.addDirectoryDescriptors(
         packages_dir,
-        "Venom Package Registry",
+        "Packages",
         shape_json,
-        "{\"invoke\":true,\"operations\":[\"venom_packages_list\",\"venom_packages_get\",\"venom_packages_install\",\"venom_packages_remove\"],\"discoverable\":true}",
-        "List, inspect, install, and remove Venom package definitions available to this Spiderweb host.",
+        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_get\",\"packages_install\",\"packages_remove\"],\"discoverable\":true}",
+        "List, inspect, install, and remove package definitions available to this Spiderweb host.",
     );
     _ = try self.addFile(
         packages_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"venom_packages_list\",\"get\":\"venom_packages_get\",\"install\":\"venom_packages_install\",\"remove\":\"venom_packages_remove\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"get\":\"packages_get\",\"install\":\"packages_install\",\"remove\":\"packages_remove\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         packages_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"venom_packages_registry\"}",
+        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"package_registry\"}",
         false,
         .none,
     );
@@ -54,7 +54,7 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(
         packages_dir,
         "STATUS.json",
-        "{\"venom_id\":\"venom_packages\",\"state\":\"namespace\",\"has_invoke\":true}",
+        "{\"surface_id\":\"packages\",\"state\":\"namespace\",\"has_invoke\":true}",
         false,
         .none,
     );
@@ -135,10 +135,10 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
 
 fn parseOp(raw: []const u8) ?Op {
     const value = std.mem.trim(u8, raw, " \t\r\n");
-    if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "venom_packages_list")) return .list;
-    if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "venom_packages_get")) return .get;
-    if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "venom_packages_install")) return .install;
-    if (std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "venom_packages_remove")) return .remove;
+    if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "packages_list") or std.mem.eql(u8, value, "venom_packages_list")) return .list;
+    if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "packages_get") or std.mem.eql(u8, value, "venom_packages_get")) return .get;
+    if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "packages_install") or std.mem.eql(u8, value, "venom_packages_install")) return .install;
+    if (std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "packages_remove") or std.mem.eql(u8, value, "venom_packages_remove")) return .remove;
     return null;
 }
 
@@ -276,10 +276,10 @@ fn operationName(op: Op) []const u8 {
 
 fn statusToolName(op: Op) []const u8 {
     return switch (op) {
-        .list => "venom_packages_list",
-        .get => "venom_packages_get",
-        .install => "venom_packages_install",
-        .remove => "venom_packages_remove",
+        .list => "packages_list",
+        .get => "packages_get",
+        .install => "packages_install",
+        .remove => "packages_remove",
     };
 }
 

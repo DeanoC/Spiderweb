@@ -2138,7 +2138,7 @@ pub const Session = struct {
         const service_path = try std.fmt.allocPrint(self.allocator, "/services/{s}", .{venom_id});
         defer self.allocator.free(service_path);
         if (self.hasWorkspaceBindPath(service_path)) {
-            return self.allocator.dupe(u8, service_path);
+            return try self.allocator.dupe(u8, service_path);
         }
 
         const global_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/_compat/global/{s}", .{venom_id});

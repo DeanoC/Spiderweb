@@ -94,6 +94,11 @@ const workspace_managed_shared_data_dir_name = session_workspace_contract.worksp
 const workspace_managed_control_dir_name = session_workspace_contract.workspace_managed_control_dir_name;
 const workspace_managed_catalog_dir_name = session_workspace_contract.workspace_managed_catalog_dir_name;
 const workspace_managed_venoms_dir_name = session_workspace_contract.workspace_managed_venoms_dir_name;
+const workspace_compat_root_name = "_compat";
+const workspace_compat_root_absolute = workspace_managed_root_absolute ++ "/" ++ workspace_compat_root_name;
+const workspace_compat_projects_absolute = workspace_compat_root_absolute ++ "/projects";
+const workspace_compat_global_absolute = workspace_compat_root_absolute ++ "/global";
+const workspace_compat_meta_absolute = workspace_compat_root_absolute ++ "/meta";
 const workspace_managed_control_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_control_dir_name ++ "/";
 const workspace_managed_venoms_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_venoms_dir_name ++ "/";
 const workspace_agents_contract_path = session_workspace_contract.workspace_agents_contract_path;
@@ -839,7 +844,7 @@ pub const Session = struct {
         defer self.allocator.free(project_id_json);
         const payload = try std.fmt.allocPrint(
             self.allocator,
-            "{{\"qid\":{{\"path\":{d},\"type\":\"dir\"}},\"layout\":\"spiderweb-fs\",\"project_id\":{s},\"roots\":[\"nodes\",\"agents\",\"projects\",\"global\",\"meta\"],\"dynamic_bind_paths\":{s},\"bind_count\":{d}}}",
+            "{{\"qid\":{{\"path\":{d},\"type\":\"dir\"}},\"layout\":\"spiderweb-fs\",\"project_id\":{s},\"roots\":[\".spiderweb\",\"nodes\",\"agents\"],\"dynamic_bind_paths\":{s},\"bind_count\":{d}}}",
             .{
                 self.root_id,
                 project_id_json,
@@ -1326,12 +1331,14 @@ pub const Session = struct {
         if (self.active_namespace_workspace_id) |value| self.allocator.free(value);
         self.active_namespace_workspace_id = try self.allocator.dupe(u8, policy.workspace_id);
         self.root_id = try self.addDir(null, "/", false);
+        const managed_root = try self.addDir(self.root_id, workspace_managed_root_name, false);
+        const compat_root = try self.addDir(managed_root, workspace_compat_root_name, false);
+        const compat_projects_root = try self.addDir(compat_root, "projects", false);
+        const compat_global_root = try self.addDir(compat_root, "global", false);
+        const compat_meta_root = try self.addDir(compat_root, "meta", false);
         const nodes_root = try self.addDir(self.root_id, "nodes", false);
         self.nodes_root_id = nodes_root;
         const agents_root = try self.addDir(self.root_id, "agents", false);
-        const projects_root = try self.addDir(self.root_id, "projects", false);
-        const global_root = try self.addDir(self.root_id, "global", false);
-        const meta_root = try self.addDir(self.root_id, "meta", false);
 
         try self.addDirectoryDescriptors(
             nodes_root,
@@ -1348,18 +1355,18 @@ pub const Session = struct {
             "Agent identities attached to this workspace namespace.",
         );
         try self.addDirectoryDescriptors(
-            projects_root,
+            compat_projects_root,
             "Workspaces",
-            "{\"kind\":\"collection\",\"entries\":\"workspace directories\",\"shape\":\"/projects/<workspace_id>/{fs,nodes,agents,meta}\"}",
+            "{\"kind\":\"collection\",\"entries\":\"workspace directories\",\"shape\":\"/.spiderweb/_compat/projects/<workspace_id>/{fs,nodes,agents,meta}\"}",
             "{\"read\":true,\"write\":false}",
-            "Attached-session compatibility view for workspace metadata and links.",
+            "Hidden compatibility view for legacy workspace metadata and links.",
         );
         try self.addDirectoryDescriptors(
-            global_root,
+            compat_global_root,
             "Global",
-            "{\"kind\":\"collection\",\"entries\":\"global namespaces\",\"shape\":\"/global/<venom_id>\"}",
+            "{\"kind\":\"collection\",\"entries\":\"global namespaces\",\"shape\":\"/.spiderweb/_compat/global/<venom_id>\"}",
             "{\"read\":true,\"write\":false}",
-            "System-wide stable namespaces shared across agents/workspaces.",
+            "Hidden compatibility view for legacy global namespaces.",
         );
         self.addNodeDirectoriesFromControlPlane(nodes_root) catch |err| {
             std.log.warn("seedNamespace addNodeDirectoriesFromControlPlane failed: {s}", .{@errorName(err)});
@@ -1369,7 +1376,7 @@ pub const Session = struct {
             if (self.lookupChild(nodes_root, node.id) != null) continue;
             try self.addNodeDirectory(nodes_root, node, false);
         }
-        self.seedLocalCatalogServiceNamespaces(global_root) catch |err| {
+        self.seedLocalCatalogServiceNamespaces(compat_global_root) catch |err| {
             std.log.warn("seedNamespace seedLocalCatalogServiceNamespaces failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -1391,7 +1398,7 @@ pub const Session = struct {
             false,
             .agent_venoms_index,
         );
-        const agent_venoms_dir = try self.addDir(global_root, "venoms", false);
+        const agent_venoms_dir = try self.addDir(compat_global_root, "venoms", false);
         try self.addDirectoryDescriptors(
             agent_venoms_dir,
             "Venoms",
@@ -1424,7 +1431,7 @@ pub const Session = struct {
             _ = try self.addFile(agent_dir, "LINK.txt", link, false, .none);
         }
 
-        const project_dir = try self.addDir(projects_root, policy.workspace_id, false);
+        const project_dir = try self.addDir(compat_projects_root, policy.workspace_id, false);
         const project_fs_dir = try self.addDir(project_dir, "fs", false);
         const project_nodes_dir = try self.addDir(project_dir, "nodes", false);
         const project_agents_dir = try self.addDir(project_dir, "agents", false);
@@ -1454,7 +1461,7 @@ pub const Session = struct {
         try self.addDirectoryDescriptors(
             project_agents_dir,
             "Workspace Agents",
-            "{\"kind\":\"collection\",\"entries\":\"agent links\",\"scope\":\"workspace\",\"targets\":\"/projects/<workspace_id>/agents/<agent_id>\"}",
+            "{\"kind\":\"collection\",\"entries\":\"agent links\",\"scope\":\"workspace\",\"targets\":\"/.spiderweb/_compat/projects/<workspace_id>/agents/<agent_id>\"}",
             "{\"read\":true,\"write\":false}",
             "Agent links visible within this workspace context.",
         );
@@ -1495,8 +1502,8 @@ pub const Session = struct {
 
         const active_agent_target = try std.fmt.allocPrint(
             self.allocator,
-            "/projects/{s}/agents/{s}\n",
-            .{ policy.workspace_id, self.agent_id },
+            "{s}/{s}/agents/{s}\n",
+            .{ workspace_compat_projects_absolute, policy.workspace_id, self.agent_id },
         );
         defer self.allocator.free(active_agent_target);
         _ = try self.addFile(project_agents_dir, self.agent_id, active_agent_target, false, .none);
@@ -1505,8 +1512,8 @@ pub const Session = struct {
             if (std.mem.eql(u8, agent_name, self.agent_id)) continue;
             const target = try std.fmt.allocPrint(
                 self.allocator,
-                "/projects/{s}/agents/{s}\n",
-                .{ policy.workspace_id, agent_name },
+                "{s}/{s}/agents/{s}\n",
+                .{ workspace_compat_projects_absolute, policy.workspace_id, agent_name },
             );
             defer self.allocator.free(target);
             _ = try self.addFile(project_agents_dir, agent_name, target, false, .none);
@@ -1524,13 +1531,13 @@ pub const Session = struct {
         };
 
         try self.addDirectoryDescriptors(
-            meta_root,
+            compat_meta_root,
             "Meta",
             "{\"kind\":\"meta\",\"entries\":[\"protocol.json\",\"view.json\",\"agent_bootstrap.json\",\"agent_bootstrap_quickref.json\",\"workspace_status.json\",\"workspace_availability.json\",\"workspace_health.json\",\"workspace_alerts.json\",\"workspace_binds.json\",\"packages.json\",\"providers.json\",\"bindings.json\"]}",
             "{\"read\":true,\"write\":false}",
-            "Attached-session compatibility metadata.",
+            "Hidden compatibility metadata for legacy namespace readers.",
         );
-        _ = try self.addFile(meta_root, "protocol.json", acheron_protocol_json, false, .none);
+        _ = try self.addFile(compat_meta_root, "protocol.json", acheron_protocol_json, false, .none);
         const escaped_agent = try unified.jsonEscape(self.allocator, self.agent_id);
         defer self.allocator.free(escaped_agent);
         const escaped_workspace = try unified.jsonEscape(self.allocator, policy.workspace_id);
@@ -1547,37 +1554,37 @@ pub const Session = struct {
             },
         );
         defer self.allocator.free(view_json);
-        _ = try self.addFile(meta_root, "view.json", view_json, false, .none);
+        _ = try self.addFile(compat_meta_root, "view.json", view_json, false, .none);
         const agent_bootstrap_json = try self.buildAgentBootstrapJson(policy.workspace_id, self.agent_id);
         defer self.allocator.free(agent_bootstrap_json);
-        _ = try self.addFile(meta_root, "agent_bootstrap.json", agent_bootstrap_json, false, .none);
+        _ = try self.addFile(compat_meta_root, "agent_bootstrap.json", agent_bootstrap_json, false, .none);
         if (workspace_status_json) |status_json| {
-            _ = try self.addFile(meta_root, "workspace_status.json", status_json, false, .none);
+            _ = try self.addFile(compat_meta_root, "workspace_status.json", status_json, false, .none);
             if (try self.extractWorkspaceAvailability(status_json)) |availability_json| {
                 defer self.allocator.free(availability_json);
-                _ = try self.addFile(meta_root, "workspace_availability.json", availability_json, false, .none);
+                _ = try self.addFile(compat_meta_root, "workspace_availability.json", availability_json, false, .none);
             } else {
-                _ = try self.addFile(meta_root, "workspace_availability.json", "{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}", false, .none);
+                _ = try self.addFile(compat_meta_root, "workspace_availability.json", "{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}", false, .none);
             }
             if (try self.extractWorkspaceHealth(status_json)) |health_json| {
                 defer self.allocator.free(health_json);
-                _ = try self.addFile(meta_root, "workspace_health.json", health_json, false, .none);
+                _ = try self.addFile(compat_meta_root, "workspace_health.json", health_json, false, .none);
             } else {
-                _ = try self.addFile(meta_root, "workspace_health.json", "{\"state\":\"unknown\",\"availability\":{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0},\"drift_count\":0,\"reconcile_state\":\"unknown\",\"queue_depth\":0}", false, .none);
+                _ = try self.addFile(compat_meta_root, "workspace_health.json", "{\"state\":\"unknown\",\"availability\":{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0},\"drift_count\":0,\"reconcile_state\":\"unknown\",\"queue_depth\":0}", false, .none);
             }
             if (try self.extractWorkspaceAlerts(status_json)) |alerts_json| {
                 defer self.allocator.free(alerts_json);
-                _ = try self.addFile(meta_root, "workspace_alerts.json", alerts_json, false, .none);
+                _ = try self.addFile(compat_meta_root, "workspace_alerts.json", alerts_json, false, .none);
             } else {
-                _ = try self.addFile(meta_root, "workspace_alerts.json", "[]", false, .none);
+                _ = try self.addFile(compat_meta_root, "workspace_alerts.json", "[]", false, .none);
             }
         } else {
             const fallback_status = try self.buildFallbackWorkspaceStatusJson(policy);
             defer self.allocator.free(fallback_status);
-            _ = try self.addFile(meta_root, "workspace_status.json", fallback_status, false, .none);
-            _ = try self.addFile(meta_root, "workspace_availability.json", "{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}", false, .none);
-            _ = try self.addFile(meta_root, "workspace_health.json", "{\"state\":\"unknown\",\"availability\":{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0},\"drift_count\":0,\"reconcile_state\":\"unknown\",\"queue_depth\":0}", false, .none);
-            _ = try self.addFile(meta_root, "workspace_alerts.json", "[]", false, .none);
+            _ = try self.addFile(compat_meta_root, "workspace_status.json", fallback_status, false, .none);
+            _ = try self.addFile(compat_meta_root, "workspace_availability.json", "{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}", false, .none);
+            _ = try self.addFile(compat_meta_root, "workspace_health.json", "{\"state\":\"unknown\",\"availability\":{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0},\"drift_count\":0,\"reconcile_state\":\"unknown\",\"queue_depth\":0}", false, .none);
+            _ = try self.addFile(compat_meta_root, "workspace_alerts.json", "[]", false, .none);
         }
 
         if (workspace_status_json) |status_json| {
@@ -1605,41 +1612,41 @@ pub const Session = struct {
             );
         }
 
-        self.registerExistingGlobalVenomBinding(global_root, "events", "workspace_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(compat_global_root, "events", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(events) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "search_code", "workspace_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(compat_global_root, "search_code", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(search_code) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "terminal", "workspace_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(compat_global_root, "terminal", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(terminal) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "mounts", "workspace_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(compat_global_root, "mounts", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(mounts) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "workers", "workspace_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(compat_global_root, "workers", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(workers) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "workspaces", "workspace_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(compat_global_root, "workspaces", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(workspaces) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "git", "workspace_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(compat_global_root, "git", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(git) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(global_root, "library", "global_namespace") catch |err| {
+        self.registerExistingGlobalVenomBinding(compat_global_root, "library", "global_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(library) failed: {s}", .{@errorName(err)});
             return err;
         };
         const preferred_fs_node_id = try self.resolvePreferredBoundVenomNodeId("fs");
         defer if (preferred_fs_node_id) |value| self.allocator.free(value);
-        _ = self.seedBoundGlobalFsNamespace(global_root, preferred_fs_node_id orelse "local") catch |err| {
+        _ = self.seedBoundGlobalFsNamespace(compat_global_root, preferred_fs_node_id orelse "local") catch |err| {
             std.log.warn("seedNamespace seedBoundGlobalFsNamespace failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -1651,7 +1658,7 @@ pub const Session = struct {
             std.log.warn("seedNamespace refreshScopedVenomIndexes failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.addWorkspaceServiceDiscoveryFiles(meta_root, project_meta_dir, policy.workspace_id) catch |err| {
+        self.addWorkspaceServiceDiscoveryFiles(compat_meta_root, project_meta_dir, policy.workspace_id) catch |err| {
             std.log.warn("seedNamespace addWorkspaceServiceDiscoveryFiles failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -1816,8 +1823,10 @@ pub const Session = struct {
     }
 
     pub fn refreshWorkspaceServiceDiscoveryFiles(self: *Session) !void {
-        const meta_root = self.lookupChild(self.root_id, "meta") orelse return;
-        const projects_root = self.lookupChild(self.root_id, "projects") orelse return;
+        const managed_root = self.lookupChild(self.root_id, workspace_managed_root_name) orelse return;
+        const compat_root = self.lookupChild(managed_root, workspace_compat_root_name) orelse return;
+        const meta_root = self.lookupChild(compat_root, "meta") orelse return;
+        const projects_root = self.lookupChild(compat_root, "projects") orelse return;
         const active_workspace_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return;
         const project_dir = self.lookupChild(projects_root, active_workspace_id) orelse return;
         const workspace_meta_dir = self.lookupChild(project_dir, "meta") orelse return;
@@ -2052,27 +2061,27 @@ pub const Session = struct {
     fn appendManagedWorkspaceEntrypointBinds(self: *Session) !void {
         const workspace_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return;
 
-        const quickref_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{workspace_id});
+        const quickref_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/agent_bootstrap_quickref.json", .{ workspace_compat_projects_absolute, workspace_id });
         defer self.allocator.free(quickref_target);
-        const bootstrap_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{workspace_id});
+        const bootstrap_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/agent_bootstrap.json", .{ workspace_compat_projects_absolute, workspace_id });
         defer self.allocator.free(bootstrap_target);
-        const workspace_status_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/workspace_status.json", .{workspace_id});
+        const workspace_status_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/workspace_status.json", .{ workspace_compat_projects_absolute, workspace_id });
         defer self.allocator.free(workspace_status_target);
-        const packages_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/packages.json", .{workspace_id});
+        const packages_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/packages.json", .{ workspace_compat_projects_absolute, workspace_id });
         defer self.allocator.free(packages_target);
-        const providers_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/providers.json", .{workspace_id});
+        const providers_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/providers.json", .{ workspace_compat_projects_absolute, workspace_id });
         defer self.allocator.free(providers_target);
-        const bindings_target = try std.fmt.allocPrint(self.allocator, "/projects/{s}/meta/bindings.json", .{workspace_id});
+        const bindings_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/bindings.json", .{ workspace_compat_projects_absolute, workspace_id });
         defer self.allocator.free(bindings_target);
 
         const managed_bind_specs = [_]struct { bind_path: []const u8, target_path: []const u8 }{
-            .{ .bind_path = workspace_managed_root_absolute ++ "/protocol.json", .target_path = "/meta/protocol.json" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/protocol.json", .target_path = workspace_compat_meta_absolute ++ "/protocol.json" },
             .{ .bind_path = workspace_managed_root_absolute ++ "/shared_data", .target_path = "/shared_data" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/home", .target_path = "/global/home" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/mounts", .target_path = "/global/mounts" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/binds", .target_path = "/global/mounts" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/packages", .target_path = "/global/venom_packages" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/runtimes", .target_path = "/global/workers" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/home", .target_path = workspace_compat_global_absolute ++ "/home" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/mounts", .target_path = workspace_compat_global_absolute ++ "/mounts" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/binds", .target_path = workspace_compat_global_absolute ++ "/mounts" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/packages", .target_path = workspace_compat_global_absolute ++ "/venom_packages" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/runtimes", .target_path = workspace_compat_global_absolute ++ "/workers" },
         };
 
         for (managed_bind_specs) |spec| {
@@ -8618,9 +8627,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     try std.testing.expect(workspace_agents != null);
     try std.testing.expectEqualStrings(namespace_agents.?, workspace_agents.?);
 
-    const quickref_path = try std.fmt.allocPrint(allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{workspace_id});
-    defer allocator.free(quickref_path);
-    const quickref_json = try session.tryReadInternalPath(quickref_path);
+    const quickref_json = try session.tryReadInternalPath("/.spiderweb/agent_bootstrap_quickref.json");
     defer if (quickref_json) |value| allocator.free(value);
     try std.testing.expect(quickref_json != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"workspace_write_root\":\".\"") != null);
@@ -8633,9 +8640,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"service_root\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"namespace_root\"") == null);
 
-    const bootstrap_path = try std.fmt.allocPrint(allocator, "/projects/{s}/meta/agent_bootstrap.json", .{workspace_id});
-    defer allocator.free(bootstrap_path);
-    const bootstrap_json = try session.tryReadInternalPath(bootstrap_path);
+    const bootstrap_json = try session.tryReadInternalPath("/.spiderweb/agent_bootstrap.json");
     defer if (bootstrap_json) |value| allocator.free(value);
     try std.testing.expect(bootstrap_json != null);
     try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"required_reads\":[\"./AGENTS.md\"") != null);
@@ -8668,6 +8673,20 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
         defer if (content) |value| allocator.free(value);
         try std.testing.expect(content != null);
     }
+
+    const legacy_projects_quickref = try std.fmt.allocPrint(allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{workspace_id});
+    defer allocator.free(legacy_projects_quickref);
+    const legacy_quickref = try session.tryReadInternalPath(legacy_projects_quickref);
+    defer if (legacy_quickref) |value| allocator.free(value);
+    try std.testing.expect(legacy_quickref == null);
+
+    const legacy_meta_protocol = try session.tryReadInternalPath("/meta/protocol.json");
+    defer if (legacy_meta_protocol) |value| allocator.free(value);
+    try std.testing.expect(legacy_meta_protocol == null);
+
+    const legacy_global_index = try session.tryReadInternalPath("/global/venoms/VENOMS.json");
+    defer if (legacy_global_index) |value| allocator.free(value);
+    try std.testing.expect(legacy_global_index == null);
 
     tmp_dir.dir.access("exports/.spiderweb", .{}) catch |err| switch (err) {
         error.FileNotFound => {},
@@ -8749,7 +8768,7 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/services/git\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/global/git\"") == null);
 
-    const venoms_index_json = try session.tryReadInternalPath("/global/venoms/VENOMS.json");
+    const venoms_index_json = try session.tryReadInternalPath("/.spiderweb/_compat/global/venoms/VENOMS.json");
     defer if (venoms_index_json) |value| allocator.free(value);
     try std.testing.expect(venoms_index_json != null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/git\"") != null);
@@ -10236,7 +10255,7 @@ test "acheron_session: mount graph snapshot keeps synthetic file contents remote
         if (node_value != .object) continue;
         const path_value = node_value.object.get("path") orelse continue;
         if (path_value != .string) continue;
-        if (!std.mem.eql(u8, path_value.string, "/AGENTS.md") and !std.mem.eql(u8, path_value.string, "/meta/protocol.json")) {
+        if (!std.mem.eql(u8, path_value.string, "/AGENTS.md") and !std.mem.eql(u8, path_value.string, "/.spiderweb/protocol.json")) {
             continue;
         }
 
@@ -10249,7 +10268,7 @@ test "acheron_session: mount graph snapshot keeps synthetic file contents remote
 
         if (std.mem.eql(u8, path_value.string, "/AGENTS.md")) {
             found_agents = true;
-        } else if (std.mem.eql(u8, path_value.string, "/meta/protocol.json")) {
+        } else if (std.mem.eql(u8, path_value.string, "/.spiderweb/protocol.json")) {
             found_protocol = true;
         }
     }
@@ -10330,7 +10349,7 @@ test "acheron_session: mount graph snapshot preserves alias directory and file k
             try std.testing.expectEqualStrings("synthetic_file", node_value.object.get("kind").?.string);
             try std.testing.expect(node_value.object.get("canonical_node_id").? != .null);
             found_agents_alias = true;
-        } else if (std.mem.eql(u8, path_value.string, "/global/mounts")) {
+        } else if (std.mem.eql(u8, path_value.string, "/.spiderweb/control/workspace/mounts")) {
             try std.testing.expectEqualStrings("synthetic_directory", node_value.object.get("kind").?.string);
             try std.testing.expect(node_value.object.get("canonical_node_id").? != .null);
             found_mounts_alias = true;

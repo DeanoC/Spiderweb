@@ -98,19 +98,6 @@ const BootstrapContractPaths = struct {
 };
 
 pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) ![]u8 {
-    const workspace_binds = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/binds.json", .{workspace_id});
-    defer session.allocator.free(workspace_binds);
-    const catalog_packages_path = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/packages.json", .{workspace_id});
-    defer session.allocator.free(catalog_packages_path);
-    const catalog_providers_path = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/providers.json", .{workspace_id});
-    defer session.allocator.free(catalog_providers_path);
-    const catalog_bindings_path = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/bindings.json", .{workspace_id});
-    defer session.allocator.free(catalog_bindings_path);
-    const agent_bootstrap = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{workspace_id});
-    defer session.allocator.free(agent_bootstrap);
-    const agent_bootstrap_quickref = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{workspace_id});
-    defer session.allocator.free(agent_bootstrap_quickref);
-
     const workspace_metadata_files = [_][]const u8{
         "topology.json",
         "nodes.json",
@@ -162,17 +149,17 @@ pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) !
     try jw.objectField("workspace_status");
     try jw.write("/.spiderweb/workspace_status.json");
     try jw.objectField("workspace_binds");
-    try jw.write(workspace_binds);
+    try jw.write("/.spiderweb/catalog/bindings.json");
     try jw.objectField("packages");
-    try jw.write(catalog_packages_path);
+    try jw.write("/.spiderweb/catalog/packages.json");
     try jw.objectField("providers");
-    try jw.write(catalog_providers_path);
+    try jw.write("/.spiderweb/catalog/providers.json");
     try jw.objectField("bindings");
-    try jw.write(catalog_bindings_path);
+    try jw.write("/.spiderweb/catalog/bindings.json");
     try jw.objectField("agent_bootstrap");
-    try jw.write(agent_bootstrap);
+    try jw.write("/.spiderweb/agent_bootstrap.json");
     try jw.objectField("agent_bootstrap_quickref");
-    try jw.write(agent_bootstrap_quickref);
+    try jw.write("/.spiderweb/agent_bootstrap_quickref.json");
     try jw.objectField("workspace_agents_contract");
     try jw.write("/AGENTS.md");
     try jw.objectField("workspace_agents_contract_persisted");
@@ -183,17 +170,6 @@ pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) !
 }
 
 pub fn buildWorkspacePathsJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-    const packages_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/packages.json", .{policy.workspace_id});
-    defer session.allocator.free(packages_meta);
-    const providers_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/providers.json", .{policy.workspace_id});
-    defer session.allocator.free(providers_meta);
-    const bindings_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/bindings.json", .{policy.workspace_id});
-    defer session.allocator.free(bindings_meta);
-    const bootstrap_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{policy.workspace_id});
-    defer session.allocator.free(bootstrap_meta);
-    const bootstrap_quickref = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{policy.workspace_id});
-    defer session.allocator.free(bootstrap_quickref);
-
     var out = std.io.Writer.Allocating.init(session.allocator);
     errdefer out.deinit();
 
@@ -221,11 +197,11 @@ pub fn buildWorkspacePathsJson(session: anytype, policy: workspace_policy.Worksp
     try jw.objectField("root");
     try jw.write("/.spiderweb/catalog");
     try jw.objectField("packages");
-    try jw.write(packages_meta);
+    try jw.write("/.spiderweb/catalog/packages.json");
     try jw.objectField("providers");
-    try jw.write(providers_meta);
+    try jw.write("/.spiderweb/catalog/providers.json");
     try jw.objectField("bindings");
-    try jw.write(bindings_meta);
+    try jw.write("/.spiderweb/catalog/bindings.json");
     try jw.endObject();
     try jw.objectField("venoms");
     try jw.beginObject();
@@ -235,9 +211,9 @@ pub fn buildWorkspacePathsJson(session: anytype, policy: workspace_policy.Worksp
     try jw.objectField("bootstrap");
     try jw.beginObject();
     try jw.objectField("meta");
-    try jw.write(bootstrap_meta);
+    try jw.write("/.spiderweb/agent_bootstrap.json");
     try jw.objectField("quickref");
-    try jw.write(bootstrap_quickref);
+    try jw.write("/.spiderweb/agent_bootstrap_quickref.json");
     try jw.objectField("workspace_contract");
     try jw.beginObject();
     try jw.objectField("namespace_alias");

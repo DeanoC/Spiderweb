@@ -59,7 +59,7 @@ pub fn registerExistingGlobalVenomBinding(
     const venom_dir = session.nodes.get(venom_dir_id) orelse return;
     if (venom_dir.kind != .dir) return;
 
-    const venom_path = try std.fmt.allocPrint(session.allocator, "/global/{s}", .{venom_id});
+    const venom_path = try std.fmt.allocPrint(session.allocator, "/.spiderweb/_compat/global/{s}", .{venom_id});
     defer session.allocator.free(venom_path);
     const invoke_path = if (session.venomCapsInvoke(venom_dir_id)) blk: {
         const invoke_target = try session.resolveNodeVenomInvokeTarget(venom_dir_id);

@@ -1628,8 +1628,8 @@ pub const Session = struct {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(mounts) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerExistingGlobalVenomBinding(compat_global_root, "workers", "workspace_namespace") catch |err| {
-            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(workers) failed: {s}", .{@errorName(err)});
+        self.registerExistingGlobalVenomBinding(compat_global_root, "runtimes", "workspace_namespace") catch |err| {
+            std.log.warn("seedNamespace registerExistingGlobalVenomBinding(runtimes) failed: {s}", .{@errorName(err)});
             return err;
         };
         self.registerExistingGlobalVenomBinding(compat_global_root, "workspaces", "workspace_namespace") catch |err| {
@@ -2394,18 +2394,18 @@ pub const Session = struct {
         };
         _ = try self.cloneLocalCatalogVenomAlias(library_dir, global_root, "library");
 
-        const venom_packages_dir = try self.addDir(local_venoms_root, "venom_packages", false);
-        self.seedPackagesNamespaceAt(venom_packages_dir, "/nodes/local/venoms/venom_packages") catch |err| {
-            std.log.warn("seedLocalCatalogServiceNamespaces venom_packages namespace failed: {s}", .{@errorName(err)});
+        const packages_dir = try self.addDir(local_venoms_root, "packages", false);
+        self.seedPackagesNamespaceAt(packages_dir, "/nodes/local/venoms/packages") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces packages namespace failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.seedBuiltinPackageMetadata(venom_packages_dir, "venom_packages") catch |err| {
-            std.log.warn("seedLocalCatalogServiceNamespaces venom_packages metadata failed: {s}", .{@errorName(err)});
+        self.seedBuiltinPackageMetadata(packages_dir, "packages") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces packages metadata failed: {s}", .{@errorName(err)});
             return err;
         };
-        const venom_packages_alias_dir = try self.cloneLocalCatalogVenomAlias(venom_packages_dir, global_root, "venom_packages");
-        self.packages_status_alias_id = self.lookupChild(venom_packages_alias_dir, "status.json") orelse 0;
-        self.packages_result_alias_id = self.lookupChild(venom_packages_alias_dir, "result.json") orelse 0;
+        const packages_alias_dir = try self.cloneLocalCatalogVenomAlias(packages_dir, global_root, "packages");
+        self.packages_status_alias_id = self.lookupChild(packages_alias_dir, "status.json") orelse 0;
+        self.packages_result_alias_id = self.lookupChild(packages_alias_dir, "result.json") orelse 0;
 
         const events_dir = try self.addDir(local_venoms_root, "events", false);
         self.seedEventsNamespaceAt(events_dir, "/nodes/local/venoms/events") catch |err| {
@@ -2431,18 +2431,18 @@ pub const Session = struct {
         self.home_status_alias_id = self.lookupChild(home_alias_dir, "status.json") orelse 0;
         self.home_result_alias_id = self.lookupChild(home_alias_dir, "result.json") orelse 0;
 
-        const workers_dir = try self.addDir(local_venoms_root, "workers", false);
-        runtimes_venom.seedNamespaceAt(self, workers_dir, "/nodes/local/venoms/workers") catch |err| {
-            std.log.warn("seedLocalCatalogServiceNamespaces workers namespace failed: {s}", .{@errorName(err)});
+        const runtimes_dir = try self.addDir(local_venoms_root, "runtimes", false);
+        runtimes_venom.seedNamespaceAt(self, runtimes_dir, "/nodes/local/venoms/runtimes") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces runtimes namespace failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.seedBuiltinPackageMetadata(workers_dir, "workers") catch |err| {
-            std.log.warn("seedLocalCatalogServiceNamespaces workers metadata failed: {s}", .{@errorName(err)});
+        self.seedBuiltinPackageMetadata(runtimes_dir, "runtimes") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces runtimes metadata failed: {s}", .{@errorName(err)});
             return err;
         };
-        const workers_alias_dir = try self.cloneLocalCatalogVenomAlias(workers_dir, global_root, "workers");
-        self.runtimes_status_alias_id = self.lookupChild(workers_alias_dir, "status.json") orelse 0;
-        self.runtimes_result_alias_id = self.lookupChild(workers_alias_dir, "result.json") orelse 0;
+        const runtimes_alias_dir = try self.cloneLocalCatalogVenomAlias(runtimes_dir, global_root, "runtimes");
+        self.runtimes_status_alias_id = self.lookupChild(runtimes_alias_dir, "status.json") orelse 0;
+        self.runtimes_result_alias_id = self.lookupChild(runtimes_alias_dir, "result.json") orelse 0;
 
         if (self.lookupChild(local_venoms_root, "search_code")) |search_code_dir| {
             _ = try self.cloneLocalCatalogVenomAlias(search_code_dir, global_root, "search_code");
@@ -2490,16 +2490,16 @@ pub const Session = struct {
             std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(library) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerLocalCatalogVenomBinding("venom_packages", "node_catalog") catch |err| {
-            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(venom_packages) failed: {s}", .{@errorName(err)});
+        self.registerLocalCatalogVenomBinding("packages", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(packages) failed: {s}", .{@errorName(err)});
             return err;
         };
         self.registerLocalCatalogVenomBinding("events", "node_catalog") catch |err| {
             std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(events) failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.registerLocalCatalogVenomBinding("workers", "node_catalog") catch |err| {
-            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(workers) failed: {s}", .{@errorName(err)});
+        self.registerLocalCatalogVenomBinding("runtimes", "node_catalog") catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces registerLocalCatalogVenomBinding(runtimes) failed: {s}", .{@errorName(err)});
             return err;
         };
         self.registerLocalCatalogVenomBinding("search_code", "node_catalog") catch |err| {

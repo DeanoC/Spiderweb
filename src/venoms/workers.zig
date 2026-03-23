@@ -14,7 +14,7 @@ const default_worker_venoms = [_][]const u8{
 const default_worker_ttl_ms: u64 = 30_000;
 
 pub fn seedNamespace(self: anytype, workers_dir: u32) !void {
-    return seedNamespaceAt(self, workers_dir, "/.spiderweb/_compat/global/workers");
+    return seedNamespaceAt(self, workers_dir, "/.spiderweb/_compat/global/runtimes");
 }
 
 pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !void {

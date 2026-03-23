@@ -568,8 +568,11 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
         if (std.mem.startsWith(u8, tail, "mounts")) {
             return workspaceManagedControlPath(allocator, "workspace/mounts");
         }
-        if (std.mem.startsWith(u8, tail, "workers")) {
+        if (std.mem.startsWith(u8, tail, "workers") or std.mem.startsWith(u8, tail, "runtimes")) {
             return workspaceManagedControlPath(allocator, "runtimes");
+        }
+        if (std.mem.startsWith(u8, tail, "venom_packages") or std.mem.startsWith(u8, tail, "packages")) {
+            return workspaceManagedControlPath(allocator, "packages");
         }
         return workspaceManagedVenomsPath(allocator, tail);
     }
@@ -581,8 +584,11 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
         if (std.mem.startsWith(u8, tail, "mounts")) {
             return workspaceManagedControlPath(allocator, "workspace/mounts");
         }
-        if (std.mem.startsWith(u8, tail, "workers")) {
+        if (std.mem.startsWith(u8, tail, "workers") or std.mem.startsWith(u8, tail, "runtimes")) {
             return workspaceManagedControlPath(allocator, "runtimes");
+        }
+        if (std.mem.startsWith(u8, tail, "venom_packages") or std.mem.startsWith(u8, tail, "packages")) {
+            return workspaceManagedControlPath(allocator, "packages");
         }
         return workspaceManagedVenomsPath(allocator, tail);
     }

@@ -64,7 +64,9 @@ const control_substrate_ids = [_][]const u8{
     "fs",
     "home",
     "mounts",
+    "packages",
     "venom_packages",
+    "runtimes",
     "workers",
     "workspaces",
 };
@@ -142,6 +144,7 @@ pub fn containsBindingScope(binding_scopes: []const BindingScope, needle: Bindin
 
 test "venom_model classifies substrate and production capability venoms" {
     try std.testing.expect(isControlSubstrateVenomId("mounts"));
+    try std.testing.expect(isControlSubstrateVenomId("runtimes"));
     try std.testing.expect(isControlSubstrateVenomId("workers"));
     try std.testing.expect(!isCapabilityVenomId("mounts"));
     try std.testing.expect(!isCapabilityVenomId("memory"));

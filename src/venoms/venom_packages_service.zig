@@ -11,7 +11,7 @@ pub const Op = enum {
 };
 
 pub fn seedNamespace(self: anytype, packages_dir: u32) !void {
-    return seedNamespaceAt(self, packages_dir, "/.spiderweb/_compat/global/venom_packages");
+    return seedNamespaceAt(self, packages_dir, "/.spiderweb/_compat/global/packages");
 }
 
 pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) !void {

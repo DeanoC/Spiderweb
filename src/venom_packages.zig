@@ -61,10 +61,10 @@ const node_scope = &.{venom_model.BindingScope.node};
 
 const builtin_packages = [_]BuiltinPackageSpec{
     .{ .venom_id = "library", .kind = "library", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/library", .categories_json = "[\"docs\",\"discovery\"]", .help_md = "Workspace library and topic discovery." },
-    .{ .venom_id = "venom_packages", .kind = "registry", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/venom_packages", .categories_json = "[\"venoms\",\"registry\"]", .help_md = "Registry of available Venom packages and install/remove operations." },
+    .{ .venom_id = "packages", .kind = "registry", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/packages", .categories_json = "[\"venoms\",\"registry\"]", .help_md = "Registry of available Venom packages and install/remove operations." },
     .{ .venom_id = "events", .kind = "events", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/events", .categories_json = "[\"events\",\"coordination\"]", .help_md = "Filesystem-native waits and event delivery." },
     .{ .venom_id = "home", .kind = "home", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/home", .categories_json = "[\"agent\",\"storage\"]", .help_md = "Provision durable per-agent workspace homes." },
-    .{ .venom_id = "workers", .kind = "workers", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/workers", .categories_json = "[\"worker\",\"registration\"]", .help_md = "Register and maintain worker-private venom instances." },
+    .{ .venom_id = "runtimes", .kind = "workers", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/runtimes", .categories_json = "[\"worker\",\"registration\"]", .help_md = "Register and maintain worker-private venom instances." },
     .{ .venom_id = "search_code", .kind = "search_code", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/search_code", .categories_json = "[\"search\",\"code\"]", .help_md = "Workspace code search service." },
     .{ .venom_id = "fs", .kind = "fs", .default_host_role = .node, .binding_scopes = node_scope, .runtime_kind = .native, .categories_json = "[\"filesystem\",\"node\"]", .runtime_json = "{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}", .schema_json = "{\"model\":\"namespace-mount\"}", .help_md = "Filesystem export surfaced by a Spiderweb node." },
     .{ .venom_id = "terminal", .kind = "terminal", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/terminal", .categories_json = "[\"terminal\",\"exec\"]", .help_md = "Command execution service with Linux-only interactive terminal sessions." },
@@ -80,10 +80,17 @@ pub fn allBuiltinPackages() []const BuiltinPackageSpec {
 }
 
 pub fn findBuiltinPackage(venom_id: []const u8) ?BuiltinPackageSpec {
+    const normalized_id = normalizeBuiltinPackageId(venom_id);
     for (builtin_packages) |spec| {
-        if (std.mem.eql(u8, spec.venom_id, venom_id)) return spec;
+        if (std.mem.eql(u8, spec.venom_id, normalized_id)) return spec;
     }
     return null;
+}
+
+fn normalizeBuiltinPackageId(venom_id: []const u8) []const u8 {
+    if (std.mem.eql(u8, venom_id, "venom_packages")) return "packages";
+    if (std.mem.eql(u8, venom_id, "workers")) return "runtimes";
+    return venom_id;
 }
 
 pub fn resolveBuiltinTargetPath(venom_id: []const u8, host_role: venom_model.HostRole) ?[]const u8 {
@@ -239,9 +246,14 @@ test "venom_packages: builtins render through shared package parser" {
     try venom_package.replacePackagesFromJsonValue(allocator, &packages, parsed.value);
 
     try std.testing.expect(packages.items.len >= 5);
+    try std.testing.expect(findBuiltinPackage("runtimes") != null);
     try std.testing.expect(findBuiltinPackage("workers") != null);
+    try std.testing.expect(findBuiltinPackage("packages") != null);
+    try std.testing.expect(findBuiltinPackage("venom_packages") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"venom_id\":\"memory\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"package_id\":\"terminal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"venom_id\":\"packages\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"venom_id\":\"runtimes\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"host_roles\":[\"node\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"binding_scopes\":[\"workspace\"]") != null);
 

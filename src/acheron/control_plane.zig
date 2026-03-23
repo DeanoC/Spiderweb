@@ -315,7 +315,7 @@ const WorkspaceTemplateSpec = struct {
 const core_workspace_bind_specs = [_]WorkspaceTemplateBindSpec{
     .{ .bind_path = "/.spiderweb/control/workspace/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/.spiderweb/control/workspace/home", .venom_id = "home" },
-    .{ .bind_path = "/.spiderweb/control/runtimes", .venom_id = "workers" },
+    .{ .bind_path = "/.spiderweb/control/runtimes", .venom_id = "runtimes" },
     .{ .bind_path = "/.spiderweb/venoms/terminal", .venom_id = "terminal", .host_role = .node },
     .{ .bind_path = "/.spiderweb/venoms/git", .venom_id = "git", .host_role = .node },
     .{ .bind_path = "/.spiderweb/venoms/search_code", .venom_id = "search_code", .host_role = .node },

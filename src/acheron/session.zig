@@ -2089,39 +2089,40 @@ pub const Session = struct {
         }
 
         inline for (venom_model.production_priority_capability_ids) |venom_id| {
-            const target_path = (try self.resolveManagedCapabilityVenomTargetPath(venom_id)) orelse continue;
-            defer self.allocator.free(target_path);
-            const bind_path = try std.fmt.allocPrint(
-                self.allocator,
-                "{s}/venoms/{s}",
-                .{ workspace_managed_root_absolute, venom_id },
-            );
-            defer self.allocator.free(bind_path);
-            try self.appendProjectBindIfMissing(.managed_entrypoint, bind_path, target_path);
+            if (try self.resolveManagedCapabilityVenomTargetPath(venom_id)) |target_path| {
+                defer self.allocator.free(target_path);
+                const bind_path = try std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}/venoms/{s}",
+                    .{ workspace_managed_root_absolute, venom_id },
+                );
+                defer self.allocator.free(bind_path);
+                try self.appendProjectBindIfMissing(.managed_entrypoint, bind_path, target_path);
 
-            const preferred_provider_node_id = try self.resolvePreferredBoundVenomNodeId(venom_id);
-            defer if (preferred_provider_node_id) |value| self.allocator.free(value);
-            const provider_path = if (preferred_provider_node_id) |value|
-                try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ value, venom_id })
-            else
-                try self.allocator.dupe(u8, target_path);
-            defer self.allocator.free(provider_path);
-            const provider_dir_id = self.resolveAbsolutePathNoBinds(provider_path);
-            const invoke_path = if (provider_dir_id) |value|
-                try self.deriveVenomInvokePath(preferred_provider_node_id orelse "local", venom_id, value)
-            else
-                null;
-            defer if (invoke_path) |value| self.allocator.free(value);
+                const preferred_provider_node_id = try self.resolvePreferredBoundVenomNodeId(venom_id);
+                defer if (preferred_provider_node_id) |value| self.allocator.free(value);
+                const provider_path = if (preferred_provider_node_id) |value|
+                    try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ value, venom_id })
+                else
+                    try self.allocator.dupe(u8, target_path);
+                defer self.allocator.free(provider_path);
+                const provider_dir_id = self.resolveAbsolutePathNoBinds(provider_path);
+                const invoke_path = if (provider_dir_id) |value|
+                    try self.deriveVenomInvokePath(preferred_provider_node_id orelse "local", venom_id, value)
+                else
+                    null;
+                defer if (invoke_path) |value| self.allocator.free(value);
 
-            try self.registerScopedVenomBindingIfMissing(
-                venom_id,
-                "workspace_binding",
-                bind_path,
-                preferred_provider_node_id,
-                provider_path,
-                provider_path,
-                invoke_path,
-            );
+                try self.registerScopedVenomBindingIfMissing(
+                    venom_id,
+                    "workspace_binding",
+                    bind_path,
+                    preferred_provider_node_id,
+                    provider_path,
+                    provider_path,
+                    invoke_path,
+                );
+            }
         }
 
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/agent_bootstrap_quickref.json", quickref_target);

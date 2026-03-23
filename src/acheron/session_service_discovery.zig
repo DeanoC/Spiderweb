@@ -28,9 +28,9 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         const version = getString(item.object, "version") orelse "1";
         const help_md = getString(item.object, "help_md");
         const runtime_kind = normalizedRuntimeKindFromObject(item.object);
-        const host_roles_json = normalizedHostRolesJson(session.allocator, item.object.get("host_roles") orelse item.object.get("hosts"));
+        const host_roles_json = try normalizedHostRolesJson(session.allocator, item.object.get("host_roles") orelse item.object.get("hosts"));
         defer session.allocator.free(host_roles_json);
-        const binding_scopes_json = normalizedBindingScopesJson(session.allocator, item.object.get("binding_scopes") orelse item.object.get("projection_modes"));
+        const binding_scopes_json = try normalizedBindingScopesJson(session.allocator, item.object.get("binding_scopes") orelse item.object.get("projection_modes"));
         defer session.allocator.free(binding_scopes_json);
         const help_json = if (help_md) |value| blk: {
             const escaped = try unified.jsonEscape(session.allocator, value);
@@ -134,30 +134,17 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
 }
 
 pub fn buildCatalogBindingsJson(session: anytype) ![]u8 {
-    var venom_ids = std.ArrayListUnmanaged([]u8){};
-    defer {
-        for (venom_ids.items) |value| session.allocator.free(value);
-        venom_ids.deinit(session.allocator);
-    }
-
-    try collectCapabilityVenomIds(session, &venom_ids);
-
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(session.allocator);
     try out.append(session.allocator, '[');
 
     var first = true;
-    for (venom_ids.items) |venom_id| {
-        const target_path = (try session.resolveManagedCapabilityVenomTargetPath(venom_id)) orelse continue;
-        defer session.allocator.free(target_path);
+    for (session.scoped_venom_bindings.items) |binding| {
+        if (!venom_model.isCapabilityVenomId(binding.venom_id)) continue;
+        if (!std.mem.startsWith(u8, binding.venom_path, "/.spiderweb/venoms/")) continue;
 
-        const binding_path = try std.fmt.allocPrint(session.allocator, "/.spiderweb/venoms/{s}", .{venom_id});
-        defer session.allocator.free(binding_path);
-
-        const provider_node_id = try session.resolvePreferredBoundVenomNodeId(venom_id);
-        defer if (provider_node_id) |value| session.allocator.free(value);
-        const provider_id_json = if (provider_node_id) |value|
-            try std.fmt.allocPrint(session.allocator, "\"{s}:{s}\"", .{ value, venom_id })
+        const provider_id_json = if (binding.provider_node_id) |value|
+            try std.fmt.allocPrint(session.allocator, "\"{s}:{s}\"", .{ value, binding.venom_id })
         else
             try session.allocator.dupe(u8, "null");
         defer session.allocator.free(provider_id_json);
@@ -167,11 +154,11 @@ pub fn buildCatalogBindingsJson(session: anytype) ![]u8 {
         try out.writer(session.allocator).print(
             "{{\"binding_id\":\"workspace:{s}\",\"scope\":\"{s}\",\"alias\":\"{s}\",\"binding_path\":\"{s}\",\"target_path\":\"{s}\",\"provider_id\":{s}}}",
             .{
-                venom_id,
+                binding.venom_id,
                 venom_model.BindingScope.workspace.asString(),
-                venom_id,
-                binding_path,
-                target_path,
+                binding.venom_id,
+                binding.venom_path,
+                if (binding.provider_venom_path) |value| value else binding.venom_path,
                 provider_id_json,
             },
         );
@@ -275,16 +262,20 @@ fn normalizedHostRolesJson(allocator: std.mem.Allocator, maybe_hosts: ?std.json.
     return out.toOwnedSlice(allocator);
 }
 
-fn normalizedBindingScopesJson(allocator: std.mem.Allocator, maybe_projection_modes: ?std.json.Value) ![]u8 {
+fn normalizedBindingScopesJson(allocator: std.mem.Allocator, maybe_binding_scopes_or_projection_modes: ?std.json.Value) ![]u8 {
     var has_workspace = false;
     var has_agent = false;
     const has_client = false;
     var has_node = false;
 
-    if (maybe_projection_modes) |projection_modes| {
+    if (maybe_binding_scopes_or_projection_modes) |projection_modes| {
         if (projection_modes == .array) {
             for (projection_modes.array.items) |item| {
                 if (item != .string) continue;
+                if (std.mem.eql(u8, item.string, venom_model.BindingScope.workspace.asString())) has_workspace = true;
+                if (std.mem.eql(u8, item.string, venom_model.BindingScope.agent.asString())) has_agent = true;
+                if (std.mem.eql(u8, item.string, venom_model.BindingScope.client.asString())) {}
+                if (std.mem.eql(u8, item.string, venom_model.BindingScope.node.asString())) has_node = true;
                 if (std.mem.eql(u8, item.string, "workspace_service")) has_workspace = true;
                 if (std.mem.eql(u8, item.string, "worker_private")) has_agent = true;
                 if (std.mem.eql(u8, item.string, "host_local")) has_node = true;
@@ -348,7 +339,7 @@ fn providerStateForDir(session: anytype, venom_dir_id: u32) ![]u8 {
 fn providerEndpointPathForDir(session: anytype, node_id: []const u8, venom_id: []const u8, venom_dir_id: u32) !?[]u8 {
     if (try session.firstVenomMountPath(venom_dir_id)) |value| return value;
     if (try session.venomEndpointPath(venom_dir_id)) |value| return value;
-    return std.fmt.allocPrint(session.allocator, "/nodes/{s}/venoms/{s}", .{ node_id, venom_id });
+    return try std.fmt.allocPrint(session.allocator, "/nodes/{s}/venoms/{s}", .{ node_id, venom_id });
 }
 
 fn providerRuntimeKindForDir(session: anytype, venom_dir_id: u32) !venom_model.RuntimeKind {

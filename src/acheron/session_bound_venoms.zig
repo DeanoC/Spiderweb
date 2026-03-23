@@ -8,7 +8,7 @@ pub fn seedActiveScopedVenomBindings(
 ) !void {
     const agent_prefix = try std.fmt.allocPrint(session.allocator, "/agents/{s}/venoms", .{session.agent_id});
     defer session.allocator.free(agent_prefix);
-    const workspace_prefix = try std.fmt.allocPrint(session.allocator, "/projects/{s}/venoms", .{active_workspace_id});
+    const workspace_prefix = try std.fmt.allocPrint(session.allocator, "/.spiderweb/_compat/projects/{s}/venoms", .{active_workspace_id});
     defer session.allocator.free(workspace_prefix);
 
     inline for ([_][]const u8{ "events", "fs" }) |venom_id| {
@@ -59,7 +59,7 @@ pub fn seedBoundNodeVenomNamespace(
     return seedBoundNodeVenomNamespaceAt(
         session,
         global_root,
-        "/global",
+        "/.spiderweb/_compat/global",
         venom_id,
         "global_binding",
         preferred_node_id,

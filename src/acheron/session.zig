@@ -2141,7 +2141,7 @@ pub const Session = struct {
             return self.allocator.dupe(u8, service_path);
         }
 
-        const global_path = try std.fmt.allocPrint(self.allocator, "/global/{s}", .{venom_id});
+        const global_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/_compat/global/{s}", .{venom_id});
         defer self.allocator.free(global_path);
         if (self.resolveAbsolutePathNoBinds(global_path) != null) {
             return self.allocator.dupe(u8, global_path);
@@ -3097,7 +3097,7 @@ pub const Session = struct {
     }
 
     fn seedAgentWorkspacesNamespace(self: *Session, workspaces_dir: u32) !void {
-        return self.seedAgentWorkspacesNamespaceAt(workspaces_dir, "/global/workspaces");
+        return self.seedAgentWorkspacesNamespaceAt(workspaces_dir, "/.spiderweb/_compat/global/workspaces");
     }
 
     fn seedAgentWorkspacesNamespaceAt(self: *Session, workspaces_dir: u32, base_path: []const u8) !void {
@@ -3109,7 +3109,7 @@ pub const Session = struct {
     }
 
     fn seedGlobalLibraryNamespace(self: *Session, library_dir: u32) !void {
-        return self.seedGlobalLibraryNamespaceAt(library_dir, "/global/library");
+        return self.seedGlobalLibraryNamespaceAt(library_dir, "/.spiderweb/_compat/global/library");
     }
 
     fn seedGlobalLibraryNamespaceAt(self: *Session, library_dir: u32, base_path: []const u8) !void {
@@ -4243,7 +4243,7 @@ pub const Session = struct {
                 .project_id = value.project_id,
             };
         }
-        const global_match = parseScopedVenomAliasPrefix(absolute_path, "/global/");
+        const global_match = parseScopedVenomAliasPrefix(absolute_path, "/.spiderweb/_compat/global/");
         if (global_match) |value| {
             return .{
                 .venom_id = value.venom_id,
@@ -4258,7 +4258,7 @@ pub const Session = struct {
                 .agent_id = value.entity_id,
             };
         }
-        const project_match = parseEntityScopedVenomAliasPrefix(absolute_path, "/projects/", "/venoms/");
+        const project_match = parseEntityScopedVenomAliasPrefix(absolute_path, "/.spiderweb/_compat/projects/", "/venoms/");
         if (project_match) |value| {
             return .{
                 .venom_id = value.venom_id,

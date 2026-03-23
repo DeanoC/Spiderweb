@@ -12,6 +12,12 @@ pub const HostRole = enum {
             .client => "client",
         };
     }
+
+    pub fn fromString(value: []const u8) HostRole {
+        if (std.mem.eql(u8, value, "node")) return .node;
+        if (std.mem.eql(u8, value, "client") or std.mem.eql(u8, value, "worker")) return .client;
+        return .spiderweb;
+    }
 };
 
 pub const RuntimeKind = enum {
@@ -44,6 +50,13 @@ pub const BindingScope = enum {
             .client => "client",
             .node => "node",
         };
+    }
+
+    pub fn fromString(value: []const u8) BindingScope {
+        if (std.mem.eql(u8, value, "agent")) return .agent;
+        if (std.mem.eql(u8, value, "client")) return .client;
+        if (std.mem.eql(u8, value, "node")) return .node;
+        return .workspace;
     }
 };
 
@@ -96,6 +109,35 @@ pub fn defaultBindingScopeForPath(path: []const u8) BindingScope {
     if (std.mem.startsWith(u8, path, "/clients/")) return .client;
     if (std.mem.startsWith(u8, path, "/nodes/")) return .node;
     return .workspace;
+}
+
+pub fn legacyProviderScope(host_role: HostRole, binding_scopes: []const BindingScope) []const u8 {
+    _ = binding_scopes;
+    return switch (host_role) {
+        .spiderweb => "host_local",
+        .node => "node_export",
+        .client => "worker_private",
+    };
+}
+
+pub fn legacyProjectionModesJson(host_role: HostRole, binding_scopes: []const BindingScope) []const u8 {
+    const workspace = containsBindingScope(binding_scopes, .workspace);
+    const agent = containsBindingScope(binding_scopes, .agent);
+    const client = containsBindingScope(binding_scopes, .client);
+    const node = containsBindingScope(binding_scopes, .node);
+
+    return switch (host_role) {
+        .spiderweb => if (workspace) "[\"host_local\",\"workspace_service\"]" else "[\"host_local\"]",
+        .node => if (workspace) "[\"node_export\",\"workspace_service\"]" else if (node) "[\"node_export\"]" else "[\"node_export\"]",
+        .client => if (agent or client) "[\"worker_private\"]" else "[\"worker_private\"]",
+    };
+}
+
+pub fn containsBindingScope(binding_scopes: []const BindingScope, needle: BindingScope) bool {
+    for (binding_scopes) |scope| {
+        if (scope == needle) return true;
+    }
+    return false;
 }
 
 test "venom_model classifies substrate and production capability venoms" {

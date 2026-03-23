@@ -2,7 +2,7 @@ const std = @import("std");
 const unified = @import("spider-protocol").unified;
 
 pub fn refreshScopedVenomIndexes(session: anytype) !void {
-    try refreshVenomsIndexFile(session, session.agent_venoms_index_id, "/global/", "global");
+    try refreshVenomsIndexFile(session, session.agent_venoms_index_id, "/.spiderweb/venoms/", "workspace");
 
     if (session.active_agent_venoms_index_id != 0) {
         const prefix = try std.fmt.allocPrint(session.allocator, "/agents/{s}/venoms/", .{session.agent_id});
@@ -11,9 +11,7 @@ pub fn refreshScopedVenomIndexes(session: anytype) !void {
     }
 
     if (session.active_workspace_venoms_index_id != 0 and session.active_namespace_workspace_id != null) {
-        const prefix = try std.fmt.allocPrint(session.allocator, "/projects/{s}/venoms/", .{session.active_namespace_workspace_id.?});
-        defer session.allocator.free(prefix);
-        try refreshVenomsIndexFile(session, session.active_workspace_venoms_index_id, prefix, session.active_namespace_workspace_id.?);
+        try refreshVenomsIndexFile(session, session.active_workspace_venoms_index_id, "/.spiderweb/venoms/", session.active_namespace_workspace_id.?);
     }
 }
 

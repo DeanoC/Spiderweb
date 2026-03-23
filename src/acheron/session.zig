@@ -1380,9 +1380,9 @@ pub const Session = struct {
         try self.addDirectoryDescriptors(
             active_agent_venoms_dir,
             "Agent Venoms",
-            "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\"],\"roots\":[\"/agents/<agent_id>/venoms/<venom_id>\",\"/nodes/<node_id>/venoms/<venom_id>\"]}",
+            "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\"],\"roots\":[\"/.spiderweb/venoms/<venom_id>\",\"/agents/<agent_id>/venoms/<venom_id>\",\"/nodes/<node_id>/venoms/<venom_id>\"]}",
             "{\"discover\":true,\"invoke_via_paths\":true}",
-            "Active-agent Venom bindings plus raw node Venom discovery.",
+            "Active-agent Venom bindings, canonical workspace venom aliases, and raw node Venom discovery.",
         );
         self.active_agent_venoms_index_id = try self.addFile(
             active_agent_venoms_dir,
@@ -1395,9 +1395,9 @@ pub const Session = struct {
         try self.addDirectoryDescriptors(
             agent_venoms_dir,
             "Venoms",
-            "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\",\"node-venom-events.ndjson\"],\"roots\":[\"/nodes/<node_id>/venoms/<venom_id>\",\"/global/<venom_id>\"]}",
+            "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\",\"node-venom-events.ndjson\"],\"roots\":[\"/.spiderweb/venoms/<venom_id>\",\"/nodes/<node_id>/venoms/<venom_id>\"]}",
             "{\"discover\":true,\"invoke_via_paths\":true}",
-            "Workspace-wide Venom discovery index plus retained node Venom change history.",
+            "Canonical workspace Venom discovery index plus retained node Venom change history.",
         );
         self.agent_venoms_index_id = try self.addFile(
             agent_venoms_dir,
@@ -1461,9 +1461,9 @@ pub const Session = struct {
         try self.addDirectoryDescriptors(
             workspace_venoms_dir,
             "Workspace Venoms",
-            "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\"],\"roots\":[\"/projects/<workspace_id>/venoms/<venom_id>\",\"/nodes/<node_id>/venoms/<venom_id>\"]}",
+            "{\"kind\":\"venom_index\",\"files\":[\"VENOMS.json\"],\"roots\":[\"/.spiderweb/venoms/<venom_id>\",\"/nodes/<node_id>/venoms/<venom_id>\"]}",
             "{\"discover\":true,\"invoke_via_paths\":true}",
-            "Workspace-scoped Venom bindings plus raw node Venom discovery.",
+            "Canonical workspace Venom bindings plus raw node Venom discovery.",
         );
         self.active_workspace_venoms_index_id = try self.addFile(
             workspace_venoms_dir,
@@ -2089,6 +2089,30 @@ pub const Session = struct {
             );
             defer self.allocator.free(bind_path);
             try self.appendProjectBindIfMissing(.managed_entrypoint, bind_path, target_path);
+
+            const preferred_provider_node_id = try self.resolvePreferredBoundVenomNodeId(venom_id);
+            defer if (preferred_provider_node_id) |value| self.allocator.free(value);
+            const provider_path = if (preferred_provider_node_id) |value|
+                try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ value, venom_id })
+            else
+                try self.allocator.dupe(u8, target_path);
+            defer self.allocator.free(provider_path);
+            const provider_dir_id = self.resolveAbsolutePathNoBinds(provider_path);
+            const invoke_path = if (provider_dir_id) |value|
+                try self.deriveVenomInvokePath(preferred_provider_node_id orelse "local", venom_id, value)
+            else
+                null;
+            defer if (invoke_path) |value| self.allocator.free(value);
+
+            try self.registerScopedVenomBindingIfMissing(
+                venom_id,
+                "workspace_binding",
+                bind_path,
+                preferred_provider_node_id,
+                provider_path,
+                provider_path,
+                invoke_path,
+            );
         }
 
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/agent_bootstrap_quickref.json", quickref_target);
@@ -7439,6 +7463,30 @@ pub const Session = struct {
         });
     }
 
+    pub fn registerScopedVenomBindingIfMissing(
+        self: *Session,
+        venom_id: []const u8,
+        scope: []const u8,
+        venom_path: []const u8,
+        provider_node_id: ?[]const u8,
+        provider_venom_path: ?[]const u8,
+        endpoint_path: ?[]const u8,
+        invoke_path: ?[]const u8,
+    ) !void {
+        for (self.scoped_venom_bindings.items) |binding| {
+            if (std.mem.eql(u8, binding.venom_path, venom_path)) return;
+        }
+        try self.registerScopedVenomBinding(
+            venom_id,
+            scope,
+            venom_path,
+            provider_node_id,
+            provider_venom_path,
+            endpoint_path,
+            invoke_path,
+        );
+    }
+
     fn registerExistingGlobalVenomBinding(
         self: *Session,
         global_root: u32,
@@ -8700,6 +8748,13 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/.spiderweb/venoms/terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/services/git\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/global/git\"") == null);
+
+    const venoms_index_json = try session.tryReadInternalPath("/global/venoms/VENOMS.json");
+    defer if (venoms_index_json) |value| allocator.free(value);
+    try std.testing.expect(venoms_index_json != null);
+    try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/git\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/terminal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/global/git\"") == null);
 }
 
 test "acheron_session: control substrate surfaces expose runtime and package operations canonically" {

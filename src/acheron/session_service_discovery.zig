@@ -28,9 +28,9 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         const version = getString(item.object, "version") orelse "1";
         const help_md = getString(item.object, "help_md");
         const runtime_kind = normalizedRuntimeKindFromObject(item.object);
-        const host_roles_json = normalizedHostRolesJson(session.allocator, item.object.get("hosts"));
+        const host_roles_json = normalizedHostRolesJson(session.allocator, item.object.get("host_roles") orelse item.object.get("hosts"));
         defer session.allocator.free(host_roles_json);
-        const binding_scopes_json = normalizedBindingScopesJson(session.allocator, item.object.get("projection_modes"));
+        const binding_scopes_json = normalizedBindingScopesJson(session.allocator, item.object.get("binding_scopes") orelse item.object.get("projection_modes"));
         defer session.allocator.free(binding_scopes_json);
         const help_json = if (help_md) |value| blk: {
             const escaped = try unified.jsonEscape(session.allocator, value);
@@ -243,6 +243,9 @@ fn getString(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
 }
 
 fn normalizedRuntimeKindFromObject(obj: std.json.ObjectMap) venom_model.RuntimeKind {
+    if (getString(obj, "runtime_kind")) |runtime_kind| {
+        return venom_model.RuntimeKind.fromRuntimeType(runtime_kind);
+    }
     const runtime_value = obj.get("runtime") orelse return .native;
     if (runtime_value != .object) return .native;
     const runtime_type = getString(runtime_value.object, "type") orelse return .native;

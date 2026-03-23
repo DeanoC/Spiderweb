@@ -2,6 +2,7 @@ const std = @import("std");
 const venom_catalog = @import("spiderweb_node").venom_catalog;
 const venom_package_model = @import("../venom_package.zig");
 const venom_packages = @import("../venom_packages.zig");
+const venom_model = @import("../venom_model.zig");
 
 const persistence_base_id = "spiderweb:control-plane:state";
 const persistence_kind = "control_plane_state_v1";
@@ -302,7 +303,7 @@ const WorkspaceBind = struct {
 const WorkspaceTemplateBindSpec = struct {
     bind_path: []const u8,
     venom_id: []const u8,
-    provider_scope: []const u8 = "host_local",
+    host_role: venom_model.HostRole = .spiderweb,
 };
 
 const WorkspaceTemplateSpec = struct {
@@ -315,9 +316,9 @@ const core_workspace_bind_specs = [_]WorkspaceTemplateBindSpec{
     .{ .bind_path = "/.spiderweb/control/workspace/mounts", .venom_id = "mounts" },
     .{ .bind_path = "/.spiderweb/control/workspace/home", .venom_id = "home" },
     .{ .bind_path = "/.spiderweb/control/runtimes", .venom_id = "workers" },
-    .{ .bind_path = "/.spiderweb/venoms/terminal", .venom_id = "terminal", .provider_scope = "node_export" },
-    .{ .bind_path = "/.spiderweb/venoms/git", .venom_id = "git", .provider_scope = "node_export" },
-    .{ .bind_path = "/.spiderweb/venoms/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
+    .{ .bind_path = "/.spiderweb/venoms/terminal", .venom_id = "terminal", .host_role = .node },
+    .{ .bind_path = "/.spiderweb/venoms/git", .venom_id = "git", .host_role = .node },
+    .{ .bind_path = "/.spiderweb/venoms/search_code", .venom_id = "search_code", .host_role = .node },
     .{ .bind_path = "/.spiderweb/venoms/library", .venom_id = "library" },
     .{ .bind_path = "/.spiderweb/venoms/events", .venom_id = "events" },
 };
@@ -4071,8 +4072,8 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .venom_id = spec.venom_id,
                 .kind = spec.kind,
                 .version = spec.version,
-                .hosts_json = spec.hosts_json,
-                .projection_modes_json = spec.projection_modes_json,
+                .hosts_json = spec.hostRolesJson(),
+                .projection_modes_json = spec.legacyProjectionModesJson(),
                 .requirements_json = spec.requirements_json,
                 .runtime_json = spec.runtime_json,
             };
@@ -5454,8 +5455,10 @@ fn appendWorkspaceTemplateBindJson(
     defer allocator.free(escaped_bind);
     const escaped_venom = try jsonEscape(allocator, bind_spec.venom_id);
     defer allocator.free(escaped_venom);
-    const escaped_scope = try jsonEscape(allocator, bind_spec.provider_scope);
-    defer allocator.free(escaped_scope);
+    const escaped_host_role = try jsonEscape(allocator, bind_spec.host_role.asString());
+    defer allocator.free(escaped_host_role);
+    const escaped_provider_scope = try jsonEscape(allocator, venom_model.legacyProviderScope(bind_spec.host_role, &.{venom_model.BindingScope.workspace}));
+    defer allocator.free(escaped_provider_scope);
     const target_path_json = if (resolveTemplateBindTargetPath(bind_spec)) |target_path| blk: {
         const escaped_target = try jsonEscape(allocator, target_path);
         defer allocator.free(escaped_target);
@@ -5464,8 +5467,8 @@ fn appendWorkspaceTemplateBindJson(
     defer allocator.free(target_path_json);
 
     try out.writer(allocator).print(
-        "{{\"bind_path\":\"{s}\",\"venom_id\":\"{s}\",\"provider_scope\":\"{s}\",\"target_path\":{s}}}",
-        .{ escaped_bind, escaped_venom, escaped_scope, target_path_json },
+        "{{\"bind_path\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"binding_scope\":\"workspace\",\"provider_scope\":\"{s}\",\"target_path\":{s}}}",
+        .{ escaped_bind, escaped_venom, escaped_host_role, escaped_provider_scope, target_path_json },
     );
 }
 
@@ -6261,7 +6264,7 @@ fn ensureBindSpecsLocked(
 }
 
 fn resolveTemplateBindTargetPath(spec: WorkspaceTemplateBindSpec) ?[]const u8 {
-    return venom_packages.resolveBuiltinTargetPath(spec.venom_id, spec.provider_scope);
+    return venom_packages.resolveBuiltinTargetPath(spec.venom_id, spec.host_role);
 }
 
 fn workspaceHasCanonicalMount(project: *const Workspace) bool {

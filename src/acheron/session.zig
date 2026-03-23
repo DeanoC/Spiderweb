@@ -2156,7 +2156,7 @@ pub const Session = struct {
         const preferred_node_id = try self.resolvePreferredBoundVenomNodeId(venom_id);
         defer if (preferred_node_id) |value| self.allocator.free(value);
         if (preferred_node_id) |node_id| {
-            return std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ node_id, venom_id });
+            return try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ node_id, venom_id });
         }
 
         return null;

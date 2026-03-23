@@ -1,6 +1,7 @@
 const std = @import("std");
 const unified = @import("spider-protocol").unified;
 const shared_node = @import("spiderweb_node");
+const venom_model = @import("../venom_model.zig");
 const workspace_policy = @import("../workspaces/policy.zig");
 
 pub const NodeResourceView = struct {
@@ -171,8 +172,9 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                     venom.state,
                     venom.provider_scope,
                     venom.categories_json,
-                    venom.hosts_json,
-                    venom.projection_modes_json,
+                    venom.host_roles_json,
+                    venom.binding_scopes_json,
+                    venom.runtime_kind,
                     venom.requirements_json,
                     venom.endpoint,
                     venom.caps_json,
@@ -565,8 +567,9 @@ const NodeVenomCatalog = struct {
         state: []u8,
         provider_scope: []u8,
         categories_json: []u8,
-        hosts_json: []u8,
-        projection_modes_json: []u8,
+        host_roles_json: []u8,
+        binding_scopes_json: []u8,
+        runtime_kind: venom_model.RuntimeKind,
         requirements_json: []u8,
         endpoint: []u8,
         caps_json: []u8,
@@ -587,8 +590,8 @@ const NodeVenomCatalog = struct {
             allocator.free(self.state);
             allocator.free(self.provider_scope);
             allocator.free(self.categories_json);
-            allocator.free(self.hosts_json);
-            allocator.free(self.projection_modes_json);
+            allocator.free(self.host_roles_json);
+            allocator.free(self.binding_scopes_json);
             allocator.free(self.requirements_json);
             allocator.free(self.endpoint);
             allocator.free(self.caps_json);
@@ -617,6 +620,43 @@ const NodeVenomCatalogResult = union(enum) {
     empty,
     catalog: NodeVenomCatalog,
 };
+
+fn normalizedHostRolesJson(allocator: std.mem.Allocator, host_roles_value: ?std.json.Value, hosts_value: ?std.json.Value) ![]u8 {
+    if (host_roles_value) |value| {
+        if (value == .array) return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, .{})});
+    }
+    if (hosts_value) |value| {
+        if (value == .array) return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, .{})});
+    }
+    return allocator.dupe(u8, "[\"node\"]");
+}
+
+fn normalizedBindingScopesJson(allocator: std.mem.Allocator, binding_scopes_value: ?std.json.Value, projection_modes_value: ?std.json.Value) ![]u8 {
+    if (binding_scopes_value) |value| {
+        if (value == .array) return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, .{})});
+    }
+    if (projection_modes_value) |value| {
+        if (value == .array) return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, .{})});
+    }
+    return allocator.dupe(u8, "[\"workspace\"]");
+}
+
+fn runtimeKindFromValues(runtime_kind_value: ?std.json.Value, runtime_value: ?std.json.Value) venom_model.RuntimeKind {
+    if (runtime_kind_value) |value| {
+        if (value == .string) {
+            if (std.mem.eql(u8, value.string, venom_model.RuntimeKind.wasm.asString())) return .wasm;
+            if (std.mem.eql(u8, value.string, venom_model.RuntimeKind.native.asString())) return .native;
+        }
+    }
+    if (runtime_value) |value| {
+        if (value == .object) {
+            if (value.object.get("type")) |runtime_type| {
+                if (runtime_type == .string and std.mem.eql(u8, runtime_type.string, "wasm")) return .wasm;
+            }
+        }
+    }
+    return .native;
+}
 
 fn loadNodeVenomsFromControlPlane(session: anytype, node_id: []const u8) !NodeVenomCatalogResult {
     const plane = session.control_plane orelse return .unavailable;
@@ -709,23 +749,19 @@ fn loadNodeVenomsFromControlPlane(session: anytype, node_id: []const u8) !NodeVe
             try session.allocator.dupe(u8, "[]");
         errdefer session.allocator.free(categories_json);
 
-        const hosts_json = if (item.object.get("hosts")) |value|
-            if (value == .array)
-                try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})})
-            else
-                try session.allocator.dupe(u8, "[]")
-        else
-            try session.allocator.dupe(u8, "[]");
-        errdefer session.allocator.free(hosts_json);
+        const host_roles_json = try normalizedHostRolesJson(
+            session.allocator,
+            item.object.get("host_roles"),
+            item.object.get("hosts"),
+        );
+        errdefer session.allocator.free(host_roles_json);
 
-        const projection_modes_json = if (item.object.get("projection_modes")) |value|
-            if (value == .array)
-                try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})})
-            else
-                try session.allocator.dupe(u8, "[]")
-        else
-            try session.allocator.dupe(u8, "[]");
-        errdefer session.allocator.free(projection_modes_json);
+        const binding_scopes_json = try normalizedBindingScopesJson(
+            session.allocator,
+            item.object.get("binding_scopes"),
+            item.object.get("projection_modes"),
+        );
+        errdefer session.allocator.free(binding_scopes_json);
 
         const requirements_json = if (item.object.get("requirements")) |value|
             if (value == .object)
@@ -780,6 +816,7 @@ fn loadNodeVenomsFromControlPlane(session: anytype, node_id: []const u8) !NodeVe
         else
             try session.allocator.dupe(u8, "{}");
         errdefer session.allocator.free(runtime_json);
+        const runtime_kind = runtimeKindFromValues(item.object.get("runtime_kind"), item.object.get("runtime"));
 
         const permissions_json = if (item.object.get("permissions")) |permissions|
             if (permissions == .object)
@@ -826,8 +863,9 @@ fn loadNodeVenomsFromControlPlane(session: anytype, node_id: []const u8) !NodeVe
             .state = try session.allocator.dupe(u8, state),
             .provider_scope = provider_scope,
             .categories_json = categories_json,
-            .hosts_json = hosts_json,
-            .projection_modes_json = projection_modes_json,
+            .host_roles_json = host_roles_json,
+            .binding_scopes_json = binding_scopes_json,
+            .runtime_kind = runtime_kind,
             .requirements_json = requirements_json,
             .endpoint = resolved_endpoint,
             .caps_json = caps_json,
@@ -859,8 +897,9 @@ fn addNodeVenomEntry(
     state: []const u8,
     provider_scope: []const u8,
     categories_json: []const u8,
-    hosts_json: []const u8,
-    projection_modes_json: []const u8,
+    host_roles_json: []const u8,
+    binding_scopes_json: []const u8,
+    runtime_kind: venom_model.RuntimeKind,
     requirements_json: []const u8,
     endpoint: []const u8,
     caps_json: []const u8,
@@ -895,8 +934,9 @@ fn addNodeVenomEntry(
         version,
         provider_scope,
         categories_json,
-        hosts_json,
-        projection_modes_json,
+        host_roles_json,
+        binding_scopes_json,
+        runtime_kind,
         requirements_json,
         caps_json,
         ops_json,
@@ -924,6 +964,8 @@ fn addNodeVenomEntry(
     defer session.allocator.free(escaped_package_id);
     const escaped_provider_scope = try unified.jsonEscape(session.allocator, provider_scope);
     defer session.allocator.free(escaped_provider_scope);
+    const escaped_runtime_kind = try unified.jsonEscape(session.allocator, runtime_kind.asString());
+    defer session.allocator.free(escaped_runtime_kind);
     const instance_id_json = if (instance_id) |value| blk: {
         const escaped_instance_id = try unified.jsonEscape(session.allocator, value);
         defer session.allocator.free(escaped_instance_id);
@@ -933,8 +975,8 @@ fn addNodeVenomEntry(
 
     const status = try std.fmt.allocPrint(
         session.allocator,
-        "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"instance_id\":{s},\"kind\":\"{s}\",\"state\":\"{s}\",\"provider_scope\":\"{s}\",\"endpoint\":\"{s}\"}}",
-        .{ escaped_venom_id, escaped_package_id, instance_id_json, escaped_kind, escaped_state, escaped_provider_scope, escaped_endpoint },
+        "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"instance_id\":{s},\"kind\":\"{s}\",\"state\":\"{s}\",\"provider_scope\":\"{s}\",\"runtime_kind\":\"{s}\",\"endpoint\":\"{s}\"}}",
+        .{ escaped_venom_id, escaped_package_id, instance_id_json, escaped_kind, escaped_state, escaped_provider_scope, escaped_runtime_kind, escaped_endpoint },
     );
     defer session.allocator.free(status);
     _ = try session.addFile(venom_dir, "STATUS.json", status, false, .none);
@@ -947,8 +989,9 @@ fn renderNodeVenomPackageJson(
     version: []const u8,
     provider_scope: []const u8,
     categories_json: []const u8,
-    hosts_json: []const u8,
-    projection_modes_json: []const u8,
+    host_roles_json: []const u8,
+    binding_scopes_json: []const u8,
+    runtime_kind: venom_model.RuntimeKind,
     requirements_json: []const u8,
     capabilities_json: []const u8,
     ops_json: []const u8,
@@ -965,21 +1008,23 @@ fn renderNodeVenomPackageJson(
     defer session.allocator.free(escaped_version);
     const escaped_provider_scope = try unified.jsonEscape(session.allocator, provider_scope);
     defer session.allocator.free(escaped_provider_scope);
+    const escaped_runtime_kind = try unified.jsonEscape(session.allocator, runtime_kind.asString());
+    defer session.allocator.free(escaped_runtime_kind);
 
     if (help_md) |help| {
         const escaped_help = try unified.jsonEscape(session.allocator, help);
         defer session.allocator.free(escaped_help);
         return std.fmt.allocPrint(
             session.allocator,
-            "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"provider_scope\":\"{s}\",\"help_md\":\"{s}\"}}",
-            .{ escaped_venom_id, escaped_kind, escaped_version, categories_json, hosts_json, projection_modes_json, requirements_json, capabilities_json, ops_json, runtime_json, permissions_json, schema_json, escaped_provider_scope, escaped_help },
+            "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"hosts\":{s},\"binding_scopes\":{s},\"projection_modes\":{s},\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime_kind\":\"{s}\",\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"provider_scope\":\"{s}\",\"help_md\":\"{s}\"}}",
+            .{ escaped_venom_id, escaped_kind, escaped_version, categories_json, host_roles_json, host_roles_json, binding_scopes_json, binding_scopes_json, requirements_json, capabilities_json, ops_json, escaped_runtime_kind, runtime_json, permissions_json, schema_json, escaped_provider_scope, escaped_help },
         );
     }
 
     return std.fmt.allocPrint(
         session.allocator,
-        "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"provider_scope\":\"{s}\"}}",
-        .{ escaped_venom_id, escaped_kind, escaped_version, categories_json, hosts_json, projection_modes_json, requirements_json, capabilities_json, ops_json, runtime_json, permissions_json, schema_json, escaped_provider_scope },
+        "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"hosts\":{s},\"binding_scopes\":{s},\"projection_modes\":{s},\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime_kind\":\"{s}\",\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"provider_scope\":\"{s}\"}}",
+        .{ escaped_venom_id, escaped_kind, escaped_version, categories_json, host_roles_json, host_roles_json, binding_scopes_json, binding_scopes_json, requirements_json, capabilities_json, ops_json, escaped_runtime_kind, runtime_json, permissions_json, schema_json, escaped_provider_scope },
     );
 }
 

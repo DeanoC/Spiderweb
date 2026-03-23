@@ -2080,8 +2080,8 @@ pub const Session = struct {
             .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/home", .target_path = workspace_compat_global_absolute ++ "/home" },
             .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/mounts", .target_path = workspace_compat_global_absolute ++ "/mounts" },
             .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/binds", .target_path = workspace_compat_global_absolute ++ "/mounts" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/packages", .target_path = workspace_compat_global_absolute ++ "/venom_packages" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/runtimes", .target_path = workspace_compat_global_absolute ++ "/workers" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/packages", .target_path = workspace_compat_global_absolute ++ "/packages" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/runtimes", .target_path = workspace_compat_global_absolute ++ "/runtimes" },
         };
 
         for (managed_bind_specs) |spec| {

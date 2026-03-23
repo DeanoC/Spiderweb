@@ -1650,14 +1650,51 @@ final class SpiderwebAppController: ObservableObject {
     }
 
     private static func extractControlPayloadObject(from text: String) throws -> [String: Any] {
+        if let payload = try extractControlPayloadObjectFromMixedOutput(text) {
+            return payload
+        }
+        throw SpiderwebAppError.message("Control response did not contain a payload object.")
+    }
+
+    private static func extractControlPayloadObjectFromMixedOutput(_ text: String) throws -> [String: Any]? {
+        guard text.canBeConverted(to: .utf8) else {
+            throw SpiderwebAppError.message("Control response was not valid UTF-8.")
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let payload = try decodeControlPayloadObject(from: trimmed) {
+            return payload
+        }
+
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("{"), line.hasSuffix("}"),
+               let payload = try decodeControlPayloadObject(from: String(line)) {
+                return payload
+            }
+        }
+
+        if let start = trimmed.firstIndex(of: "{"),
+           let end = trimmed.lastIndex(of: "}"),
+           start <= end {
+            let candidate = String(trimmed[start...end])
+            if let payload = try decodeControlPayloadObject(from: candidate) {
+                return payload
+            }
+        }
+
+        return nil
+    }
+
+    private static func decodeControlPayloadObject(from text: String) throws -> [String: Any]? {
         guard let data = text.data(using: .utf8) else {
             throw SpiderwebAppError.message("Control response was not valid UTF-8.")
         }
-        let raw = try JSONSerialization.jsonObject(with: data)
+        let raw = try? JSONSerialization.jsonObject(with: data)
         guard let envelope = raw as? [String: Any],
               let payload = envelope["payload"] as? [String: Any]
         else {
-            throw SpiderwebAppError.message("Control response did not contain a payload object.")
+            return nil
         }
         return payload
     }

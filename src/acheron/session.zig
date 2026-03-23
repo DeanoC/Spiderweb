@@ -1580,20 +1580,21 @@ pub const Session = struct {
             _ = try self.addFile(meta_root, "workspace_alerts.json", "[]", false, .none);
         }
 
-        self.refreshWorkspaceBindsFromControlPlane() catch |err| {
-            std.log.warn("seedNamespace refreshWorkspaceBindsFromControlPlane failed: {s}", .{@errorName(err)});
-            return err;
-        };
         if (workspace_status_json) |status_json| {
-            self.appendWorkspaceMountAliasesFromWorkspaceStatus(status_json) catch |err| {
-                std.log.warn("seedNamespace appendWorkspaceMountAliasesFromWorkspaceStatus failed: {s}", .{@errorName(err)});
+            self.refreshWorkspaceProjectionFromStatus(status_json) catch |err| {
+                std.log.warn("seedNamespace refreshWorkspaceProjectionFromStatus failed: {s}", .{@errorName(err)});
+                return err;
+            };
+        } else {
+            self.refreshWorkspaceBindsFromControlPlane() catch |err| {
+                std.log.warn("seedNamespace refreshWorkspaceBindsFromControlPlane failed: {s}", .{@errorName(err)});
+                return err;
+            };
+            self.materializeProjectBindPrefixDirectories() catch |err| {
+                std.log.warn("seedNamespace materializeProjectBindPrefixDirectories failed: {s}", .{@errorName(err)});
                 return err;
             };
         }
-        self.materializeProjectBindPrefixDirectories() catch |err| {
-            std.log.warn("seedNamespace materializeProjectBindPrefixDirectories failed: {s}", .{@errorName(err)});
-            return err;
-        };
         if (self.lookupChild(self.root_id, "services")) |services_root| {
             try self.addDirectoryDescriptors(
                 services_root,
@@ -2007,6 +2008,12 @@ pub const Session = struct {
             try self.appendProjectBind(.workspace, bind_path.string, target_path.string);
         }
         try self.appendManagedWorkspaceEntrypointBinds();
+    }
+
+    pub fn refreshWorkspaceProjectionFromStatus(self: *Session, workspace_status_json: []const u8) !void {
+        try self.refreshWorkspaceBindsFromControlPlane();
+        try self.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
+        try self.materializeProjectBindPrefixDirectories();
     }
 
     fn appendProjectBind(self: *Session, kind: PathBindKind, bind_path: []const u8, target_path: []const u8) !void {
@@ -9365,6 +9372,113 @@ test "acheron_session: mount graph snapshots honor workspace bind overrides for 
     try std.testing.expect(!found_shadowed_local);
     try std.testing.expect(found_managed_root);
     try std.testing.expect(found_managed_protocol);
+}
+
+test "acheron_session: refreshWorkspaceProjectionFromStatus picks up binds added after session init" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/local-only.txt",
+        .data = "local\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const joined = try control_plane.ensureNode("workspace-local", "ws://127.0.0.1:28894/fs", 60_000);
+    defer allocator.free(joined);
+    var parsed_joined = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
+    defer parsed_joined.deinit();
+    const local_node_id = parsed_joined.value.object.get("node_id").?.string;
+
+    const workspace_up = try control_plane.workspaceUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"RefreshWorkspaceProjection\",\"vision\":\"Bind changes should appear in live mount snapshots\",\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+            .{local_node_id},
+        ),
+    );
+    defer allocator.free(workspace_up);
+
+    var parsed_workspace_up = try std.json.parseFromSlice(std.json.Value, allocator, workspace_up, .{});
+    defer parsed_workspace_up.deinit();
+    const workspace_id_value = parsed_workspace_up.value.object.get("workspace_id") orelse
+        parsed_workspace_up.value.object.get("project_id") orelse return error.InvalidResponse;
+    if (workspace_id_value != .string) return error.InvalidResponse;
+    const workspace_token_value = parsed_workspace_up.value.object.get("workspace_token") orelse
+        parsed_workspace_up.value.object.get("project_token") orelse return error.InvalidResponse;
+    if (workspace_token_value != .string) return error.InvalidResponse;
+    const workspace_id = workspace_id_value.string;
+    const workspace_token = workspace_token_value.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{workspace_id});
+    defer allocator.free(workspace_req);
+    const initial_workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(initial_workspace_json);
+
+    const initial_snapshot = try session.buildMountGraphSnapshotPayloadForPath(
+        initial_workspace_json,
+        "mount-test",
+        "/",
+        1,
+    );
+    defer allocator.free(initial_snapshot);
+    try std.testing.expect(std.mem.indexOf(u8, initial_snapshot, "\"path\":\"/remote\"") == null);
+
+    const bind_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"bind_path\":\"/remote\",\"target_path\":\"/nodes/local/fs\"}}",
+        .{ workspace_id, workspace_token },
+    );
+    defer allocator.free(bind_req);
+    const bind_resp = try control_plane.setWorkspaceBindWithRole(bind_req, true);
+    defer allocator.free(bind_resp);
+
+    const refreshed_workspace_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(refreshed_workspace_json);
+    try session.refreshWorkspaceProjectionFromStatus(refreshed_workspace_json);
+
+    const refreshed_snapshot = try session.buildMountGraphSnapshotPayloadForPath(
+        refreshed_workspace_json,
+        "mount-test",
+        "/remote",
+        2,
+    );
+    defer allocator.free(refreshed_snapshot);
+    try std.testing.expect(std.mem.indexOf(u8, refreshed_snapshot, "\"path\":\"/remote/local-only.txt\"") != null);
 }
 
 test "acheron_session: projected workspace .spiderweb snapshot keeps protocol file under workspace mount override" {

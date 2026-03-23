@@ -14,7 +14,7 @@ const default_worker_venoms = [_][]const u8{
 const default_worker_ttl_ms: u64 = 30_000;
 
 pub fn seedNamespace(self: anytype, workers_dir: u32) !void {
-    return seedNamespaceAt(self, workers_dir, "/global/workers");
+    return seedNamespaceAt(self, workers_dir, "/.spiderweb/_compat/global/workers");
 }
 
 pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !void {
@@ -61,7 +61,7 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
         false,
         .none,
     );
-    self.workers_status_id = try self.addFile(
+    self.runtimes_status_id = try self.addFile(
         workers_dir,
         "status.json",
         "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}",
@@ -74,7 +74,7 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
         "{\"ok\":false,\"node_id\":null,\"node_path\":null,\"venoms\":[],\"expires_at_ms\":0,\"detached\":false}",
     );
     defer self.allocator.free(initial_result);
-    self.workers_result_id = try self.addFile(
+    self.runtimes_result_id = try self.addFile(
         workers_dir,
         "result.json",
         initial_result,
@@ -90,10 +90,10 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
         false,
         .none,
     );
-    _ = try self.addFile(control_dir, "invoke.json", "", true, .workers_invoke);
-    _ = try self.addFile(control_dir, "register.json", "", true, .workers_register);
-    _ = try self.addFile(control_dir, "heartbeat.json", "", true, .workers_heartbeat);
-    _ = try self.addFile(control_dir, "detach.json", "", true, .workers_detach);
+    _ = try self.addFile(control_dir, "invoke.json", "", true, .runtimes_invoke);
+    _ = try self.addFile(control_dir, "register.json", "", true, .runtimes_register);
+    _ = try self.addFile(control_dir, "heartbeat.json", "", true, .runtimes_heartbeat);
+    _ = try self.addFile(control_dir, "detach.json", "", true, .runtimes_detach);
 }
 
 pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_input: []const u8) !usize {
@@ -107,10 +107,10 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
     const obj = parsed.value.object;
 
     const op = switch (special) {
-        .workers_register => Op.register,
-        .workers_heartbeat => Op.heartbeat,
-        .workers_detach => Op.detach,
-        .workers_invoke => blk: {
+        .runtimes_register => Op.register,
+        .runtimes_heartbeat => Op.heartbeat,
+        .runtimes_detach => Op.detach,
+        .runtimes_invoke => blk: {
             const op_raw = blk2: {
                 if (obj.get("op")) |value| if (value == .string and value.string.len > 0) break :blk2 value.string;
                 if (obj.get("operation")) |value| if (value == .string and value.string.len > 0) break :blk2 value.string;
@@ -154,23 +154,23 @@ fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, written: usize
     };
     const running_status = try self.buildServiceInvokeStatusJson("running", tool_name, null);
     defer self.allocator.free(running_status);
-    try self.setMirroredFileContent(self.workers_status_id, self.workers_status_alias_id, running_status);
+    try self.setMirroredFileContent(self.runtimes_status_id, self.runtimes_status_alias_id, running_status);
 
     const result_payload = executeOpPayload(self, op, args_obj) catch |err| {
         const failed_status = try self.buildServiceInvokeStatusJson("failed", tool_name, @errorName(err));
         defer self.allocator.free(failed_status);
-        try self.setMirroredFileContent(self.workers_status_id, self.workers_status_alias_id, failed_status);
+        try self.setMirroredFileContent(self.runtimes_status_id, self.runtimes_status_alias_id, failed_status);
         const failed_result = try buildFailureResultJson(self, op, "invalid_payload", @errorName(err));
         defer self.allocator.free(failed_result);
-        try self.setMirroredFileContent(self.workers_result_id, self.workers_result_alias_id, failed_result);
+        try self.setMirroredFileContent(self.runtimes_result_id, self.runtimes_result_alias_id, failed_result);
         return err;
     };
     defer self.allocator.free(result_payload);
 
     const done_status = try self.buildServiceInvokeStatusJson("done", tool_name, null);
     defer self.allocator.free(done_status);
-    try self.setMirroredFileContent(self.workers_status_id, self.workers_status_alias_id, done_status);
-    try self.setMirroredFileContent(self.workers_result_id, self.workers_result_alias_id, result_payload);
+    try self.setMirroredFileContent(self.runtimes_status_id, self.runtimes_status_alias_id, done_status);
+    try self.setMirroredFileContent(self.runtimes_result_id, self.runtimes_result_alias_id, result_payload);
     return written;
 }
 

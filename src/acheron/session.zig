@@ -17,8 +17,8 @@ const events_venom = @import("../venoms/events.zig");
 const terminal_venom = @import("../venoms/terminal.zig");
 const mounts_venom = @import("../venoms/mounts.zig");
 const home_venom = @import("../venoms/home.zig");
-const workers_venom = @import("../venoms/workers.zig");
-const venom_packages_service_venom = @import("../venoms/venom_packages_service.zig");
+const runtimes_venom = @import("../venoms/workers.zig");
+const packages_venom = @import("../venoms/venom_packages_service.zig");
 const workspaces_venom = @import("../venoms/workspaces.zig");
 const git_venom = @import("../venoms/git.zig");
 const venom_packages = @import("../venom_packages.zig");
@@ -46,15 +46,15 @@ const SpecialKind = enum {
     node_venom_events_log,
     home_invoke,
     home_ensure,
-    workers_invoke,
-    workers_register,
-    workers_heartbeat,
-    workers_detach,
-    venom_packages_invoke,
-    venom_packages_list,
-    venom_packages_get,
-    venom_packages_install,
-    venom_packages_remove,
+    runtimes_invoke,
+    runtimes_register,
+    runtimes_heartbeat,
+    runtimes_detach,
+    packages_invoke,
+    packages_list,
+    packages_get,
+    packages_install,
+    packages_remove,
     workspaces_invoke,
     workspaces_list,
     workspaces_get,
@@ -474,14 +474,14 @@ pub const Session = struct {
     home_result_id: u32 = 0,
     home_status_alias_id: u32 = 0,
     home_result_alias_id: u32 = 0,
-    workers_status_id: u32 = 0,
-    workers_result_id: u32 = 0,
-    workers_status_alias_id: u32 = 0,
-    workers_result_alias_id: u32 = 0,
-    venom_packages_status_id: u32 = 0,
-    venom_packages_result_id: u32 = 0,
-    venom_packages_status_alias_id: u32 = 0,
-    venom_packages_result_alias_id: u32 = 0,
+    runtimes_status_id: u32 = 0,
+    runtimes_result_id: u32 = 0,
+    runtimes_status_alias_id: u32 = 0,
+    runtimes_result_alias_id: u32 = 0,
+    packages_status_id: u32 = 0,
+    packages_result_id: u32 = 0,
+    packages_status_alias_id: u32 = 0,
+    packages_result_alias_id: u32 = 0,
     wait_sources: std.ArrayListUnmanaged(WaitSource) = .{},
     wait_timeout_ms: i64 = default_wait_timeout_ms,
     wait_event_seq: u64 = 1,
@@ -1210,8 +1210,8 @@ pub const Session = struct {
             .event_signal => self.handleEventSignalWrite(node_id, data),
             .mounts_invoke, .mounts_list, .mounts_mount, .mounts_mkdir, .mounts_unmount, .mounts_bind, .mounts_unbind, .mounts_resolve => self.handleMountsNamespaceWrite(special, node_id, data),
             .home_invoke, .home_ensure => self.handleHomeNamespaceWrite(special, node_id, data),
-            .workers_invoke, .workers_register, .workers_heartbeat, .workers_detach => self.handleWorkersNamespaceWrite(special, node_id, data),
-            .venom_packages_invoke, .venom_packages_list, .venom_packages_get, .venom_packages_install, .venom_packages_remove => self.handleVenomPackagesNamespaceWrite(special, node_id, data),
+            .runtimes_invoke, .runtimes_register, .runtimes_heartbeat, .runtimes_detach => self.handleRuntimesNamespaceWrite(special, node_id, data),
+            .packages_invoke, .packages_list, .packages_get, .packages_install, .packages_remove => self.handlePackagesNamespaceWrite(special, node_id, data),
             .workspaces_invoke, .workspaces_list, .workspaces_get, .workspaces_up => self.handleWorkspacesNamespaceWrite(special, node_id, data),
             .git_invoke, .git_sync_checkout, .git_status, .git_diff_range => self.handleGitNamespaceWrite(special, node_id, data),
             .terminal_invoke => self.handleTerminalInvokeWrite(node_id, data),
@@ -2395,7 +2395,7 @@ pub const Session = struct {
         _ = try self.cloneLocalCatalogVenomAlias(library_dir, global_root, "library");
 
         const venom_packages_dir = try self.addDir(local_venoms_root, "venom_packages", false);
-        self.seedVenomPackagesNamespaceAt(venom_packages_dir, "/nodes/local/venoms/venom_packages") catch |err| {
+        self.seedPackagesNamespaceAt(venom_packages_dir, "/nodes/local/venoms/venom_packages") catch |err| {
             std.log.warn("seedLocalCatalogServiceNamespaces venom_packages namespace failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -2404,8 +2404,8 @@ pub const Session = struct {
             return err;
         };
         const venom_packages_alias_dir = try self.cloneLocalCatalogVenomAlias(venom_packages_dir, global_root, "venom_packages");
-        self.venom_packages_status_alias_id = self.lookupChild(venom_packages_alias_dir, "status.json") orelse 0;
-        self.venom_packages_result_alias_id = self.lookupChild(venom_packages_alias_dir, "result.json") orelse 0;
+        self.packages_status_alias_id = self.lookupChild(venom_packages_alias_dir, "status.json") orelse 0;
+        self.packages_result_alias_id = self.lookupChild(venom_packages_alias_dir, "result.json") orelse 0;
 
         const events_dir = try self.addDir(local_venoms_root, "events", false);
         self.seedEventsNamespaceAt(events_dir, "/nodes/local/venoms/events") catch |err| {
@@ -2432,7 +2432,7 @@ pub const Session = struct {
         self.home_result_alias_id = self.lookupChild(home_alias_dir, "result.json") orelse 0;
 
         const workers_dir = try self.addDir(local_venoms_root, "workers", false);
-        workers_venom.seedNamespaceAt(self, workers_dir, "/nodes/local/venoms/workers") catch |err| {
+        runtimes_venom.seedNamespaceAt(self, workers_dir, "/nodes/local/venoms/workers") catch |err| {
             std.log.warn("seedLocalCatalogServiceNamespaces workers namespace failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -2441,8 +2441,8 @@ pub const Session = struct {
             return err;
         };
         const workers_alias_dir = try self.cloneLocalCatalogVenomAlias(workers_dir, global_root, "workers");
-        self.workers_status_alias_id = self.lookupChild(workers_alias_dir, "status.json") orelse 0;
-        self.workers_result_alias_id = self.lookupChild(workers_alias_dir, "result.json") orelse 0;
+        self.runtimes_status_alias_id = self.lookupChild(workers_alias_dir, "status.json") orelse 0;
+        self.runtimes_result_alias_id = self.lookupChild(workers_alias_dir, "result.json") orelse 0;
 
         if (self.lookupChild(local_venoms_root, "search_code")) |search_code_dir| {
             _ = try self.cloneLocalCatalogVenomAlias(search_code_dir, global_root, "search_code");
@@ -2887,7 +2887,7 @@ pub const Session = struct {
                     try self.addDir(venoms_root_id, "memory", false);
                 const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/memory", .{worker_id});
                 defer self.allocator.free(base_path);
-                try workers_venom.seedPassiveWorkerMemoryNamespaceAt(self, memory_dir_id, base_path, worker_id, agent_id);
+                try runtimes_venom.seedPassiveWorkerMemoryNamespaceAt(self, memory_dir_id, base_path, worker_id, agent_id);
                 try self.seedBuiltinPackageMetadata(memory_dir_id, "memory");
             } else if (std.mem.eql(u8, venom_id, "sub_brains")) {
                 const sub_brains_dir_id = if (self.lookupChild(venoms_root_id, "sub_brains")) |existing|
@@ -2896,7 +2896,7 @@ pub const Session = struct {
                     try self.addDir(venoms_root_id, "sub_brains", false);
                 const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/sub_brains", .{worker_id});
                 defer self.allocator.free(base_path);
-                try workers_venom.seedPassiveWorkerSubBrainsNamespaceAt(self, sub_brains_dir_id, base_path, worker_id, agent_id);
+                try runtimes_venom.seedPassiveWorkerSubBrainsNamespaceAt(self, sub_brains_dir_id, base_path, worker_id, agent_id);
                 try self.seedBuiltinPackageMetadata(sub_brains_dir_id, "sub_brains");
             } else {
                 var package = (try self.cloneWorkerVenomPackage(venom_id)) orelse continue;
@@ -3068,8 +3068,8 @@ pub const Session = struct {
         return home_venom.seedNamespaceAt(self, home_dir, base_path);
     }
 
-    fn seedVenomPackagesNamespaceAt(self: *Session, packages_dir: u32, base_path: []const u8) !void {
-        return venom_packages_service_venom.seedNamespaceAt(self, packages_dir, base_path);
+    fn seedPackagesNamespaceAt(self: *Session, packages_dir: u32, base_path: []const u8) !void {
+        return packages_venom.seedNamespaceAt(self, packages_dir, base_path);
     }
 
     fn seedAgentTerminalNamespace(self: *Session, terminal_dir: u32) !void {
@@ -4643,12 +4643,12 @@ pub const Session = struct {
         return .{ .written = try home_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
     }
 
-    fn handleWorkersNamespaceWrite(self: *Session, special: SpecialKind, node_id: u32, raw_input: []const u8) !WriteOutcome {
-        return .{ .written = try workers_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
+    fn handleRuntimesNamespaceWrite(self: *Session, special: SpecialKind, node_id: u32, raw_input: []const u8) !WriteOutcome {
+        return .{ .written = try runtimes_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
     }
 
-    fn handleVenomPackagesNamespaceWrite(self: *Session, special: SpecialKind, node_id: u32, raw_input: []const u8) !WriteOutcome {
-        return .{ .written = try venom_packages_service_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
+    fn handlePackagesNamespaceWrite(self: *Session, special: SpecialKind, node_id: u32, raw_input: []const u8) !WriteOutcome {
+        return .{ .written = try packages_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
     }
 
     pub fn normalizeLocalFsRelativePath(self: *Session, raw_path: []const u8) ![]u8 {

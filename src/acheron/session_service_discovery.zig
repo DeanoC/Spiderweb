@@ -265,7 +265,7 @@ fn normalizedHostRolesJson(allocator: std.mem.Allocator, maybe_hosts: ?std.json.
 fn normalizedBindingScopesJson(allocator: std.mem.Allocator, maybe_binding_scopes_or_projection_modes: ?std.json.Value) ![]u8 {
     var has_workspace = false;
     var has_agent = false;
-    const has_client = false;
+    var has_client = false;
     var has_node = false;
 
     if (maybe_binding_scopes_or_projection_modes) |projection_modes| {
@@ -274,7 +274,7 @@ fn normalizedBindingScopesJson(allocator: std.mem.Allocator, maybe_binding_scope
                 if (item != .string) continue;
                 if (std.mem.eql(u8, item.string, venom_model.BindingScope.workspace.asString())) has_workspace = true;
                 if (std.mem.eql(u8, item.string, venom_model.BindingScope.agent.asString())) has_agent = true;
-                if (std.mem.eql(u8, item.string, venom_model.BindingScope.client.asString())) {}
+                if (std.mem.eql(u8, item.string, venom_model.BindingScope.client.asString())) has_client = true;
                 if (std.mem.eql(u8, item.string, venom_model.BindingScope.node.asString())) has_node = true;
                 if (std.mem.eql(u8, item.string, "workspace_service")) has_workspace = true;
                 if (std.mem.eql(u8, item.string, "worker_private")) has_agent = true;

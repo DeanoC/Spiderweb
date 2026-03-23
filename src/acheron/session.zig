@@ -2136,10 +2136,16 @@ pub const Session = struct {
     pub fn resolveManagedCapabilityVenomTargetPath(self: *Session, venom_id: []const u8) !?[]u8 {
         if (!venom_model.isCapabilityVenomId(venom_id)) return null;
 
+        const canonical_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/venoms/{s}", .{venom_id});
+        defer self.allocator.free(canonical_path);
+        if (try self.resolveBoundPathOnce(canonical_path)) |target_path| {
+            return target_path;
+        }
+
         const service_path = try std.fmt.allocPrint(self.allocator, "/services/{s}", .{venom_id});
         defer self.allocator.free(service_path);
-        if (self.hasWorkspaceBindPath(service_path)) {
-            return try self.allocator.dupe(u8, service_path);
+        if (try self.resolveBoundPathOnce(service_path)) |target_path| {
+            return target_path;
         }
 
         const global_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/_compat/global/{s}", .{venom_id});

@@ -1,12 +1,14 @@
 const std = @import("std");
+const venom_model = @import("venom_model.zig");
 
 pub const VenomPackage = struct {
     venom_id: []u8,
     kind: []u8,
     version: []u8,
     categories_json: []u8,
-    hosts_json: []u8,
-    projection_modes_json: []u8,
+    host_roles_json: []u8,
+    binding_scopes_json: []u8,
+    runtime_kind: venom_model.RuntimeKind,
     requirements_json: []u8,
     capabilities_json: []u8,
     ops_json: []u8,
@@ -20,8 +22,8 @@ pub const VenomPackage = struct {
         allocator.free(self.kind);
         allocator.free(self.version);
         allocator.free(self.categories_json);
-        allocator.free(self.hosts_json);
-        allocator.free(self.projection_modes_json);
+        allocator.free(self.host_roles_json);
+        allocator.free(self.binding_scopes_json);
         allocator.free(self.requirements_json);
         allocator.free(self.capabilities_json);
         allocator.free(self.ops_json);
@@ -75,14 +77,16 @@ pub fn appendPackageJson(
         const escaped_help = try jsonEscape(allocator, help);
         defer allocator.free(escaped_help);
         try out.writer(allocator).print(
-            "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"help_md\":\"{s}\"}}",
+            "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"help_md\":\"{s}\"}}",
             .{
+                escaped_venom_id,
                 escaped_venom_id,
                 escaped_kind,
                 escaped_version,
                 package.categories_json,
-                package.hosts_json,
-                package.projection_modes_json,
+                package.host_roles_json,
+                package.binding_scopes_json,
+                package.runtime_kind.asString(),
                 package.requirements_json,
                 package.capabilities_json,
                 package.ops_json,
@@ -96,14 +100,16 @@ pub fn appendPackageJson(
     }
 
     try out.writer(allocator).print(
-        "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}}}",
+        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}}}",
         .{
+            escaped_venom_id,
             escaped_venom_id,
             escaped_kind,
             escaped_version,
             package.categories_json,
-            package.hosts_json,
-            package.projection_modes_json,
+            package.host_roles_json,
+            package.binding_scopes_json,
+            package.runtime_kind.asString(),
             package.requirements_json,
             package.capabilities_json,
             package.ops_json,
@@ -120,8 +126,9 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
         .kind = undefined,
         .version = undefined,
         .categories_json = undefined,
-        .hosts_json = undefined,
-        .projection_modes_json = undefined,
+        .host_roles_json = undefined,
+        .binding_scopes_json = undefined,
+        .runtime_kind = .native,
         .requirements_json = undefined,
         .capabilities_json = undefined,
         .ops_json = undefined,
@@ -135,7 +142,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     var version_set = false;
     var categories_set = false;
     var hosts_set = false;
-    var projection_modes_set = false;
+    var binding_scopes_set = false;
     var requirements_set = false;
     var capabilities_set = false;
     var ops_set = false;
@@ -147,8 +154,8 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
         if (kind_set) allocator.free(package.kind);
         if (version_set) allocator.free(package.version);
         if (categories_set) allocator.free(package.categories_json);
-        if (hosts_set) allocator.free(package.hosts_json);
-        if (projection_modes_set) allocator.free(package.projection_modes_json);
+        if (hosts_set) allocator.free(package.host_roles_json);
+        if (binding_scopes_set) allocator.free(package.binding_scopes_json);
         if (requirements_set) allocator.free(package.requirements_json);
         if (capabilities_set) allocator.free(package.capabilities_json);
         if (ops_set) allocator.free(package.ops_json);
@@ -166,10 +173,10 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     version_set = true;
     package.categories_json = try dupObjectFieldJsonOrDefault(allocator, obj, "categories", "[]");
     categories_set = true;
-    package.hosts_json = try dupObjectFieldJsonOrDefault(allocator, obj, "hosts", "[]");
+    package.host_roles_json = try dupObjectFieldJsonOrDefault(allocator, obj, "host_roles", "[]");
     hosts_set = true;
-    package.projection_modes_json = try dupObjectFieldJsonOrDefault(allocator, obj, "projection_modes", "[]");
-    projection_modes_set = true;
+    package.binding_scopes_json = try dupObjectFieldJsonOrDefault(allocator, obj, "binding_scopes", "[]");
+    binding_scopes_set = true;
     package.requirements_json = try dupObjectFieldJsonOrDefault(allocator, obj, "requirements", "{}");
     requirements_set = true;
     package.capabilities_json = try dupObjectFieldJsonOrDefault(allocator, obj, "capabilities", "{}");
@@ -178,6 +185,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     ops_set = true;
     package.runtime_json = try dupObjectFieldJsonOrDefault(allocator, obj, "runtime", "{}");
     runtime_set = true;
+    package.runtime_kind = try parseRuntimeKind(obj, package.runtime_json);
     package.permissions_json = try dupObjectFieldJsonOrDefault(allocator, obj, "permissions", "{}");
     permissions_set = true;
     package.schema_json = try dupObjectFieldJsonOrDefault(allocator, obj, "schema", "{}");
@@ -229,6 +237,23 @@ fn dupObjectFieldJsonOrDefault(
         .array, .object => std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, .{})}),
         else => error.InvalidPackage,
     };
+}
+
+fn parseRuntimeKind(obj: std.json.ObjectMap, runtime_json: []const u8) !venom_model.RuntimeKind {
+    if (obj.get("runtime_kind")) |value| {
+        if (value != .string or value.string.len == 0) return error.InvalidPackage;
+        return venom_model.RuntimeKind.fromRuntimeType(value.string);
+    }
+    var parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, runtime_json, .{}) catch return .native;
+    defer parsed.deinit();
+    if (parsed.value == .object) {
+        if (parsed.value.object.get("type")) |runtime_type| {
+            if (runtime_type == .string and runtime_type.string.len > 0) {
+                return venom_model.RuntimeKind.fromRuntimeType(runtime_type.string);
+            }
+        }
+    }
+    return .native;
 }
 
 fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {

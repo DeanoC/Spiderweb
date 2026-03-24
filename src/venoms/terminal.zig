@@ -58,7 +58,7 @@ fn terminalSupportsInteractiveSessions() bool {
 }
 
 pub fn seedNamespace(self: anytype, terminal_dir: u32) !void {
-    return seedNamespaceAt(self, terminal_dir, "/global/terminal");
+    return seedNamespaceAt(self, terminal_dir, "/.spiderweb/_compat/global/terminal");
 }
 
 pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) !void {

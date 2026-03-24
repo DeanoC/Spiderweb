@@ -17,8 +17,8 @@ const events_venom = @import("../venoms/events.zig");
 const terminal_venom = @import("../venoms/terminal.zig");
 const mounts_venom = @import("../venoms/mounts.zig");
 const home_venom = @import("../venoms/home.zig");
-const runtimes_venom = @import("../venoms/workers.zig");
-const packages_venom = @import("../venoms/venom_packages_service.zig");
+const runtimes_venom = @import("../venoms/runtimes.zig");
+const packages_venom = @import("../venoms/packages.zig");
 const workspaces_venom = @import("../venoms/workspaces.zig");
 const git_venom = @import("../venoms/git.zig");
 const venom_packages = @import("../venom_packages.zig");
@@ -28,7 +28,7 @@ const session_workspace_contract = @import("session_workspace_contract.zig");
 const session_service_discovery = @import("session_service_discovery.zig");
 const session_project_status = @import("session_project_status.zig");
 const session_node_venoms = @import("session_node_venoms.zig");
-const session_worker_venoms = @import("session_worker_venoms.zig");
+const session_runtime_venoms = @import("session_runtime_venoms.zig");
 const session_bound_venoms = @import("session_bound_venoms.zig");
 const session_scoped_venom_index = @import("session_scoped_venom_index.zig");
 const session_catalog_bindings = @import("session_catalog_bindings.zig");
@@ -105,7 +105,7 @@ const workspace_agents_contract_path = session_workspace_contract.workspace_agen
 const workspace_agents_heading = session_workspace_contract.workspace_agents_heading;
 const workspace_agents_managed_begin = session_workspace_contract.workspace_agents_managed_begin;
 const workspace_agents_managed_end = session_workspace_contract.workspace_agents_managed_end;
-const worker_reap_grace_ms: i64 = 60_000;
+const runtime_reap_grace_ms: i64 = 60_000;
 const acheron_protocol_json =
     "{\"channel\":\"acheron\",\"version\":\"acheron-1\",\"layout\":\"acheron-namespace-workspace-contract\",\"ops\":[\"t_version\",\"t_attach\",\"t_walk\",\"t_open\",\"t_read\",\"t_write\",\"t_stat\",\"t_clunk\",\"t_flush\"]}";
 
@@ -326,12 +326,12 @@ const InternalFsrpcIds = struct {
     tag_base: u32,
 };
 
-const WorkerPresence = struct {
+const RuntimePresence = struct {
     agent_id: []u8,
     last_seen_ms: i64,
     expires_at_ms: i64,
 
-    fn deinit(self: *WorkerPresence, allocator: std.mem.Allocator) void {
+    fn deinit(self: *RuntimePresence, allocator: std.mem.Allocator) void {
         allocator.free(self.agent_id);
         self.* = undefined;
     }
@@ -490,7 +490,7 @@ pub const Session = struct {
     terminal_sessions: std.StringHashMapUnmanaged(TerminalSession) = .{},
     current_terminal_session_id: ?[]u8 = null,
     next_terminal_session_seq: u64 = 1,
-    worker_presence: std.StringHashMapUnmanaged(WorkerPresence) = .{},
+    runtime_presence: std.StringHashMapUnmanaged(RuntimePresence) = .{},
     local_fs_lock_files: std.StringHashMapUnmanaged(LocalFsLockEntry) = .{},
     workspace_binds: std.ArrayListUnmanaged(PathBind) = .{},
     scoped_venom_bindings: std.ArrayListUnmanaged(ScopedVenomBinding) = .{},
@@ -616,7 +616,7 @@ pub const Session = struct {
         self.clearTerminalSessions();
         self.clearWorkspaceBinds();
         self.clearScopedVenomBindings();
-        self.clearWorkerPresence();
+        self.clearRuntimePresence();
         self.clearLocalFsLockFiles();
         self.node_aliases.deinit(self.allocator);
         self.clearWorkspaceMountFsAuthTokens();
@@ -707,15 +707,15 @@ pub const Session = struct {
         self.namespace_mount_ready = false;
     }
 
-    fn clearWorkerPresence(self: *Session) void {
-        var it = self.worker_presence.iterator();
+    fn clearRuntimePresence(self: *Session) void {
+        var it = self.runtime_presence.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
             var presence = entry.value_ptr.*;
             presence.deinit(self.allocator);
         }
-        self.worker_presence.deinit(self.allocator);
-        self.worker_presence = .{};
+        self.runtime_presence.deinit(self.allocator);
+        self.runtime_presence = .{};
     }
 
     fn clearLocalFsLockFiles(self: *Session) void {
@@ -1028,8 +1028,8 @@ pub const Session = struct {
         }
         var timer = try std.time.Timer.start();
 
-        try self.reapExpiredWorkerNodes();
-        try self.refreshWorkerPresenceStatuses();
+        try self.reapExpiredRuntimeNodes();
+        try self.refreshRuntimePresenceStatuses();
         if (dir_id == self.nodes_root_id) {
             try self.addNodeDirectoriesFromControlPlane(self.nodes_root_id);
         }
@@ -1602,16 +1602,6 @@ pub const Session = struct {
                 return err;
             };
         }
-        if (self.lookupChild(self.root_id, "services")) |services_root| {
-            try self.addDirectoryDescriptors(
-                services_root,
-                "Services",
-                "{\"kind\":\"collection\",\"entries\":\"workspace service binds\",\"shape\":\"/services/<venom_id>/{README.md,SCHEMA.json,CAPS.json,OPS.json,STATUS.json,status.json,result.json,control/*}\"}",
-                "{\"read\":true,\"write\":false}",
-                "Workspace-bound service paths projected from the active workspace binds.",
-            );
-        }
-
         self.registerExistingGlobalVenomBinding(compat_global_root, "events", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(events) failed: {s}", .{@errorName(err)});
             return err;
@@ -2074,6 +2064,8 @@ pub const Session = struct {
         defer self.allocator.free(providers_target);
         const bindings_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/bindings.json", .{ workspace_compat_projects_absolute, workspace_id });
         defer self.allocator.free(bindings_target);
+        const node_venom_events_target = try std.fmt.allocPrint(self.allocator, "{s}/venoms/node-venom-events.ndjson", .{workspace_compat_global_absolute});
+        defer self.allocator.free(node_venom_events_target);
 
         const managed_bind_specs = [_]struct { bind_path: []const u8, target_path: []const u8 }{
             .{ .bind_path = workspace_managed_root_absolute ++ "/protocol.json", .target_path = workspace_compat_meta_absolute ++ "/protocol.json" },
@@ -2134,6 +2126,7 @@ pub const Session = struct {
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/packages.json", packages_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/providers.json", providers_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/bindings.json", bindings_target);
+        try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/node-venom-events.ndjson", node_venom_events_target);
     }
 
     pub fn resolveManagedCapabilityVenomTargetPath(self: *Session, venom_id: []const u8) !?[]u8 {
@@ -2142,12 +2135,6 @@ pub const Session = struct {
         const canonical_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/venoms/{s}", .{venom_id});
         defer self.allocator.free(canonical_path);
         if (try self.resolveBoundPathOnce(canonical_path)) |target_path| {
-            return target_path;
-        }
-
-        const service_path = try std.fmt.allocPrint(self.allocator, "/services/{s}", .{venom_id});
-        defer self.allocator.free(service_path);
-        if (try self.resolveBoundPathOnce(service_path)) |target_path| {
             return target_path;
         }
 
@@ -2394,7 +2381,7 @@ pub const Session = struct {
         const local_venoms_root = self.lookupLocalNodeVenomsRoot() orelse return;
 
         const library_dir = try self.addDir(local_venoms_root, "library", false);
-        self.seedGlobalLibraryNamespaceAt(library_dir, "/nodes/local/venoms/library") catch |err| {
+        self.seedLibraryNamespaceAt(library_dir, "/nodes/local/venoms/library") catch |err| {
             std.log.warn("seedLocalCatalogServiceNamespaces library namespace failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -2853,41 +2840,41 @@ pub const Session = struct {
         _ = try self.addFile(dir_id, "CAPS.json", caps_json, false, .none);
     }
 
-    pub fn ensureWorkerLoopbackNode(self: *Session, worker_id: []const u8, agent_id: []const u8, venoms: []const []const u8) !void {
+    pub fn ensureRuntimeLoopbackNode(self: *Session, runtime_id: []const u8, agent_id: []const u8, venoms: []const []const u8) !void {
         const nodes_root = self.lookupChild(self.root_id, "nodes") orelse return error.InvalidPayload;
-        const node_dir_id = if (self.lookupChild(nodes_root, worker_id)) |existing|
+        const node_dir_id = if (self.lookupChild(nodes_root, runtime_id)) |existing|
             existing
         else
-            try self.addDir(nodes_root, worker_id, false);
+            try self.addDir(nodes_root, runtime_id, false);
 
-        try self.ensureWorkerFile(node_dir_id, "README.md", "External worker node projected into this mounted workspace session.\n", false, .none);
-        try self.ensureWorkerFile(node_dir_id, "SCHEMA.json", "{\"kind\":\"node\",\"children\":\"venoms + worker metadata\"}", false, .none);
-        try self.ensureWorkerFile(node_dir_id, "CAPS.json", "{\"worker_owned\":true,\"venoms\":true}", false, .none);
-        const status_json = try self.renderWorkerNodeStatusJson(worker_id, agent_id);
+        try self.ensureRuntimeFile(node_dir_id, "README.md", "External runtime node projected into this mounted workspace session.\n", false, .none);
+        try self.ensureRuntimeFile(node_dir_id, "SCHEMA.json", "{\"kind\":\"node\",\"children\":\"venoms + runtime metadata\"}", false, .none);
+        try self.ensureRuntimeFile(node_dir_id, "CAPS.json", "{\"runtime_owned\":true,\"venoms\":true}", false, .none);
+        const status_json = try self.renderRuntimeNodeStatusJson(runtime_id, agent_id);
         defer self.allocator.free(status_json);
-        try self.ensureWorkerFile(node_dir_id, "STATUS.json", status_json, false, .none);
-        try self.ensureWorkerFile(node_dir_id, "NODE.json", status_json, false, .none);
+        try self.ensureRuntimeFile(node_dir_id, "STATUS.json", status_json, false, .none);
+        try self.ensureRuntimeFile(node_dir_id, "NODE.json", status_json, false, .none);
 
         const venoms_root_id = if (self.lookupChild(node_dir_id, "venoms")) |existing|
             existing
         else
             try self.addDir(node_dir_id, "venoms", false);
-        try self.ensureWorkerFile(
+        try self.ensureRuntimeFile(
             venoms_root_id,
             "README.md",
-            "Worker-owned loopback venoms. External agents may read and write these files directly within the mounted workspace.\n",
+            "Runtime-owned loopback venoms. External runtimes may read and write these files directly within the mounted workspace.\n",
             false,
             .none,
         );
-        try self.ensureWorkerFile(
+        try self.ensureRuntimeFile(
             venoms_root_id,
             "SCHEMA.json",
-            "{\"kind\":\"collection\",\"entries\":\"worker venoms\",\"shape\":\"/nodes/<worker_id>/venoms/<venom_id>/{README.md,SCHEMA.json,CAPS.json,OPS.json,STATUS.json,status.json,result.json,control/*}\"}",
+            "{\"kind\":\"collection\",\"entries\":\"runtime venoms\",\"shape\":\"/nodes/<runtime_id>/venoms/<venom_id>/{README.md,SCHEMA.json,CAPS.json,OPS.json,STATUS.json,status.json,result.json,control/*}\"}",
             false,
             .none,
         );
-        try self.ensureWorkerFile(venoms_root_id, "CAPS.json", "{\"discover\":true,\"invoke_via_paths\":true,\"worker_owned\":true}", false, .none);
-        try self.ensureWorkerFile(venoms_root_id, "VENOMS.json", "[]", false, .none);
+        try self.ensureRuntimeFile(venoms_root_id, "CAPS.json", "{\"discover\":true,\"invoke_via_paths\":true,\"runtime_owned\":true}", false, .none);
+        try self.ensureRuntimeFile(venoms_root_id, "VENOMS.json", "[]", false, .none);
 
         for (venoms) |venom_id| {
             if (std.mem.eql(u8, venom_id, "memory")) {
@@ -2895,41 +2882,41 @@ pub const Session = struct {
                     existing
                 else
                     try self.addDir(venoms_root_id, "memory", false);
-                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/memory", .{worker_id});
+                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/memory", .{runtime_id});
                 defer self.allocator.free(base_path);
-                try runtimes_venom.seedPassiveWorkerMemoryNamespaceAt(self, memory_dir_id, base_path, worker_id, agent_id);
+                try runtimes_venom.seedPassiveRuntimeMemoryNamespaceAt(self, memory_dir_id, base_path, runtime_id, agent_id);
                 try self.seedBuiltinPackageMetadata(memory_dir_id, "memory");
             } else if (std.mem.eql(u8, venom_id, "sub_brains")) {
                 const sub_brains_dir_id = if (self.lookupChild(venoms_root_id, "sub_brains")) |existing|
                     existing
                 else
                     try self.addDir(venoms_root_id, "sub_brains", false);
-                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/sub_brains", .{worker_id});
+                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/sub_brains", .{runtime_id});
                 defer self.allocator.free(base_path);
-                try runtimes_venom.seedPassiveWorkerSubBrainsNamespaceAt(self, sub_brains_dir_id, base_path, worker_id, agent_id);
+                try runtimes_venom.seedPassiveRuntimeSubBrainsNamespaceAt(self, sub_brains_dir_id, base_path, runtime_id, agent_id);
                 try self.seedBuiltinPackageMetadata(sub_brains_dir_id, "sub_brains");
             } else {
-                var package = (try self.cloneWorkerVenomPackage(venom_id)) orelse continue;
+                var package = (try self.cloneRuntimeVenomPackage(venom_id)) orelse continue;
                 defer package.deinit(self.allocator);
 
                 const venom_dir_id = if (self.lookupChild(venoms_root_id, venom_id)) |existing|
                     existing
                 else
                     try self.addDir(venoms_root_id, venom_id, false);
-                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ worker_id, venom_id });
+                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ runtime_id, venom_id });
                 defer self.allocator.free(base_path);
-                try self.seedGenericWorkerLoopbackVenomNamespaceAt(venom_dir_id, base_path, worker_id, agent_id, package);
+                try self.seedGenericRuntimeLoopbackVenomNamespaceAt(venom_dir_id, base_path, runtime_id, agent_id, package);
             }
         }
 
-        try self.refreshNodeVenomsIndex(worker_id);
+        try self.refreshNodeVenomsIndex(runtime_id);
         try self.refreshScopedVenomIndexes();
     }
 
-    pub fn recordWorkerHeartbeat(self: *Session, worker_id: []const u8, agent_id: []const u8, ttl_ms: u64) !void {
+    pub fn recordRuntimeHeartbeat(self: *Session, runtime_id: []const u8, agent_id: []const u8, ttl_ms: u64) !void {
         const now_ms = std.time.milliTimestamp();
         const expires_at_ms = now_ms + @as(i64, @intCast(ttl_ms));
-        const entry = try self.worker_presence.getOrPut(self.allocator, worker_id);
+        const entry = try self.runtime_presence.getOrPut(self.allocator, runtime_id);
         if (entry.found_existing) {
             if (!std.mem.eql(u8, entry.value_ptr.agent_id, agent_id)) {
                 self.allocator.free(entry.value_ptr.agent_id);
@@ -2940,7 +2927,7 @@ pub const Session = struct {
             return;
         }
 
-        entry.key_ptr.* = try self.allocator.dupe(u8, worker_id);
+        entry.key_ptr.* = try self.allocator.dupe(u8, runtime_id);
         entry.value_ptr.* = .{
             .agent_id = try self.allocator.dupe(u8, agent_id),
             .last_seen_ms = now_ms,
@@ -2948,28 +2935,28 @@ pub const Session = struct {
         };
     }
 
-    pub fn detachWorkerLoopbackNode(self: *Session, worker_id: []const u8) anyerror!void {
-        if (self.worker_presence.fetchRemove(worker_id)) |removed| {
+    pub fn detachRuntimeLoopbackNode(self: *Session, runtime_id: []const u8) anyerror!void {
+        if (self.runtime_presence.fetchRemove(runtime_id)) |removed| {
             self.allocator.free(removed.key);
             var presence = removed.value;
             presence.deinit(self.allocator);
         }
 
         const nodes_root = self.lookupChild(self.root_id, "nodes") orelse return;
-        const worker_node_dir_id = self.lookupChild(nodes_root, worker_id) orelse return;
+        const runtime_node_dir_id = self.lookupChild(nodes_root, runtime_id) orelse return;
 
-        try self.deleteNodeRecursive(worker_node_dir_id);
+        try self.deleteNodeRecursive(runtime_node_dir_id);
         try self.refreshScopedVenomIndexes();
     }
 
-    fn refreshWorkerPresenceStatuses(self: *Session) !void {
-        var it = self.worker_presence.iterator();
+    fn refreshRuntimePresenceStatuses(self: *Session) !void {
+        var it = self.runtime_presence.iterator();
         while (it.next()) |entry| {
-            const worker_id = entry.key_ptr.*;
+            const runtime_id = entry.key_ptr.*;
             const presence = entry.value_ptr.*;
             const nodes_root = self.lookupChild(self.root_id, "nodes") orelse continue;
-            const node_dir_id = self.lookupChild(nodes_root, worker_id) orelse continue;
-            const status_json = try self.renderWorkerNodeStatusJson(worker_id, presence.agent_id);
+            const node_dir_id = self.lookupChild(nodes_root, runtime_id) orelse continue;
+            const status_json = try self.renderRuntimeNodeStatusJson(runtime_id, presence.agent_id);
             defer self.allocator.free(status_json);
             if (self.lookupChild(node_dir_id, "STATUS.json")) |status_id| {
                 try self.setFileContent(status_id, status_json);
@@ -2980,31 +2967,31 @@ pub const Session = struct {
         }
     }
 
-    fn reapExpiredWorkerNodes(self: *Session) !void {
+    fn reapExpiredRuntimeNodes(self: *Session) !void {
         var expired = std.ArrayListUnmanaged([]const u8){};
         defer expired.deinit(self.allocator);
 
         const now_ms = std.time.milliTimestamp();
-        var it = self.worker_presence.iterator();
+        var it = self.runtime_presence.iterator();
         while (it.next()) |entry| {
             const presence = entry.value_ptr.*;
             if (presence.expires_at_ms <= 0) continue;
-            if (now_ms <= presence.expires_at_ms + worker_reap_grace_ms) continue;
+            if (now_ms <= presence.expires_at_ms + runtime_reap_grace_ms) continue;
             try expired.append(self.allocator, try self.allocator.dupe(u8, entry.key_ptr.*));
         }
-        defer for (expired.items) |worker_id| self.allocator.free(worker_id);
+        defer for (expired.items) |runtime_id| self.allocator.free(runtime_id);
 
-        for (expired.items) |worker_id| {
-            try self.detachWorkerLoopbackNode(worker_id);
+        for (expired.items) |runtime_id| {
+            try self.detachRuntimeLoopbackNode(runtime_id);
         }
     }
 
-    fn renderWorkerNodeStatusJson(self: *Session, worker_id: []const u8, default_agent_id: []const u8) ![]u8 {
+    fn renderRuntimeNodeStatusJson(self: *Session, runtime_id: []const u8, default_agent_id: []const u8) ![]u8 {
         const now_ms = std.time.milliTimestamp();
         var agent_id = default_agent_id;
         var last_seen_ms: i64 = 0;
         var expires_at_ms: i64 = 0;
-        if (self.worker_presence.get(worker_id)) |presence| {
+        if (self.runtime_presence.get(runtime_id)) |presence| {
             agent_id = presence.agent_id;
             last_seen_ms = presence.last_seen_ms;
             expires_at_ms = presence.expires_at_ms;
@@ -3012,11 +2999,11 @@ pub const Session = struct {
         const online = expires_at_ms > now_ms;
         return std.fmt.allocPrint(
             self.allocator,
-            "{{\"node_id\":\"{s}\",\"node_name\":\"{s}\",\"state\":\"{s}\",\"online\":{s},\"agent_id\":\"{s}\",\"last_seen_ms\":{d},\"expires_at_ms\":{d},\"source\":\"worker_registration\"}}",
+            "{{\"node_id\":\"{s}\",\"node_name\":\"{s}\",\"state\":\"{s}\",\"online\":{s},\"agent_id\":\"{s}\",\"last_seen_ms\":{d},\"expires_at_ms\":{d},\"source\":\"runtime_registration\"}}",
             .{
-                worker_id,
-                worker_id,
-                if (online) "worker_attached" else "worker_stale",
+                runtime_id,
+                runtime_id,
+                if (online) "runtime_attached" else "runtime_stale",
                 if (online) "true" else "false",
                 agent_id,
                 last_seen_ms,
@@ -3055,7 +3042,7 @@ pub const Session = struct {
         doomed.deinit(self.allocator);
     }
 
-    pub fn ensureWorkerFile(
+    pub fn ensureRuntimeFile(
         self: *Session,
         parent_id: u32,
         name: []const u8,
@@ -3118,11 +3105,11 @@ pub const Session = struct {
         return events_venom.seedNamespaceAt(self, events_dir, base_path);
     }
 
-    fn seedGlobalLibraryNamespace(self: *Session, library_dir: u32) !void {
-        return self.seedGlobalLibraryNamespaceAt(library_dir, "/.spiderweb/_compat/global/library");
+    fn seedLibraryNamespace(self: *Session, library_dir: u32) !void {
+        return self.seedLibraryNamespaceAt(library_dir, "/.spiderweb/_compat/global/library");
     }
 
-    fn seedGlobalLibraryNamespaceAt(self: *Session, library_dir: u32, base_path: []const u8) !void {
+    fn seedLibraryNamespaceAt(self: *Session, library_dir: u32, base_path: []const u8) !void {
         const escaped_base_path = try unified.jsonEscape(self.allocator, base_path);
         defer self.allocator.free(escaped_base_path);
         const shape_json = try std.fmt.allocPrint(
@@ -3133,7 +3120,7 @@ pub const Session = struct {
         defer self.allocator.free(shape_json);
         try self.addDirectoryDescriptors(
             library_dir,
-            "Global Library",
+            "Library",
             shape_json,
             "{\"invoke\":false,\"operations\":[],\"discoverable\":true,\"read_only\":true}",
             "Stable, system-wide documentation for common Spiderweb/Acheron operations.",
@@ -3181,7 +3168,7 @@ pub const Session = struct {
         const index_path = try std.fs.path.join(self.allocator, &.{ self.assets_dir, "library", "Index.md" });
         defer self.allocator.free(index_path);
         return std.fs.cwd().readFileAlloc(self.allocator, index_path, 512 * 1024) catch
-            self.allocator.dupe(u8, defaultGlobalLibraryIndexMd());
+            self.allocator.dupe(u8, defaultLibraryIndexMd());
     }
 
     fn seedGlobalLibraryTopicsFromAssets(self: *Session, topics_dir: u32) !bool {
@@ -3243,56 +3230,56 @@ pub const Session = struct {
         _ = try self.addFile(
             topics_dir,
             "getting-started.md",
-            defaultGlobalLibraryTopicGettingStarted(),
+            defaultLibraryTopicGettingStarted(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "service-discovery.md",
-            defaultGlobalLibraryTopicServiceDiscovery(),
+            defaultLibraryTopicServiceDiscovery(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "events-and-waits.md",
-            defaultGlobalLibraryTopicEventsAndWaits(),
+            defaultLibraryTopicEventsAndWaits(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "search-services.md",
-            defaultGlobalLibraryTopicSearchServices(),
+            defaultLibraryTopicSearchServices(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "terminal-workflows.md",
-            defaultGlobalLibraryTopicTerminalWorkflows(),
+            defaultLibraryTopicTerminalWorkflows(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "memory-workflows.md",
-            defaultGlobalLibraryTopicMemoryWorkflows(),
+            defaultLibraryTopicMemoryWorkflows(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "workspace-mounts-and-binds.md",
-            defaultGlobalLibraryTopicWorkspaceMountsAndBinds(),
+            defaultLibraryTopicWorkspaceMountsAndBinds(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "agent-management-and-sub-brains.md",
-            defaultGlobalLibraryTopicAgentManagementAndSubBrains(),
+            defaultLibraryTopicAgentManagementAndSubBrains(),
             false,
             .none,
         );
@@ -3637,41 +3624,41 @@ pub const Session = struct {
     }
 
     fn seedBuiltinPackageMetadata(self: *Session, venom_dir_id: u32, venom_id: []const u8) !void {
-        return session_worker_venoms.seedBuiltinPackageMetadata(self, venom_dir_id, venom_id);
+        return session_runtime_venoms.seedBuiltinPackageMetadata(self, venom_dir_id, venom_id);
     }
 
-    fn cloneWorkerVenomPackage(self: *Session, venom_id: []const u8) !?venom_package.VenomPackage {
-        return session_worker_venoms.cloneWorkerVenomPackage(self, venom_id);
+    fn cloneRuntimeVenomPackage(self: *Session, venom_id: []const u8) !?venom_package.VenomPackage {
+        return session_runtime_venoms.cloneRuntimeVenomPackage(self, venom_id);
     }
 
     fn seedPackageMetadata(self: *Session, venom_dir_id: u32, package: venom_package.VenomPackage) !void {
-        return session_worker_venoms.seedPackageMetadata(self, venom_dir_id, package);
+        return session_runtime_venoms.seedPackageMetadata(self, venom_dir_id, package);
     }
 
-    fn seedGenericWorkerLoopbackVenomNamespaceAt(
+    fn seedGenericRuntimeLoopbackVenomNamespaceAt(
         self: *Session,
         venom_dir_id: u32,
         base_path: []const u8,
-        worker_id: []const u8,
+        runtime_id: []const u8,
         agent_id: []const u8,
         package: venom_package.VenomPackage,
     ) !void {
-        return session_worker_venoms.seedGenericWorkerLoopbackVenomNamespaceAt(
+        return session_runtime_venoms.seedGenericRuntimeLoopbackVenomNamespaceAt(
             self,
             venom_dir_id,
             base_path,
-            worker_id,
+            runtime_id,
             agent_id,
             package,
         );
     }
 
-    fn seedWorkerControlFilesFromOpsJson(self: *Session, control_dir: u32, ops_json: []const u8) !void {
-        return session_worker_venoms.seedWorkerControlFilesFromOpsJson(self, control_dir, ops_json);
+    fn seedRuntimeControlFilesFromOpsJson(self: *Session, control_dir: u32, ops_json: []const u8) !void {
+        return session_runtime_venoms.seedRuntimeControlFilesFromOpsJson(self, control_dir, ops_json);
     }
 
-    fn ensureWorkerControlFileFromPath(self: *Session, control_dir: u32, raw_path: []const u8) !void {
-        return session_worker_venoms.ensureWorkerControlFileFromPath(self, control_dir, raw_path);
+    fn ensureRuntimeControlFileFromPath(self: *Session, control_dir: u32, raw_path: []const u8) !void {
+        return session_runtime_venoms.ensureRuntimeControlFileFromPath(self, control_dir, raw_path);
     }
 
     fn seedActiveScopedVenomBindings(
@@ -4245,12 +4232,12 @@ pub const Session = struct {
                 .provider_export_name = null,
             };
         }
-        const service_match = parseServiceScopedVenomAliasPrefix(self, absolute_path);
-        if (service_match) |value| {
+        const workspace_match = parseWorkspaceScopedVenomAliasPrefix(self, absolute_path);
+        if (workspace_match) |value| {
             return .{
                 .venom_id = value.venom_id,
                 .remote_path = try self.allocator.dupe(u8, value.remote_path),
-                .project_id = value.project_id,
+                .project_id = value.workspace_id,
             };
         }
         const global_match = parseScopedVenomAliasPrefix(absolute_path, "/.spiderweb/_compat/global/");
@@ -7681,13 +7668,11 @@ pub const Session = struct {
 fn isWorldAbsolutePath(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "/nodes/") or
         std.mem.startsWith(u8, path, "/agents/") or
-        std.mem.startsWith(u8, path, "/services/") or
-        std.mem.startsWith(u8, path, "/global/") or
         std.mem.startsWith(u8, path, "/.spiderweb/");
 }
 
-fn defaultGlobalLibraryIndexMd() []const u8 {
-    return "# Spiderweb Global Library\n\n" ++
+fn defaultLibraryIndexMd() []const u8 {
+    return "# Spiderweb Library\n\n" ++
         "- [Getting Started](/.spiderweb/venoms/library/topics/getting-started.md)\n" ++
         "- [Service Discovery](/.spiderweb/venoms/library/topics/service-discovery.md)\n" ++
         "- [Events and Waits](/.spiderweb/venoms/library/topics/events-and-waits.md)\n" ++
@@ -7698,16 +7683,16 @@ fn defaultGlobalLibraryIndexMd() []const u8 {
         "- [Agent Management and Sub-Brains](/.spiderweb/venoms/library/topics/agent-management-and-sub-brains.md)\n";
 }
 
-fn defaultGlobalLibraryTopicGettingStarted() []const u8 {
+fn defaultLibraryTopicGettingStarted() []const u8 {
     return "# Getting Started\n\n" ++
         "1. Discover capability bindings in `/.spiderweb/catalog/bindings.json` and available providers in `/.spiderweb/catalog/providers.json`.\n" ++
         "2. Use `/.spiderweb/venoms/<venom_id>` as the canonical capability path.\n" ++
-        "3. Register external runtimes through `/.spiderweb/control/runtimes/control/register.json` before expecting worker-owned venoms like memory or sub_brains to appear.\n" ++
+        "3. Register external runtimes through `/.spiderweb/control/runtimes/control/register.json` before expecting runtime-private venoms like memory or sub_brains to appear.\n" ++
         "4. Read each Venom `README.md`, `SCHEMA.json`, `TEMPLATE.json`, `HOST.json`, and `CAPS.json` before using it.\n" ++
         "5. Use `/.spiderweb/venoms/library` for system guides.\n";
 }
 
-fn defaultGlobalLibraryTopicServiceDiscovery() []const u8 {
+fn defaultLibraryTopicServiceDiscovery() []const u8 {
     return "# Venom Discovery\n\n" ++
         "- Canonical venom bindings: `/.spiderweb/venoms/<venom_id>`\n" ++
         "- Discovery metadata: `/.spiderweb/catalog/{packages.json,providers.json,bindings.json}`\n" ++
@@ -7716,40 +7701,40 @@ fn defaultGlobalLibraryTopicServiceDiscovery() []const u8 {
         "- Production capability venoms include: terminal, git, search_code, library, and events.\n";
 }
 
-fn defaultGlobalLibraryTopicEventsAndWaits() []const u8 {
+fn defaultLibraryTopicEventsAndWaits() []const u8 {
     return "# Events and Waits\n\n" ++
         "Use single-source blocking reads first for deterministic waits.\n" ++
         "Use `/.spiderweb/venoms/events/control/wait.json` + `/.spiderweb/venoms/events/next.json`.\n";
 }
 
-fn defaultGlobalLibraryTopicSearchServices() []const u8 {
+fn defaultLibraryTopicSearchServices() []const u8 {
     return "# Search Services\n\n" ++
         "Use `/.spiderweb/venoms/search_code` for repository-local search.\n" ++
         "Drive it through `control/invoke.json`, then check `status.json` and `result.json`.\n";
 }
 
-fn defaultGlobalLibraryTopicTerminalWorkflows() []const u8 {
+fn defaultLibraryTopicTerminalWorkflows() []const u8 {
     return "# Terminal Workflows\n\n" ++
         "Use `/.spiderweb/venoms/terminal/control/*.json` for sessionized shell execution.\n" ++
         "Prefer `create` + `write/read` for interactive loops and `exec` for single command tasks.\n";
 }
 
-fn defaultGlobalLibraryTopicMemoryWorkflows() []const u8 {
+fn defaultLibraryTopicMemoryWorkflows() []const u8 {
     return "# Memory Workflows\n\n" ++
-        "Use worker-owned memory venom paths after registering a worker node (for example `/nodes/<worker-node>/venoms/memory/control/*.json`). Spiderweb does not provide a canonical shared memory venom for Spider Monkey.\n" ++
+        "Use runtime-private memory venom paths after registering an external runtime (for example `/nodes/<runtime-id>/venoms/memory/control/*.json`). Spiderweb does not provide a canonical shared memory venom for Spider Monkey.\n" ++
         "Use `search` before creating duplicate memories.\n";
 }
 
-fn defaultGlobalLibraryTopicWorkspaceMountsAndBinds() []const u8 {
+fn defaultLibraryTopicWorkspaceMountsAndBinds() []const u8 {
     return "# Workspace Mounts and Binds\n\n" ++
         "Use `/.spiderweb/control/workspace/mounts/control/mount.json`, `mkdir.json`, and `unmount.json` for workspace mounts.\n" ++
         "Use `/.spiderweb/control/workspace/binds/control/bind.json` and `resolve.json` for stable workspace paths.\n";
 }
 
-fn defaultGlobalLibraryTopicAgentManagementAndSubBrains() []const u8 {
+fn defaultLibraryTopicAgentManagementAndSubBrains() []const u8 {
     return "# Agent Management and Sub-Brains\n\n" ++
         "Spiderweb no longer provisions or manages internal agents.\n" ++
-        "Use `/.spiderweb/control/runtimes` for runtime attach/detach and worker-owned `/nodes/<worker-node>/venoms/sub_brains/*` for private sub-brain control.\n";
+        "Use `/.spiderweb/control/runtimes` for runtime attach/detach and runtime-private `/nodes/<runtime-id>/venoms/sub_brains/*` for private sub-brain control.\n";
 }
 
 fn pathMatchesPrefixBoundary(path: []const u8, prefix: []const u8) bool {
@@ -7811,8 +7796,8 @@ const ParsedEntityScopedVenomAlias = struct {
     remote_path: []const u8,
 };
 
-const ParsedServiceScopedVenomAlias = struct {
-    project_id: []const u8,
+const ParsedWorkspaceScopedVenomAlias = struct {
+    workspace_id: []const u8,
     venom_id: []const u8,
     remote_path: []const u8,
 };
@@ -7866,13 +7851,12 @@ fn parseEntityScopedVenomAliasPrefix(
     };
 }
 
-fn parseServiceScopedVenomAliasPrefix(self: *Session, path: []const u8) ?ParsedServiceScopedVenomAlias {
-    const project_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return null;
-    const parsed = parseScopedVenomAliasPrefix(path, "/services/") orelse
-        parseScopedVenomAliasPrefix(path, workspace_managed_venoms_absolute_prefix) orelse
+fn parseWorkspaceScopedVenomAliasPrefix(self: *Session, path: []const u8) ?ParsedWorkspaceScopedVenomAlias {
+    const workspace_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return null;
+    const parsed = parseScopedVenomAliasPrefix(path, workspace_managed_venoms_absolute_prefix) orelse
         return null;
     return .{
-        .project_id = project_id,
+        .workspace_id = workspace_id,
         .venom_id = parsed.venom_id,
         .remote_path = parsed.remote_path,
     };
@@ -8670,6 +8654,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"venom_root\":\"./.spiderweb/venoms\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"control_root\":\"./.spiderweb/control\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"catalog_root\":\"./.spiderweb/catalog\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"node_venom_events\":\"./.spiderweb/catalog/node-venom-events.ndjson\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"required_venoms\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"./AGENTS.md\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"protocol\":\"./.spiderweb/protocol.json\"") != null);
@@ -8698,6 +8683,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
         "/nodes/local/fs/.spiderweb/catalog/packages.json",
         "/nodes/local/fs/.spiderweb/catalog/providers.json",
         "/nodes/local/fs/.spiderweb/catalog/bindings.json",
+        "/nodes/local/fs/.spiderweb/catalog/node-venom-events.ndjson",
         "/nodes/local/fs/.spiderweb/control/workspace/home/control/ensure.json",
         "/nodes/local/fs/.spiderweb/control/workspace/mounts/control/bind.json",
         "/nodes/local/fs/.spiderweb/control/runtimes/control/register.json",
@@ -8791,6 +8777,9 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(providers_json != null);
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"package_id\":\"terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"runtime_kind\":\"native\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"install\":{\"installed\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"provider\":{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"policy\":") != null);
     try std.testing.expect(
         std.mem.indexOf(u8, providers_json.?, "\"host_role\":\"spiderweb\"") != null or
             std.mem.indexOf(u8, providers_json.?, "\"host_role\":\"node\"") != null,

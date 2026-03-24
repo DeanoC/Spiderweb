@@ -156,6 +156,8 @@ pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) !
     try jw.write("/.spiderweb/catalog/providers.json");
     try jw.objectField("bindings");
     try jw.write("/.spiderweb/catalog/bindings.json");
+    try jw.objectField("node_venom_events");
+    try jw.write("/.spiderweb/catalog/node-venom-events.ndjson");
     try jw.objectField("agent_bootstrap");
     try jw.write("/.spiderweb/agent_bootstrap.json");
     try jw.objectField("agent_bootstrap_quickref");
@@ -365,7 +367,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
         paths.workspace_status_path,
     };
     const required_venom_ids = [_][]const u8{ "terminal", "git", "search_code", "library", "events" };
-    const default_worker_venoms = [_][]const u8{ "memory", "sub_brains" };
+    const default_runtime_venoms = [_][]const u8{ "memory", "sub_brains" };
 
     var out = std.io.Writer.Allocating.init(session.allocator);
     errdefer out.deinit();
@@ -476,7 +478,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.objectField("invoke_path");
     try jw.write(paths.register_runtime_path);
     try jw.objectField("default_venoms");
-    try jw.write(default_worker_venoms);
+    try jw.write(default_runtime_venoms);
     try jw.objectField("required");
     try jw.write(false);
     try jw.endObject();
@@ -491,7 +493,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.write("persistent");
     try jw.objectField("agent_home");
     try jw.write("durable_per_agent");
-    try jw.objectField("worker_loopback");
+    try jw.objectField("runtime_loopback");
     try jw.write("ephemeral");
     try jw.endObject();
 
@@ -499,7 +501,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.beginObject();
     try jw.objectField("shared_changes");
     try jw.write("keep");
-    try jw.objectField("worker_state");
+    try jw.objectField("runtime_state");
     try jw.write("detach_or_ttl_cleanup");
     try jw.endObject();
 
@@ -560,22 +562,6 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
     if (std.mem.startsWith(u8, namespace_path, "/shared_data/")) {
         return workspaceManagedSharedDataPath(allocator, namespace_path["/shared_data/".len..]);
     }
-    if (std.mem.startsWith(u8, namespace_path, "/services/")) {
-        const tail = namespace_path["/services/".len..];
-        if (std.mem.startsWith(u8, tail, "home")) {
-            return workspaceManagedControlPath(allocator, "workspace/home");
-        }
-        if (std.mem.startsWith(u8, tail, "mounts")) {
-            return workspaceManagedControlPath(allocator, "workspace/mounts");
-        }
-        if (std.mem.startsWith(u8, tail, "workers") or std.mem.startsWith(u8, tail, "runtimes")) {
-            return workspaceManagedControlPath(allocator, "runtimes");
-        }
-        if (std.mem.startsWith(u8, tail, "venom_packages") or std.mem.startsWith(u8, tail, "packages")) {
-            return workspaceManagedControlPath(allocator, "packages");
-        }
-        return workspaceManagedVenomsPath(allocator, tail);
-    }
     if (std.mem.startsWith(u8, namespace_path, "/nodes/local/venoms/")) {
         const tail = namespace_path["/nodes/local/venoms/".len..];
         if (std.mem.startsWith(u8, tail, "home")) {
@@ -584,10 +570,10 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
         if (std.mem.startsWith(u8, tail, "mounts")) {
             return workspaceManagedControlPath(allocator, "workspace/mounts");
         }
-        if (std.mem.startsWith(u8, tail, "workers") or std.mem.startsWith(u8, tail, "runtimes")) {
+        if (std.mem.startsWith(u8, tail, "runtimes")) {
             return workspaceManagedControlPath(allocator, "runtimes");
         }
-        if (std.mem.startsWith(u8, tail, "venom_packages") or std.mem.startsWith(u8, tail, "packages")) {
+        if (std.mem.startsWith(u8, tail, "packages")) {
             return workspaceManagedControlPath(allocator, "packages");
         }
         return workspaceManagedVenomsPath(allocator, tail);
@@ -612,9 +598,6 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
     }
     if (std.mem.endsWith(u8, namespace_path, "/meta/mounted_services.json")) {
         return workspaceManagedCatalogPath(allocator, "bindings.json");
-    }
-    if (std.mem.endsWith(u8, namespace_path, "/meta/venom_packages.json")) {
-        return workspaceManagedCatalogPath(allocator, "packages.json");
     }
     if (std.mem.eql(u8, namespace_path, "/nodes/local/fs")) {
         return allocator.dupe(u8, ".");

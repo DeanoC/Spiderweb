@@ -15,7 +15,7 @@ pub const HostRole = enum {
 
     pub fn fromString(value: []const u8) HostRole {
         if (std.mem.eql(u8, value, "node")) return .node;
-        if (std.mem.eql(u8, value, "client") or std.mem.eql(u8, value, "worker")) return .client;
+        if (std.mem.eql(u8, value, "client")) return .client;
         return .spiderweb;
     }
 };
@@ -65,9 +65,7 @@ const control_substrate_ids = [_][]const u8{
     "home",
     "mounts",
     "packages",
-    "venom_packages",
     "runtimes",
-    "workers",
     "workspaces",
 };
 
@@ -118,7 +116,7 @@ pub fn legacyProviderScope(host_role: HostRole, binding_scopes: []const BindingS
     return switch (host_role) {
         .spiderweb => "host_local",
         .node => "node_export",
-        .client => "worker_private",
+        .client => "runtime_private",
     };
 }
 
@@ -131,7 +129,7 @@ pub fn legacyProjectionModesJson(host_role: HostRole, binding_scopes: []const Bi
     return switch (host_role) {
         .spiderweb => if (workspace) "[\"host_local\",\"workspace_service\"]" else "[\"host_local\"]",
         .node => if (workspace) "[\"node_export\",\"workspace_service\"]" else if (node) "[\"node_export\"]" else "[\"node_export\"]",
-        .client => if (agent or client) "[\"worker_private\"]" else "[\"worker_private\"]",
+        .client => if (agent or client) "[\"runtime_private\"]" else "[\"runtime_private\"]",
     };
 }
 
@@ -145,7 +143,6 @@ pub fn containsBindingScope(binding_scopes: []const BindingScope, needle: Bindin
 test "venom_model classifies substrate and production capability venoms" {
     try std.testing.expect(isControlSubstrateVenomId("mounts"));
     try std.testing.expect(isControlSubstrateVenomId("runtimes"));
-    try std.testing.expect(isControlSubstrateVenomId("workers"));
     try std.testing.expect(!isCapabilityVenomId("mounts"));
     try std.testing.expect(!isCapabilityVenomId("memory"));
     try std.testing.expect(isCapabilityVenomId("terminal"));

@@ -506,14 +506,14 @@ def main() -> int:
                 elif normalized_path.endswith("/services/mounts/control/unmount.json"):
                     action = "mounts_unmount"
                     change_scope = "persistent"
-                elif normalized_path.endswith("/services/workers/control/register.json"):
-                    action = "workers_register"
+                elif normalized_path.endswith("/services/workers/control/register.json") or normalized_path.endswith("/.spiderweb/control/runtimes/control/register.json"):
+                    action = "runtime_attach"
                     change_scope = "ephemeral"
-                elif normalized_path.endswith("/services/workers/control/heartbeat.json"):
-                    action = "workers_heartbeat"
+                elif normalized_path.endswith("/services/workers/control/heartbeat.json") or normalized_path.endswith("/.spiderweb/control/runtimes/control/heartbeat.json"):
+                    action = "runtime_heartbeat"
                     change_scope = "ephemeral"
-                elif normalized_path.endswith("/services/workers/control/detach.json"):
-                    action = "workers_detach"
+                elif normalized_path.endswith("/services/workers/control/detach.json") or normalized_path.endswith("/.spiderweb/control/runtimes/control/detach.json"):
+                    action = "runtime_detach"
                     change_scope = "ephemeral"
                 if action:
                     event = {"action": action, "path": normalized_path}

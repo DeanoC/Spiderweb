@@ -135,10 +135,10 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
 
 fn parseOp(raw: []const u8) ?Op {
     const value = std.mem.trim(u8, raw, " \t\r\n");
-    if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "packages_list") or std.mem.eql(u8, value, "venom_packages_list")) return .list;
-    if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "packages_get") or std.mem.eql(u8, value, "venom_packages_get")) return .get;
-    if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "packages_install") or std.mem.eql(u8, value, "venom_packages_install")) return .install;
-    if (std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "packages_remove") or std.mem.eql(u8, value, "venom_packages_remove")) return .remove;
+    if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "packages_list")) return .list;
+    if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "packages_get")) return .get;
+    if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "packages_install")) return .install;
+    if (std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "packages_remove")) return .remove;
     return null;
 }
 

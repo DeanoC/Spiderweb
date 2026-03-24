@@ -1334,15 +1334,15 @@ pub const ControlPlane = struct {
         return null;
     }
 
-    pub fn validateWorkerVenomInstantiation(
+    pub fn validateRuntimeVenomInstantiation(
         self: *ControlPlane,
         requested_venoms: []const []const u8,
     ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const worker_host_capabilities = [_][]const u8{
-            "external_worker",
+        const runtime_host_capabilities = [_][]const u8{
+            "external_runtime",
             "filesystem_loopback",
         };
         for (requested_venoms) |venom_id| {
@@ -1350,11 +1350,11 @@ pub const ControlPlane = struct {
             try validateVenomPackageInstantiationLocked(
                 self.allocator,
                 package,
-                "worker",
-                "worker_private",
+                "client",
+                "runtime_private",
                 requested_venoms,
-                worker_host_capabilities[0..],
-                "{\"type\":\"external_worker\"}",
+                runtime_host_capabilities[0..],
+                "{\"type\":\"external_runtime\"}",
             );
         }
     }
@@ -4062,7 +4062,6 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         version: []const u8,
         host_roles_json: []const u8,
         binding_scopes_json: []const u8,
-        projection_modes_json: []const u8,
         requirements_json: []const u8,
         runtime_json: []const u8,
         runtime_kind: venom_model.RuntimeKind,
@@ -4076,7 +4075,6 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .version = spec.version,
                 .host_roles_json = spec.hostRolesJson(),
                 .binding_scopes_json = spec.bindingScopesJson(),
-                .projection_modes_json = spec.legacyProjectionModesJson(),
                 .requirements_json = spec.requirements_json,
                 .runtime_json = spec.runtime_json,
                 .runtime_kind = spec.runtime_kind,
@@ -4088,9 +4086,8 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .venom_id = package.venom_id,
                 .kind = package.kind,
                 .version = package.version,
-                .host_roles_json = package.hosts_json,
-                .binding_scopes_json = package.projection_modes_json,
-                .projection_modes_json = package.projection_modes_json,
+                .host_roles_json = package.host_roles_json,
+                .binding_scopes_json = package.binding_scopes_json,
                 .requirements_json = package.requirements_json,
                 .runtime_json = package.runtime_json,
                 .runtime_kind = if (std.mem.indexOf(u8, package.runtime_json, "\"type\":\"wasm\"") != null) .wasm else .native,
@@ -4112,8 +4109,9 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .kind = try allocator.dupe(u8, package.kind),
                 .version = try allocator.dupe(u8, package.version),
                 .categories_json = try allocator.dupe(u8, package.categories_json),
-                .hosts_json = try allocator.dupe(u8, package.hosts_json),
-                .projection_modes_json = try allocator.dupe(u8, package.projection_modes_json),
+                .host_roles_json = try allocator.dupe(u8, package.host_roles_json),
+                .binding_scopes_json = try allocator.dupe(u8, package.binding_scopes_json),
+                .runtime_kind = package.runtime_kind,
                 .requirements_json = try allocator.dupe(u8, package.requirements_json),
                 .capabilities_json = try allocator.dupe(u8, package.capabilities_json),
                 .ops_json = try allocator.dupe(u8, package.ops_json),
@@ -4170,7 +4168,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         allocator: std.mem.Allocator,
         package: VenomPackageView,
         host: []const u8,
-        projection_mode: []const u8,
+        legacy_projection_mode: []const u8,
         available_venoms: []const []const u8,
         host_capabilities: []const []const u8,
         actual_runtime_json: ?[]const u8,
@@ -4178,7 +4176,17 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         if (!jsonArrayContainsString(allocator, package.host_roles_json, host)) {
             return ControlPlaneError.VenomPackageHostUnsupported;
         }
-        if (!jsonArrayContainsString(allocator, package.projection_modes_json, projection_mode)) {
+        const required_scope = if (std.mem.eql(u8, legacy_projection_mode, "node_export"))
+            "workspace"
+        else if (std.mem.eql(u8, legacy_projection_mode, "workspace_service") or std.mem.eql(u8, legacy_projection_mode, "host_local"))
+            "workspace"
+        else if (std.mem.eql(u8, legacy_projection_mode, "runtime_private"))
+            "agent"
+        else if (std.mem.eql(u8, legacy_projection_mode, "client_private"))
+            "client"
+        else
+            legacy_projection_mode;
+        if (!jsonArrayContainsString(allocator, package.binding_scopes_json, required_scope)) {
             return ControlPlaneError.VenomPackageProjectionUnsupported;
         }
         if (!requirementsSatisfied(allocator, package.requirements_json, available_venoms, host_capabilities)) {
@@ -4261,7 +4269,8 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         defer parsed.deinit();
         if (parsed.value != .array) return false;
         for (parsed.value.array.items) |item| {
-            if (item == .string and std.mem.eql(u8, item.string, needle)) return true;
+            if (item != .string) continue;
+            if (std.mem.eql(u8, item.string, needle)) return true;
         }
         return false;
     }
@@ -5463,8 +5472,6 @@ fn appendWorkspaceTemplateBindJson(
     defer allocator.free(escaped_venom);
     const escaped_host_role = try jsonEscape(allocator, bind_spec.host_role.asString());
     defer allocator.free(escaped_host_role);
-    const escaped_provider_scope = try jsonEscape(allocator, venom_model.legacyProviderScope(bind_spec.host_role, &.{venom_model.BindingScope.workspace}));
-    defer allocator.free(escaped_provider_scope);
     const target_path_json = if (resolveTemplateBindTargetPath(bind_spec)) |target_path| blk: {
         const escaped_target = try jsonEscape(allocator, target_path);
         defer allocator.free(escaped_target);
@@ -5473,8 +5480,8 @@ fn appendWorkspaceTemplateBindJson(
     defer allocator.free(target_path_json);
 
     try out.writer(allocator).print(
-        "{{\"bind_path\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"binding_scope\":\"workspace\",\"provider_scope\":\"{s}\",\"target_path\":{s}}}",
-        .{ escaped_bind, escaped_venom, escaped_host_role, escaped_provider_scope, target_path_json },
+        "{{\"bind_path\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"binding_scope\":\"workspace\",\"target_path\":{s}}}",
+        .{ escaped_bind, escaped_venom, escaped_host_role, target_path_json },
     );
 }
 
@@ -8016,11 +8023,11 @@ test "acheron_control_plane: node venom delta changes when only package_id chang
     defer plane.deinit();
 
     const installed_a = try plane.installVenomPackage(
-        \\{"package":{"venom_id":"camera_pkg_a","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+        \\{"package":{"venom_id":"camera_pkg_a","kind":"camera","version":"1","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
     );
     defer allocator.free(installed_a);
     const installed_b = try plane.installVenomPackage(
-        \\{"package":{"venom_id":"camera_pkg_b","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+        \\{"package":{"venom_id":"camera_pkg_b","kind":"camera","version":"1","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
     );
     defer allocator.free(installed_b);
 
@@ -8610,7 +8617,7 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/search_code\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"target_path\":\"/nodes/local/venoms/git\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"provider_scope\":\"node_export\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"provider_scope\":") == null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/chat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/jobs\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/web_search\"") == null);
@@ -8806,7 +8813,7 @@ test "acheron_control_plane: persistence restores node venom catalogs" {
         expected_node_id = try allocator.dupe(u8, node_id);
 
         const installed = try plane.installVenomPackage(
-            \\{"package":{"venom_id":"camera","kind":"camera","version":"1","categories":["camera","edge"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{},"permissions":{},"schema":{}}}
+            \\{"package":{"venom_id":"camera","kind":"camera","version":"1","categories":["camera","edge"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{},"permissions":{},"schema":{}}}
         );
         defer allocator.free(installed);
 
@@ -8861,7 +8868,7 @@ test "acheron_control_plane: node venom upsert rejects runtime mismatch with ins
     defer plane.deinit();
 
     const installed = try plane.installVenomPackage(
-        \\{"package":{"venom_id":"camera","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"wasm"},"permissions":{},"schema":{}}}
+        \\{"package":{"venom_id":"camera","kind":"camera","version":"1","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"wasm","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"wasm"},"permissions":{},"schema":{}}}
     );
     defer allocator.free(installed);
 
@@ -8895,7 +8902,7 @@ test "acheron_control_plane: builtin terminal package accepts local node export 
 
     const upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"spiderweb\"}},\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"package_id\":\"terminal\",\"provider_scope\":\"node_export\",\"hosts\":[\"node\"],\"projection_modes\":[\"node_export\",\"workspace_service\"],\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/terminal\"],\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/venoms/terminal\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"discoverable\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"allow-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"spiderweb\"}},\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"package_id\":\"terminal\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/terminal\"],\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/venoms/terminal\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"discoverable\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"allow-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}]}}",
         .{ node_id, node_secret, node_id, node_id },
     );
     defer allocator.free(upsert_req);
@@ -8911,7 +8918,7 @@ test "acheron_control_plane: node venom upsert honors package_id alias" {
     defer plane.deinit();
 
     const installed = try plane.installVenomPackage(
-        \\{"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+        \\{"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
     );
     defer allocator.free(installed);
 
@@ -8940,7 +8947,7 @@ test "acheron_control_plane: platform-only upsert preserves stored package_id al
     defer plane.deinit();
 
     const installed = try plane.installVenomPackage(
-        \\{"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+        \\{"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
     );
     defer allocator.free(installed);
 
@@ -8978,7 +8985,7 @@ test "acheron_control_plane: platform-only node upsert revalidates existing veno
     defer plane.deinit();
 
     const installed = try plane.installVenomPackage(
-        \\{"package":{"venom_id":"camera","kind":"camera","version":"1","categories":["camera"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{"host_capabilities":["native_proc"]},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
+        \\{"package":{"venom_id":"camera","kind":"camera","version":"1","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{"host_capabilities":["native_proc"]},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{},"schema":{}}}
     );
     defer allocator.free(installed);
 
@@ -9007,22 +9014,22 @@ test "acheron_control_plane: platform-only node upsert revalidates existing veno
     try std.testing.expectError(ControlPlaneError.VenomPackageRequirementsUnmet, plane.nodeVenomUpsert(platform_only_req));
 }
 
-test "acheron_control_plane: worker venom instantiation requires package dependencies" {
+test "acheron_control_plane: runtime venom instantiation requires package dependencies" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
     const installed = try plane.installVenomPackage(
-        \\{"package":{"venom_id":"scratchpad","kind":"memory_ext","version":"1","categories":["memory"],"hosts":["worker"],"projection_modes":["worker_private"],"requirements":{"venoms":["memory"]},"capabilities":{"invoke":true},"ops":{"model":"filesystem_loopback"},"runtime":{"type":"external_worker"},"permissions":{},"schema":{}}}
+        \\{"package":{"venom_id":"scratchpad","kind":"memory_ext","version":"1","categories":["memory"],"host_roles":["client"],"binding_scopes":["agent"],"runtime_kind":"native","requirements":{"venoms":["memory"]},"capabilities":{"invoke":true},"ops":{"model":"filesystem_loopback"},"runtime":{"type":"external_runtime"},"permissions":{},"schema":{}}}
     );
     defer allocator.free(installed);
 
     try std.testing.expectError(
         ControlPlaneError.VenomPackageRequirementsUnmet,
-        plane.validateWorkerVenomInstantiation(&.{"scratchpad"}),
+        plane.validateRuntimeVenomInstantiation(&.{"scratchpad"}),
     );
 
-    try plane.validateWorkerVenomInstantiation(&.{ "memory", "scratchpad" });
+    try plane.validateRuntimeVenomInstantiation(&.{ "memory", "scratchpad" });
 }
 
 test "acheron_control_plane: venom package install list get remove" {
@@ -9031,7 +9038,7 @@ test "acheron_control_plane: venom package install list get remove" {
     defer plane.deinit();
 
     const install_req =
-        \\{"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","categories":["camera","edge"],"hosts":["node"],"projection_modes":["node_export"],"requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"},"help_md":"Camera package"}}
+        \\{"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","categories":["camera","edge"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"},"help_md":"Camera package"}}
     ;
     const installed = try plane.installVenomPackage(install_req);
     defer allocator.free(installed);
@@ -9039,7 +9046,7 @@ test "acheron_control_plane: venom package install list get remove" {
 
     const listed = try plane.listVenomPackages();
     defer allocator.free(listed);
-    try std.testing.expect(std.mem.indexOf(u8, listed, "\"venom_id\":\"venom_packages\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"venom_id\":\"packages\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"venom_id\":\"camera_pkg\"") != null);
 
     const fetched = try plane.getVenomPackage("{\"venom_id\":\"camera_pkg\"}");
@@ -9067,7 +9074,7 @@ test "acheron_control_plane: venom package persistence restores installed regist
         var plane = ControlPlane.initWithPersistence(allocator, dir, "control-plane.db");
         defer plane.deinit();
         const installed = try plane.installVenomPackage(
-            \\{"package":{"venom_id":"package_persist","kind":"registry_test","version":"3","categories":["test"],"hosts":["spiderweb"],"projection_modes":["host_local"],"requirements":{},"capabilities":{},"ops":{},"runtime":{},"permissions":{},"schema":{}}}
+            \\{"package":{"venom_id":"package_persist","kind":"registry_test","version":"3","categories":["test"],"host_roles":["spiderweb"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{},"capabilities":{},"ops":{},"runtime":{},"permissions":{},"schema":{}}}
         );
         defer allocator.free(installed);
         try std.testing.expect(std.mem.indexOf(u8, installed, "\"venom_id\":\"package_persist\"") != null);

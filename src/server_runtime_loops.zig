@@ -1,11 +1,11 @@
 const std = @import("std");
 
-pub fn reconcileWorkerMain(runtime_registry: anytype) void {
-    runtime_registry.runReconcileWorkerLoop();
+pub fn reconcileLoopMain(runtime_registry: anytype) void {
+    runtime_registry.runReconcileLoop();
 }
 
-pub fn servicePresenceWorkerMain(runtime_registry: anytype) void {
-    runtime_registry.runServicePresenceWorkerLoop();
+pub fn servicePresenceLoopMain(runtime_registry: anytype) void {
+    runtime_registry.runServicePresenceLoop();
 }
 
 pub fn spawnRuntimeWarmupThread(

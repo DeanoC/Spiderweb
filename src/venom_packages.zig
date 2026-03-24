@@ -64,15 +64,15 @@ const builtin_packages = [_]BuiltinPackageSpec{
     .{ .venom_id = "packages", .kind = "registry", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/packages", .categories_json = "[\"venoms\",\"registry\"]", .help_md = "Registry of available Venom packages and install/remove operations." },
     .{ .venom_id = "events", .kind = "events", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/events", .categories_json = "[\"events\",\"coordination\"]", .help_md = "Filesystem-native waits and event delivery." },
     .{ .venom_id = "home", .kind = "home", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/home", .categories_json = "[\"agent\",\"storage\"]", .help_md = "Provision durable per-agent workspace homes." },
-    .{ .venom_id = "runtimes", .kind = "workers", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/runtimes", .categories_json = "[\"worker\",\"registration\"]", .help_md = "Register and maintain worker-private venom instances." },
+    .{ .venom_id = "runtimes", .kind = "runtimes", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/runtimes", .categories_json = "[\"runtime\",\"registration\"]", .help_md = "Register and maintain runtime-private venom instances." },
     .{ .venom_id = "search_code", .kind = "search_code", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/search_code", .categories_json = "[\"search\",\"code\"]", .help_md = "Workspace code search service." },
     .{ .venom_id = "fs", .kind = "fs", .default_host_role = .node, .binding_scopes = node_scope, .runtime_kind = .native, .categories_json = "[\"filesystem\",\"node\"]", .runtime_json = "{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}", .schema_json = "{\"model\":\"namespace-mount\"}", .help_md = "Filesystem export surfaced by a Spiderweb node." },
     .{ .venom_id = "terminal", .kind = "terminal", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/terminal", .categories_json = "[\"terminal\",\"exec\"]", .help_md = "Command execution service with Linux-only interactive terminal sessions." },
     .{ .venom_id = "mounts", .kind = "mounts", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/mounts", .categories_json = "[\"workspace\",\"mounts\"]", .help_md = "Workspace mounts and binds management." },
     .{ .venom_id = "workspaces", .kind = "workspaces", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/workspaces", .categories_json = "[\"workspace\",\"control\"]", .help_md = "Workspace control-plane management service." },
     .{ .venom_id = "git", .kind = "git", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/git", .categories_json = "[\"developer\",\"scm\"]", .requirements_json = "{\"host_capabilities\":[\"local_fs_export\"]}", .help_md = "Git checkout and diff operations." },
-    .{ .venom_id = "memory", .kind = "memory", .default_host_role = .client, .binding_scopes = agent_scope, .categories_json = "[\"memory\",\"agent_private\"]", .capabilities_json = "{\"invoke\":true,\"operations\":[\"memory_create\",\"memory_load\",\"memory_versions\",\"memory_mutate\",\"memory_evict\",\"memory_search\"],\"discoverable\":true,\"worker_owned\":true}", .ops_json = "{\"model\":\"filesystem_loopback\",\"invoke\":\"control/invoke.json\",\"transport\":\"filesystem\",\"paths\":{\"create\":\"control/create.json\",\"load\":\"control/load.json\",\"versions\":\"control/versions.json\",\"mutate\":\"control/mutate.json\",\"evict\":\"control/evict.json\",\"search\":\"control/search.json\"},\"operations\":{\"create\":\"create\",\"load\":\"load\",\"versions\":\"versions\",\"mutate\":\"mutate\",\"evict\":\"evict\",\"search\":\"search\"}}", .runtime_json = "{\"type\":\"external_worker\",\"transport\":\"filesystem_loopback\",\"component\":\"spider_monkey\"}", .permissions_json = "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"worker\"}", .schema_json = "{\"model\":\"worker-loopback-memory-v1\"}", .help_md = "Worker-private memory service." },
-    .{ .venom_id = "sub_brains", .kind = "sub_brains", .default_host_role = .client, .binding_scopes = agent_scope, .categories_json = "[\"agent_private\",\"sub_brains\"]", .capabilities_json = "{\"invoke\":true,\"operations\":[\"sub_brains_list\",\"sub_brains_upsert\",\"sub_brains_delete\"],\"discoverable\":true,\"worker_owned\":true}", .ops_json = "{\"model\":\"filesystem_loopback\",\"invoke\":\"control/invoke.json\",\"transport\":\"filesystem\",\"paths\":{\"list\":\"control/list.json\",\"upsert\":\"control/upsert.json\",\"delete\":\"control/delete.json\"},\"operations\":{\"list\":\"list\",\"upsert\":\"upsert\",\"delete\":\"delete\"}}", .runtime_json = "{\"type\":\"external_worker\",\"transport\":\"filesystem_loopback\",\"component\":\"spider_monkey\"}", .permissions_json = "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"worker\"}", .schema_json = "{\"model\":\"worker-loopback-sub-brains-v1\"}", .help_md = "Worker-private sub-brain service." },
+    .{ .venom_id = "memory", .kind = "memory", .default_host_role = .client, .binding_scopes = agent_scope, .categories_json = "[\"memory\",\"agent_private\"]", .capabilities_json = "{\"invoke\":true,\"operations\":[\"memory_create\",\"memory_load\",\"memory_versions\",\"memory_mutate\",\"memory_evict\",\"memory_search\"],\"discoverable\":true,\"runtime_owned\":true}", .ops_json = "{\"model\":\"filesystem_loopback\",\"invoke\":\"control/invoke.json\",\"transport\":\"filesystem\",\"paths\":{\"create\":\"control/create.json\",\"load\":\"control/load.json\",\"versions\":\"control/versions.json\",\"mutate\":\"control/mutate.json\",\"evict\":\"control/evict.json\",\"search\":\"control/search.json\"},\"operations\":{\"create\":\"create\",\"load\":\"load\",\"versions\":\"versions\",\"mutate\":\"mutate\",\"evict\":\"evict\",\"search\":\"search\"}}", .runtime_json = "{\"type\":\"external_runtime\",\"transport\":\"filesystem_loopback\",\"component\":\"spider_monkey\"}", .permissions_json = "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"runtime\"}", .schema_json = "{\"model\":\"runtime-loopback-memory-v1\"}", .help_md = "Runtime-private memory service." },
+    .{ .venom_id = "sub_brains", .kind = "sub_brains", .default_host_role = .client, .binding_scopes = agent_scope, .categories_json = "[\"agent_private\",\"sub_brains\"]", .capabilities_json = "{\"invoke\":true,\"operations\":[\"sub_brains_list\",\"sub_brains_upsert\",\"sub_brains_delete\"],\"discoverable\":true,\"runtime_owned\":true}", .ops_json = "{\"model\":\"filesystem_loopback\",\"invoke\":\"control/invoke.json\",\"transport\":\"filesystem\",\"paths\":{\"list\":\"control/list.json\",\"upsert\":\"control/upsert.json\",\"delete\":\"control/delete.json\"},\"operations\":{\"list\":\"list\",\"upsert\":\"upsert\",\"delete\":\"delete\"}}", .runtime_json = "{\"type\":\"external_runtime\",\"transport\":\"filesystem_loopback\",\"component\":\"spider_monkey\"}", .permissions_json = "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"runtime\"}", .schema_json = "{\"model\":\"runtime-loopback-sub-brains-v1\"}", .help_md = "Runtime-private sub-brain service." },
 };
 
 pub fn allBuiltinPackages() []const BuiltinPackageSpec {
@@ -80,17 +80,10 @@ pub fn allBuiltinPackages() []const BuiltinPackageSpec {
 }
 
 pub fn findBuiltinPackage(venom_id: []const u8) ?BuiltinPackageSpec {
-    const normalized_id = normalizeBuiltinPackageId(venom_id);
     for (builtin_packages) |spec| {
-        if (std.mem.eql(u8, spec.venom_id, normalized_id)) return spec;
+        if (std.mem.eql(u8, spec.venom_id, venom_id)) return spec;
     }
     return null;
-}
-
-fn normalizeBuiltinPackageId(venom_id: []const u8) []const u8 {
-    if (std.mem.eql(u8, venom_id, "venom_packages")) return "packages";
-    if (std.mem.eql(u8, venom_id, "workers")) return "runtimes";
-    return venom_id;
 }
 
 pub fn resolveBuiltinTargetPath(venom_id: []const u8, host_role: venom_model.HostRole) ?[]const u8 {
@@ -150,8 +143,9 @@ pub fn cloneBuiltinPackage(
         .kind = try allocator.dupe(u8, spec.kind),
         .version = try allocator.dupe(u8, spec.version),
         .categories_json = try allocator.dupe(u8, spec.categories_json),
-        .hosts_json = try allocator.dupe(u8, spec.hostRolesJson()),
-        .projection_modes_json = try allocator.dupe(u8, spec.legacyProjectionModesJson()),
+        .host_roles_json = try allocator.dupe(u8, spec.hostRolesJson()),
+        .binding_scopes_json = try allocator.dupe(u8, spec.bindingScopesJson()),
+        .runtime_kind = spec.runtime_kind,
         .requirements_json = try allocator.dupe(u8, spec.requirements_json),
         .capabilities_json = try allocator.dupe(u8, spec.capabilities_json),
         .ops_json = try allocator.dupe(u8, spec.ops_json),
@@ -173,8 +167,6 @@ fn appendPackageJson(
     defer allocator.free(escaped_kind);
     const escaped_version = try jsonEscape(allocator, spec.version);
     defer allocator.free(escaped_version);
-    const escaped_provider_scope = try jsonEscape(allocator, spec.legacyDefaultProviderScope());
-    defer allocator.free(escaped_provider_scope);
     const target_path_json = if (spec.default_target_path) |value| blk: {
         const escaped = try jsonEscape(allocator, value);
         defer allocator.free(escaped);
@@ -183,7 +175,7 @@ fn appendPackageJson(
     defer allocator.free(target_path_json);
 
     try out.writer(allocator).print(
-        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"hosts\":{s},\"binding_scopes\":{s},\"projection_modes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"default_host_role\":\"{s}\",\"default_provider_scope\":\"{s}\",\"default_target_path\":{s}",
+        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"default_host_role\":\"{s}\",\"default_target_path\":{s}",
         .{
             escaped_venom_id,
             escaped_venom_id,
@@ -191,9 +183,7 @@ fn appendPackageJson(
             escaped_version,
             spec.categories_json,
             spec.hostRolesJson(),
-            spec.hostRolesJson(),
             spec.bindingScopesJson(),
-            spec.legacyProjectionModesJson(),
             spec.runtime_kind.asString(),
             spec.requirements_json,
             spec.capabilities_json,
@@ -202,7 +192,6 @@ fn appendPackageJson(
             spec.permissions_json,
             spec.schema_json,
             spec.default_host_role.asString(),
-            escaped_provider_scope,
             target_path_json,
         },
     );
@@ -247,9 +236,7 @@ test "venom_packages: builtins render through shared package parser" {
 
     try std.testing.expect(packages.items.len >= 5);
     try std.testing.expect(findBuiltinPackage("runtimes") != null);
-    try std.testing.expect(findBuiltinPackage("workers") != null);
     try std.testing.expect(findBuiltinPackage("packages") != null);
-    try std.testing.expect(findBuiltinPackage("venom_packages") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"venom_id\":\"memory\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"package_id\":\"terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"venom_id\":\"packages\"") != null);

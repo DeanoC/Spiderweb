@@ -20,7 +20,7 @@ pub const ParsedShellExecResult = struct {
 };
 
 pub fn seedNamespace(self: anytype, git_dir: u32) !void {
-    return seedNamespaceAt(self, git_dir, "/global/git");
+    return seedNamespaceAt(self, git_dir, "/.spiderweb/_compat/global/git");
 }
 
 pub fn seedNamespaceAt(self: anytype, git_dir: u32, base_path: []const u8) !void {

@@ -269,9 +269,9 @@ fn signalEventTypeName(kind: SignalEventType) []const u8 {
 
 fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
     inline for ([_][]const u8{
-        "/global/events/sources/agent.json",
-        "/nodes/local/venoms/events/sources/agent.json",
-        "/services/events/sources/agent.json",
+        "/.spiderweb/venoms/events/sources/agent.json",
+        "/nodes/local/fs/.spiderweb/venoms/events/sources/agent.json",
+        "/.spiderweb/_compat/global/events/sources/agent.json",
     }) |candidate| {
         if (std.mem.eql(u8, path, candidate) or std.mem.endsWith(u8, path, candidate)) {
             return .{
@@ -281,9 +281,9 @@ fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
         }
     }
     inline for ([_][]const u8{
-        "/global/events/sources/hook.json",
-        "/nodes/local/venoms/events/sources/hook.json",
-        "/services/events/sources/hook.json",
+        "/.spiderweb/venoms/events/sources/hook.json",
+        "/nodes/local/fs/.spiderweb/venoms/events/sources/hook.json",
+        "/.spiderweb/_compat/global/events/sources/hook.json",
     }) |candidate| {
         if (std.mem.eql(u8, path, candidate) or std.mem.endsWith(u8, path, candidate)) {
             return .{
@@ -293,9 +293,9 @@ fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
         }
     }
     inline for ([_][]const u8{
-        "/global/events/sources/user.json",
-        "/nodes/local/venoms/events/sources/user.json",
-        "/services/events/sources/user.json",
+        "/.spiderweb/venoms/events/sources/user.json",
+        "/nodes/local/fs/.spiderweb/venoms/events/sources/user.json",
+        "/.spiderweb/_compat/global/events/sources/user.json",
     }) |candidate| {
         if (std.mem.eql(u8, path, candidate) or std.mem.endsWith(u8, path, candidate)) {
             return .{
@@ -305,9 +305,9 @@ fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
         }
     }
     inline for ([_][]const u8{
-        "/global/events/sources/agent/",
-        "/nodes/local/venoms/events/sources/agent/",
-        "/services/events/sources/agent/",
+        "/.spiderweb/venoms/events/sources/agent/",
+        "/nodes/local/fs/.spiderweb/venoms/events/sources/agent/",
+        "/.spiderweb/_compat/global/events/sources/agent/",
     }) |marker| {
         if (std.mem.indexOf(u8, path, marker)) |prefix_index| {
             const token = path[prefix_index + marker.len ..];
@@ -321,9 +321,9 @@ fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
         }
     }
     inline for ([_][]const u8{
-        "/global/events/sources/hook/",
-        "/nodes/local/venoms/events/sources/hook/",
-        "/services/events/sources/hook/",
+        "/.spiderweb/venoms/events/sources/hook/",
+        "/nodes/local/fs/.spiderweb/venoms/events/sources/hook/",
+        "/.spiderweb/_compat/global/events/sources/hook/",
     }) |marker| {
         if (std.mem.indexOf(u8, path, marker)) |prefix_index| {
             const token = path[prefix_index + marker.len ..];
@@ -337,9 +337,9 @@ fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
         }
     }
     inline for ([_][]const u8{
-        "/global/events/sources/user/",
-        "/nodes/local/venoms/events/sources/user/",
-        "/services/events/sources/user/",
+        "/.spiderweb/venoms/events/sources/user/",
+        "/nodes/local/fs/.spiderweb/venoms/events/sources/user/",
+        "/.spiderweb/_compat/global/events/sources/user/",
     }) |marker| {
         if (std.mem.indexOf(u8, path, marker)) |prefix_index| {
             const token = path[prefix_index + marker.len ..];
@@ -353,9 +353,9 @@ fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
         }
     }
     inline for ([_][]const u8{
-        "/global/events/sources/time/after/",
-        "/nodes/local/venoms/events/sources/time/after/",
-        "/services/events/sources/time/after/",
+        "/.spiderweb/venoms/events/sources/time/after/",
+        "/nodes/local/fs/.spiderweb/venoms/events/sources/time/after/",
+        "/.spiderweb/_compat/global/events/sources/time/after/",
     }) |marker| {
         if (std.mem.indexOf(u8, path, marker)) |prefix_index| {
             const token = path[prefix_index + marker.len ..];
@@ -369,9 +369,9 @@ fn parseWaitSourcePath(self: anytype, path: []const u8) !WaitSource {
         }
     }
     inline for ([_][]const u8{
-        "/global/events/sources/time/at/",
-        "/nodes/local/venoms/events/sources/time/at/",
-        "/services/events/sources/time/at/",
+        "/.spiderweb/venoms/events/sources/time/at/",
+        "/nodes/local/fs/.spiderweb/venoms/events/sources/time/at/",
+        "/.spiderweb/_compat/global/events/sources/time/at/",
     }) |marker| {
         if (std.mem.indexOf(u8, path, marker)) |prefix_index| {
             const token = path[prefix_index + marker.len ..];
@@ -483,17 +483,17 @@ fn buildSignalCandidate(self: anytype, source: WaitSource, source_index: usize) 
     const event = selected.?;
     const event_path = switch (source.kind) {
         .agent_signal => if (event.parameter) |value|
-            try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/events/sources/agent/{s}.json", .{value})
+            try std.fmt.allocPrint(self.allocator, "/nodes/local/fs/.spiderweb/venoms/events/sources/agent/{s}.json", .{value})
         else
-            try self.allocator.dupe(u8, "/nodes/local/venoms/events/sources/agent.json"),
+            try self.allocator.dupe(u8, "/nodes/local/fs/.spiderweb/venoms/events/sources/agent.json"),
         .hook_signal => if (event.parameter) |value|
-            try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/events/sources/hook/{s}.json", .{value})
+            try std.fmt.allocPrint(self.allocator, "/nodes/local/fs/.spiderweb/venoms/events/sources/hook/{s}.json", .{value})
         else
-            try self.allocator.dupe(u8, "/nodes/local/venoms/events/sources/hook.json"),
+            try self.allocator.dupe(u8, "/nodes/local/fs/.spiderweb/venoms/events/sources/hook.json"),
         .user_signal => if (event.parameter) |value|
-            try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/events/sources/user/{s}.json", .{value})
+            try std.fmt.allocPrint(self.allocator, "/nodes/local/fs/.spiderweb/venoms/events/sources/user/{s}.json", .{value})
         else
-            try self.allocator.dupe(u8, "/nodes/local/venoms/events/sources/user.json"),
+            try self.allocator.dupe(u8, "/nodes/local/fs/.spiderweb/venoms/events/sources/user.json"),
         else => unreachable,
     };
     defer self.allocator.free(event_path);

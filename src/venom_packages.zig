@@ -61,9 +61,7 @@ const agent_scope = &.{venom_model.BindingScope.agent};
 const node_scope = &.{venom_model.BindingScope.node};
 
 const builtin_packages = [_]BuiltinPackageSpec{
-    .{ .venom_id = "library", .kind = "library", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/library", .categories_json = "[\"docs\",\"discovery\"]", .help_md = "Workspace library and topic discovery." },
     .{ .venom_id = "packages", .kind = "registry", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/packages", .categories_json = "[\"venoms\",\"registry\"]", .help_md = "Registry of available Venom packages and install/remove operations." },
-    .{ .venom_id = "events", .kind = "events", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/events", .categories_json = "[\"events\",\"coordination\"]", .help_md = "Filesystem-native waits and event delivery." },
     .{ .venom_id = "home", .kind = "home", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/home", .categories_json = "[\"agent\",\"storage\"]", .help_md = "Provision durable per-agent workspace homes." },
     .{ .venom_id = "runtimes", .kind = "runtimes", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/runtimes", .categories_json = "[\"runtime\",\"registration\"]", .help_md = "Register and maintain runtime-private venom instances." },
     .{ .venom_id = "search_code", .kind = "search_code", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/search_code", .categories_json = "[\"search\",\"code\"]", .help_md = "Workspace code search service." },

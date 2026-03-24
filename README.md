@@ -4,15 +4,18 @@
 [![Zig](https://img.shields.io/badge/Zig-0.15.0-orange.svg)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Spiderweb is a **workspace host + distributed RPC filesystem** for all AI agents. It provides the workspace, virtual filesystem, nodes, venoms (applications, tools and services), and control plane. The agent process itself lives outside Spiderweb and uses the mounted workspace as its contract.
+Spiderweb is a **workspace host + distributed RPC filesystem** for AI agents. It provides the mounted workspace, nodes, a small public venom set, and the control plane. The agent process itself lives outside Spiderweb and uses the mounted workspace as its contract.
 
 Built in Zig. The Spiderweb workspace host runs on Linux and macOS. The standalone `spiderweb-fs-mount` client has real local mount backends on Linux, Windows, and macOS. On macOS, `--mount-backend auto` now prefers the native `FSKit` backend under `platform/macos` when it is installed and ready, while `macFUSE` remains the explicit fallback. The native path uses a sample-derived pure Swift app/extension runtime with timeout/fail-fast protection, browse/read support across the namespace, and read-write support on mounted export paths such as `/nodes/local/fs`.
 
 ## Vision
 
-Spiderweb’s goal is to make agent systems feel like they are navigating a filesystem instead of stitching together bespoke APIs. The current external-agent contract centers on files, mounts, worker registration, events, and a small core service set projected into one namespace so agents can discover and use them by path.
+Spiderweb’s goal is to make agent systems feel like they are navigating a filesystem instead of stitching together bespoke APIs. The current external-agent contract centers on the mounted workspace plus three canonical roots:
+- `/.spiderweb/control/*` for workspace composition and runtime/package control
+- `/.spiderweb/catalog/*` for discovery and metadata
+- `/.spiderweb/venoms/{terminal,git,search_code}` for public capabilities
 
-In short: **Spiderweb hosts the namespace; workers operate through it**.
+In short: **Spiderweb hosts the namespace; external runtimes operate through it**.
 
 If that resonates, start with:
 - `docs/overview.md`
@@ -87,7 +90,7 @@ On macOS:
 - if a file has already been seen through the mount and is then edited directly on the underlying host path, the mounted view may continue to serve stale data for that file until it is reopened or the mount is remounted; mount-local workflows are unaffected
 
 - `--workspace-url <ws-url>` keeps the existing routed `/fs` mount mode.
-- `--namespace-url <ws-url>` connects to the main Spiderweb websocket, attaches an Acheron session root, and mounts the full namespace (`/agents`, `/nodes`, `/global`, `/services`).
+- `--namespace-url <ws-url>` connects to the main Spiderweb websocket and mounts the full namespace (`/.spiderweb`, `/agents`, `/nodes`).
 - In namespace mode, node-backed filesystem subtrees discovered from workspace topology still route through `/fs`, so regular file mutation keeps working under mounted workspace exports.
 - Session-only synthetic paths support `stat`, `readdir`, `read`, and writes to existing writable files. `create`, `unlink`, `mkdir`, `rmdir`, `rename`, and `truncate` return unsupported errors on those paths.
 
@@ -132,17 +135,22 @@ This flow has been smoke-tested with:
 ### What Spiderweb Owns
 
 - Workspace creation, topology, control-plane metadata, and workspace tokens.
-- Mounted namespace projection through Acheron / WorldFS.
-- Shared workspace services such as `/services/home`, `/services/mounts`, `/services/workers`, `/services/terminal`, `/services/git`, `/services/search_code`, `/services/library`, and `/services/events`.
+- Mounted namespace projection through the filesystem mount contract.
+- Control substrate under `/.spiderweb/control/*`:
+  - workspace home and mounts/binds
+  - package lifecycle
+  - runtime attach/heartbeat/detach
+- Discovery metadata under `/.spiderweb/catalog/*`
+- Public capability venoms under `/.spiderweb/venoms/{terminal,git,search_code}`
 - Durable per-agent home allocation inside a workspace.
-- Ephemeral worker-node projection and liveness tracking for attached workers.
-- Supervision of the internal `spiderweb-local-node` companion process that exports `/nodes/local/fs` plus the local `terminal`, `git`, and `search_code` services.
+- Ephemeral runtime-node projection and liveness tracking for attached external runtimes.
+- Supervision of the internal `spiderweb-local-node` companion process that exports `/nodes/local/fs` plus the local `terminal`, `git`, and `search_code` providers.
 
 ### What External Workers Own
 
 - Model/provider configuration and credentials.
-- Private loopback services such as worker-owned `memory` and `sub_brains`.
-- Task execution through the mounted workspace plus any worker-private loopback services they choose to expose.
+- Private loopback services such as runtime-owned `memory` and `sub_brains`.
+- Task execution through the mounted workspace plus any runtime-private loopback services they choose to expose.
 - Their own process lifecycle outside Spiderweb.
 
 ## Notes

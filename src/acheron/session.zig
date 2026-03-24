@@ -11322,6 +11322,161 @@ test "acheron_session: services terminal exec updates live service status and re
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "dGVybWluYWwtb2s=") != null);
 }
 
+test "acheron_session: canonical git venom status and diff_range update live result files" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/repo");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+    const repo_host_path = try std.fs.path.join(allocator, &.{ exports_dir, "repo" });
+    defer allocator.free(repo_host_path);
+    const readme_host_path = try std.fs.path.join(allocator, &.{ repo_host_path, "README.md" });
+    defer allocator.free(readme_host_path);
+
+    {
+        const init_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "init" });
+        defer allocator.free(init_stdout);
+        const config_name_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "config", "user.name", "Spider Tests" });
+        defer allocator.free(config_name_stdout);
+        const config_email_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "config", "user.email", "spider@example.com" });
+        defer allocator.free(config_email_stdout);
+        {
+            const readme_file = try std.fs.createFileAbsolute(readme_host_path, .{ .truncate = true });
+            defer readme_file.close();
+            try readme_file.writeAll("first\n");
+        }
+        const add_first_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "add", "README.md" });
+        defer allocator.free(add_first_stdout);
+        const commit_first_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "commit", "-m", "initial" });
+        defer allocator.free(commit_first_stdout);
+        {
+            const readme_file = try std.fs.createFileAbsolute(readme_host_path, .{ .truncate = true });
+            defer readme_file.close();
+            try readme_file.writeAll("second\n");
+        }
+        const add_second_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "add", "README.md" });
+        defer allocator.free(add_second_stdout);
+        const commit_second_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "commit", "-m", "second" });
+        defer allocator.free(commit_second_stdout);
+    }
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const workspace_json = try control_plane.createWorkspace(
+        "{\"name\":\"GitCanonSmoke\",\"vision\":\"Validate canonical git venom lifecycle\",\"template_id\":\"dev\"}",
+    );
+    defer allocator.free(workspace_json);
+
+    var parsed_workspace = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed_workspace.deinit();
+    const workspace_id = parsed_workspace.value.object.get("workspace_id").?.string;
+    const workspace_token = parsed_workspace.value.object.get("workspace_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+        },
+    );
+    defer session.deinit();
+
+    try protocolWriteFile(
+        &session,
+        allocator,
+        520,
+        521,
+        &.{ ".spiderweb", "venoms", "git", "control", "status.json" },
+        "{\"checkout_path\":\"/nodes/local/fs/repo\",\"base_ref\":\"HEAD~1\"}",
+        1220,
+    );
+
+    const git_status = try protocolReadFile(
+        &session,
+        allocator,
+        522,
+        523,
+        &.{ ".spiderweb", "venoms", "git", "status.json" },
+        1225,
+    );
+    defer allocator.free(git_status);
+    try std.testing.expect(std.mem.indexOf(u8, git_status, "\"state\":\"done\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status, "\"tool\":\"git_status\"") != null);
+
+    const git_status_result = try protocolReadFile(
+        &session,
+        allocator,
+        524,
+        525,
+        &.{ ".spiderweb", "venoms", "git", "result.json" },
+        1230,
+    );
+    defer allocator.free(git_status_result);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"operation\":\"status\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"checkout_path\":\"/nodes/local/fs/repo\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"base_ref\":\"HEAD~1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"changed_files\":[\"README.md\"]") != null);
+
+    try protocolWriteFile(
+        &session,
+        allocator,
+        526,
+        527,
+        &.{ ".spiderweb", "venoms", "git", "control", "diff_range.json" },
+        "{\"checkout_path\":\"/nodes/local/fs/repo\",\"base_ref\":\"HEAD~1\",\"head_ref\":\"HEAD\",\"symmetric\":false}",
+        1235,
+    );
+
+    const git_diff_status = try protocolReadFile(
+        &session,
+        allocator,
+        528,
+        529,
+        &.{ ".spiderweb", "venoms", "git", "status.json" },
+        1240,
+    );
+    defer allocator.free(git_diff_status);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_status, "\"state\":\"done\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_status, "\"tool\":\"git_diff_range\"") != null);
+
+    const git_diff_result = try protocolReadFile(
+        &session,
+        allocator,
+        530,
+        531,
+        &.{ ".spiderweb", "venoms", "git", "result.json" },
+        1245,
+    );
+    defer allocator.free(git_diff_result);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"operation\":\"diff_range\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"base_ref\":\"HEAD~1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"head_ref\":\"HEAD\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"symmetric\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"changed_files\":[\"README.md\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "README.md") != null);
+}
+
 test "acheron_session: local fs export rejects symlink targets outside export root" {
     const allocator = std.testing.allocator;
 

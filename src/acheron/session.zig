@@ -8306,6 +8306,10 @@ test "acheron_session: preferred venom paths use canonical workspace bindings wh
     defer allocator.free(bound_git_path);
     try std.testing.expectEqualStrings("/.spiderweb/venoms/git/control/invoke.json", bound_git_path);
 
+    const bound_search_code_path = try bound_session.resolvePreferredServicePath("search_code", "/control/invoke.json");
+    defer allocator.free(bound_search_code_path);
+    try std.testing.expectEqualStrings("/.spiderweb/venoms/search_code/control/invoke.json", bound_search_code_path);
+
     var unbound_session = try Session.initWithOptions(
         allocator,
         runtime_handle,

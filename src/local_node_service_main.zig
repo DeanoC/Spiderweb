@@ -144,10 +144,15 @@ fn handleSearchCodeInvocation(
         jsonObjectOptionalString(args_obj, "pattern") orelse
         return buildWrappedFailureJson(allocator, "invalid_payload", "missing query");
     const path_relative = if (jsonObjectOptionalString(args_obj, "path")) |value|
-        try workspacePathToRelative(allocator, value)
+        workspacePathToRelative(allocator, value) catch
+            return buildWrappedFailureJson(allocator, "invalid_payload", "path must stay within /nodes/local/fs")
     else
         try allocator.dupe(u8, ".");
     defer allocator.free(path_relative);
+    const case_sensitive = jsonObjectStrictOptionalBool(args_obj, "case_sensitive") catch
+        return buildWrappedFailureJson(allocator, "invalid_payload", "case_sensitive must be boolean");
+    const max_results = jsonObjectStrictOptionalU64(args_obj, "max_results") catch
+        return buildWrappedFailureJson(allocator, "invalid_payload", "max_results must be non-negative integer");
 
     var result = try withExportRootToolResult(
         allocator,
@@ -156,8 +161,8 @@ fn handleSearchCodeInvocation(
         .{
             .query = query,
             .path_relative = path_relative,
-            .case_sensitive = jsonObjectOptionalBool(args_obj, "case_sensitive") orelse false,
-            .max_results = jsonObjectOptionalU64(args_obj, "max_results") orelse 200,
+            .case_sensitive = case_sensitive orelse false,
+            .max_results = max_results orelse 200,
         },
     );
     defer result.deinit(allocator);
@@ -592,6 +597,24 @@ fn jsonObjectOptionalU64(obj: std.json.ObjectMap, key: []const u8) ?u64 {
     return @intCast(value.integer);
 }
 
+fn jsonObjectStrictOptionalBool(obj: std.json.ObjectMap, key: []const u8) !?bool {
+    const value = obj.get(key) orelse return null;
+    return switch (value) {
+        .bool => value.bool,
+        .null => null,
+        else => error.InvalidPayload,
+    };
+}
+
+fn jsonObjectStrictOptionalU64(obj: std.json.ObjectMap, key: []const u8) !?u64 {
+    const value = obj.get(key) orelse return null;
+    return switch (value) {
+        .integer => if (value.integer < 0) error.InvalidPayload else @intCast(value.integer),
+        .null => null,
+        else => error.InvalidPayload,
+    };
+}
+
 fn toolErrorCodeName(code: tool_registry.ToolErrorCode) []const u8 {
     return @tagName(code);
 }
@@ -607,4 +630,67 @@ test "local_node_service_main: workspace-relative paths reject parent traversal"
 test "local_node_service_main: slash-terminated export roots still match child paths" {
     try std.testing.expect(pathMatchesPrefixBoundary("/workspace/repo", "/workspace/"));
     try std.testing.expect(pathMatchesPrefixBoundary("/nodes/local/fs/repo", "/nodes/local/fs/"));
+}
+
+test "local_node_service_main: search_code invocation returns wrapped matches" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("export/src");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "export/src/example.txt",
+        .data = "alpha\nTODO: search me\nomega\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const export_root = try std.fs.path.join(allocator, &.{ root, "export" });
+    defer allocator.free(export_root);
+
+    const result_json = try handleSearchCodeInvocation(
+        allocator,
+        export_root,
+        "{\"query\":\"TODO\",\"path\":\"/nodes/local/fs/src\",\"case_sensitive\":true,\"max_results\":10}",
+    );
+    defer allocator.free(result_json);
+
+    try std.testing.expect(std.mem.indexOf(u8, result_json, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_json, "\"path\":\"src\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_json, "\"query\":\"TODO\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_json, "\"count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_json, "example.txt:2:TODO: search me") != null);
+}
+
+test "local_node_service_main: search_code invocation rejects invalid payload fields" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("export");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const export_root = try std.fs.path.join(allocator, &.{ root, "export" });
+    defer allocator.free(export_root);
+
+    const bad_path_result = try handleSearchCodeInvocation(
+        allocator,
+        export_root,
+        "{\"query\":\"TODO\",\"path\":\"/nodes/local/fs/../outside\"}",
+    );
+    defer allocator.free(bad_path_result);
+    try std.testing.expect(std.mem.indexOf(u8, bad_path_result, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bad_path_result, "\"code\":\"invalid_payload\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bad_path_result, "path must stay within /nodes/local/fs") != null);
+
+    const bad_max_result = try handleSearchCodeInvocation(
+        allocator,
+        export_root,
+        "{\"query\":\"TODO\",\"max_results\":\"many\"}",
+    );
+    defer allocator.free(bad_max_result);
+    try std.testing.expect(std.mem.indexOf(u8, bad_max_result, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bad_max_result, "\"code\":\"invalid_payload\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bad_max_result, "max_results must be non-negative integer") != null);
 }

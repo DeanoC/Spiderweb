@@ -10,6 +10,8 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         try venom_packages.buildPackagesJson(session.allocator);
     defer session.allocator.free(raw_packages_json);
 
+    session.refreshDynamicDirectory(session.nodes_root_id) catch {};
+
     var parsed = try std.json.parseFromSlice(std.json.Value, session.allocator, raw_packages_json, .{});
     defer parsed.deinit();
     if (parsed.value != .array) return session.allocator.dupe(u8, "[]");

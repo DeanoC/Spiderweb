@@ -143,6 +143,36 @@ fn openFileForRead(path: []const u8) !std.fs.File {
     return std.fs.cwd().openFile(path, .{ .mode = .read_only });
 }
 
+fn containsPathSeparator(path: []const u8) bool {
+    if (std.mem.indexOfScalar(u8, path, std.fs.path.sep)) |_| return true;
+    if (builtin.os.tag == .windows) {
+        if (std.mem.indexOfScalar(u8, path, '/')) |_| return true;
+    }
+    return false;
+}
+
+fn resolveExecutableSourcePath(allocator: std.mem.Allocator, source_path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(source_path) or containsPathSeparator(source_path)) {
+        return allocator.dupe(u8, source_path);
+    }
+
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+
+    const path_value = env_map.get("PATH") orelse return allocator.dupe(u8, source_path);
+    const delimiter: u8 = if (builtin.os.tag == .windows) ';' else ':';
+    var path_it = std.mem.splitScalar(u8, path_value, delimiter);
+    while (path_it.next()) |entry| {
+        if (entry.len == 0) continue;
+        const candidate = try std.fs.path.join(allocator, &.{ entry, source_path });
+        errdefer allocator.free(candidate);
+        if (pathExists(candidate)) return candidate;
+        allocator.free(candidate);
+    }
+
+    return allocator.dupe(u8, source_path);
+}
+
 fn openOrCreateFileForWrite(path: []const u8) !std.fs.File {
     const parent = std.fs.path.dirname(path) orelse return error.InvalidPath;
     const base = std.fs.path.basename(path);
@@ -160,8 +190,11 @@ fn openOrCreateFileForWrite(path: []const u8) !std.fs.File {
     return dir.createFile(base, .{ .truncate = true });
 }
 
-fn stageExecutable(source_path: []const u8, staged_path: []const u8) !void {
-    var source_file = try openFileForRead(source_path);
+fn stageExecutable(allocator: std.mem.Allocator, source_path: []const u8, staged_path: []const u8) !void {
+    const resolved_source_path = try resolveExecutableSourcePath(allocator, source_path);
+    defer allocator.free(resolved_source_path);
+
+    var source_file = try openFileForRead(resolved_source_path);
     defer source_file.close();
 
     var staged_file = try openOrCreateFileForWrite(staged_path);
@@ -400,11 +433,11 @@ pub const LocalNodeSupervisor = struct {
 
         if (self.computer_driver_binary_path) |source_path| {
             const staged_path = self.staged_computer_driver_path orelse return error.InvalidArguments;
-            try stageExecutable(source_path, staged_path);
+            try stageExecutable(self.allocator, source_path, staged_path);
         }
         if (self.browser_driver_binary_path) |source_path| {
             const staged_path = self.staged_browser_driver_path orelse return error.InvalidArguments;
-            try stageExecutable(source_path, staged_path);
+            try stageExecutable(self.allocator, source_path, staged_path);
         }
     }
 

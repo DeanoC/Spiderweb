@@ -2029,6 +2029,10 @@ pub const Session = struct {
                 return;
             }
         }
+        self.clearProjectBindsByKind(.workspace_mount);
+        self.clearWorkspaceMountFsAuthTokens();
+        self.clearWorkspaceMountFsUrls();
+        self.clearWorkspaceMountProxyRoots();
         try self.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
         try self.materializeProjectBindPrefixDirectories();
         try self.refreshWorkspaceServiceDiscoveryFiles();
@@ -8905,6 +8909,75 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
     try std.testing.expectEqualStrings("/control/invoke.json", node_computer_proxy.remote_path);
 }
 
+test "acheron_session: long-lived sessions refresh explicit-bind packages after node publication" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const workspace_json = try control_plane.createWorkspace(
+        "{\"name\":\"DynamicMacCapabilities\",\"vision\":\"Refresh package discovery after node capability publication\"}",
+    );
+    defer allocator.free(workspace_json);
+
+    var parsed_workspace = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed_workspace.deinit();
+    const workspace_id = parsed_workspace.value.object.get("workspace_id").?.string;
+    const workspace_token = parsed_workspace.value.object.get("workspace_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const joined = try control_plane.ensureNode("dynamic-mac-capabilities", "", 60_000);
+    defer allocator.free(joined);
+    var parsed_node = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
+    defer parsed_node.deinit();
+    const node_id = parsed_node.value.object.get("node_id").?.string;
+    const node_secret = parsed_node.value.object.get("node_secret").?.string;
+
+    const upsert_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"macos\",\"arch\":\"arm64\",\"runtime_kind\":\"native\"}},\"venoms\":[" ++
+            "{{\"venom_id\":\"computer-main\",\"package_id\":\"computer\",\"kind\":\"computer\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{\"host_capabilities\":[\"macos_accessibility\",\"screen_capture\"]}},\"endpoints\":[\"/nodes/{s}/venoms/computer-main\"],\"mounts\":[{{\"mount_id\":\"computer-main\",\"mount_path\":\"/nodes/{s}/venoms/computer-main\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"observe\":true,\"act\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"computer-observe-act-v1\"}}}}," ++
+            "{{\"venom_id\":\"browser-main\",\"package_id\":\"browser\",\"kind\":\"browser\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{\"host_capabilities\":[\"managed_browser\"]}},\"endpoints\":[\"/nodes/{s}/venoms/browser-main\"],\"mounts\":[{{\"mount_id\":\"browser-main\",\"mount_path\":\"/nodes/{s}/venoms/browser-main\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"observe\":true,\"act\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"browser-observe-act-v1\"}}}}" ++
+            "]}}",
+        .{ node_id, node_secret, node_id, node_id, node_id, node_id },
+    );
+    defer allocator.free(upsert_req);
+    const upserted = try control_plane.nodeVenomUpsert(upsert_req);
+    defer allocator.free(upserted);
+
+    const packages_json = try session.buildCatalogPackagesJson();
+    defer allocator.free(packages_json);
+    try std.testing.expect(std.mem.indexOf(u8, packages_json, "\"package_id\":\"computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_json, "\"package_id\":\"browser\"") != null);
+
+    const providers_json = try session.buildCatalogProvidersJson();
+    defer allocator.free(providers_json);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json, "\"package_id\":\"computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json, "\"package_id\":\"browser\"") != null);
+}
+
 test "acheron_session: control substrate surfaces expose runtime and package operations canonically" {
     const allocator = std.testing.allocator;
 
@@ -9469,6 +9542,87 @@ test "acheron_session: workspace mount aliases still apply when the namespace pa
         try std.testing.expectEqualStrings(expected_target, bind.target_path);
     }
     try std.testing.expect(found_workspace_mount);
+}
+
+test "acheron_session: refreshWorkspaceProjectionFromStatus removes stale workspace mount aliases" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("workspace-remote", "ws://127.0.0.1:28895/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const project_up = try control_plane.workspaceUp(
+        "codex",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"StaleMountAliasRefresh\",\"vision\":\"Refresh should drop removed workspace mount aliases\",\"desired_mounts\":[{{\"mount_path\":\"/shared_data\",\"node_id\":\"{s}\",\"export_name\":\"shared\"}}]}}",
+            .{remote_node_id},
+        ),
+    );
+    defer allocator.free(project_up);
+
+    var parsed_project = try std.json.parseFromSlice(std.json.Value, allocator, project_up, .{});
+    defer parsed_project.deinit();
+    const project_id = parsed_project.value.object.get("project_id").?.string;
+    const project_token = parsed_project.value.object.get("project_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = project_id,
+            .project_token = project_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expect(session.workspace_mount_fs_auth_tokens.get(remote_node_id) != null);
+    try std.testing.expect(session.workspace_mount_fs_urls.get(remote_node_id) != null);
+
+    var found_workspace_mount = false;
+    for (session.workspace_binds.items) |bind| {
+        if (bind.kind != .workspace_mount) continue;
+        if (!std.mem.eql(u8, bind.bind_path, "/shared_data")) continue;
+        found_workspace_mount = true;
+    }
+    try std.testing.expect(found_workspace_mount);
+
+    try session.refreshWorkspaceProjectionFromStatus("{\"mounts\":[]}");
+
+    for (session.workspace_binds.items) |bind| {
+        try std.testing.expect(bind.kind != .workspace_mount);
+    }
+    try std.testing.expectEqual(@as(usize, 0), session.workspace_mount_fs_auth_tokens.count());
+    try std.testing.expectEqual(@as(usize, 0), session.workspace_mount_fs_urls.count());
+    try std.testing.expectEqual(@as(usize, 0), session.workspace_mount_proxy_roots.count());
 }
 
 test "acheron_session: bound venom proxy refresh ignores dot entries" {

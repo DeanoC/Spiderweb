@@ -28,6 +28,12 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         const version = getString(item.object, "version") orelse "1";
         const help_md = getString(item.object, "help_md");
         const runtime_kind = normalizedRuntimeKindFromObject(item.object);
+        const escaped_package_id = try unified.jsonEscape(session.allocator, package_id);
+        defer session.allocator.free(escaped_package_id);
+        const escaped_kind = try unified.jsonEscape(session.allocator, kind);
+        defer session.allocator.free(escaped_kind);
+        const escaped_version = try unified.jsonEscape(session.allocator, version);
+        defer session.allocator.free(escaped_version);
         const host_roles_json = try normalizedHostRolesJson(session.allocator, item.object.get("host_roles") orelse item.object.get("hosts"));
         defer session.allocator.free(host_roles_json);
         const binding_scopes_json = try normalizedBindingScopesJson(session.allocator, item.object.get("binding_scopes") orelse item.object.get("projection_modes"));
@@ -44,9 +50,9 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         try out.writer(session.allocator).print(
             "{{\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"help_md\":{s}}}",
             .{
-                package_id,
-                kind,
-                version,
+                escaped_package_id,
+                escaped_kind,
+                escaped_version,
                 host_roles_json,
                 binding_scopes_json,
                 runtime_kind.asString(),
@@ -249,7 +255,12 @@ fn normalizedHostRolesJson(allocator: std.mem.Allocator, maybe_hosts: ?std.json.
         if (hosts_value == .array) {
             for (hosts_value.array.items) |item| {
                 if (item != .string) continue;
-                const mapped = if (std.mem.eql(u8, item.string, "worker")) venom_model.HostRole.client else if (std.mem.eql(u8, item.string, "node")) venom_model.HostRole.node else venom_model.HostRole.spiderweb;
+                const mapped = if (std.mem.eql(u8, item.string, "worker") or std.mem.eql(u8, item.string, "client"))
+                    venom_model.HostRole.client
+                else if (std.mem.eql(u8, item.string, "node"))
+                    venom_model.HostRole.node
+                else
+                    venom_model.HostRole.spiderweb;
                 if (!first) try out.append(allocator, ',');
                 first = false;
                 try out.writer(allocator).print("\"{s}\"", .{mapped.asString()});

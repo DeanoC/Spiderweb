@@ -8777,6 +8777,9 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(providers_json != null);
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"package_id\":\"terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"runtime_kind\":\"native\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"install\":{\"installed\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"provider\":{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"policy\":") != null);
     try std.testing.expect(
         std.mem.indexOf(u8, providers_json.?, "\"host_role\":\"spiderweb\"") != null or
             std.mem.indexOf(u8, providers_json.?, "\"host_role\":\"node\"") != null,

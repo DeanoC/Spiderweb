@@ -19,6 +19,11 @@ pub const ParsedShellExecResult = struct {
     }
 };
 
+const GitOutputOutcome = union(enum) {
+    success: []u8,
+    failure_json: []u8,
+};
+
 pub fn seedNamespace(self: anytype, git_dir: u32) !void {
     return seedNamespaceAt(self, git_dir, "/.spiderweb/_compat/global/git");
 }
@@ -248,7 +253,7 @@ fn executeSyncCheckoutOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
 
     const git_dir_host = try std.fs.path.join(self.allocator, &.{ checkout_host_path, ".git" });
     defer self.allocator.free(git_dir_host);
-    const had_checkout = try pathExistsAsDirectory(git_dir_host);
+    const had_checkout = try pathExists(git_dir_host);
 
     if (had_checkout) {
         const dirty_command = try self.buildCliCommand("git", &.{ "-C", checkout_host_path, "status", "--porcelain" });
@@ -388,19 +393,26 @@ fn executeStatusOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
     const checkout_host_path = try self.resolveWorkspaceHostPath(checkout_path);
     defer self.allocator.free(checkout_host_path);
 
-    const head_sha = runGitCaptureStdout(self, checkout_host_path, &.{ "rev-parse", "HEAD" }, timeout_ms) catch |err| switch (err) {
-        error.InvalidPayload => return error.InvalidPayload,
-        else => return self.buildGitFailureResultJson(.status, "execution_failed", @errorName(err)),
+    if (try ensureGitCheckoutPresent(self, .status, checkout_host_path, checkout_path)) |failure_json| {
+        return failure_json;
+    }
+
+    const head_sha_outcome = try runGitCaptureStdoutOutcome(self, .status, checkout_host_path, &.{ "rev-parse", "HEAD" }, timeout_ms, "git_status_failed", "git rev-parse HEAD failed");
+    const head_sha = switch (head_sha_outcome) {
+        .success => |value| value,
+        .failure_json => |value| return value,
     };
     defer self.allocator.free(head_sha);
-    const branch_name = runGitCaptureStdout(self, checkout_host_path, &.{ "rev-parse", "--abbrev-ref", "HEAD" }, timeout_ms) catch |err| switch (err) {
-        error.InvalidPayload => return error.InvalidPayload,
-        else => return self.buildGitFailureResultJson(.status, "execution_failed", @errorName(err)),
+    const branch_name_outcome = try runGitCaptureStdoutOutcome(self, .status, checkout_host_path, &.{ "rev-parse", "--abbrev-ref", "HEAD" }, timeout_ms, "git_status_failed", "git rev-parse --abbrev-ref HEAD failed");
+    const branch_name = switch (branch_name_outcome) {
+        .success => |value| value,
+        .failure_json => |value| return value,
     };
     defer self.allocator.free(branch_name);
-    const status_short = runGitCaptureStdout(self, checkout_host_path, &.{ "status", "--short" }, timeout_ms) catch |err| switch (err) {
-        error.InvalidPayload => return error.InvalidPayload,
-        else => return self.buildGitFailureResultJson(.status, "execution_failed", @errorName(err)),
+    const status_short_outcome = try runGitCaptureStdoutOutcome(self, .status, checkout_host_path, &.{ "status", "--short" }, timeout_ms, "git_status_failed", "git status --short failed");
+    const status_short = switch (status_short_outcome) {
+        .success => |value| value,
+        .failure_json => |value| return value,
     };
     defer self.allocator.free(status_short);
 
@@ -412,10 +424,13 @@ fn executeStatusOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
         null;
     defer if (base_ref) |value| self.allocator.free(value);
 
-    const changed_files_json = if (base_ref) |value|
-        try runGitDiffNamesJson(self, checkout_host_path, value, "HEAD", true, timeout_ms)
-    else
-        try self.allocator.dupe(u8, "[]");
+    const changed_files_json = if (base_ref) |value| blk: {
+        const outcome = try runGitDiffNamesJsonOutcome(self, .status, checkout_host_path, value, "HEAD", true, timeout_ms, "git_status_failed", "git diff --name-only failed");
+        break :blk switch (outcome) {
+            .success => |json| json,
+            .failure_json => |failure_json| return failure_json,
+        };
+    } else try self.allocator.dupe(u8, "[]");
     defer self.allocator.free(changed_files_json);
 
     const detail = try buildStatusDetailJson(
@@ -440,6 +455,10 @@ fn executeDiffRangeOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
     defer self.allocator.free(checkout_host_path);
     const timeout_ms = (try jsonObjectOptionalU64(args_obj, "timeout_ms")) orelse 30_000;
 
+    if (try ensureGitCheckoutPresent(self, .diff_range, checkout_host_path, checkout_path)) |failure_json| {
+        return failure_json;
+    }
+
     const base_ref = if (extractOptionalStringByNames(args_obj, &[_][]const u8{"base_ref"})) |value|
         try self.allocator.dupe(u8, std.mem.trim(u8, value, " \t\r\n"))
     else if (extractOptionalStringByNames(args_obj, &[_][]const u8{"base_branch"})) |value|
@@ -450,9 +469,17 @@ fn executeDiffRangeOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
 
     const head_ref = std.mem.trim(u8, extractOptionalStringByNames(args_obj, &[_][]const u8{"head_ref"}) orelse "HEAD", " \t\r\n");
     const symmetric = (try jsonObjectOptionalBool(args_obj, "symmetric")) orelse true;
-    const changed_files_json = try runGitDiffNamesJson(self, checkout_host_path, base_ref, head_ref, symmetric, timeout_ms);
+    const changed_files_outcome = try runGitDiffNamesJsonOutcome(self, .diff_range, checkout_host_path, base_ref, head_ref, symmetric, timeout_ms, "git_diff_range_failed", "git diff --name-only failed");
+    const changed_files_json = switch (changed_files_outcome) {
+        .success => |json| json,
+        .failure_json => |failure_json| return failure_json,
+    };
     defer self.allocator.free(changed_files_json);
-    const diff_stat = try runGitDiffStat(self, checkout_host_path, base_ref, head_ref, symmetric, timeout_ms);
+    const diff_stat_outcome = try runGitDiffStatOutcome(self, .diff_range, checkout_host_path, base_ref, head_ref, symmetric, timeout_ms, "git_diff_range_failed", "git diff --stat failed");
+    const diff_stat = switch (diff_stat_outcome) {
+        .success => |value| value,
+        .failure_json => |failure_json| return failure_json,
+    };
     defer self.allocator.free(diff_stat);
 
     const detail = try buildDiffRangeDetailJson(
@@ -485,6 +512,52 @@ fn buildGitHubPrFetchCommand(self: anytype, checkout_host_path: []const u8, pr_n
     );
     defer self.allocator.free(refspec);
     return self.buildCliCommand("git", &.{ "-C", checkout_host_path, "fetch", "--prune", "origin", refspec });
+}
+
+fn ensureGitCheckoutPresent(self: anytype, op: Op, checkout_host_path: []const u8, checkout_path: []const u8) !?[]u8 {
+    const git_dir_host = try std.fs.path.join(self.allocator, &.{ checkout_host_path, ".git" });
+    defer self.allocator.free(git_dir_host);
+    if (try pathExists(git_dir_host)) return null;
+    const message = try std.fmt.allocPrint(self.allocator, "checkout_path is not a git checkout: {s}", .{checkout_path});
+    defer self.allocator.free(message);
+    return try self.buildGitFailureResultJson(op, "checkout_missing", message);
+}
+
+fn runGitCaptureStdoutOutcome(
+    self: anytype,
+    op: Op,
+    checkout_host_path: []const u8,
+    git_args: []const []const u8,
+    timeout_ms: u64,
+    failure_code: []const u8,
+    default_message: []const u8,
+) !GitOutputOutcome {
+    var argv = std.ArrayListUnmanaged([]const u8){};
+    defer argv.deinit(self.allocator);
+    try argv.append(self.allocator, "-C");
+    try argv.append(self.allocator, checkout_host_path);
+    for (git_args) |arg| try argv.append(self.allocator, arg);
+    const command = try self.buildCliCommand("git", argv.items);
+    defer self.allocator.free(command);
+    var outcome = try self.runShellExecCommand(command, null, timeout_ms);
+    defer outcome.deinit(self.allocator);
+    switch (outcome) {
+        .failure => |info| return .{ .failure_json = try self.buildGitFailureResultJson(op, info.code, info.message) },
+        .success => |result| {
+            if (result.exit_code != 0) {
+                const stderr_trimmed = std.mem.trim(u8, result.stderr, " \t\r\n");
+                const stdout_trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+                const message = if (stderr_trimmed.len > 0)
+                    result.stderr
+                else if (stdout_trimmed.len > 0)
+                    result.stdout
+                else
+                    default_message;
+                return .{ .failure_json = try self.buildGitFailureResultJson(op, failure_code, message) };
+            }
+            return .{ .success = try self.allocator.dupe(u8, result.stdout) };
+        },
+    }
 }
 
 fn runGitCaptureStdout(self: anytype, checkout_host_path: []const u8, git_args: []const []const u8, timeout_ms: u64) ![]u8 {
@@ -527,6 +600,32 @@ fn runGitDiffNamesJson(
     return renderJsonStringArrayFromLines(self.allocator, output);
 }
 
+fn runGitDiffNamesJsonOutcome(
+    self: anytype,
+    op: Op,
+    checkout_host_path: []const u8,
+    base_ref: []const u8,
+    head_ref: []const u8,
+    symmetric: bool,
+    timeout_ms: u64,
+    failure_code: []const u8,
+    default_message: []const u8,
+) !GitOutputOutcome {
+    const range = if (symmetric)
+        try std.fmt.allocPrint(self.allocator, "{s}...{s}", .{ base_ref, head_ref })
+    else
+        try std.fmt.allocPrint(self.allocator, "{s}..{s}", .{ base_ref, head_ref });
+    defer self.allocator.free(range);
+    const output_outcome = try runGitCaptureStdoutOutcome(self, op, checkout_host_path, &.{ "diff", "--name-only", range }, timeout_ms, failure_code, default_message);
+    return switch (output_outcome) {
+        .success => |output| blk: {
+            defer self.allocator.free(output);
+            break :blk .{ .success = try renderJsonStringArrayFromLines(self.allocator, output) };
+        },
+        .failure_json => |failure_json| .{ .failure_json = failure_json },
+    };
+}
+
 fn runGitDiffStat(
     self: anytype,
     checkout_host_path: []const u8,
@@ -541,6 +640,25 @@ fn runGitDiffStat(
         try std.fmt.allocPrint(self.allocator, "{s}..{s}", .{ base_ref, head_ref });
     defer self.allocator.free(range);
     return runGitCaptureStdout(self, checkout_host_path, &.{ "diff", "--stat", range }, timeout_ms);
+}
+
+fn runGitDiffStatOutcome(
+    self: anytype,
+    op: Op,
+    checkout_host_path: []const u8,
+    base_ref: []const u8,
+    head_ref: []const u8,
+    symmetric: bool,
+    timeout_ms: u64,
+    failure_code: []const u8,
+    default_message: []const u8,
+) !GitOutputOutcome {
+    const range = if (symmetric)
+        try std.fmt.allocPrint(self.allocator, "{s}...{s}", .{ base_ref, head_ref })
+    else
+        try std.fmt.allocPrint(self.allocator, "{s}..{s}", .{ base_ref, head_ref });
+    defer self.allocator.free(range);
+    return runGitCaptureStdoutOutcome(self, op, checkout_host_path, &.{ "diff", "--stat", range }, timeout_ms, failure_code, default_message);
 }
 
 fn buildSyncCheckoutDetailJson(
@@ -739,6 +857,22 @@ fn pathExistsAsDirectory(path: []const u8) !bool {
     return true;
 }
 
+fn pathExists(path: []const u8) !bool {
+    if (std.fs.path.isAbsolute(path)) {
+        std.fs.accessAbsolute(path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return err,
+        };
+        return true;
+    }
+
+    std.fs.cwd().access(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
+}
+
 fn ensurePathExists(path: []const u8) !void {
     if (path.len == 0) return error.InvalidPath;
     if (std.fs.path.isAbsolute(path)) {
@@ -750,4 +884,31 @@ fn ensurePathExists(path: []const u8) !void {
         return;
     }
     try std.fs.cwd().makePath(path);
+}
+
+test "git: checkout marker accepts .git directory and file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makePath("checkout-dir/.git");
+    try tmp_dir.dir.makePath("checkout-file");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "checkout-file/.git",
+        .data = "gitdir: /tmp/example\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    const git_dir_path = try std.fs.path.join(allocator, &.{ root, "checkout-dir", ".git" });
+    defer allocator.free(git_dir_path);
+    try std.testing.expect(try pathExists(git_dir_path));
+    try std.testing.expect(try pathExistsAsDirectory(git_dir_path));
+
+    const git_file_path = try std.fs.path.join(allocator, &.{ root, "checkout-file", ".git" });
+    defer allocator.free(git_file_path);
+    try std.testing.expect(try pathExists(git_file_path));
+    try std.testing.expect(!(try pathExistsAsDirectory(git_file_path)));
 }

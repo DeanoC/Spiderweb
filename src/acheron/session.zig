@@ -8306,6 +8306,10 @@ test "acheron_session: preferred venom paths use canonical workspace bindings wh
     defer allocator.free(bound_git_path);
     try std.testing.expectEqualStrings("/.spiderweb/venoms/git/control/invoke.json", bound_git_path);
 
+    const bound_search_code_path = try bound_session.resolvePreferredServicePath("search_code", "/control/invoke.json");
+    defer allocator.free(bound_search_code_path);
+    try std.testing.expectEqualStrings("/.spiderweb/venoms/search_code/control/invoke.json", bound_search_code_path);
+
     var unbound_session = try Session.initWithOptions(
         allocator,
         runtime_handle,
@@ -11083,6 +11087,431 @@ test "acheron_session: services terminal exec updates live service status and re
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "\"operation\":\"exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "\"ok\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, terminal_result, "dGVybWluYWwtb2s=") != null);
+}
+
+test "acheron_session: canonical git venom status and diff_range update live result files" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/repo");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+    const repo_host_path = try std.fs.path.join(allocator, &.{ exports_dir, "repo" });
+    defer allocator.free(repo_host_path);
+    const readme_host_path = try std.fs.path.join(allocator, &.{ repo_host_path, "README.md" });
+    defer allocator.free(readme_host_path);
+
+    {
+        const init_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "init" });
+        defer allocator.free(init_stdout);
+        const config_name_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "config", "user.name", "Spider Tests" });
+        defer allocator.free(config_name_stdout);
+        const config_email_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "config", "user.email", "spider@example.com" });
+        defer allocator.free(config_email_stdout);
+        {
+            const readme_file = try std.fs.createFileAbsolute(readme_host_path, .{ .truncate = true });
+            defer readme_file.close();
+            try readme_file.writeAll("first\n");
+        }
+        const add_first_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "add", "README.md" });
+        defer allocator.free(add_first_stdout);
+        const commit_first_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "commit", "-m", "initial" });
+        defer allocator.free(commit_first_stdout);
+        {
+            const readme_file = try std.fs.createFileAbsolute(readme_host_path, .{ .truncate = true });
+            defer readme_file.close();
+            try readme_file.writeAll("second\n");
+        }
+        const add_second_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "add", "README.md" });
+        defer allocator.free(add_second_stdout);
+        const commit_second_stdout = try runTestCommandCapture(allocator, repo_host_path, &.{ "git", "commit", "-m", "second" });
+        defer allocator.free(commit_second_stdout);
+    }
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const workspace_json = try control_plane.createWorkspace(
+        "{\"name\":\"GitCanonSmoke\",\"vision\":\"Validate canonical git venom lifecycle\",\"template_id\":\"dev\"}",
+    );
+    defer allocator.free(workspace_json);
+
+    var parsed_workspace = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed_workspace.deinit();
+    const workspace_id = parsed_workspace.value.object.get("workspace_id").?.string;
+    const workspace_token = parsed_workspace.value.object.get("workspace_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+        },
+    );
+    defer session.deinit();
+
+    try protocolWriteFile(
+        &session,
+        allocator,
+        520,
+        521,
+        &.{ ".spiderweb", "venoms", "git", "control", "status.json" },
+        "{\"checkout_path\":\"/nodes/local/fs/repo\",\"base_ref\":\"HEAD~1\"}",
+        1220,
+    );
+
+    const git_status = try protocolReadFile(
+        &session,
+        allocator,
+        522,
+        523,
+        &.{ ".spiderweb", "venoms", "git", "status.json" },
+        1225,
+    );
+    defer allocator.free(git_status);
+    try std.testing.expect(std.mem.indexOf(u8, git_status, "\"state\":\"done\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status, "\"tool\":\"git_status\"") != null);
+
+    const git_status_result = try protocolReadFile(
+        &session,
+        allocator,
+        524,
+        525,
+        &.{ ".spiderweb", "venoms", "git", "result.json" },
+        1230,
+    );
+    defer allocator.free(git_status_result);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"operation\":\"status\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"checkout_path\":\"/nodes/local/fs/repo\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"base_ref\":\"HEAD~1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_status_result, "\"changed_files\":[\"README.md\"]") != null);
+
+    try protocolWriteFile(
+        &session,
+        allocator,
+        526,
+        527,
+        &.{ ".spiderweb", "venoms", "git", "control", "diff_range.json" },
+        "{\"checkout_path\":\"/nodes/local/fs/repo\",\"base_ref\":\"HEAD~1\",\"head_ref\":\"HEAD\",\"symmetric\":false}",
+        1235,
+    );
+
+    const git_diff_status = try protocolReadFile(
+        &session,
+        allocator,
+        528,
+        529,
+        &.{ ".spiderweb", "venoms", "git", "status.json" },
+        1240,
+    );
+    defer allocator.free(git_diff_status);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_status, "\"state\":\"done\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_status, "\"tool\":\"git_diff_range\"") != null);
+
+    const git_diff_result = try protocolReadFile(
+        &session,
+        allocator,
+        530,
+        531,
+        &.{ ".spiderweb", "venoms", "git", "result.json" },
+        1245,
+    );
+    defer allocator.free(git_diff_result);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"operation\":\"diff_range\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"base_ref\":\"HEAD~1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"head_ref\":\"HEAD\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"symmetric\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "\"changed_files\":[\"README.md\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_diff_result, "README.md") != null);
+}
+
+test "acheron_session: canonical git venom sync_checkout clones and reuses a checkout" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/checkouts");
+    try tmp_dir.dir.makePath("remote-src");
+    try tmp_dir.dir.makePath("remotes");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+    const remote_src_host_path = try std.fs.path.join(allocator, &.{ root, "remote-src" });
+    defer allocator.free(remote_src_host_path);
+    const remote_readme_host_path = try std.fs.path.join(allocator, &.{ remote_src_host_path, "README.md" });
+    defer allocator.free(remote_readme_host_path);
+    const remote_bare_host_path = try std.fs.path.join(allocator, &.{ root, "remotes", "sample.git" });
+    defer allocator.free(remote_bare_host_path);
+
+    {
+        const init_stdout = try runTestCommandCapture(allocator, remote_src_host_path, &.{ "git", "init" });
+        defer allocator.free(init_stdout);
+        const config_name_stdout = try runTestCommandCapture(allocator, remote_src_host_path, &.{ "git", "config", "user.name", "Spider Tests" });
+        defer allocator.free(config_name_stdout);
+        const config_email_stdout = try runTestCommandCapture(allocator, remote_src_host_path, &.{ "git", "config", "user.email", "spider@example.com" });
+        defer allocator.free(config_email_stdout);
+        {
+            const readme_file = try std.fs.createFileAbsolute(remote_readme_host_path, .{ .truncate = true });
+            defer readme_file.close();
+            try readme_file.writeAll("hello from bare remote\n");
+        }
+        const add_stdout = try runTestCommandCapture(allocator, remote_src_host_path, &.{ "git", "add", "README.md" });
+        defer allocator.free(add_stdout);
+        const commit_stdout = try runTestCommandCapture(allocator, remote_src_host_path, &.{ "git", "commit", "-m", "initial" });
+        defer allocator.free(commit_stdout);
+        const rename_branch_stdout = try runTestCommandCapture(allocator, remote_src_host_path, &.{ "git", "branch", "-M", "main" });
+        defer allocator.free(rename_branch_stdout);
+        const bare_clone_stdout = try runTestCommandCapture(allocator, root, &.{ "git", "clone", "--bare", remote_src_host_path, remote_bare_host_path });
+        defer allocator.free(bare_clone_stdout);
+    }
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const workspace_json = try control_plane.createWorkspace(
+        "{\"name\":\"GitSyncCheckoutSmoke\",\"vision\":\"Validate canonical git sync_checkout lifecycle\",\"template_id\":\"dev\"}",
+    );
+    defer allocator.free(workspace_json);
+
+    var parsed_workspace = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed_workspace.deinit();
+    const workspace_id = parsed_workspace.value.object.get("workspace_id").?.string;
+    const workspace_token = parsed_workspace.value.object.get("workspace_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+        },
+    );
+    defer session.deinit();
+
+    const sync_checkout_payload = try std.fmt.allocPrint(
+        allocator,
+        "{{\"repo_url\":\"{s}\",\"checkout_path\":\"/nodes/local/fs/checkouts/sample\",\"base_branch\":\"main\"}}",
+        .{remote_bare_host_path},
+    );
+    defer allocator.free(sync_checkout_payload);
+
+    try protocolWriteFile(
+        &session,
+        allocator,
+        540,
+        541,
+        &.{ ".spiderweb", "venoms", "git", "control", "sync_checkout.json" },
+        sync_checkout_payload,
+        1250,
+    );
+
+    const git_sync_status = try protocolReadFile(
+        &session,
+        allocator,
+        542,
+        543,
+        &.{ ".spiderweb", "venoms", "git", "status.json" },
+        1255,
+    );
+    defer allocator.free(git_sync_status);
+    try std.testing.expect(std.mem.indexOf(u8, git_sync_status, "\"state\":\"done\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_sync_status, "\"tool\":\"git_sync_checkout\"") != null);
+
+    const git_sync_result = try protocolReadFile(
+        &session,
+        allocator,
+        544,
+        545,
+        &.{ ".spiderweb", "venoms", "git", "result.json" },
+        1260,
+    );
+    defer allocator.free(git_sync_result);
+    try std.testing.expect(std.mem.indexOf(u8, git_sync_result, "\"operation\":\"sync_checkout\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_sync_result, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_sync_result, "\"checkout_path\":\"/nodes/local/fs/checkouts/sample\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_sync_result, "\"repo_url\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_sync_result, "\"reused_checkout\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_sync_result, "\"target_ref\":\"refs/remotes/origin/main\"") != null);
+
+    const checked_out_readme = try session.tryReadInternalPath("/nodes/local/fs/checkouts/sample/README.md");
+    defer if (checked_out_readme) |value| allocator.free(value);
+    try std.testing.expect(checked_out_readme != null);
+    try std.testing.expect(std.mem.indexOf(u8, checked_out_readme.?, "hello from bare remote") != null);
+
+    try protocolWriteFile(
+        &session,
+        allocator,
+        546,
+        547,
+        &.{ ".spiderweb", "venoms", "git", "control", "sync_checkout.json" },
+        sync_checkout_payload,
+        1265,
+    );
+
+    const git_resync_result = try protocolReadFile(
+        &session,
+        allocator,
+        548,
+        549,
+        &.{ ".spiderweb", "venoms", "git", "result.json" },
+        1270,
+    );
+    defer allocator.free(git_resync_result);
+    try std.testing.expect(std.mem.indexOf(u8, git_resync_result, "\"operation\":\"sync_checkout\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_resync_result, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, git_resync_result, "\"reused_checkout\":true") != null);
+}
+
+test "acheron_session: canonical git venom reports checkout_missing cleanly" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const workspace_json = try control_plane.createWorkspace(
+        "{\"name\":\"GitMissingCheckoutSmoke\",\"vision\":\"Validate canonical git missing-checkout failure\",\"template_id\":\"dev\"}",
+    );
+    defer allocator.free(workspace_json);
+
+    var parsed_workspace = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed_workspace.deinit();
+    const workspace_id = parsed_workspace.value.object.get("workspace_id").?.string;
+    const workspace_token = parsed_workspace.value.object.get("workspace_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+        },
+    );
+    defer session.deinit();
+
+    try protocolWriteFile(
+        &session,
+        allocator,
+        550,
+        551,
+        &.{ ".spiderweb", "venoms", "git", "control", "status.json" },
+        "{\"checkout_path\":\"/nodes/local/fs/missing\",\"base_ref\":\"HEAD~1\"}",
+        1275,
+    );
+
+    const missing_status = try protocolReadFile(
+        &session,
+        allocator,
+        552,
+        553,
+        &.{ ".spiderweb", "venoms", "git", "status.json" },
+        1280,
+    );
+    defer allocator.free(missing_status);
+    try std.testing.expect(std.mem.indexOf(u8, missing_status, "\"state\":\"failed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_status, "\"tool\":\"git_status\"") != null);
+
+    const missing_status_result = try protocolReadFile(
+        &session,
+        allocator,
+        554,
+        555,
+        &.{ ".spiderweb", "venoms", "git", "result.json" },
+        1285,
+    );
+    defer allocator.free(missing_status_result);
+    try std.testing.expect(std.mem.indexOf(u8, missing_status_result, "\"operation\":\"status\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_status_result, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_status_result, "\"code\":\"checkout_missing\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_status_result, "/nodes/local/fs/missing") != null);
+
+    try protocolWriteFile(
+        &session,
+        allocator,
+        556,
+        557,
+        &.{ ".spiderweb", "venoms", "git", "control", "diff_range.json" },
+        "{\"checkout_path\":\"/nodes/local/fs/missing\",\"base_ref\":\"HEAD~1\",\"head_ref\":\"HEAD\",\"symmetric\":false}",
+        1290,
+    );
+
+    const missing_diff_status = try protocolReadFile(
+        &session,
+        allocator,
+        558,
+        559,
+        &.{ ".spiderweb", "venoms", "git", "status.json" },
+        1295,
+    );
+    defer allocator.free(missing_diff_status);
+    try std.testing.expect(std.mem.indexOf(u8, missing_diff_status, "\"state\":\"failed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_diff_status, "\"tool\":\"git_diff_range\"") != null);
+
+    const missing_diff_result = try protocolReadFile(
+        &session,
+        allocator,
+        560,
+        561,
+        &.{ ".spiderweb", "venoms", "git", "result.json" },
+        1300,
+    );
+    defer allocator.free(missing_diff_result);
+    try std.testing.expect(std.mem.indexOf(u8, missing_diff_result, "\"operation\":\"diff_range\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_diff_result, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_diff_result, "\"code\":\"checkout_missing\"") != null);
 }
 
 test "acheron_session: local fs export rejects symlink targets outside export root" {

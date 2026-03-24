@@ -442,15 +442,15 @@ fn providerRuntimeSummaryForDir(
 
     if (runtime_value.object.get("install")) |value| {
         session.allocator.free(summary.install_json);
-        summary.install_json = try std.json.stringifyAlloc(session.allocator, value, .{});
+        summary.install_json = try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})});
     }
     if (runtime_value.object.get("provider")) |value| {
         session.allocator.free(summary.provider_json);
-        summary.provider_json = try std.json.stringifyAlloc(session.allocator, value, .{});
+        summary.provider_json = try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})});
     }
     if (runtime_value.object.get("policy")) |value| {
         session.allocator.free(summary.policy_json);
-        summary.policy_json = try std.json.stringifyAlloc(session.allocator, value, .{});
+        summary.policy_json = try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})});
     }
 
     return summary;

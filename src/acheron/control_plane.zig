@@ -4061,8 +4061,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         kind: []const u8,
         version: []const u8,
         host_roles_json: []const u8,
-        binding_scopes_json: []const u8,
-        projection_modes_json: []const u8,
+        legacy_projection_modes_json: []const u8,
         requirements_json: []const u8,
         runtime_json: []const u8,
         runtime_kind: venom_model.RuntimeKind,
@@ -4075,8 +4074,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .kind = spec.kind,
                 .version = spec.version,
                 .host_roles_json = spec.hostRolesJson(),
-                .binding_scopes_json = spec.bindingScopesJson(),
-                .projection_modes_json = spec.legacyProjectionModesJson(),
+                .legacy_projection_modes_json = spec.legacyProjectionModesJson(),
                 .requirements_json = spec.requirements_json,
                 .runtime_json = spec.runtime_json,
                 .runtime_kind = spec.runtime_kind,
@@ -4089,8 +4087,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .kind = package.kind,
                 .version = package.version,
                 .host_roles_json = package.hosts_json,
-                .binding_scopes_json = package.projection_modes_json,
-                .projection_modes_json = package.projection_modes_json,
+                .legacy_projection_modes_json = package.projection_modes_json,
                 .requirements_json = package.requirements_json,
                 .runtime_json = package.runtime_json,
                 .runtime_kind = if (std.mem.indexOf(u8, package.runtime_json, "\"type\":\"wasm\"") != null) .wasm else .native,
@@ -4170,7 +4167,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         allocator: std.mem.Allocator,
         package: VenomPackageView,
         host: []const u8,
-        projection_mode: []const u8,
+        legacy_projection_mode: []const u8,
         available_venoms: []const []const u8,
         host_capabilities: []const []const u8,
         actual_runtime_json: ?[]const u8,
@@ -4178,7 +4175,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         if (!jsonArrayContainsString(allocator, package.host_roles_json, host)) {
             return ControlPlaneError.VenomPackageHostUnsupported;
         }
-        if (!jsonArrayContainsString(allocator, package.projection_modes_json, projection_mode)) {
+        if (!jsonArrayContainsString(allocator, package.legacy_projection_modes_json, legacy_projection_mode)) {
             return ControlPlaneError.VenomPackageProjectionUnsupported;
         }
         if (!requirementsSatisfied(allocator, package.requirements_json, available_venoms, host_capabilities)) {

@@ -18,6 +18,11 @@ pub fn getOrInitNamespaceSessionForBinding(
     trusted_namespace_mount_url: ?[]const u8,
     is_admin: bool,
 ) !*namespace_session_mod.Session {
+    if (namespace_session.*) |*session| {
+        if (!namespaceSessionMatchesBinding(session, binding, session_key, is_admin)) {
+            resetNamespaceSession(namespace_session);
+        }
+    }
     if (namespace_session.* == null) {
         namespace_session.* = try initNamespaceSessionForBinding(
             allocator,
@@ -29,6 +34,27 @@ pub fn getOrInitNamespaceSessionForBinding(
         );
     }
     return &(namespace_session.*.?);
+}
+
+fn optionalStringsEqual(lhs: ?[]const u8, rhs: ?[]const u8) bool {
+    if (lhs == null and rhs == null) return true;
+    if (lhs == null or rhs == null) return false;
+    return std.mem.eql(u8, lhs.?, rhs.?);
+}
+
+fn namespaceSessionMatchesBinding(
+    session: *const namespace_session_mod.Session,
+    binding: anytype,
+    session_key: []const u8,
+    is_admin: bool,
+) bool {
+    return std.mem.eql(u8, session.agent_id, binding.agent_id) and
+        std.mem.eql(u8, session.actor_type, binding.actor_type) and
+        std.mem.eql(u8, session.actor_id, binding.actor_id) and
+        optionalStringsEqual(session.workspace_id, binding.workspace_id) and
+        optionalStringsEqual(session.workspace_token, binding.workspace_token) and
+        optionalStringsEqual(session.namespace_session_key, session_key) and
+        session.is_admin == is_admin;
 }
 
 pub fn localFsExportRootForNamespace(runtime_config: Config.RuntimeConfig) ?[]const u8 {

@@ -441,16 +441,19 @@ fn providerRuntimeSummaryForDir(
     if (runtime_value != .object) return summary;
 
     if (runtime_value.object.get("install")) |value| {
+        const next_json = try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})});
         session.allocator.free(summary.install_json);
-        summary.install_json = try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})});
+        summary.install_json = next_json;
     }
     if (runtime_value.object.get("provider")) |value| {
+        const next_json = try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})});
         session.allocator.free(summary.provider_json);
-        summary.provider_json = try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})});
+        summary.provider_json = next_json;
     }
     if (runtime_value.object.get("policy")) |value| {
+        const next_json = try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})});
         session.allocator.free(summary.policy_json);
-        summary.policy_json = try std.fmt.allocPrint(session.allocator, "{f}", .{std.json.fmt(value, .{})});
+        summary.policy_json = next_json;
     }
 
     return summary;

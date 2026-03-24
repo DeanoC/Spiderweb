@@ -9,7 +9,7 @@ pub const Op = enum {
 const default_home_root = "/nodes/local/fs/.spiderweb/agents";
 
 pub fn seedNamespace(self: anytype, home_dir: u32) !void {
-    return seedNamespaceAt(self, home_dir, "/global/home");
+    return seedNamespaceAt(self, home_dir, "/.spiderweb/_compat/global/home");
 }
 
 pub fn seedNamespaceAt(self: anytype, home_dir: u32, base_path: []const u8) !void {

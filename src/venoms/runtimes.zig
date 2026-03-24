@@ -7,17 +7,17 @@ pub const Op = enum {
     detach,
 };
 
-const default_worker_venoms = [_][]const u8{
+const default_runtime_venoms = [_][]const u8{
     "memory",
     "sub_brains",
 };
-const default_worker_ttl_ms: u64 = 30_000;
+const default_runtime_ttl_ms: u64 = 30_000;
 
-pub fn seedNamespace(self: anytype, workers_dir: u32) !void {
-    return seedNamespaceAt(self, workers_dir, "/.spiderweb/_compat/global/runtimes");
+pub fn seedNamespace(self: anytype, runtimes_dir: u32) !void {
+    return seedNamespaceAt(self, runtimes_dir, "/.spiderweb/_compat/global/runtimes");
 }
 
-pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !void {
+pub fn seedNamespaceAt(self: anytype, runtimes_dir: u32, base_path: []const u8) !void {
     const escaped_base_path = try unified.jsonEscape(self.allocator, base_path);
     defer self.allocator.free(escaped_base_path);
     const shape_json = try std.fmt.allocPrint(
@@ -27,42 +27,42 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
     );
     defer self.allocator.free(shape_json);
     try self.addDirectoryDescriptors(
-        workers_dir,
+        runtimes_dir,
         "Runtimes",
         shape_json,
         "{\"invoke\":true,\"operations\":[\"runtime_attach\",\"runtime_heartbeat\",\"runtime_detach\"],\"discoverable\":true,\"workspace_scope\":true}",
         "Attach an external runtime, heartbeat its lease, detach it, and project its private loopback venoms into /nodes/<runtime_id>/venoms/*.",
     );
     _ = try self.addFile(
-        workers_dir,
+        runtimes_dir,
         "OPS.json",
         "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"register\":\"control/register.json\",\"heartbeat\":\"control/heartbeat.json\",\"detach\":\"control/detach.json\"},\"operations\":{\"register\":\"runtime_attach\",\"heartbeat\":\"runtime_heartbeat\",\"detach\":\"runtime_detach\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
-        workers_dir,
+        runtimes_dir,
         "RUNTIME.json",
         "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"runtime_attach_registry\"}",
         false,
         .none,
     );
     _ = try self.addFile(
-        workers_dir,
+        runtimes_dir,
         "PERMISSIONS.json",
         "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"workspace\",\"workspace_token_required\":false}",
         false,
         .none,
     );
     _ = try self.addFile(
-        workers_dir,
+        runtimes_dir,
         "STATUS.json",
         "{\"surface_id\":\"runtimes\",\"state\":\"namespace\",\"has_invoke\":true}",
         false,
         .none,
     );
     self.runtimes_status_id = try self.addFile(
-        workers_dir,
+        runtimes_dir,
         "status.json",
         "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}",
         false,
@@ -75,14 +75,14 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
     );
     defer self.allocator.free(initial_result);
     self.runtimes_result_id = try self.addFile(
-        workers_dir,
+        runtimes_dir,
         "result.json",
         initial_result,
         false,
         .none,
     );
 
-    const control_dir = try self.addDir(workers_dir, "control", false);
+    const control_dir = try self.addDir(runtimes_dir, "control", false);
     _ = try self.addFile(
         control_dir,
         "README.md",
@@ -179,7 +179,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
     if (!isValidIdentifier(worker_id)) return error.InvalidPayload;
     const agent_id = extractOptionalStringByNames(args_obj, &[_][]const u8{"agent_id"}) orelse self.agent_id;
     if (!isValidIdentifier(agent_id)) return error.InvalidPayload;
-    const ttl_ms = extractOptionalU64(args_obj, "ttl_ms") orelse default_worker_ttl_ms;
+    const ttl_ms = extractOptionalU64(args_obj, "ttl_ms") orelse default_runtime_ttl_ms;
 
     if (op == .detach) {
         try self.detachWorkerLoopbackNode(worker_id);
@@ -221,7 +221,7 @@ fn appendRequestedVenoms(
         return;
     }
 
-    inline for (default_worker_venoms) |venom_id| {
+    inline for (default_runtime_venoms) |venom_id| {
         try venoms.append(allocator, venom_id);
     }
 }
@@ -443,7 +443,7 @@ fn currentWorkerExpiry(self: anytype, worker_id: []const u8) i64 {
 }
 
 fn isSupportedWorkerVenom(venom_id: []const u8) bool {
-    inline for (default_worker_venoms) |supported| {
+    inline for (default_runtime_venoms) |supported| {
         if (std.mem.eql(u8, venom_id, supported)) return true;
     }
     return false;

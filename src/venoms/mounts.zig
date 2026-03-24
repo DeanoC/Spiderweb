@@ -20,7 +20,7 @@ const MountProjectScope = struct {
 const local_fs_world_prefix = "/nodes/local/fs";
 
 pub fn seedNamespace(self: anytype, mounts_dir: u32) !void {
-    return seedNamespaceAt(self, mounts_dir, "/global/mounts");
+    return seedNamespaceAt(self, mounts_dir, "/.spiderweb/_compat/global/mounts");
 }
 
 pub fn seedNamespaceAt(self: anytype, mounts_dir: u32, base_path: []const u8) !void {

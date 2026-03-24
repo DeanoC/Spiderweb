@@ -9,7 +9,7 @@ pub const Op = enum {
 };
 
 pub fn seedNamespace(self: anytype, workspaces_dir: u32) !void {
-    return seedNamespaceAt(self, workspaces_dir, "/global/workspaces");
+    return seedNamespaceAt(self, workspaces_dir, "/.spiderweb/_compat/global/workspaces");
 }
 
 pub fn seedNamespaceAt(self: anytype, workspaces_dir: u32, base_path: []const u8) !void {

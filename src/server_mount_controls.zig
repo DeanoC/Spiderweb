@@ -116,6 +116,14 @@ pub fn handleMountFileReadControl(
         trusted_namespace_mount_url,
         is_admin,
     );
+    try refreshNamespaceSessionForBinding(
+        allocator,
+        runtime_registry,
+        session,
+        binding,
+        null,
+        is_admin,
+    );
     const chunk = try session.readMountGraphFile(absolute_path, offset, requested_length);
     defer allocator.free(chunk);
 
@@ -167,6 +175,14 @@ pub fn handleMountFileWriteControl(
         binding,
         session_key,
         trusted_namespace_mount_url,
+        is_admin,
+    );
+    try refreshNamespaceSessionForBinding(
+        allocator,
+        runtime_registry,
+        session,
+        binding,
+        null,
         is_admin,
     );
     const existing = try session.tryReadInternalPath(absolute_path);
@@ -237,6 +253,14 @@ pub fn handleMountPathControl(
         binding,
         session_key,
         trusted_namespace_mount_url,
+        is_admin,
+    );
+    try refreshNamespaceSessionForBinding(
+        allocator,
+        runtime_registry,
+        session,
+        binding,
+        null,
         is_admin,
     );
 
@@ -387,6 +411,25 @@ pub fn handleMountPathControl(
         },
         else => return error.InvalidPayload,
     }
+}
+
+fn refreshNamespaceSessionForBinding(
+    allocator: std.mem.Allocator,
+    runtime_registry: anytype,
+    session: *namespace_session_mod.Session,
+    binding: server_session_bindings.SessionBinding,
+    connection_workspace_url: ?[]const u8,
+    is_admin: bool,
+) !void {
+    const workspace_json = try buildWorkspaceStatusPayloadForBinding(
+        allocator,
+        runtime_registry,
+        binding,
+        connection_workspace_url,
+        is_admin,
+    );
+    defer allocator.free(workspace_json);
+    try session.refreshWorkspaceProjectionFromStatus(workspace_json);
 }
 
 fn buildWorkspaceStatusPayloadForBinding(

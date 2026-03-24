@@ -246,6 +246,38 @@ pub fn build(b: *std.Build) void {
     spiderweb_local_service.linkLibC();
     b.installArtifact(spiderweb_local_service);
 
+    const computer_driver_mod = b.createModule(.{
+        .root_source_file = spider_node_dep.path("examples/drivers/computer_driver.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    computer_driver_mod.addImport("spiderweb_node", spiderweb_node_module);
+    const spiderweb_computer_driver = b.addExecutable(.{
+        .name = "spiderweb-computer-driver",
+        .root_module = computer_driver_mod,
+    });
+    spiderweb_computer_driver.linkLibC();
+    if (target.result.os.tag == .macos) {
+        spiderweb_computer_driver.linkFramework("ApplicationServices");
+    }
+    b.installArtifact(spiderweb_computer_driver);
+
+    const browser_driver_mod = b.createModule(.{
+        .root_source_file = spider_node_dep.path("examples/drivers/browser_driver.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    browser_driver_mod.addImport("spiderweb_node", spiderweb_node_module);
+    const spiderweb_browser_driver = b.addExecutable(.{
+        .name = "spiderweb-browser-driver",
+        .root_module = browser_driver_mod,
+    });
+    spiderweb_browser_driver.linkLibC();
+    if (target.result.os.tag == .macos) {
+        spiderweb_browser_driver.linkFramework("ApplicationServices");
+    }
+    b.installArtifact(spiderweb_browser_driver);
+
     // Distributed filesystem mount/router executable
     const fs_mount_mod = b.createModule(.{
         .root_source_file = b.path("src/acheron/mount_main.zig"),

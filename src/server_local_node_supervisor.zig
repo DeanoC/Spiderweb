@@ -3,12 +3,16 @@ const builtin = @import("builtin");
 const Config = @import("config.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
 const unified = @import("spider-protocol").unified;
+const macos_capability_venoms = @import("spiderweb_node").macos_capability_venoms;
 
 const local_node_supervisor_dirname = "local-node";
 const local_node_state_filename = "state.json";
 const local_node_manifests_dirname = "services.d";
+const local_node_bin_dirname = "bin";
 pub const local_node_default_name = "spiderweb-local";
 const local_node_service_binary_name = "spiderweb-local-service";
+const local_node_computer_binary_name = macos_capability_venoms.computer_driver_binary_name;
+const local_node_browser_binary_name = macos_capability_venoms.browser_driver_binary_name;
 
 pub fn ensureDirectoryExists(dir_path: []const u8) !void {
     if (dir_path.len == 0) return error.InvalidPath;
@@ -132,6 +136,82 @@ fn writeFileReplacing(path: []const u8, data: []const u8) !void {
     try file.writeAll(data);
 }
 
+fn openFileForRead(path: []const u8) !std.fs.File {
+    if (std.fs.path.isAbsolute(path)) {
+        return std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    }
+    return std.fs.cwd().openFile(path, .{ .mode = .read_only });
+}
+
+fn containsPathSeparator(path: []const u8) bool {
+    if (std.mem.indexOfScalar(u8, path, std.fs.path.sep)) |_| return true;
+    if (builtin.os.tag == .windows) {
+        if (std.mem.indexOfScalar(u8, path, '/')) |_| return true;
+    }
+    return false;
+}
+
+fn resolveExecutableSourcePath(allocator: std.mem.Allocator, source_path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(source_path) or containsPathSeparator(source_path)) {
+        return allocator.dupe(u8, source_path);
+    }
+
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+
+    const path_value = env_map.get("PATH") orelse return allocator.dupe(u8, source_path);
+    const delimiter: u8 = if (builtin.os.tag == .windows) ';' else ':';
+    var path_it = std.mem.splitScalar(u8, path_value, delimiter);
+    while (path_it.next()) |entry| {
+        if (entry.len == 0) continue;
+        const candidate = try std.fs.path.join(allocator, &.{ entry, source_path });
+        errdefer allocator.free(candidate);
+        if (pathExists(candidate)) return candidate;
+        allocator.free(candidate);
+    }
+
+    return allocator.dupe(u8, source_path);
+}
+
+fn openOrCreateFileForWrite(path: []const u8) !std.fs.File {
+    const parent = std.fs.path.dirname(path) orelse return error.InvalidPath;
+    const base = std.fs.path.basename(path);
+    if (base.len == 0) return error.InvalidPath;
+    try ensureDirectoryExists(parent);
+
+    if (std.fs.path.isAbsolute(parent)) {
+        var dir = try std.fs.openDirAbsolute(parent, .{});
+        defer dir.close();
+        return dir.createFile(base, .{ .truncate = true });
+    }
+
+    var dir = try std.fs.cwd().openDir(parent, .{});
+    defer dir.close();
+    return dir.createFile(base, .{ .truncate = true });
+}
+
+fn stageExecutable(allocator: std.mem.Allocator, source_path: []const u8, staged_path: []const u8) !void {
+    const resolved_source_path = try resolveExecutableSourcePath(allocator, source_path);
+    defer allocator.free(resolved_source_path);
+
+    var source_file = try openFileForRead(resolved_source_path);
+    defer source_file.close();
+
+    var staged_file = try openOrCreateFileForWrite(staged_path);
+    defer staged_file.close();
+
+    var buffer: [16 * 1024]u8 = undefined;
+    while (true) {
+        const read_len = try source_file.read(&buffer);
+        if (read_len == 0) break;
+        try staged_file.writeAll(buffer[0..read_len]);
+    }
+
+    if (builtin.os.tag != .windows and builtin.os.tag != .wasi) {
+        try staged_file.chmod(0o755);
+    }
+}
+
 fn terminateChildPid(child_id: std.process.Child.Id) void {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
     std.posix.kill(child_id, std.posix.SIG.KILL) catch {};
@@ -164,6 +244,11 @@ pub const LocalNodeSupervisor = struct {
     control_auth_token: []u8,
     binary_path: []u8,
     service_binary_path: []u8,
+    computer_driver_binary_path: ?[]u8 = null,
+    browser_driver_binary_path: ?[]u8 = null,
+    driver_bin_dir: []u8,
+    staged_computer_driver_path: ?[]u8 = null,
+    staged_browser_driver_path: ?[]u8 = null,
     export_root: []u8,
     export_name: []u8,
     profile: []u8,
@@ -198,6 +283,8 @@ pub const LocalNodeSupervisor = struct {
         errdefer allocator.free(state_path);
         const manifests_dir = try std.fs.path.join(allocator, &.{ state_dir, local_node_manifests_dirname });
         errdefer allocator.free(manifests_dir);
+        const driver_bin_dir = try std.fs.path.join(allocator, &.{ state_dir, local_node_bin_dirname });
+        errdefer allocator.free(driver_bin_dir);
 
         supervisor.* = .{
             .allocator = allocator,
@@ -211,6 +298,23 @@ pub const LocalNodeSupervisor = struct {
             else
                 try resolveSiblingExecutablePath(allocator, local_cfg.binary),
             .service_binary_path = try resolveSiblingExecutablePath(allocator, local_node_service_binary_name),
+            .computer_driver_binary_path = if (builtin.os.tag == .macos)
+                try resolveSiblingExecutablePath(allocator, local_node_computer_binary_name)
+            else
+                null,
+            .browser_driver_binary_path = if (builtin.os.tag == .macos)
+                try resolveSiblingExecutablePath(allocator, local_node_browser_binary_name)
+            else
+                null,
+            .driver_bin_dir = driver_bin_dir,
+            .staged_computer_driver_path = if (builtin.os.tag == .macos)
+                try std.fs.path.join(allocator, &.{ driver_bin_dir, local_node_computer_binary_name })
+            else
+                null,
+            .staged_browser_driver_path = if (builtin.os.tag == .macos)
+                try std.fs.path.join(allocator, &.{ driver_bin_dir, local_node_browser_binary_name })
+            else
+                null,
             .export_root = try allocator.dupe(u8, export_root_trimmed),
             .export_name = try allocator.dupe(u8, std.mem.trim(u8, local_cfg.export_name, " \t\r\n")),
             .profile = try allocator.dupe(u8, std.mem.trim(u8, local_cfg.profile, " \t\r\n")),
@@ -241,6 +345,11 @@ pub const LocalNodeSupervisor = struct {
         self.allocator.free(self.control_auth_token);
         self.allocator.free(self.binary_path);
         self.allocator.free(self.service_binary_path);
+        if (self.computer_driver_binary_path) |value| self.allocator.free(value);
+        if (self.browser_driver_binary_path) |value| self.allocator.free(value);
+        self.allocator.free(self.driver_bin_dir);
+        if (self.staged_computer_driver_path) |value| self.allocator.free(value);
+        if (self.staged_browser_driver_path) |value| self.allocator.free(value);
         self.allocator.free(self.export_root);
         self.allocator.free(self.export_name);
         self.allocator.free(self.profile);
@@ -286,6 +395,8 @@ pub const LocalNodeSupervisor = struct {
 
     fn prepareLaunch(self: *LocalNodeSupervisor) !void {
         try ensureDirectoryExists(self.state_dir);
+        try ensureDirectoryExists(self.driver_bin_dir);
+        try self.stageCapabilityDrivers();
         try deleteTreeIfPresent(self.manifests_dir);
         try ensureDirectoryExists(self.manifests_dir);
         const initial_join_payload = try self.control_plane.ensureNode(local_node_default_name, "", 15 * 60 * 1000);
@@ -307,12 +418,48 @@ pub const LocalNodeSupervisor = struct {
         try self.writeManifestFile("terminal", "terminal");
         try self.writeManifestFile("git", "git");
         try self.writeManifestFile("search_code", "search_code");
+        if (builtin.os.tag == .macos) {
+            if (self.staged_computer_driver_path) |value| {
+                try self.writeCapabilityManifestFile("computer", value);
+            }
+            if (self.staged_browser_driver_path) |value| {
+                try self.writeCapabilityManifestFile("browser", value);
+            }
+        }
+    }
+
+    fn stageCapabilityDrivers(self: *LocalNodeSupervisor) !void {
+        if (builtin.os.tag != .macos) return;
+
+        if (self.computer_driver_binary_path) |source_path| {
+            const staged_path = self.staged_computer_driver_path orelse return error.InvalidArguments;
+            try stageExecutable(self.allocator, source_path, staged_path);
+        }
+        if (self.browser_driver_binary_path) |source_path| {
+            const staged_path = self.staged_browser_driver_path orelse return error.InvalidArguments;
+            try stageExecutable(self.allocator, source_path, staged_path);
+        }
     }
 
     fn writeManifestFile(self: *LocalNodeSupervisor, venom_id: []const u8, mode: []const u8) !void {
         const manifest_json = try self.buildManifestJson(venom_id, mode);
         defer self.allocator.free(manifest_json);
         const manifest_name = try std.fmt.allocPrint(self.allocator, "{s}.json", .{mode});
+        defer self.allocator.free(manifest_name);
+        const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, manifest_name });
+        defer self.allocator.free(manifest_path);
+        try writeFileReplacing(manifest_path, manifest_json);
+    }
+
+    fn writeCapabilityManifestFile(self: *LocalNodeSupervisor, family_id: []const u8, executable_path: []const u8) !void {
+        const manifest_json = if (std.mem.eql(u8, family_id, "computer"))
+            try macos_capability_venoms.renderComputerManifestJson(self.allocator, executable_path)
+        else if (std.mem.eql(u8, family_id, "browser"))
+            try macos_capability_venoms.renderBrowserManifestJson(self.allocator, executable_path)
+        else
+            return error.InvalidArguments;
+        defer self.allocator.free(manifest_json);
+        const manifest_name = try std.fmt.allocPrint(self.allocator, "{s}.json", .{family_id});
         defer self.allocator.free(manifest_name);
         const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, manifest_name });
         defer self.allocator.free(manifest_path);

@@ -10,6 +10,8 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         try venom_packages.buildPackagesJson(session.allocator);
     defer session.allocator.free(raw_packages_json);
 
+    session.refreshDynamicDirectory(session.nodes_root_id) catch {};
+
     var parsed = try std.json.parseFromSlice(std.json.Value, session.allocator, raw_packages_json, .{});
     defer parsed.deinit();
     if (parsed.value != .array) return session.allocator.dupe(u8, "[]");
@@ -26,6 +28,11 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
             if (enabled == .bool and !enabled.bool) continue;
         }
         if (!venom_model.isCapabilityVenomId(package_id)) continue;
+        if (venom_model.isExplicitBindOnlyCapabilityVenomId(package_id) and
+            !sessionHasPublishedCapabilityProvider(session, package_id))
+        {
+            continue;
+        }
 
         const kind = getString(item.object, "kind") orelse package_id;
         const version = getString(item.object, "version") orelse "1";
@@ -66,6 +73,31 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
 
     try out.append(session.allocator, ']');
     return out.toOwnedSlice(session.allocator);
+}
+
+fn sessionHasPublishedCapabilityProvider(session: anytype, package_id: []const u8) bool {
+    const nodes_root = session.nodes.get(session.nodes_root_id) orelse return false;
+    var node_it = nodes_root.children.iterator();
+    while (node_it.next()) |node_entry| {
+        const node_dir_id = node_entry.value_ptr.*;
+        const venoms_root_id = session.lookupChild(node_dir_id, "venoms") orelse continue;
+        const venoms_root = session.nodes.get(venoms_root_id) orelse continue;
+        if (venoms_root.kind != .dir) continue;
+
+        var venom_it = venoms_root.children.iterator();
+        while (venom_it.next()) |venom_entry| {
+            const venom_id = venom_entry.key_ptr.*;
+            if (!venom_model.isCapabilityVenomId(venom_id)) continue;
+            if (std.mem.eql(u8, venom_id, package_id)) return true;
+            if (std.mem.startsWith(u8, venom_id, package_id) and
+                venom_id.len > package_id.len and
+                venom_id[package_id.len] == '-')
+            {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
@@ -181,8 +213,53 @@ pub fn buildCatalogBindingsJson(session: anytype) ![]u8 {
         );
     }
 
+    for (session.workspace_binds.items) |bind| {
+        if (bind.kind != .workspace) continue;
+        if (!std.mem.startsWith(u8, bind.bind_path, "/.spiderweb/venoms/")) continue;
+        if (hasScopedBindingForPath(session, bind.bind_path)) continue;
+
+        const alias = bind.bind_path["/.spiderweb/venoms/".len..];
+        if (alias.len == 0 or std.mem.indexOfScalar(u8, alias, '/') != null) continue;
+        if (!venom_model.isCapabilityVenomId(alias)) continue;
+
+        const provider_id_json = if (std.mem.startsWith(u8, bind.target_path, "/nodes/")) blk: {
+            const after_prefix = bind.target_path["/nodes/".len..];
+            const node_end = std.mem.indexOfScalar(u8, after_prefix, '/') orelse break :blk try session.allocator.dupe(u8, "null");
+            const node_id = after_prefix[0..node_end];
+            const after_node = after_prefix[node_end..];
+            const provider_venom_id = if (std.mem.startsWith(u8, after_node, "/venoms/")) blk2: {
+                const tail = after_node["/venoms/".len..];
+                const venom_end = std.mem.indexOfScalar(u8, tail, '/') orelse tail.len;
+                break :blk2 tail[0..venom_end];
+            } else alias;
+            break :blk try std.fmt.allocPrint(session.allocator, "\"{s}:{s}\"", .{ node_id, provider_venom_id });
+        } else try session.allocator.dupe(u8, "null");
+        defer session.allocator.free(provider_id_json);
+
+        if (!first) try out.append(session.allocator, ',');
+        first = false;
+        try out.writer(session.allocator).print(
+            "{{\"binding_id\":\"workspace:{s}\",\"scope\":\"{s}\",\"alias\":\"{s}\",\"binding_path\":\"{s}\",\"target_path\":\"{s}\",\"provider_id\":{s}}}",
+            .{
+                alias,
+                venom_model.BindingScope.workspace.asString(),
+                alias,
+                bind.bind_path,
+                bind.target_path,
+                provider_id_json,
+            },
+        );
+    }
+
     try out.append(session.allocator, ']');
     return out.toOwnedSlice(session.allocator);
+}
+
+fn hasScopedBindingForPath(session: anytype, binding_path: []const u8) bool {
+    for (session.scoped_venom_bindings.items) |binding| {
+        if (std.mem.eql(u8, binding.venom_path, binding_path)) return true;
+    }
+    return false;
 }
 
 pub fn buildWorkspaceBindsArrayJson(session: anytype) ![]u8 {

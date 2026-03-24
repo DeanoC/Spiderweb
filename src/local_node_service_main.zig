@@ -694,3 +694,33 @@ test "local_node_service_main: search_code invocation rejects invalid payload fi
     try std.testing.expect(std.mem.indexOf(u8, bad_max_result, "\"code\":\"invalid_payload\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bad_max_result, "max_results must be non-negative integer") != null);
 }
+
+test "local_node_service_main: dispatch search_code accepts canonical invoke payload shape" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("export/src");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "export/src/search.txt",
+        .data = "one\nneedle here\ntwo\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const export_root = try std.fs.path.join(allocator, &.{ root, "export" });
+    defer allocator.free(export_root);
+
+    const result_json = try dispatchInvocation(
+        allocator,
+        "search_code",
+        export_root,
+        "{\"op\":\"search\",\"arguments\":{\"query\":\"needle\",\"path\":\"/nodes/local/fs/src\",\"case_sensitive\":true,\"max_results\":5}}",
+    );
+    defer allocator.free(result_json);
+
+    try std.testing.expect(std.mem.indexOf(u8, result_json, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_json, "\"query\":\"needle\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_json, "\"path\":\"src\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_json, "search.txt:2:needle here") != null);
+}

@@ -2091,7 +2091,7 @@ pub const Session = struct {
             try self.appendProjectBindIfMissing(.managed_entrypoint, spec.bind_path, spec.target_path);
         }
 
-        inline for (venom_model.production_priority_capability_ids) |venom_id| {
+        inline for (venom_model.default_workspace_capability_ids) |venom_id| {
             const bind_path = try std.fmt.allocPrint(
                 self.allocator,
                 "{s}/venoms/{s}",
@@ -8521,6 +8521,8 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(std.mem.indexOf(u8, packages_json.?, "\"package_id\":\"terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_json.?, "\"package_id\":\"git\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_json.?, "\"package_id\":\"search_code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_json.?, "\"package_id\":\"computer\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_json.?, "\"package_id\":\"browser\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, packages_json.?, "\"package_id\":\"events\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, packages_json.?, "\"package_id\":\"library\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, packages_json.?, "\"package_id\":\"fs\"") == null);
@@ -8536,6 +8538,8 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"package_id\":\"terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"package_id\":\"git\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"package_id\":\"search_code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"package_id\":\"computer\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"package_id\":\"browser\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"package_id\":\"events\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"package_id\":\"library\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, providers_json.?, "\"runtime_kind\":\"native\"") != null);
@@ -8553,6 +8557,8 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/.spiderweb/venoms/search_code\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/.spiderweb/venoms/git\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/.spiderweb/venoms/terminal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/.spiderweb/venoms/computer\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/.spiderweb/venoms/browser\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/.spiderweb/venoms/events\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/.spiderweb/venoms/library\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, bindings_json.?, "\"binding_path\":\"/.spiderweb/venoms/home\"") == null);
@@ -8569,8 +8575,11 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/search_code\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/git\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/terminal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/nodes/") == null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/events\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/library\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/computer\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/browser\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/global/git\"") == null);
 
     const internal_library_index = try session.tryReadInternalPath("/.spiderweb/_compat/global/library/Index.md");
@@ -8580,6 +8589,137 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     const internal_library_topic = try session.tryReadInternalPath("/.spiderweb/_compat/global/library/topics/service-discovery.md");
     defer if (internal_library_topic) |value| allocator.free(value);
     try std.testing.expect(internal_library_topic == null);
+}
+
+test "acheron_session: computer and browser stay explicit-bind-only until workspace bind" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const workspace_json = try control_plane.createWorkspace(
+        "{\"name\":\"MacCapabilities\",\"vision\":\"Validate explicit-bind-only computer/browser venoms\"}",
+    );
+    defer allocator.free(workspace_json);
+
+    var parsed_workspace = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed_workspace.deinit();
+    const workspace_id = parsed_workspace.value.object.get("workspace_id").?.string;
+    const workspace_token = parsed_workspace.value.object.get("workspace_token").?.string;
+
+    const joined = try control_plane.ensureNode("mac-capabilities", "", 60_000);
+    defer allocator.free(joined);
+    var parsed_node = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
+    defer parsed_node.deinit();
+    const node_id = parsed_node.value.object.get("node_id").?.string;
+    const node_secret = parsed_node.value.object.get("node_secret").?.string;
+
+    const upsert_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"macos\",\"arch\":\"arm64\",\"runtime_kind\":\"native\"}},\"venoms\":[" ++
+            "{{\"venom_id\":\"computer-main\",\"package_id\":\"computer\",\"kind\":\"computer\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{\"host_capabilities\":[\"macos_accessibility\",\"screen_capture\"]}},\"endpoints\":[\"/nodes/{s}/venoms/computer-main\"],\"mounts\":[{{\"mount_id\":\"computer-main\",\"mount_path\":\"/nodes/{s}/venoms/computer-main\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"observe\":true,\"act\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"computer-observe-act-v1\"}}}}," ++
+            "{{\"venom_id\":\"browser-main\",\"package_id\":\"browser\",\"kind\":\"browser\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{\"host_capabilities\":[\"managed_browser\"]}},\"endpoints\":[\"/nodes/{s}/venoms/browser-main\"],\"mounts\":[{{\"mount_id\":\"browser-main\",\"mount_path\":\"/nodes/{s}/venoms/browser-main\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"observe\":true,\"act\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"browser-observe-act-v1\"}}}}" ++
+            "]}}",
+        .{ node_id, node_secret, node_id, node_id, node_id, node_id },
+    );
+    defer allocator.free(upsert_req);
+    const upserted = try control_plane.nodeVenomUpsert(upsert_req);
+    defer allocator.free(upserted);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var unbound_session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer unbound_session.deinit();
+
+    const unbound_packages = try unbound_session.tryReadInternalPath("/nodes/local/fs/.spiderweb/catalog/packages.json");
+    defer if (unbound_packages) |value| allocator.free(value);
+    try std.testing.expect(unbound_packages != null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_packages.?, "\"package_id\":\"computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_packages.?, "\"package_id\":\"browser\"") != null);
+
+    const unbound_providers = try unbound_session.tryReadInternalPath("/nodes/local/fs/.spiderweb/catalog/providers.json");
+    defer if (unbound_providers) |value| allocator.free(value);
+    try std.testing.expect(unbound_providers != null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_providers.?, "\"package_id\":\"computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_providers.?, "\"package_id\":\"browser\"") != null);
+
+    const unbound_bindings = try unbound_session.tryReadInternalPath("/nodes/local/fs/.spiderweb/catalog/bindings.json");
+    defer if (unbound_bindings) |value| allocator.free(value);
+    try std.testing.expect(unbound_bindings != null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_bindings.?, "\"binding_path\":\"/.spiderweb/venoms/computer\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_bindings.?, "\"binding_path\":\"/.spiderweb/venoms/browser\"") == null);
+
+    const unbound_venoms_index = try unbound_session.tryReadInternalPath("/.spiderweb/_compat/global/venoms/VENOMS.json");
+    defer if (unbound_venoms_index) |value| allocator.free(value);
+    try std.testing.expect(unbound_venoms_index != null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_venoms_index.?, "\"venom_path\":\"/.spiderweb/venoms/computer\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_venoms_index.?, "\"venom_path\":\"/.spiderweb/venoms/browser\"") == null);
+
+    const bind_computer_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"bind_path\":\"/.spiderweb/venoms/computer\",\"target_path\":\"/nodes/{s}/venoms/computer-main\"}}",
+        .{ workspace_id, workspace_token, node_id },
+    );
+    defer allocator.free(bind_computer_req);
+    const bound_computer = try control_plane.setWorkspaceBind(bind_computer_req);
+    defer allocator.free(bound_computer);
+
+    const bind_browser_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"bind_path\":\"/.spiderweb/venoms/browser\",\"target_path\":\"/nodes/{s}/venoms/browser-main\"}}",
+        .{ workspace_id, workspace_token, node_id },
+    );
+    defer allocator.free(bind_browser_req);
+    const bound_browser = try control_plane.setWorkspaceBind(bind_browser_req);
+    defer allocator.free(bound_browser);
+
+    var bound_session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer bound_session.deinit();
+
+    const bound_computer_path = try bound_session.resolvePreferredServicePath("computer", "/control/invoke.json");
+    defer allocator.free(bound_computer_path);
+    try std.testing.expectEqualStrings("/.spiderweb/venoms/computer/control/invoke.json", bound_computer_path);
+
+    const bound_browser_path = try bound_session.resolvePreferredServicePath("browser", "/control/invoke.json");
+    defer allocator.free(bound_browser_path);
+    try std.testing.expectEqualStrings("/.spiderweb/venoms/browser/control/invoke.json", bound_browser_path);
+
+    const bound_bindings = try bound_session.tryReadInternalPath("/nodes/local/fs/.spiderweb/catalog/bindings.json");
+    defer if (bound_bindings) |value| allocator.free(value);
+    try std.testing.expect(bound_bindings != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_bindings.?, "\"binding_path\":\"/.spiderweb/venoms/computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_bindings.?, "\"binding_path\":\"/.spiderweb/venoms/browser\"") != null);
 }
 
 test "acheron_session: control substrate surfaces expose runtime and package operations canonically" {

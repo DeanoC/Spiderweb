@@ -3,12 +3,15 @@ const builtin = @import("builtin");
 const Config = @import("config.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
 const unified = @import("spider-protocol").unified;
+const macos_capability_venoms = @import("spiderweb_node").macos_capability_venoms;
 
 const local_node_supervisor_dirname = "local-node";
 const local_node_state_filename = "state.json";
 const local_node_manifests_dirname = "services.d";
 pub const local_node_default_name = "spiderweb-local";
 const local_node_service_binary_name = "spiderweb-local-service";
+const local_node_computer_binary_name = macos_capability_venoms.computer_driver_binary_name;
+const local_node_browser_binary_name = macos_capability_venoms.browser_driver_binary_name;
 
 pub fn ensureDirectoryExists(dir_path: []const u8) !void {
     if (dir_path.len == 0) return error.InvalidPath;
@@ -164,6 +167,8 @@ pub const LocalNodeSupervisor = struct {
     control_auth_token: []u8,
     binary_path: []u8,
     service_binary_path: []u8,
+    computer_driver_binary_path: ?[]u8 = null,
+    browser_driver_binary_path: ?[]u8 = null,
     export_root: []u8,
     export_name: []u8,
     profile: []u8,
@@ -211,6 +216,14 @@ pub const LocalNodeSupervisor = struct {
             else
                 try resolveSiblingExecutablePath(allocator, local_cfg.binary),
             .service_binary_path = try resolveSiblingExecutablePath(allocator, local_node_service_binary_name),
+            .computer_driver_binary_path = if (builtin.os.tag == .macos)
+                try resolveSiblingExecutablePath(allocator, local_node_computer_binary_name)
+            else
+                null,
+            .browser_driver_binary_path = if (builtin.os.tag == .macos)
+                try resolveSiblingExecutablePath(allocator, local_node_browser_binary_name)
+            else
+                null,
             .export_root = try allocator.dupe(u8, export_root_trimmed),
             .export_name = try allocator.dupe(u8, std.mem.trim(u8, local_cfg.export_name, " \t\r\n")),
             .profile = try allocator.dupe(u8, std.mem.trim(u8, local_cfg.profile, " \t\r\n")),
@@ -241,6 +254,8 @@ pub const LocalNodeSupervisor = struct {
         self.allocator.free(self.control_auth_token);
         self.allocator.free(self.binary_path);
         self.allocator.free(self.service_binary_path);
+        if (self.computer_driver_binary_path) |value| self.allocator.free(value);
+        if (self.browser_driver_binary_path) |value| self.allocator.free(value);
         self.allocator.free(self.export_root);
         self.allocator.free(self.export_name);
         self.allocator.free(self.profile);
@@ -307,12 +322,35 @@ pub const LocalNodeSupervisor = struct {
         try self.writeManifestFile("terminal", "terminal");
         try self.writeManifestFile("git", "git");
         try self.writeManifestFile("search_code", "search_code");
+        if (builtin.os.tag == .macos) {
+            if (self.computer_driver_binary_path) |value| {
+                try self.writeCapabilityManifestFile("computer", value);
+            }
+            if (self.browser_driver_binary_path) |value| {
+                try self.writeCapabilityManifestFile("browser", value);
+            }
+        }
     }
 
     fn writeManifestFile(self: *LocalNodeSupervisor, venom_id: []const u8, mode: []const u8) !void {
         const manifest_json = try self.buildManifestJson(venom_id, mode);
         defer self.allocator.free(manifest_json);
         const manifest_name = try std.fmt.allocPrint(self.allocator, "{s}.json", .{mode});
+        defer self.allocator.free(manifest_name);
+        const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, manifest_name });
+        defer self.allocator.free(manifest_path);
+        try writeFileReplacing(manifest_path, manifest_json);
+    }
+
+    fn writeCapabilityManifestFile(self: *LocalNodeSupervisor, family_id: []const u8, executable_path: []const u8) !void {
+        const manifest_json = if (std.mem.eql(u8, family_id, "computer"))
+            try macos_capability_venoms.renderComputerManifestJson(self.allocator, executable_path)
+        else if (std.mem.eql(u8, family_id, "browser"))
+            try macos_capability_venoms.renderBrowserManifestJson(self.allocator, executable_path)
+        else
+            return error.InvalidArguments;
+        defer self.allocator.free(manifest_json);
+        const manifest_name = try std.fmt.allocPrint(self.allocator, "{s}.json", .{family_id});
         defer self.allocator.free(manifest_name);
         const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, manifest_name });
         defer self.allocator.free(manifest_path);

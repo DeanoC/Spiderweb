@@ -64,6 +64,8 @@ const builtin_packages = [_]BuiltinPackageSpec{
     .{ .venom_id = "packages", .kind = "registry", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/packages", .categories_json = "[\"venoms\",\"registry\"]", .help_md = "Registry of available Venom packages and install/remove operations." },
     .{ .venom_id = "home", .kind = "home", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/home", .categories_json = "[\"agent\",\"storage\"]", .help_md = "Provision durable per-agent workspace homes." },
     .{ .venom_id = "runtimes", .kind = "runtimes", .default_host_role = .spiderweb, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/runtimes", .categories_json = "[\"runtime\",\"registration\"]", .help_md = "Register and maintain runtime-private venom instances." },
+    .{ .venom_id = "computer", .kind = "computer", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/computer-main", .categories_json = "[\"desktop\",\"automation\"]", .requirements_json = "{\"host_capabilities\":[\"macos_accessibility\",\"screen_capture\"]}", .help_md = "Workspace computer automation service published by a node and bound explicitly when needed." },
+    .{ .venom_id = "browser", .kind = "browser", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/browser-main", .categories_json = "[\"browser\",\"automation\"]", .requirements_json = "{\"host_capabilities\":[\"managed_browser\"]}", .help_md = "Workspace browser automation service published by a node and bound explicitly when needed." },
     .{ .venom_id = "search_code", .kind = "search_code", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/search_code", .categories_json = "[\"search\",\"code\"]", .help_md = "Workspace code search service." },
     .{ .venom_id = "fs", .kind = "fs", .default_host_role = .node, .binding_scopes = node_scope, .runtime_kind = .native, .categories_json = "[\"filesystem\",\"node\"]", .runtime_json = "{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}", .schema_json = "{\"model\":\"namespace-mount\"}", .help_md = "Filesystem export surfaced by a Spiderweb node." },
     .{ .venom_id = "terminal", .kind = "terminal", .default_host_role = .node, .binding_scopes = workspace_scope, .default_target_path = "/nodes/local/venoms/terminal", .categories_json = "[\"terminal\",\"exec\"]", .help_md = "Command execution service with Linux-only interactive terminal sessions." },
@@ -248,8 +250,12 @@ test "venom_packages: builtins render through shared package parser" {
     const terminal = findBuiltinPackage("terminal") orelse return error.TestExpectedResponse;
     const git = findBuiltinPackage("git") orelse return error.TestExpectedResponse;
     const search_code = findBuiltinPackage("search_code") orelse return error.TestExpectedResponse;
+    const computer = findBuiltinPackage("computer") orelse return error.TestExpectedResponse;
+    const browser = findBuiltinPackage("browser") orelse return error.TestExpectedResponse;
     try std.testing.expect(terminal.default_host_role == .node);
     try std.testing.expect(git.default_host_role == .node);
     try std.testing.expect(search_code.default_host_role == .node);
+    try std.testing.expect(computer.default_host_role == .node);
+    try std.testing.expect(browser.default_host_role == .node);
     try std.testing.expectEqualStrings("node_export", terminal.legacyDefaultProviderScope());
 }

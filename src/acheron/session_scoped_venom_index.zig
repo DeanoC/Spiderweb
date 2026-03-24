@@ -24,62 +24,11 @@ pub fn refreshVenomsIndexFile(session: anytype, node_id: u32, binding_prefix: []
 
 pub fn buildScopedVenomsIndexJson(session: anytype, binding_prefix: []const u8, binding_owner_id: []const u8) ![]u8 {
     session.refreshDynamicDirectory(session.nodes_root_id) catch {};
-
-    const nodes_root = session.nodes.get(session.nodes_root_id) orelse return session.allocator.dupe(u8, "[]");
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(session.allocator);
     try out.append(session.allocator, '[');
 
     var first = true;
-    var node_it = nodes_root.children.iterator();
-    while (node_it.next()) |node_entry| {
-        const node_id = node_entry.key_ptr.*;
-        const node_dir_id = node_entry.value_ptr.*;
-        const node_dir = session.nodes.get(node_dir_id) orelse continue;
-        if (node_dir.kind != .dir) continue;
-
-        const services_root_id = session.lookupChild(node_dir_id, "venoms") orelse continue;
-        const services_root = session.nodes.get(services_root_id) orelse continue;
-        if (services_root.kind != .dir) continue;
-
-        var venom_it = services_root.children.iterator();
-        while (venom_it.next()) |venom_entry| {
-            const venom_id = venom_entry.key_ptr.*;
-            if (!venom_model.isCapabilityVenomId(venom_id)) continue;
-            const venom_dir_id = venom_entry.value_ptr.*;
-            const venom_dir = session.nodes.get(venom_dir_id) orelse continue;
-            if (venom_dir.kind != .dir) continue;
-
-            const venom_path = try std.fmt.allocPrint(
-                session.allocator,
-                "/nodes/{s}/venoms/{s}",
-                .{ node_id, venom_id },
-            );
-            defer session.allocator.free(venom_path);
-            const endpoint_path = blk: {
-                if (try session.firstVenomMountPath(venom_dir_id)) |value| break :blk value;
-                break :blk try session.venomEndpointPath(venom_dir_id);
-            };
-            defer if (endpoint_path) |value| session.allocator.free(value);
-            const invoke_path = try session.deriveVenomInvokePath(node_id, venom_id, venom_dir_id);
-            defer if (invoke_path) |value| session.allocator.free(value);
-
-            try appendAgentVenomIndexEntry(
-                session,
-                &out,
-                &first,
-                node_id,
-                venom_id,
-                venom_path,
-                endpoint_path,
-                invoke_path,
-                "node",
-                null,
-                null,
-            );
-        }
-    }
-
     try appendScopedVenomBindingIndexEntriesForPrefix(session, &out, &first, binding_prefix, binding_owner_id);
     try out.append(session.allocator, ']');
     return out.toOwnedSlice(session.allocator);

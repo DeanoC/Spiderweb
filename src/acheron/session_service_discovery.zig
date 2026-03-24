@@ -26,6 +26,11 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
             if (enabled == .bool and !enabled.bool) continue;
         }
         if (!venom_model.isCapabilityVenomId(package_id)) continue;
+        if (venom_model.isExplicitBindOnlyCapabilityVenomId(package_id) and
+            !sessionHasPublishedCapabilityProvider(session, package_id))
+        {
+            continue;
+        }
 
         const kind = getString(item.object, "kind") orelse package_id;
         const version = getString(item.object, "version") orelse "1";
@@ -66,6 +71,31 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
 
     try out.append(session.allocator, ']');
     return out.toOwnedSlice(session.allocator);
+}
+
+fn sessionHasPublishedCapabilityProvider(session: anytype, package_id: []const u8) bool {
+    const nodes_root = session.nodes.get(session.nodes_root_id) orelse return false;
+    var node_it = nodes_root.children.iterator();
+    while (node_it.next()) |node_entry| {
+        const node_dir_id = node_entry.value_ptr.*;
+        const venoms_root_id = session.lookupChild(node_dir_id, "venoms") orelse continue;
+        const venoms_root = session.nodes.get(venoms_root_id) orelse continue;
+        if (venoms_root.kind != .dir) continue;
+
+        var venom_it = venoms_root.children.iterator();
+        while (venom_it.next()) |venom_entry| {
+            const venom_id = venom_entry.key_ptr.*;
+            if (!venom_model.isCapabilityVenomId(venom_id)) continue;
+            if (std.mem.eql(u8, venom_id, package_id)) return true;
+            if (std.mem.startsWith(u8, venom_id, package_id) and
+                venom_id.len > package_id.len and
+                venom_id[package_id.len] == '-')
+            {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {

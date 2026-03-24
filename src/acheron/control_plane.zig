@@ -8709,6 +8709,8 @@ test "acheron_control_plane: dev template seeds canonical development binds" {
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/git\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/search_code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/computer\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/browser\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/events\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/library\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/chat\"") == null);
@@ -8965,6 +8967,34 @@ test "acheron_control_plane: builtin terminal package accepts local node export 
     const upserted = try plane.nodeVenomUpsert(upsert_req);
     defer allocator.free(upserted);
     try std.testing.expect(std.mem.indexOf(u8, upserted, "\"venom_id\":\"terminal\"") != null);
+}
+
+test "acheron_control_plane: builtin computer and browser packages accept node export upsert" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.init(allocator);
+    defer plane.deinit();
+
+    const joined = try plane.ensureNode("mac-capabilities", "", 60_000);
+    defer allocator.free(joined);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
+    defer parsed.deinit();
+    const node_id = parsed.value.object.get("node_id").?.string;
+    const node_secret = parsed.value.object.get("node_secret").?.string;
+
+    const upsert_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"macos\",\"arch\":\"arm64\",\"runtime_kind\":\"native\"}},\"venoms\":[" ++
+            "{{\"venom_id\":\"computer-main\",\"package_id\":\"computer\",\"kind\":\"computer\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{\"host_capabilities\":[\"macos_accessibility\",\"screen_capture\"]}},\"endpoints\":[\"/nodes/{s}/venoms/computer-main\"],\"mounts\":[{{\"mount_id\":\"computer-main\",\"mount_path\":\"/nodes/{s}/venoms/computer-main\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"observe\":true,\"act\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"computer-observe-act-v1\"}}}}," ++
+            "{{\"venom_id\":\"browser-main\",\"package_id\":\"browser\",\"kind\":\"browser\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{\"host_capabilities\":[\"managed_browser\"]}},\"endpoints\":[\"/nodes/{s}/venoms/browser-main\"],\"mounts\":[{{\"mount_id\":\"browser-main\",\"mount_path\":\"/nodes/{s}/venoms/browser-main\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"observe\":true,\"act\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"browser-observe-act-v1\"}}}}" ++
+            "]}}",
+        .{ node_id, node_secret, node_id, node_id, node_id, node_id },
+    );
+    defer allocator.free(upsert_req);
+
+    const upserted = try plane.nodeVenomUpsert(upsert_req);
+    defer allocator.free(upserted);
+    try std.testing.expect(std.mem.indexOf(u8, upserted, "\"venom_id\":\"computer-main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, upserted, "\"venom_id\":\"browser-main\"") != null);
 }
 
 test "acheron_control_plane: node venom upsert honors package_id alias" {

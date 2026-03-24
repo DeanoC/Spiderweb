@@ -2826,8 +2826,8 @@ const AgentRuntimeRegistry = struct {
         _ = workspace_token;
         const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
             self.allocator,
-            "external_worker_required",
-            "external worker required; mount the workspace and start Spider Monkey",
+            "external_runtime_required",
+            "external runtime required; mount the workspace and start Spider Monkey",
         );
         errdefer runtime_handle.destroy();
         return .{
@@ -4742,7 +4742,7 @@ fn handleWebSocketConnection(
                             const response = try unified.buildFsrpcError(
                                 allocator,
                                 parsed.tag,
-                                "external_worker_required",
+                                "external_runtime_required",
                                 "embedded runtime websocket access is removed; call control.session_attach with a workspace_id before using namespace fsrpc",
                             );
                             defer allocator.free(response);
@@ -5353,7 +5353,7 @@ fn expectLegacyAcheronRejected(allocator: std.mem.Allocator, client: *std.net.St
     var rejection = try readServerFrame(allocator, client);
     defer rejection.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, rejection.payload, "\"type\":\"acheron.r_error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rejection.payload, "\"code\":\"external_worker_required\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rejection.payload, "\"code\":\"external_runtime_required\"") != null);
 
     var close_reply = try readServerFrame(allocator, client);
     defer close_reply.deinit(allocator);

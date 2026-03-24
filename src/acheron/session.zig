@@ -105,7 +105,7 @@ const workspace_agents_contract_path = session_workspace_contract.workspace_agen
 const workspace_agents_heading = session_workspace_contract.workspace_agents_heading;
 const workspace_agents_managed_begin = session_workspace_contract.workspace_agents_managed_begin;
 const workspace_agents_managed_end = session_workspace_contract.workspace_agents_managed_end;
-const worker_reap_grace_ms: i64 = 60_000;
+const runtime_reap_grace_ms: i64 = 60_000;
 const acheron_protocol_json =
     "{\"channel\":\"acheron\",\"version\":\"acheron-1\",\"layout\":\"acheron-namespace-workspace-contract\",\"ops\":[\"t_version\",\"t_attach\",\"t_walk\",\"t_open\",\"t_read\",\"t_write\",\"t_stat\",\"t_clunk\",\"t_flush\"]}";
 
@@ -326,12 +326,12 @@ const InternalFsrpcIds = struct {
     tag_base: u32,
 };
 
-const WorkerPresence = struct {
+const RuntimePresence = struct {
     agent_id: []u8,
     last_seen_ms: i64,
     expires_at_ms: i64,
 
-    fn deinit(self: *WorkerPresence, allocator: std.mem.Allocator) void {
+    fn deinit(self: *RuntimePresence, allocator: std.mem.Allocator) void {
         allocator.free(self.agent_id);
         self.* = undefined;
     }
@@ -490,7 +490,7 @@ pub const Session = struct {
     terminal_sessions: std.StringHashMapUnmanaged(TerminalSession) = .{},
     current_terminal_session_id: ?[]u8 = null,
     next_terminal_session_seq: u64 = 1,
-    worker_presence: std.StringHashMapUnmanaged(WorkerPresence) = .{},
+    runtime_presence: std.StringHashMapUnmanaged(RuntimePresence) = .{},
     local_fs_lock_files: std.StringHashMapUnmanaged(LocalFsLockEntry) = .{},
     workspace_binds: std.ArrayListUnmanaged(PathBind) = .{},
     scoped_venom_bindings: std.ArrayListUnmanaged(ScopedVenomBinding) = .{},
@@ -616,7 +616,7 @@ pub const Session = struct {
         self.clearTerminalSessions();
         self.clearWorkspaceBinds();
         self.clearScopedVenomBindings();
-        self.clearWorkerPresence();
+        self.clearRuntimePresence();
         self.clearLocalFsLockFiles();
         self.node_aliases.deinit(self.allocator);
         self.clearWorkspaceMountFsAuthTokens();
@@ -707,15 +707,15 @@ pub const Session = struct {
         self.namespace_mount_ready = false;
     }
 
-    fn clearWorkerPresence(self: *Session) void {
-        var it = self.worker_presence.iterator();
+    fn clearRuntimePresence(self: *Session) void {
+        var it = self.runtime_presence.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
             var presence = entry.value_ptr.*;
             presence.deinit(self.allocator);
         }
-        self.worker_presence.deinit(self.allocator);
-        self.worker_presence = .{};
+        self.runtime_presence.deinit(self.allocator);
+        self.runtime_presence = .{};
     }
 
     fn clearLocalFsLockFiles(self: *Session) void {
@@ -1028,8 +1028,8 @@ pub const Session = struct {
         }
         var timer = try std.time.Timer.start();
 
-        try self.reapExpiredWorkerNodes();
-        try self.refreshWorkerPresenceStatuses();
+        try self.reapExpiredRuntimeNodes();
+        try self.refreshRuntimePresenceStatuses();
         if (dir_id == self.nodes_root_id) {
             try self.addNodeDirectoriesFromControlPlane(self.nodes_root_id);
         }
@@ -2837,41 +2837,41 @@ pub const Session = struct {
         _ = try self.addFile(dir_id, "CAPS.json", caps_json, false, .none);
     }
 
-    pub fn ensureWorkerLoopbackNode(self: *Session, worker_id: []const u8, agent_id: []const u8, venoms: []const []const u8) !void {
+    pub fn ensureRuntimeLoopbackNode(self: *Session, runtime_id: []const u8, agent_id: []const u8, venoms: []const []const u8) !void {
         const nodes_root = self.lookupChild(self.root_id, "nodes") orelse return error.InvalidPayload;
-        const node_dir_id = if (self.lookupChild(nodes_root, worker_id)) |existing|
+        const node_dir_id = if (self.lookupChild(nodes_root, runtime_id)) |existing|
             existing
         else
-            try self.addDir(nodes_root, worker_id, false);
+            try self.addDir(nodes_root, runtime_id, false);
 
-        try self.ensureWorkerFile(node_dir_id, "README.md", "External worker node projected into this mounted workspace session.\n", false, .none);
-        try self.ensureWorkerFile(node_dir_id, "SCHEMA.json", "{\"kind\":\"node\",\"children\":\"venoms + worker metadata\"}", false, .none);
-        try self.ensureWorkerFile(node_dir_id, "CAPS.json", "{\"worker_owned\":true,\"venoms\":true}", false, .none);
-        const status_json = try self.renderWorkerNodeStatusJson(worker_id, agent_id);
+        try self.ensureRuntimeFile(node_dir_id, "README.md", "External runtime node projected into this mounted workspace session.\n", false, .none);
+        try self.ensureRuntimeFile(node_dir_id, "SCHEMA.json", "{\"kind\":\"node\",\"children\":\"venoms + runtime metadata\"}", false, .none);
+        try self.ensureRuntimeFile(node_dir_id, "CAPS.json", "{\"runtime_owned\":true,\"venoms\":true}", false, .none);
+        const status_json = try self.renderRuntimeNodeStatusJson(runtime_id, agent_id);
         defer self.allocator.free(status_json);
-        try self.ensureWorkerFile(node_dir_id, "STATUS.json", status_json, false, .none);
-        try self.ensureWorkerFile(node_dir_id, "NODE.json", status_json, false, .none);
+        try self.ensureRuntimeFile(node_dir_id, "STATUS.json", status_json, false, .none);
+        try self.ensureRuntimeFile(node_dir_id, "NODE.json", status_json, false, .none);
 
         const venoms_root_id = if (self.lookupChild(node_dir_id, "venoms")) |existing|
             existing
         else
             try self.addDir(node_dir_id, "venoms", false);
-        try self.ensureWorkerFile(
+        try self.ensureRuntimeFile(
             venoms_root_id,
             "README.md",
-            "Worker-owned loopback venoms. External agents may read and write these files directly within the mounted workspace.\n",
+            "Runtime-owned loopback venoms. External runtimes may read and write these files directly within the mounted workspace.\n",
             false,
             .none,
         );
-        try self.ensureWorkerFile(
+        try self.ensureRuntimeFile(
             venoms_root_id,
             "SCHEMA.json",
-            "{\"kind\":\"collection\",\"entries\":\"worker venoms\",\"shape\":\"/nodes/<worker_id>/venoms/<venom_id>/{README.md,SCHEMA.json,CAPS.json,OPS.json,STATUS.json,status.json,result.json,control/*}\"}",
+            "{\"kind\":\"collection\",\"entries\":\"runtime venoms\",\"shape\":\"/nodes/<runtime_id>/venoms/<venom_id>/{README.md,SCHEMA.json,CAPS.json,OPS.json,STATUS.json,status.json,result.json,control/*}\"}",
             false,
             .none,
         );
-        try self.ensureWorkerFile(venoms_root_id, "CAPS.json", "{\"discover\":true,\"invoke_via_paths\":true,\"worker_owned\":true}", false, .none);
-        try self.ensureWorkerFile(venoms_root_id, "VENOMS.json", "[]", false, .none);
+        try self.ensureRuntimeFile(venoms_root_id, "CAPS.json", "{\"discover\":true,\"invoke_via_paths\":true,\"runtime_owned\":true}", false, .none);
+        try self.ensureRuntimeFile(venoms_root_id, "VENOMS.json", "[]", false, .none);
 
         for (venoms) |venom_id| {
             if (std.mem.eql(u8, venom_id, "memory")) {
@@ -2879,18 +2879,18 @@ pub const Session = struct {
                     existing
                 else
                     try self.addDir(venoms_root_id, "memory", false);
-                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/memory", .{worker_id});
+                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/memory", .{runtime_id});
                 defer self.allocator.free(base_path);
-                try runtimes_venom.seedPassiveWorkerMemoryNamespaceAt(self, memory_dir_id, base_path, worker_id, agent_id);
+                try runtimes_venom.seedPassiveWorkerMemoryNamespaceAt(self, memory_dir_id, base_path, runtime_id, agent_id);
                 try self.seedBuiltinPackageMetadata(memory_dir_id, "memory");
             } else if (std.mem.eql(u8, venom_id, "sub_brains")) {
                 const sub_brains_dir_id = if (self.lookupChild(venoms_root_id, "sub_brains")) |existing|
                     existing
                 else
                     try self.addDir(venoms_root_id, "sub_brains", false);
-                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/sub_brains", .{worker_id});
+                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/sub_brains", .{runtime_id});
                 defer self.allocator.free(base_path);
-                try runtimes_venom.seedPassiveWorkerSubBrainsNamespaceAt(self, sub_brains_dir_id, base_path, worker_id, agent_id);
+                try runtimes_venom.seedPassiveWorkerSubBrainsNamespaceAt(self, sub_brains_dir_id, base_path, runtime_id, agent_id);
                 try self.seedBuiltinPackageMetadata(sub_brains_dir_id, "sub_brains");
             } else {
                 var package = (try self.cloneRuntimeVenomPackage(venom_id)) orelse continue;
@@ -2900,20 +2900,20 @@ pub const Session = struct {
                     existing
                 else
                     try self.addDir(venoms_root_id, venom_id, false);
-                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ worker_id, venom_id });
+                const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ runtime_id, venom_id });
                 defer self.allocator.free(base_path);
-                try self.seedGenericRuntimeLoopbackVenomNamespaceAt(venom_dir_id, base_path, worker_id, agent_id, package);
+                try self.seedGenericRuntimeLoopbackVenomNamespaceAt(venom_dir_id, base_path, runtime_id, agent_id, package);
             }
         }
 
-        try self.refreshNodeVenomsIndex(worker_id);
+        try self.refreshNodeVenomsIndex(runtime_id);
         try self.refreshScopedVenomIndexes();
     }
 
-    pub fn recordWorkerHeartbeat(self: *Session, worker_id: []const u8, agent_id: []const u8, ttl_ms: u64) !void {
+    pub fn recordRuntimeHeartbeat(self: *Session, runtime_id: []const u8, agent_id: []const u8, ttl_ms: u64) !void {
         const now_ms = std.time.milliTimestamp();
         const expires_at_ms = now_ms + @as(i64, @intCast(ttl_ms));
-        const entry = try self.worker_presence.getOrPut(self.allocator, worker_id);
+        const entry = try self.runtime_presence.getOrPut(self.allocator, runtime_id);
         if (entry.found_existing) {
             if (!std.mem.eql(u8, entry.value_ptr.agent_id, agent_id)) {
                 self.allocator.free(entry.value_ptr.agent_id);
@@ -2924,7 +2924,7 @@ pub const Session = struct {
             return;
         }
 
-        entry.key_ptr.* = try self.allocator.dupe(u8, worker_id);
+        entry.key_ptr.* = try self.allocator.dupe(u8, runtime_id);
         entry.value_ptr.* = .{
             .agent_id = try self.allocator.dupe(u8, agent_id),
             .last_seen_ms = now_ms,
@@ -2932,28 +2932,28 @@ pub const Session = struct {
         };
     }
 
-    pub fn detachWorkerLoopbackNode(self: *Session, worker_id: []const u8) anyerror!void {
-        if (self.worker_presence.fetchRemove(worker_id)) |removed| {
+    pub fn detachRuntimeLoopbackNode(self: *Session, runtime_id: []const u8) anyerror!void {
+        if (self.runtime_presence.fetchRemove(runtime_id)) |removed| {
             self.allocator.free(removed.key);
             var presence = removed.value;
             presence.deinit(self.allocator);
         }
 
         const nodes_root = self.lookupChild(self.root_id, "nodes") orelse return;
-        const worker_node_dir_id = self.lookupChild(nodes_root, worker_id) orelse return;
+        const runtime_node_dir_id = self.lookupChild(nodes_root, runtime_id) orelse return;
 
-        try self.deleteNodeRecursive(worker_node_dir_id);
+        try self.deleteNodeRecursive(runtime_node_dir_id);
         try self.refreshScopedVenomIndexes();
     }
 
-    fn refreshWorkerPresenceStatuses(self: *Session) !void {
-        var it = self.worker_presence.iterator();
+    fn refreshRuntimePresenceStatuses(self: *Session) !void {
+        var it = self.runtime_presence.iterator();
         while (it.next()) |entry| {
-            const worker_id = entry.key_ptr.*;
+            const runtime_id = entry.key_ptr.*;
             const presence = entry.value_ptr.*;
             const nodes_root = self.lookupChild(self.root_id, "nodes") orelse continue;
-            const node_dir_id = self.lookupChild(nodes_root, worker_id) orelse continue;
-            const status_json = try self.renderWorkerNodeStatusJson(worker_id, presence.agent_id);
+            const node_dir_id = self.lookupChild(nodes_root, runtime_id) orelse continue;
+            const status_json = try self.renderRuntimeNodeStatusJson(runtime_id, presence.agent_id);
             defer self.allocator.free(status_json);
             if (self.lookupChild(node_dir_id, "STATUS.json")) |status_id| {
                 try self.setFileContent(status_id, status_json);
@@ -2964,31 +2964,31 @@ pub const Session = struct {
         }
     }
 
-    fn reapExpiredWorkerNodes(self: *Session) !void {
+    fn reapExpiredRuntimeNodes(self: *Session) !void {
         var expired = std.ArrayListUnmanaged([]const u8){};
         defer expired.deinit(self.allocator);
 
         const now_ms = std.time.milliTimestamp();
-        var it = self.worker_presence.iterator();
+        var it = self.runtime_presence.iterator();
         while (it.next()) |entry| {
             const presence = entry.value_ptr.*;
             if (presence.expires_at_ms <= 0) continue;
-            if (now_ms <= presence.expires_at_ms + worker_reap_grace_ms) continue;
+            if (now_ms <= presence.expires_at_ms + runtime_reap_grace_ms) continue;
             try expired.append(self.allocator, try self.allocator.dupe(u8, entry.key_ptr.*));
         }
-        defer for (expired.items) |worker_id| self.allocator.free(worker_id);
+        defer for (expired.items) |runtime_id| self.allocator.free(runtime_id);
 
-        for (expired.items) |worker_id| {
-            try self.detachWorkerLoopbackNode(worker_id);
+        for (expired.items) |runtime_id| {
+            try self.detachRuntimeLoopbackNode(runtime_id);
         }
     }
 
-    fn renderWorkerNodeStatusJson(self: *Session, worker_id: []const u8, default_agent_id: []const u8) ![]u8 {
+    fn renderRuntimeNodeStatusJson(self: *Session, runtime_id: []const u8, default_agent_id: []const u8) ![]u8 {
         const now_ms = std.time.milliTimestamp();
         var agent_id = default_agent_id;
         var last_seen_ms: i64 = 0;
         var expires_at_ms: i64 = 0;
-        if (self.worker_presence.get(worker_id)) |presence| {
+        if (self.runtime_presence.get(runtime_id)) |presence| {
             agent_id = presence.agent_id;
             last_seen_ms = presence.last_seen_ms;
             expires_at_ms = presence.expires_at_ms;
@@ -2996,11 +2996,11 @@ pub const Session = struct {
         const online = expires_at_ms > now_ms;
         return std.fmt.allocPrint(
             self.allocator,
-            "{{\"node_id\":\"{s}\",\"node_name\":\"{s}\",\"state\":\"{s}\",\"online\":{s},\"agent_id\":\"{s}\",\"last_seen_ms\":{d},\"expires_at_ms\":{d},\"source\":\"worker_registration\"}}",
+            "{{\"node_id\":\"{s}\",\"node_name\":\"{s}\",\"state\":\"{s}\",\"online\":{s},\"agent_id\":\"{s}\",\"last_seen_ms\":{d},\"expires_at_ms\":{d},\"source\":\"runtime_registration\"}}",
             .{
-                worker_id,
-                worker_id,
-                if (online) "worker_attached" else "worker_stale",
+                runtime_id,
+                runtime_id,
+                if (online) "runtime_attached" else "runtime_stale",
                 if (online) "true" else "false",
                 agent_id,
                 last_seen_ms,
@@ -3039,7 +3039,7 @@ pub const Session = struct {
         doomed.deinit(self.allocator);
     }
 
-    pub fn ensureWorkerFile(
+    pub fn ensureRuntimeFile(
         self: *Session,
         parent_id: u32,
         name: []const u8,
@@ -3636,7 +3636,7 @@ pub const Session = struct {
         self: *Session,
         venom_dir_id: u32,
         base_path: []const u8,
-        worker_id: []const u8,
+        runtime_id: []const u8,
         agent_id: []const u8,
         package: venom_package.VenomPackage,
     ) !void {
@@ -3644,7 +3644,7 @@ pub const Session = struct {
             self,
             venom_dir_id,
             base_path,
-            worker_id,
+            runtime_id,
             agent_id,
             package,
         );

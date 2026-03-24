@@ -175,15 +175,15 @@ fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, written: usize
 }
 
 fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
-    const worker_id = extractOptionalStringByNames(args_obj, &[_][]const u8{ "worker_id", "node_id" }) orelse return error.InvalidPayload;
-    if (!isValidIdentifier(worker_id)) return error.InvalidPayload;
+    const runtime_id = extractOptionalStringByNames(args_obj, &[_][]const u8{ "runtime_id", "worker_id", "node_id" }) orelse return error.InvalidPayload;
+    if (!isValidIdentifier(runtime_id)) return error.InvalidPayload;
     const agent_id = extractOptionalStringByNames(args_obj, &[_][]const u8{"agent_id"}) orelse self.agent_id;
     if (!isValidIdentifier(agent_id)) return error.InvalidPayload;
     const ttl_ms = extractOptionalU64(args_obj, "ttl_ms") orelse default_runtime_ttl_ms;
 
     if (op == .detach) {
-        try self.detachWorkerLoopbackNode(worker_id);
-        return buildDetachResultJson(self, worker_id, agent_id);
+        try self.detachRuntimeLoopbackNode(runtime_id);
+        return buildDetachResultJson(self, runtime_id, agent_id);
     }
 
     var venoms = std.ArrayListUnmanaged([]const u8){};
@@ -194,15 +194,15 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
         try control_plane.validateRuntimeVenomInstantiation(venoms.items);
     } else {
         for (venoms.items) |venom_id| {
-            if (!isSupportedWorkerVenom(venom_id)) return error.InvalidPayload;
+            if (!isSupportedRuntimeVenom(venom_id)) return error.InvalidPayload;
         }
     }
 
-    try self.recordWorkerHeartbeat(worker_id, agent_id, ttl_ms);
-    try self.ensureWorkerLoopbackNode(worker_id, agent_id, venoms.items);
+    try self.recordRuntimeHeartbeat(runtime_id, agent_id, ttl_ms);
+    try self.ensureRuntimeLoopbackNode(runtime_id, agent_id, venoms.items);
     return switch (op) {
-        .register => buildRegisterResultJson(self, worker_id, agent_id, venoms.items),
-        .heartbeat => buildHeartbeatResultJson(self, worker_id, agent_id, ttl_ms),
+        .register => buildRegisterResultJson(self, runtime_id, agent_id, venoms.items),
+        .heartbeat => buildHeartbeatResultJson(self, runtime_id, agent_id, ttl_ms),
         .detach => unreachable,
     };
 }
@@ -328,15 +328,15 @@ fn ensureFile(
     _ = try self.addFile(parent_id, name, content, writable, special);
 }
 
-fn buildRegisterResultJson(self: anytype, worker_id: []const u8, agent_id: []const u8, venoms: []const []const u8) ![]u8 {
-    const node_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}", .{worker_id});
+fn buildRegisterResultJson(self: anytype, runtime_id: []const u8, agent_id: []const u8, venoms: []const []const u8) ![]u8 {
+    const node_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}", .{runtime_id});
     defer self.allocator.free(node_path);
     var venoms_json = std.ArrayListUnmanaged(u8){};
     defer venoms_json.deinit(self.allocator);
     try venoms_json.append(self.allocator, '[');
     for (venoms, 0..) |venom_id, idx| {
         if (idx != 0) try venoms_json.append(self.allocator, ',');
-        const venom_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ worker_id, venom_id });
+        const venom_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ runtime_id, venom_id });
         defer self.allocator.free(venom_path);
         const escaped_venom_id = try unified.jsonEscape(self.allocator, venom_id);
         defer self.allocator.free(escaped_venom_id);
@@ -349,45 +349,45 @@ fn buildRegisterResultJson(self: anytype, worker_id: []const u8, agent_id: []con
     }
     try venoms_json.append(self.allocator, ']');
 
-    const escaped_worker_id = try unified.jsonEscape(self.allocator, worker_id);
-    defer self.allocator.free(escaped_worker_id);
+    const escaped_runtime_id = try unified.jsonEscape(self.allocator, runtime_id);
+    defer self.allocator.free(escaped_runtime_id);
     const escaped_agent_id = try unified.jsonEscape(self.allocator, agent_id);
     defer self.allocator.free(escaped_agent_id);
     const escaped_node_path = try unified.jsonEscape(self.allocator, node_path);
     defer self.allocator.free(escaped_node_path);
-    const expires_at_ms = currentWorkerExpiry(self, worker_id);
+    const expires_at_ms = currentRuntimeExpiry(self, runtime_id);
     const result_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"ok\":true,\"worker_id\":\"{s}\",\"agent_id\":\"{s}\",\"node_id\":\"{s}\",\"node_path\":\"{s}\",\"venoms\":{s},\"expires_at_ms\":{d}}}",
-        .{ escaped_worker_id, escaped_agent_id, escaped_worker_id, escaped_node_path, venoms_json.items, expires_at_ms },
+        "{{\"ok\":true,\"runtime_id\":\"{s}\",\"agent_id\":\"{s}\",\"node_id\":\"{s}\",\"node_path\":\"{s}\",\"venoms\":{s},\"expires_at_ms\":{d}}}",
+        .{ escaped_runtime_id, escaped_agent_id, escaped_runtime_id, escaped_node_path, venoms_json.items, expires_at_ms },
     );
     defer self.allocator.free(result_json);
     return buildSuccessResultJson(self, .register, result_json);
 }
 
-fn buildHeartbeatResultJson(self: anytype, worker_id: []const u8, agent_id: []const u8, ttl_ms: u64) ![]u8 {
-    const escaped_worker_id = try unified.jsonEscape(self.allocator, worker_id);
-    defer self.allocator.free(escaped_worker_id);
+fn buildHeartbeatResultJson(self: anytype, runtime_id: []const u8, agent_id: []const u8, ttl_ms: u64) ![]u8 {
+    const escaped_runtime_id = try unified.jsonEscape(self.allocator, runtime_id);
+    defer self.allocator.free(escaped_runtime_id);
     const escaped_agent_id = try unified.jsonEscape(self.allocator, agent_id);
     defer self.allocator.free(escaped_agent_id);
     const result_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"ok\":true,\"worker_id\":\"{s}\",\"agent_id\":\"{s}\",\"ttl_ms\":{d},\"expires_at_ms\":{d}}}",
-        .{ escaped_worker_id, escaped_agent_id, ttl_ms, currentWorkerExpiry(self, worker_id) },
+        "{{\"ok\":true,\"runtime_id\":\"{s}\",\"agent_id\":\"{s}\",\"ttl_ms\":{d},\"expires_at_ms\":{d}}}",
+        .{ escaped_runtime_id, escaped_agent_id, ttl_ms, currentRuntimeExpiry(self, runtime_id) },
     );
     defer self.allocator.free(result_json);
     return buildSuccessResultJson(self, .heartbeat, result_json);
 }
 
-fn buildDetachResultJson(self: anytype, worker_id: []const u8, agent_id: []const u8) ![]u8 {
-    const escaped_worker_id = try unified.jsonEscape(self.allocator, worker_id);
-    defer self.allocator.free(escaped_worker_id);
+fn buildDetachResultJson(self: anytype, runtime_id: []const u8, agent_id: []const u8) ![]u8 {
+    const escaped_runtime_id = try unified.jsonEscape(self.allocator, runtime_id);
+    defer self.allocator.free(escaped_runtime_id);
     const escaped_agent_id = try unified.jsonEscape(self.allocator, agent_id);
     defer self.allocator.free(escaped_agent_id);
     const result_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"ok\":true,\"worker_id\":\"{s}\",\"agent_id\":\"{s}\",\"detached\":true}}",
-        .{ escaped_worker_id, escaped_agent_id },
+        "{{\"ok\":true,\"runtime_id\":\"{s}\",\"agent_id\":\"{s}\",\"detached\":true}}",
+        .{ escaped_runtime_id, escaped_agent_id },
     );
     defer self.allocator.free(result_json);
     return buildSuccessResultJson(self, .detach, result_json);
@@ -437,12 +437,12 @@ fn extractOptionalU64(obj: std.json.ObjectMap, name: []const u8) ?u64 {
     return null;
 }
 
-fn currentWorkerExpiry(self: anytype, worker_id: []const u8) i64 {
-    if (self.worker_presence.get(worker_id)) |presence| return presence.expires_at_ms;
+fn currentRuntimeExpiry(self: anytype, runtime_id: []const u8) i64 {
+    if (self.runtime_presence.get(runtime_id)) |presence| return presence.expires_at_ms;
     return 0;
 }
 
-fn isSupportedWorkerVenom(venom_id: []const u8) bool {
+fn isSupportedRuntimeVenom(venom_id: []const u8) bool {
     inline for (default_runtime_venoms) |supported| {
         if (std.mem.eql(u8, venom_id, supported)) return true;
     }

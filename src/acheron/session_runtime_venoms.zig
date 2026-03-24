@@ -43,12 +43,12 @@ pub fn seedGenericRuntimeLoopbackVenomNamespaceAt(
     defer session.allocator.free(shape_json);
 
     const readme = package.help_md orelse "Runtime-owned loopback venom projected for an attached external runtime.\n";
-    try session.ensureWorkerFile(venom_dir_id, "README.md", readme, false, .none);
-    try session.ensureWorkerFile(venom_dir_id, "SCHEMA.json", shape_json, false, .none);
-    try session.ensureWorkerFile(venom_dir_id, "CAPS.json", package.capabilities_json, false, .none);
-    try session.ensureWorkerFile(venom_dir_id, "OPS.json", package.ops_json, false, .none);
-    try session.ensureWorkerFile(venom_dir_id, "RUNTIME.json", package.runtime_json, false, .none);
-    try session.ensureWorkerFile(venom_dir_id, "PERMISSIONS.json", package.permissions_json, false, .none);
+    try session.ensureRuntimeFile(venom_dir_id, "README.md", readme, false, .none);
+    try session.ensureRuntimeFile(venom_dir_id, "SCHEMA.json", shape_json, false, .none);
+    try session.ensureRuntimeFile(venom_dir_id, "CAPS.json", package.capabilities_json, false, .none);
+    try session.ensureRuntimeFile(venom_dir_id, "OPS.json", package.ops_json, false, .none);
+    try session.ensureRuntimeFile(venom_dir_id, "RUNTIME.json", package.runtime_json, false, .none);
+    try session.ensureRuntimeFile(venom_dir_id, "PERMISSIONS.json", package.permissions_json, false, .none);
     try seedPackageMetadata(session, venom_dir_id, package);
 
     const status_json = try std.fmt.allocPrint(
@@ -57,15 +57,15 @@ pub fn seedGenericRuntimeLoopbackVenomNamespaceAt(
         .{ package.venom_id, worker_id, agent_id },
     );
     defer session.allocator.free(status_json);
-    try session.ensureWorkerFile(venom_dir_id, "STATUS.json", status_json, false, .none);
-    try session.ensureWorkerFile(venom_dir_id, "status.json", "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}", true, .none);
-    try session.ensureWorkerFile(venom_dir_id, "result.json", "{\"ok\":false,\"result\":null,\"error\":null}", true, .none);
+    try session.ensureRuntimeFile(venom_dir_id, "STATUS.json", status_json, false, .none);
+    try session.ensureRuntimeFile(venom_dir_id, "status.json", "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}", true, .none);
+    try session.ensureRuntimeFile(venom_dir_id, "result.json", "{\"ok\":false,\"result\":null,\"error\":null}", true, .none);
 
     const control_dir = if (session.lookupChild(venom_dir_id, "control")) |existing|
         existing
     else
         try session.addDir(venom_dir_id, "control", false);
-    try session.ensureWorkerFile(control_dir, "README.md", "External runtime watches and writes this loopback venom namespace directly.\n", false, .none);
+    try session.ensureRuntimeFile(control_dir, "README.md", "External runtime watches and writes this loopback venom namespace directly.\n", false, .none);
     try seedRuntimeControlFilesFromOpsJson(session, control_dir, package.ops_json);
 }
 
@@ -95,5 +95,5 @@ pub fn ensureRuntimeControlFileFromPath(session: anytype, control_dir: u32, raw_
     }
     const name = std.fs.path.basename(relative);
     if (name.len == 0) return;
-    try session.ensureWorkerFile(control_dir, name, "", true, .none);
+    try session.ensureRuntimeFile(control_dir, name, "", true, .none);
 }

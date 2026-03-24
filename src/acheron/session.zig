@@ -4318,6 +4318,8 @@ pub const Session = struct {
     }
 
     fn refreshBoundVenomProxyDirectory(self: *Session, dir_id: u32) !void {
+        if ((try self.localFsNodeHostPath(dir_id)) != null) return;
+
         const absolute_path = try self.nodeAbsolutePath(dir_id);
         defer self.allocator.free(absolute_path);
 
@@ -4326,15 +4328,6 @@ pub const Session = struct {
 
         var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return;
         defer router.deinit();
-        std.log.warn(
-            "mounted export refresh start: path={s} remote={s} node={s} export={s}",
-            .{
-                absolute_path,
-                proxy.remote_path,
-                proxy.provider_node_id orelse "(none)",
-                proxy.provider_export_name orelse "(none)",
-            },
-        );
 
         var seen_names = std.ArrayListUnmanaged([]u8){};
         defer {
@@ -4351,10 +4344,6 @@ pub const Session = struct {
                 return;
             };
             defer self.allocator.free(listing_json);
-            std.log.warn(
-                "mounted export refresh page: path={s} remote={s} cookie={d} bytes={d}",
-                .{ absolute_path, proxy.remote_path, cookie, listing_json.len },
-            );
             const next_cookie = try self.applyBoundVenomProxyListing(dir_id, listing_json, &seen_names);
             if (next_cookie == 0 or next_cookie <= cookie) break;
             cookie = next_cookie;

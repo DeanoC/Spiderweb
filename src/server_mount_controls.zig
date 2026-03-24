@@ -1,6 +1,6 @@
 const std = @import("std");
 const unified = @import("spider-protocol").unified;
-const acheron_session_mod = @import("acheron/session.zig");
+const namespace_session_mod = @import("acheron/session.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
 const server_control_payloads = @import("server_control_payloads.zig");
 const server_mount_graph_io = @import("server_mount_graph_io.zig");
@@ -25,7 +25,7 @@ const decodeStandardBase64Owned = server_control_payloads.decodeStandardBase64Ow
 pub fn handleMountAttachControl(
     allocator: std.mem.Allocator,
     runtime_registry: anytype,
-    namespace_session: *?acheron_session_mod.Session,
+    namespace_session: *?namespace_session_mod.Session,
     binding: server_session_bindings.SessionBinding,
     session_key: []const u8,
     trusted_namespace_mount_url: ?[]const u8,
@@ -85,7 +85,7 @@ pub fn handleMountAttachControl(
 pub fn handleMountFileReadControl(
     allocator: std.mem.Allocator,
     runtime_registry: anytype,
-    namespace_session: *?acheron_session_mod.Session,
+    namespace_session: *?namespace_session_mod.Session,
     binding: server_session_bindings.SessionBinding,
     session_key: []const u8,
     trusted_namespace_mount_url: ?[]const u8,
@@ -142,7 +142,7 @@ pub fn handleMountFileReadControl(
 pub fn handleMountFileWriteControl(
     allocator: std.mem.Allocator,
     runtime_registry: anytype,
-    namespace_session: *?acheron_session_mod.Session,
+    namespace_session: *?namespace_session_mod.Session,
     binding: server_session_bindings.SessionBinding,
     session_key: []const u8,
     trusted_namespace_mount_url: ?[]const u8,
@@ -218,7 +218,7 @@ pub fn handleMountFileWriteControl(
 pub fn handleMountPathControl(
     allocator: std.mem.Allocator,
     runtime_registry: anytype,
-    namespace_session: *?acheron_session_mod.Session,
+    namespace_session: *?namespace_session_mod.Session,
     binding: server_session_bindings.SessionBinding,
     session_key: []const u8,
     trusted_namespace_mount_url: ?[]const u8,

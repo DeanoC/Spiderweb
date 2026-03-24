@@ -92,6 +92,7 @@ const max_signal_events: usize = events_venom.max_signal_events;
 const local_fs_world_prefix = "/nodes/local/fs";
 const workspace_managed_root_name = session_workspace_contract.workspace_managed_root_name;
 const workspace_managed_root_absolute = local_fs_world_prefix ++ "/" ++ workspace_managed_root_name;
+const workspace_managed_root_projected_absolute = "/" ++ workspace_managed_root_name;
 const workspace_managed_shared_data_dir_name = session_workspace_contract.workspace_managed_shared_data_dir_name;
 const workspace_managed_control_dir_name = session_workspace_contract.workspace_managed_control_dir_name;
 const workspace_managed_catalog_dir_name = session_workspace_contract.workspace_managed_catalog_dir_name;
@@ -2083,6 +2084,23 @@ pub const Session = struct {
             try self.appendProjectBindIfMissing(.managed_entrypoint, spec.bind_path, spec.target_path);
         }
 
+        const projected_managed_bind_specs = [_]struct { bind_path: []const u8, target_path: []const u8 }{
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/protocol.json", .target_path = workspace_compat_meta_absolute ++ "/protocol.json" },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/shared_data", .target_path = "/shared_data" },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/control/packages", .target_path = workspace_compat_global_absolute ++ "/packages" },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/agent_bootstrap_quickref.json", .target_path = quickref_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/agent_bootstrap.json", .target_path = bootstrap_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/workspace_status.json", .target_path = workspace_status_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/packages.json", .target_path = packages_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/providers.json", .target_path = providers_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/bindings.json", .target_path = bindings_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/node-venom-events.ndjson", .target_path = node_venom_events_target },
+        };
+
+        for (projected_managed_bind_specs) |spec| {
+            try self.appendProjectBindIfMissing(.managed_entrypoint, spec.bind_path, spec.target_path);
+        }
+
         inline for (venom_model.production_priority_capability_ids) |venom_id| {
             const bind_path = try std.fmt.allocPrint(
                 self.allocator,
@@ -3125,7 +3143,7 @@ pub const Session = struct {
             "Library",
             shape_json,
             "{\"invoke\":false,\"operations\":[],\"discoverable\":true,\"read_only\":true}",
-            "Stable, system-wide documentation for common Spiderweb/Acheron operations.",
+            "Stable, system-wide documentation for common Spiderweb namespace operations.",
         );
         _ = try self.addFile(
             library_dir,
@@ -8868,6 +8886,62 @@ test "acheron_session: control substrate surfaces expose runtime and package ope
     defer if (packages_status) |value| allocator.free(value);
     try std.testing.expect(packages_status != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_status.?, "\"surface_id\":\"packages\"") != null);
+}
+
+test "acheron_session: projected mount graph exposes canonical packages control path" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const workspace_json = try control_plane.createWorkspace(
+        "{\"name\":\"ProjectedPackages\",\"vision\":\"Projected mount graph should expose canonical package controls\"}",
+    );
+    defer allocator.free(workspace_json);
+
+    var parsed_workspace = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed_workspace.deinit();
+    const workspace_id = parsed_workspace.value.object.get("workspace_id").?.string;
+    const workspace_token = parsed_workspace.value.object.get("workspace_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{workspace_id});
+    defer allocator.free(workspace_req);
+    const status_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(status_json);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        status_json,
+        "mount-test",
+        "/.spiderweb/control",
+        2,
+    );
+    defer allocator.free(snapshot_json);
+
+    try std.testing.expect(std.mem.indexOf(u8, snapshot_json, "\"/.spiderweb/control/packages\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot_json, "\"/.spiderweb/control/runtimes\"") != null);
 }
 
 test "acheron_session: workspace mount aliases project live mounts into the namespace" {

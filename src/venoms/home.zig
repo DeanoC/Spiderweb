@@ -31,14 +31,14 @@ pub fn seedNamespaceAt(self: anytype, home_dir: u32, base_path: []const u8) !voi
     _ = try self.addFile(
         home_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"ensure\":\"control/ensure.json\"},\"operations\":{\"ensure\":\"home_ensure\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"ensure\":\"control/ensure.json\"},\"operations\":{\"ensure\":\"home_ensure\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         home_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"agent_home\"}",
+        "{\"type\":\"namespace_local\",\"component\":\"namespace_session\",\"subject\":\"agent_home\"}",
         false,
         .none,
     );

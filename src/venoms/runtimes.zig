@@ -36,14 +36,14 @@ pub fn seedNamespaceAt(self: anytype, runtimes_dir: u32, base_path: []const u8) 
     _ = try self.addFile(
         runtimes_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"register\":\"control/register.json\",\"heartbeat\":\"control/heartbeat.json\",\"detach\":\"control/detach.json\"},\"operations\":{\"register\":\"runtime_attach\",\"heartbeat\":\"runtime_heartbeat\",\"detach\":\"runtime_detach\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"register\":\"control/register.json\",\"heartbeat\":\"control/heartbeat.json\",\"detach\":\"control/detach.json\"},\"operations\":{\"register\":\"runtime_attach\",\"heartbeat\":\"runtime_heartbeat\",\"detach\":\"runtime_detach\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         runtimes_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"runtime_attach_registry\"}",
+        "{\"type\":\"namespace_local\",\"component\":\"namespace_session\",\"subject\":\"runtime_attach_registry\"}",
         false,
         .none,
     );

@@ -1,8 +1,8 @@
 const std = @import("std");
 const Config = @import("config.zig");
-const acheron_session_mod = @import("acheron/session.zig");
+const namespace_session_mod = @import("acheron/session.zig");
 
-pub fn resetNamespaceSession(namespace_session: *?acheron_session_mod.Session) void {
+pub fn resetNamespaceSession(namespace_session: *?namespace_session_mod.Session) void {
     if (namespace_session.*) |*session| {
         session.deinit();
         namespace_session.* = null;
@@ -11,13 +11,13 @@ pub fn resetNamespaceSession(namespace_session: *?acheron_session_mod.Session) v
 
 pub fn getOrInitNamespaceSessionForBinding(
     allocator: std.mem.Allocator,
-    namespace_session: *?acheron_session_mod.Session,
+    namespace_session: *?namespace_session_mod.Session,
     runtime_registry: anytype,
     binding: anytype,
     session_key: []const u8,
     trusted_namespace_mount_url: ?[]const u8,
     is_admin: bool,
-) !*acheron_session_mod.Session {
+) !*namespace_session_mod.Session {
     if (namespace_session.* == null) {
         namespace_session.* = try initNamespaceSessionForBinding(
             allocator,
@@ -44,7 +44,7 @@ pub fn initNamespaceSessionForBinding(
     session_key: []const u8,
     trusted_namespace_mount_url: ?[]const u8,
     is_admin: bool,
-) !acheron_session_mod.Session {
+) !namespace_session_mod.Session {
     const workspace_id = binding.workspace_id orelse return error.InvalidState;
     const runtime = runtime_registry.getRuntimeForBindingIfReady(binding.agent_id, binding.workspace_id) orelse
         try runtime_registry.getOrCreate(binding.agent_id, binding.workspace_id, binding.workspace_token);
@@ -56,7 +56,7 @@ pub fn initNamespaceSessionForBinding(
         try runtime_registry.auth_tokens.copyAccessToken();
     defer allocator.free(namespace_auth_token);
 
-    return acheron_session_mod.Session.initWithOptions(
+    return namespace_session_mod.Session.initWithOptions(
         allocator,
         runtime,
         binding.agent_id,

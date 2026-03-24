@@ -520,7 +520,7 @@ fn ensureGitCheckoutPresent(self: anytype, op: Op, checkout_host_path: []const u
     if (try pathExistsAsDirectory(git_dir_host)) return null;
     const message = try std.fmt.allocPrint(self.allocator, "checkout_path is not a git checkout: {s}", .{checkout_path});
     defer self.allocator.free(message);
-    return self.buildGitFailureResultJson(op, "checkout_missing", message);
+    return try self.buildGitFailureResultJson(op, "checkout_missing", message);
 }
 
 fn runGitCaptureStdoutOutcome(

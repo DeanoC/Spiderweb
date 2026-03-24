@@ -19,7 +19,7 @@ const server_metrics_http = @import("server_metrics_http.zig");
 const server_namespace_sessions = @import("server_namespace_sessions.zig");
 const server_session_controls = @import("server_session_controls.zig");
 const server_session_observer_controls = @import("server_session_observer_controls.zig");
-const server_runtime_workers = @import("server_runtime_workers.zig");
+const server_runtime_loops = @import("server_runtime_loops.zig");
 const server_session_bindings = @import("server_session_bindings.zig");
 const server_workspace_status = @import("server_workspace_status.zig");
 const fs_protocol = @import("spiderweb_fs").fs_protocol;
@@ -62,7 +62,7 @@ const min_connection_worker_threads: usize = 64;
 const max_mount_graph_materialized_file_bytes: usize = 16 * 1024 * 1024;
 const runtime_warmup_stale_timeout_ms: i64 = 30_000;
 const runtime_warmup_error_retry_backoff_ms: i64 = 10_000;
-const runtime_residency_worker_interval_ms_default: u64 = 1_000;
+const runtime_residency_loop_interval_ms_default: u64 = 1_000;
 const session_heartbeat_ttl_ms: i64 = 5 * 60 * 1000;
 const agent_heartbeat_ttl_ms: i64 = 5 * 60 * 1000;
 
@@ -1972,22 +1972,22 @@ const AgentRuntimeRegistry = struct {
     runtime_warmup_lifecycle_cond: std.Thread.Condition = .{},
     runtime_warmup_inflight: usize = 0,
     runtime_warmup_stopping: bool = false,
-    venom_presence_worker_thread: ?std.Thread = null,
-    venom_presence_worker_stop: bool = false,
-    venom_presence_worker_mutex: std.Thread.Mutex = .{},
-    venom_presence_worker_cond: std.Thread.Condition = .{},
+    venom_presence_loop_thread: ?std.Thread = null,
+    venom_presence_loop_stop: bool = false,
+    venom_presence_loop_mutex: std.Thread.Mutex = .{},
+    venom_presence_loop_cond: std.Thread.Condition = .{},
     venom_presence_jobs: std.ArrayListUnmanaged(VenomPresenceDispatchJob) = .{},
     audit_records_mutex: std.Thread.Mutex = .{},
     audit_records: std.ArrayListUnmanaged(AuditRecord) = .{},
     next_audit_record_id: u64 = 1,
-    reconcile_worker_thread: ?std.Thread = null,
-    reconcile_worker_stop: bool = false,
-    reconcile_worker_mutex: std.Thread.Mutex = .{},
-    reconcile_worker_interval_ms: u64 = 250,
-    runtime_residency_worker_thread: ?std.Thread = null,
-    runtime_residency_worker_stop: bool = false,
-    runtime_residency_worker_mutex: std.Thread.Mutex = .{},
-    runtime_residency_worker_interval_ms: u64 = runtime_residency_worker_interval_ms_default,
+    reconcile_loop_thread: ?std.Thread = null,
+    reconcile_loop_stop: bool = false,
+    reconcile_loop_mutex: std.Thread.Mutex = .{},
+    reconcile_loop_interval_ms: u64 = 250,
+    runtime_residency_loop_thread: ?std.Thread = null,
+    runtime_residency_loop_stop: bool = false,
+    runtime_residency_loop_mutex: std.Thread.Mutex = .{},
+    runtime_residency_loop_interval_ms: u64 = runtime_residency_loop_interval_ms_default,
 
     fn init(
         allocator: std.mem.Allocator,
@@ -2056,27 +2056,27 @@ const AgentRuntimeRegistry = struct {
     }
 
     fn deinit(self: *AgentRuntimeRegistry) void {
-        self.requestVenomPresenceWorkerStop();
-        if (self.venom_presence_worker_thread) |thread| {
+        self.requestVenomPresenceLoopStop();
+        if (self.venom_presence_loop_thread) |thread| {
             thread.join();
-            self.venom_presence_worker_thread = null;
+            self.venom_presence_loop_thread = null;
         }
-        self.venom_presence_worker_mutex.lock();
+        self.venom_presence_loop_mutex.lock();
         for (self.venom_presence_jobs.items) |*job| job.deinit(self.allocator);
         self.venom_presence_jobs.deinit(self.allocator);
         self.venom_presence_jobs = .{};
-        self.venom_presence_worker_mutex.unlock();
+        self.venom_presence_loop_mutex.unlock();
 
-        self.requestRuntimeResidencyWorkerStop();
-        if (self.runtime_residency_worker_thread) |thread| {
+        self.requestRuntimeResidencyLoopStop();
+        if (self.runtime_residency_loop_thread) |thread| {
             thread.join();
-            self.runtime_residency_worker_thread = null;
+            self.runtime_residency_loop_thread = null;
         }
 
-        self.requestReconcileWorkerStop();
-        if (self.reconcile_worker_thread) |thread| {
+        self.requestReconcileLoopStop();
+        if (self.reconcile_loop_thread) |thread| {
             thread.join();
-            self.reconcile_worker_thread = null;
+            self.reconcile_loop_thread = null;
         }
 
         self.runtime_warmup_lifecycle_mutex.lock();
@@ -2305,10 +2305,10 @@ const AgentRuntimeRegistry = struct {
         const owned_venom_id = try self.allocator.dupe(u8, venom_id);
         errdefer self.allocator.free(owned_venom_id);
 
-        self.venom_presence_worker_mutex.lock();
-        defer self.venom_presence_worker_mutex.unlock();
+        self.venom_presence_loop_mutex.lock();
+        defer self.venom_presence_loop_mutex.unlock();
 
-        if (self.venom_presence_worker_stop) return error.ShuttingDown;
+        if (self.venom_presence_loop_stop) return error.ShuttingDown;
 
         for (self.venom_presence_jobs.items) |*job| {
             if (job.matches(binding.agent_id, binding.workspace_id, session_key, venom_id, attached)) {
@@ -2331,7 +2331,7 @@ const AgentRuntimeRegistry = struct {
             .attached = attached,
             .payload_json = payload_json,
         });
-        self.venom_presence_worker_cond.signal();
+        self.venom_presence_loop_cond.signal();
     }
 
     pub fn getRuntimeForBindingIfReady(
@@ -2418,7 +2418,7 @@ const AgentRuntimeRegistry = struct {
         _ = venom_id;
         _ = attached;
         // Venom presence sync used to target the embedded runtime. Spiderweb is
-        // now a workspace host only, so attached workers discover presence
+        // now a workspace host only, so attached runtimes discover presence
         // through the mounted namespace rather than runtime-directed control
         // messages.
     }
@@ -2514,79 +2514,79 @@ const AgentRuntimeRegistry = struct {
         };
     }
 
-    fn startReconcileWorker(self: *AgentRuntimeRegistry) !void {
-        self.reconcile_worker_mutex.lock();
-        self.reconcile_worker_stop = false;
-        self.reconcile_worker_mutex.unlock();
-        self.reconcile_worker_thread = try std.Thread.spawn(
+    fn startReconcileLoop(self: *AgentRuntimeRegistry) !void {
+        self.reconcile_loop_mutex.lock();
+        self.reconcile_loop_stop = false;
+        self.reconcile_loop_mutex.unlock();
+        self.reconcile_loop_thread = try std.Thread.spawn(
             .{},
-            server_runtime_workers.reconcileWorkerMain,
+            server_runtime_loops.reconcileLoopMain,
             .{self},
         );
     }
 
-    fn startVenomPresenceWorker(self: *AgentRuntimeRegistry) !void {
-        self.venom_presence_worker_mutex.lock();
-        self.venom_presence_worker_stop = false;
-        self.venom_presence_worker_mutex.unlock();
-        self.venom_presence_worker_thread = try std.Thread.spawn(
+    fn startVenomPresenceLoop(self: *AgentRuntimeRegistry) !void {
+        self.venom_presence_loop_mutex.lock();
+        self.venom_presence_loop_stop = false;
+        self.venom_presence_loop_mutex.unlock();
+        self.venom_presence_loop_thread = try std.Thread.spawn(
             .{},
-            server_runtime_workers.servicePresenceWorkerMain,
+            server_runtime_loops.servicePresenceLoopMain,
             .{self},
         );
     }
 
-    fn startRuntimeResidencyWorker(self: *AgentRuntimeRegistry) !void {
+    fn startRuntimeResidencyLoop(self: *AgentRuntimeRegistry) !void {
         _ = self;
     }
 
-    fn requestReconcileWorkerStop(self: *AgentRuntimeRegistry) void {
-        self.reconcile_worker_mutex.lock();
-        self.reconcile_worker_stop = true;
-        self.reconcile_worker_mutex.unlock();
+    fn requestReconcileLoopStop(self: *AgentRuntimeRegistry) void {
+        self.reconcile_loop_mutex.lock();
+        self.reconcile_loop_stop = true;
+        self.reconcile_loop_mutex.unlock();
     }
 
-    fn requestVenomPresenceWorkerStop(self: *AgentRuntimeRegistry) void {
-        self.venom_presence_worker_mutex.lock();
-        self.venom_presence_worker_stop = true;
-        self.venom_presence_worker_cond.broadcast();
-        self.venom_presence_worker_mutex.unlock();
+    fn requestVenomPresenceLoopStop(self: *AgentRuntimeRegistry) void {
+        self.venom_presence_loop_mutex.lock();
+        self.venom_presence_loop_stop = true;
+        self.venom_presence_loop_cond.broadcast();
+        self.venom_presence_loop_mutex.unlock();
     }
 
-    fn shouldStopReconcileWorker(self: *AgentRuntimeRegistry) bool {
-        self.reconcile_worker_mutex.lock();
-        defer self.reconcile_worker_mutex.unlock();
-        return self.reconcile_worker_stop;
+    fn shouldStopReconcileLoop(self: *AgentRuntimeRegistry) bool {
+        self.reconcile_loop_mutex.lock();
+        defer self.reconcile_loop_mutex.unlock();
+        return self.reconcile_loop_stop;
     }
 
-    pub fn runReconcileWorkerLoop(self: *AgentRuntimeRegistry) void {
+    pub fn runReconcileLoop(self: *AgentRuntimeRegistry) void {
         while (true) {
-            if (self.shouldStopReconcileWorker()) return;
+            if (self.shouldStopReconcileLoop()) return;
 
             const maybe_payload = self.control_plane.runReconcileCycle(false) catch |err| {
-                std.log.warn("control-plane reconcile worker error: {s}", .{@errorName(err)});
-                if (self.shouldStopReconcileWorker()) return;
-                std.Thread.sleep(self.reconcile_worker_interval_ms * std.time.ns_per_ms);
+                std.log.warn("control-plane reconcile loop error: {s}", .{@errorName(err)});
+                if (self.shouldStopReconcileLoop()) return;
+                std.Thread.sleep(self.reconcile_loop_interval_ms * std.time.ns_per_ms);
                 continue;
             };
             if (maybe_payload) |payload| {
                 defer self.allocator.free(payload);
             }
 
-            std.Thread.sleep(self.reconcile_worker_interval_ms * std.time.ns_per_ms);
+            std.Thread.sleep(self.reconcile_loop_interval_ms * std.time.ns_per_ms);
         }
     }
 
-    fn requestRuntimeResidencyWorkerStop(self: *AgentRuntimeRegistry) void {
-        self.runtime_residency_worker_mutex.lock();
-        self.runtime_residency_worker_stop = true;
-        self.runtime_residency_worker_mutex.unlock();
+    fn requestRuntimeResidencyLoopStop(self: *AgentRuntimeRegistry) void {
+        self.runtime_residency_loop_mutex.lock();
+        self.runtime_residency_loop_stop = true;
+        self.runtime_residency_loop_mutex.unlock();
     }
 
-    fn shouldStopRuntimeResidencyWorker(self: *AgentRuntimeRegistry) bool {
-        self.runtime_residency_worker_mutex.lock();
-        defer self.runtime_residency_worker_mutex.unlock();
-        return self.runtime_residency_worker_stop;
+    fn shouldStopRuntimeResidencyLoop(self: *AgentRuntimeRegistry) bool {
+        self.runtime_residency_loop_mutex.lock();
+        defer self.runtime_residency_loop_mutex.unlock();
+        return self.runtime_residency_loop_stop;
     }
 
     fn ensureActiveRuntimeResidency(self: *AgentRuntimeRegistry, retry_on_error: bool) !void {
@@ -3179,7 +3179,7 @@ const AgentRuntimeRegistry = struct {
         project_id: ?[]const u8,
         project_token: ?[]const u8,
     ) !void {
-        try server_runtime_workers.spawnRuntimeWarmupThread(
+        try server_runtime_loops.spawnRuntimeWarmupThread(
             self,
             binding_key,
             agent_id,
@@ -3433,18 +3433,18 @@ const AgentRuntimeRegistry = struct {
         self.markRuntimeWarmupReady(binding_key);
     }
 
-    pub fn runServicePresenceWorkerLoop(self: *AgentRuntimeRegistry) void {
+    pub fn runServicePresenceLoop(self: *AgentRuntimeRegistry) void {
         while (true) {
-            self.venom_presence_worker_mutex.lock();
-            while (self.venom_presence_jobs.items.len == 0 and !self.venom_presence_worker_stop) {
-                self.venom_presence_worker_cond.wait(&self.venom_presence_worker_mutex);
+            self.venom_presence_loop_mutex.lock();
+            while (self.venom_presence_jobs.items.len == 0 and !self.venom_presence_loop_stop) {
+                self.venom_presence_loop_cond.wait(&self.venom_presence_loop_mutex);
             }
-            if (self.venom_presence_worker_stop and self.venom_presence_jobs.items.len == 0) {
-                self.venom_presence_worker_mutex.unlock();
+            if (self.venom_presence_loop_stop and self.venom_presence_jobs.items.len == 0) {
+                self.venom_presence_loop_mutex.unlock();
                 return;
             }
             var job = self.venom_presence_jobs.orderedRemove(0);
-            self.venom_presence_worker_mutex.unlock();
+            self.venom_presence_loop_mutex.unlock();
             defer job.deinit(self.allocator);
 
             self.dispatchRuntimeAgentControlForTarget(
@@ -3488,8 +3488,8 @@ pub fn run(
     warnDeprecatedEmbeddedLocalNodeEnv(allocator);
 
     runtime_registry.workspace_url = try server_local_node_supervisor.formatInternalWsUrl(allocator, bind_addr, port, "/");
-    try runtime_registry.startVenomPresenceWorker();
-    try runtime_registry.startReconcileWorker();
+    try runtime_registry.startVenomPresenceLoop();
+    try runtime_registry.startReconcileLoop();
 
     const metrics_port_raw = parseUnsignedEnv(allocator, metrics_port_env, 0);
     if (metrics_port_raw > 0) {

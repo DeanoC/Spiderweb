@@ -253,7 +253,7 @@ fn executeSyncCheckoutOp(self: anytype, args_obj: std.json.ObjectMap) ![]u8 {
 
     const git_dir_host = try std.fs.path.join(self.allocator, &.{ checkout_host_path, ".git" });
     defer self.allocator.free(git_dir_host);
-    const had_checkout = try pathExistsAsDirectory(git_dir_host);
+    const had_checkout = try pathExists(git_dir_host);
 
     if (had_checkout) {
         const dirty_command = try self.buildCliCommand("git", &.{ "-C", checkout_host_path, "status", "--porcelain" });
@@ -517,7 +517,7 @@ fn buildGitHubPrFetchCommand(self: anytype, checkout_host_path: []const u8, pr_n
 fn ensureGitCheckoutPresent(self: anytype, op: Op, checkout_host_path: []const u8, checkout_path: []const u8) !?[]u8 {
     const git_dir_host = try std.fs.path.join(self.allocator, &.{ checkout_host_path, ".git" });
     defer self.allocator.free(git_dir_host);
-    if (try pathExistsAsDirectory(git_dir_host)) return null;
+    if (try pathExists(git_dir_host)) return null;
     const message = try std.fmt.allocPrint(self.allocator, "checkout_path is not a git checkout: {s}", .{checkout_path});
     defer self.allocator.free(message);
     return try self.buildGitFailureResultJson(op, "checkout_missing", message);
@@ -857,6 +857,22 @@ fn pathExistsAsDirectory(path: []const u8) !bool {
     return true;
 }
 
+fn pathExists(path: []const u8) !bool {
+    if (std.fs.path.isAbsolute(path)) {
+        std.fs.accessAbsolute(path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return err,
+        };
+        return true;
+    }
+
+    std.fs.cwd().access(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
+}
+
 fn ensurePathExists(path: []const u8) !void {
     if (path.len == 0) return error.InvalidPath;
     if (std.fs.path.isAbsolute(path)) {
@@ -868,4 +884,31 @@ fn ensurePathExists(path: []const u8) !void {
         return;
     }
     try std.fs.cwd().makePath(path);
+}
+
+test "git: checkout marker accepts .git directory and file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makePath("checkout-dir/.git");
+    try tmp_dir.dir.makePath("checkout-file");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "checkout-file/.git",
+        .data = "gitdir: /tmp/example\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    const git_dir_path = try std.fs.path.join(allocator, &.{ root, "checkout-dir", ".git" });
+    defer allocator.free(git_dir_path);
+    try std.testing.expect(try pathExists(git_dir_path));
+    try std.testing.expect(try pathExistsAsDirectory(git_dir_path));
+
+    const git_file_path = try std.fs.path.join(allocator, &.{ root, "checkout-file", ".git" });
+    defer allocator.free(git_file_path);
+    try std.testing.expect(try pathExists(git_file_path));
+    try std.testing.expect(!(try pathExistsAsDirectory(git_file_path)));
 }

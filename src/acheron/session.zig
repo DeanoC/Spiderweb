@@ -28,7 +28,7 @@ const session_workspace_contract = @import("session_workspace_contract.zig");
 const session_service_discovery = @import("session_service_discovery.zig");
 const session_project_status = @import("session_project_status.zig");
 const session_node_venoms = @import("session_node_venoms.zig");
-const session_worker_venoms = @import("session_worker_venoms.zig");
+const session_runtime_venoms = @import("session_runtime_venoms.zig");
 const session_bound_venoms = @import("session_bound_venoms.zig");
 const session_scoped_venom_index = @import("session_scoped_venom_index.zig");
 const session_catalog_bindings = @import("session_catalog_bindings.zig");
@@ -2893,7 +2893,7 @@ pub const Session = struct {
                 try runtimes_venom.seedPassiveWorkerSubBrainsNamespaceAt(self, sub_brains_dir_id, base_path, worker_id, agent_id);
                 try self.seedBuiltinPackageMetadata(sub_brains_dir_id, "sub_brains");
             } else {
-                var package = (try self.cloneWorkerVenomPackage(venom_id)) orelse continue;
+                var package = (try self.cloneRuntimeVenomPackage(venom_id)) orelse continue;
                 defer package.deinit(self.allocator);
 
                 const venom_dir_id = if (self.lookupChild(venoms_root_id, venom_id)) |existing|
@@ -2902,7 +2902,7 @@ pub const Session = struct {
                     try self.addDir(venoms_root_id, venom_id, false);
                 const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ worker_id, venom_id });
                 defer self.allocator.free(base_path);
-                try self.seedGenericWorkerLoopbackVenomNamespaceAt(venom_dir_id, base_path, worker_id, agent_id, package);
+                try self.seedGenericRuntimeLoopbackVenomNamespaceAt(venom_dir_id, base_path, worker_id, agent_id, package);
             }
         }
 
@@ -3621,18 +3621,18 @@ pub const Session = struct {
     }
 
     fn seedBuiltinPackageMetadata(self: *Session, venom_dir_id: u32, venom_id: []const u8) !void {
-        return session_worker_venoms.seedBuiltinPackageMetadata(self, venom_dir_id, venom_id);
+        return session_runtime_venoms.seedBuiltinPackageMetadata(self, venom_dir_id, venom_id);
     }
 
-    fn cloneWorkerVenomPackage(self: *Session, venom_id: []const u8) !?venom_package.VenomPackage {
-        return session_worker_venoms.cloneWorkerVenomPackage(self, venom_id);
+    fn cloneRuntimeVenomPackage(self: *Session, venom_id: []const u8) !?venom_package.VenomPackage {
+        return session_runtime_venoms.cloneRuntimeVenomPackage(self, venom_id);
     }
 
     fn seedPackageMetadata(self: *Session, venom_dir_id: u32, package: venom_package.VenomPackage) !void {
-        return session_worker_venoms.seedPackageMetadata(self, venom_dir_id, package);
+        return session_runtime_venoms.seedPackageMetadata(self, venom_dir_id, package);
     }
 
-    fn seedGenericWorkerLoopbackVenomNamespaceAt(
+    fn seedGenericRuntimeLoopbackVenomNamespaceAt(
         self: *Session,
         venom_dir_id: u32,
         base_path: []const u8,
@@ -3640,7 +3640,7 @@ pub const Session = struct {
         agent_id: []const u8,
         package: venom_package.VenomPackage,
     ) !void {
-        return session_worker_venoms.seedGenericWorkerLoopbackVenomNamespaceAt(
+        return session_runtime_venoms.seedGenericRuntimeLoopbackVenomNamespaceAt(
             self,
             venom_dir_id,
             base_path,
@@ -3650,12 +3650,12 @@ pub const Session = struct {
         );
     }
 
-    fn seedWorkerControlFilesFromOpsJson(self: *Session, control_dir: u32, ops_json: []const u8) !void {
-        return session_worker_venoms.seedWorkerControlFilesFromOpsJson(self, control_dir, ops_json);
+    fn seedRuntimeControlFilesFromOpsJson(self: *Session, control_dir: u32, ops_json: []const u8) !void {
+        return session_runtime_venoms.seedRuntimeControlFilesFromOpsJson(self, control_dir, ops_json);
     }
 
-    fn ensureWorkerControlFileFromPath(self: *Session, control_dir: u32, raw_path: []const u8) !void {
-        return session_worker_venoms.ensureWorkerControlFileFromPath(self, control_dir, raw_path);
+    fn ensureRuntimeControlFileFromPath(self: *Session, control_dir: u32, raw_path: []const u8) !void {
+        return session_runtime_venoms.ensureRuntimeControlFileFromPath(self, control_dir, raw_path);
     }
 
     fn seedActiveScopedVenomBindings(

@@ -10,7 +10,7 @@ pub fn seedBuiltinPackageMetadata(session: anytype, venom_dir_id: u32, venom_id:
     _ = try session.addFile(venom_dir_id, "PACKAGE.json", package_json, false, .none);
 }
 
-pub fn cloneWorkerVenomPackage(session: anytype, venom_id: []const u8) !?venom_package.VenomPackage {
+pub fn cloneRuntimeVenomPackage(session: anytype, venom_id: []const u8) !?venom_package.VenomPackage {
     if (session.control_plane) |control_plane| {
         return control_plane.cloneVenomPackage(session.allocator, venom_id);
     }
@@ -25,7 +25,7 @@ pub fn seedPackageMetadata(session: anytype, venom_dir_id: u32, package: venom_p
     _ = try session.addFile(venom_dir_id, "PACKAGE.json", package_json.items, false, .none);
 }
 
-pub fn seedGenericWorkerLoopbackVenomNamespaceAt(
+pub fn seedGenericRuntimeLoopbackVenomNamespaceAt(
     session: anytype,
     venom_dir_id: u32,
     base_path: []const u8,
@@ -42,7 +42,7 @@ pub fn seedGenericWorkerLoopbackVenomNamespaceAt(
     );
     defer session.allocator.free(shape_json);
 
-    const readme = package.help_md orelse "Worker-owned loopback venom projected for an attached external worker.\n";
+    const readme = package.help_md orelse "Runtime-owned loopback venom projected for an attached external runtime.\n";
     try session.ensureWorkerFile(venom_dir_id, "README.md", readme, false, .none);
     try session.ensureWorkerFile(venom_dir_id, "SCHEMA.json", shape_json, false, .none);
     try session.ensureWorkerFile(venom_dir_id, "CAPS.json", package.capabilities_json, false, .none);
@@ -65,17 +65,17 @@ pub fn seedGenericWorkerLoopbackVenomNamespaceAt(
         existing
     else
         try session.addDir(venom_dir_id, "control", false);
-    try session.ensureWorkerFile(control_dir, "README.md", "External worker watches and writes this loopback venom namespace directly.\n", false, .none);
-    try seedWorkerControlFilesFromOpsJson(session, control_dir, package.ops_json);
+    try session.ensureWorkerFile(control_dir, "README.md", "External runtime watches and writes this loopback venom namespace directly.\n", false, .none);
+    try seedRuntimeControlFilesFromOpsJson(session, control_dir, package.ops_json);
 }
 
-pub fn seedWorkerControlFilesFromOpsJson(session: anytype, control_dir: u32, ops_json: []const u8) !void {
+pub fn seedRuntimeControlFilesFromOpsJson(session: anytype, control_dir: u32, ops_json: []const u8) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, ops_json, .{}) catch return;
     defer parsed.deinit();
     if (parsed.value != .object) return;
     if (parsed.value.object.get("invoke")) |invoke_value| {
         if (invoke_value == .string and invoke_value.string.len > 0) {
-            try ensureWorkerControlFileFromPath(session, control_dir, invoke_value.string);
+            try ensureRuntimeControlFileFromPath(session, control_dir, invoke_value.string);
         }
     }
     if (parsed.value.object.get("paths")) |paths_value| {
@@ -83,12 +83,12 @@ pub fn seedWorkerControlFilesFromOpsJson(session: anytype, control_dir: u32, ops
         var it = paths_value.object.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.* != .string or entry.value_ptr.string.len == 0) continue;
-            try ensureWorkerControlFileFromPath(session, control_dir, entry.value_ptr.string);
+            try ensureRuntimeControlFileFromPath(session, control_dir, entry.value_ptr.string);
         }
     }
 }
 
-pub fn ensureWorkerControlFileFromPath(session: anytype, control_dir: u32, raw_path: []const u8) !void {
+pub fn ensureRuntimeControlFileFromPath(session: anytype, control_dir: u32, raw_path: []const u8) !void {
     var relative = raw_path;
     if (std.mem.startsWith(u8, relative, "control/")) {
         relative = relative["control/".len..];

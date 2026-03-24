@@ -98,6 +98,7 @@ const MountGraphCache = struct {
 
     fn deinit(self: *MountGraphCache, allocator: std.mem.Allocator) void {
         self.clearAllNodes(allocator);
+        self.nodes.deinit(allocator);
         self.path_index.deinit(allocator);
         self.id_index.deinit(allocator);
         self.clearLoadedDirectoryDepths(allocator);

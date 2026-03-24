@@ -126,4 +126,44 @@ fn appendScopedVenomBindingIndexEntriesForPrefix(
             binding.provider_venom_path,
         );
     }
+
+    for (session.workspace_binds.items) |bind| {
+        if (bind.kind != .workspace) continue;
+        if (!std.mem.startsWith(u8, bind.bind_path, binding_prefix)) continue;
+        if (hasScopedBindingForPath(session, bind.bind_path)) continue;
+
+        const venom_id = bind.bind_path[binding_prefix.len..];
+        if (venom_id.len == 0 or std.mem.indexOfScalar(u8, venom_id, '/') != null) continue;
+        if (!venom_model.isCapabilityVenomId(venom_id)) continue;
+
+        const invoke_path = try session.pathWithInvokeSuffix(bind.target_path);
+        defer session.allocator.free(invoke_path);
+
+        const provider_node_id = if (std.mem.startsWith(u8, bind.target_path, "/nodes/")) blk: {
+            const after_prefix = bind.target_path["/nodes/".len..];
+            const node_end = std.mem.indexOfScalar(u8, after_prefix, '/') orelse break :blk null;
+            break :blk after_prefix[0..node_end];
+        } else null;
+
+        try appendAgentVenomIndexEntry(
+            session,
+            out,
+            first,
+            binding_owner_id,
+            venom_id,
+            bind.bind_path,
+            bind.target_path,
+            invoke_path,
+            "workspace_binding",
+            provider_node_id,
+            bind.target_path,
+        );
+    }
+}
+
+fn hasScopedBindingForPath(session: anytype, binding_path: []const u8) bool {
+    for (session.scoped_venom_bindings.items) |binding| {
+        if (std.mem.eql(u8, binding.venom_path, binding_path)) return true;
+    }
+    return false;
 }

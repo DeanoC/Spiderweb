@@ -99,9 +99,13 @@ const workspace_managed_catalog_dir_name = session_workspace_contract.workspace_
 const workspace_managed_venoms_dir_name = session_workspace_contract.workspace_managed_venoms_dir_name;
 const workspace_compat_root_name = "_compat";
 const workspace_compat_root_absolute = workspace_managed_root_absolute ++ "/" ++ workspace_compat_root_name;
+const workspace_compat_root_projected_absolute = workspace_managed_root_projected_absolute ++ "/" ++ workspace_compat_root_name;
 const workspace_compat_projects_absolute = workspace_compat_root_absolute ++ "/projects";
+const workspace_compat_projects_projected_absolute = workspace_compat_root_projected_absolute ++ "/projects";
 const workspace_compat_global_absolute = workspace_compat_root_absolute ++ "/global";
+const workspace_compat_global_projected_absolute = workspace_compat_root_projected_absolute ++ "/global";
 const workspace_compat_meta_absolute = workspace_compat_root_absolute ++ "/meta";
+const workspace_compat_meta_projected_absolute = workspace_compat_root_projected_absolute ++ "/meta";
 const workspace_managed_control_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_control_dir_name ++ "/";
 const workspace_managed_venoms_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_venoms_dir_name ++ "/";
 const workspace_agents_contract_path = session_workspace_contract.workspace_agents_contract_path;
@@ -1985,6 +1989,7 @@ pub const Session = struct {
         } else try std.fmt.allocPrint(self.allocator, "{{\"workspace_id\":\"{s}\"}}", .{escaped_project});
         defer self.allocator.free(payload);
 
+        self.clearProjectBindsByKind(.workspace);
         const binds_json = plane.listWorkspaceBindsWithRole(payload, self.is_admin) catch return;
         defer self.allocator.free(binds_json);
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, binds_json, .{}) catch return;
@@ -2001,6 +2006,18 @@ pub const Session = struct {
             try self.appendProjectBind(.workspace, bind_path.string, target_path.string);
         }
         try self.appendManagedWorkspaceEntrypointBinds();
+    }
+
+    fn clearProjectBindsByKind(self: *Session, kind: PathBindKind) void {
+        var index: usize = 0;
+        while (index < self.workspace_binds.items.len) {
+            if (self.workspace_binds.items[index].kind != kind) {
+                index += 1;
+                continue;
+            }
+            var removed = self.workspace_binds.swapRemove(index);
+            removed.deinit(self.allocator);
+        }
     }
 
     pub fn refreshWorkspaceProjectionFromStatus(self: *Session, workspace_status_json: []const u8) !void {
@@ -2044,30 +2061,34 @@ pub const Session = struct {
 
     fn appendManagedWorkspaceEntrypointBinds(self: *Session) !void {
         const workspace_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return;
+        self.clearScopedWorkspaceCapabilityBindings();
 
-        const quickref_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/agent_bootstrap_quickref.json", .{ workspace_compat_projects_absolute, workspace_id });
+        const quickref_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/agent_bootstrap_quickref.json", .{ workspace_compat_projects_projected_absolute, workspace_id });
         defer self.allocator.free(quickref_target);
-        const bootstrap_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/agent_bootstrap.json", .{ workspace_compat_projects_absolute, workspace_id });
+        const bootstrap_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/agent_bootstrap.json", .{ workspace_compat_projects_projected_absolute, workspace_id });
         defer self.allocator.free(bootstrap_target);
-        const workspace_status_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/workspace_status.json", .{ workspace_compat_projects_absolute, workspace_id });
+        const workspace_status_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/workspace_status.json", .{ workspace_compat_projects_projected_absolute, workspace_id });
         defer self.allocator.free(workspace_status_target);
-        const packages_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/packages.json", .{ workspace_compat_projects_absolute, workspace_id });
+        const packages_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/packages.json", .{ workspace_compat_projects_projected_absolute, workspace_id });
         defer self.allocator.free(packages_target);
-        const providers_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/providers.json", .{ workspace_compat_projects_absolute, workspace_id });
+        const providers_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/providers.json", .{ workspace_compat_projects_projected_absolute, workspace_id });
         defer self.allocator.free(providers_target);
-        const bindings_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/bindings.json", .{ workspace_compat_projects_absolute, workspace_id });
+        const bindings_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/bindings.json", .{ workspace_compat_projects_projected_absolute, workspace_id });
         defer self.allocator.free(bindings_target);
-        const node_venom_events_target = try std.fmt.allocPrint(self.allocator, "{s}/venoms/node-venom-events.ndjson", .{workspace_compat_global_absolute});
+        const node_venom_events_target = try std.fmt.allocPrint(self.allocator, "{s}/venoms/node-venom-events.ndjson", .{workspace_compat_global_projected_absolute});
         defer self.allocator.free(node_venom_events_target);
+        const venoms_index_target = try std.fmt.allocPrint(self.allocator, "{s}/venoms/VENOMS.json", .{workspace_compat_global_projected_absolute});
+        defer self.allocator.free(venoms_index_target);
 
         const managed_bind_specs = [_]struct { bind_path: []const u8, target_path: []const u8 }{
-            .{ .bind_path = workspace_managed_root_absolute ++ "/protocol.json", .target_path = workspace_compat_meta_absolute ++ "/protocol.json" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/protocol.json", .target_path = workspace_compat_meta_projected_absolute ++ "/protocol.json" },
             .{ .bind_path = workspace_managed_root_absolute ++ "/shared_data", .target_path = "/shared_data" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/home", .target_path = workspace_compat_global_absolute ++ "/home" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/mounts", .target_path = workspace_compat_global_absolute ++ "/mounts" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/binds", .target_path = workspace_compat_global_absolute ++ "/mounts" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/packages", .target_path = workspace_compat_global_absolute ++ "/packages" },
-            .{ .bind_path = workspace_managed_root_absolute ++ "/control/runtimes", .target_path = workspace_compat_global_absolute ++ "/runtimes" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/home", .target_path = workspace_compat_global_projected_absolute ++ "/home" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/mounts", .target_path = workspace_compat_global_projected_absolute ++ "/mounts" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/workspace/binds", .target_path = workspace_compat_global_projected_absolute ++ "/mounts" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/packages", .target_path = workspace_compat_global_projected_absolute ++ "/packages" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/control/runtimes", .target_path = workspace_compat_global_projected_absolute ++ "/runtimes" },
+            .{ .bind_path = workspace_managed_root_absolute ++ "/venoms/VENOMS.json", .target_path = venoms_index_target },
         };
 
         for (managed_bind_specs) |spec| {
@@ -2075,9 +2096,9 @@ pub const Session = struct {
         }
 
         const projected_managed_bind_specs = [_]struct { bind_path: []const u8, target_path: []const u8 }{
-            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/protocol.json", .target_path = workspace_compat_meta_absolute ++ "/protocol.json" },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/protocol.json", .target_path = workspace_compat_meta_projected_absolute ++ "/protocol.json" },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/shared_data", .target_path = "/shared_data" },
-            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/control/packages", .target_path = workspace_compat_global_absolute ++ "/packages" },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/control/packages", .target_path = workspace_compat_global_projected_absolute ++ "/packages" },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/agent_bootstrap_quickref.json", .target_path = quickref_target },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/agent_bootstrap.json", .target_path = bootstrap_target },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/workspace_status.json", .target_path = workspace_status_target },
@@ -2085,6 +2106,7 @@ pub const Session = struct {
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/providers.json", .target_path = providers_target },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/bindings.json", .target_path = bindings_target },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/node-venom-events.ndjson", .target_path = node_venom_events_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/venoms/VENOMS.json", .target_path = venoms_index_target },
         };
 
         for (projected_managed_bind_specs) |spec| {
@@ -2130,6 +2152,8 @@ pub const Session = struct {
             }
         }
 
+        try self.registerExplicitWorkspaceCapabilityBindings();
+
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/agent_bootstrap_quickref.json", quickref_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/agent_bootstrap.json", bootstrap_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/workspace_status.json", workspace_status_target);
@@ -2137,6 +2161,47 @@ pub const Session = struct {
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/providers.json", providers_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/bindings.json", bindings_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/node-venom-events.ndjson", node_venom_events_target);
+    }
+
+    fn registerExplicitWorkspaceCapabilityBindings(self: *Session) !void {
+        for (self.workspace_binds.items) |bind| {
+            if (bind.kind != .workspace) continue;
+            if (!std.mem.startsWith(u8, bind.bind_path, workspace_managed_venoms_absolute_prefix)) continue;
+
+            const alias_tail = bind.bind_path[workspace_managed_venoms_absolute_prefix.len..];
+            if (alias_tail.len == 0 or std.mem.indexOfScalar(u8, alias_tail, '/') != null) continue;
+            if (!venom_model.isCapabilityVenomId(alias_tail)) continue;
+
+            const target_service = parseNodeVenomServicePath(bind.target_path) orelse continue;
+            const endpoint_path = blk: {
+                const nodes_root = self.lookupChild(self.root_id, "nodes") orelse break :blk try self.allocator.dupe(u8, bind.target_path);
+                const node_dir_id = self.lookupChild(nodes_root, target_service.node_id) orelse break :blk try self.allocator.dupe(u8, bind.target_path);
+                const venoms_root_id = self.lookupChild(node_dir_id, "venoms") orelse break :blk try self.allocator.dupe(u8, bind.target_path);
+                const provider_dir_id = self.lookupChild(venoms_root_id, target_service.venom_id) orelse break :blk try self.allocator.dupe(u8, bind.target_path);
+                if (try self.firstVenomMountPath(provider_dir_id)) |value| break :blk value;
+                if (try self.venomEndpointPath(provider_dir_id)) |value| break :blk value;
+                break :blk try self.allocator.dupe(u8, bind.target_path);
+            };
+            defer self.allocator.free(endpoint_path);
+            const invoke_path = blk: {
+                const nodes_root = self.lookupChild(self.root_id, "nodes") orelse break :blk try self.pathWithInvokeSuffix(bind.target_path);
+                const node_dir_id = self.lookupChild(nodes_root, target_service.node_id) orelse break :blk try self.pathWithInvokeSuffix(bind.target_path);
+                const venoms_root_id = self.lookupChild(node_dir_id, "venoms") orelse break :blk try self.pathWithInvokeSuffix(bind.target_path);
+                const provider_dir_id = self.lookupChild(venoms_root_id, target_service.venom_id) orelse break :blk try self.pathWithInvokeSuffix(bind.target_path);
+                break :blk try self.deriveVenomInvokePath(target_service.node_id, target_service.venom_id, provider_dir_id);
+            };
+            defer if (invoke_path) |value| self.allocator.free(value);
+
+            try self.registerScopedVenomBindingIfMissing(
+                alias_tail,
+                "workspace_binding",
+                bind.bind_path,
+                target_service.node_id,
+                bind.target_path,
+                endpoint_path,
+                invoke_path,
+            );
+        }
     }
 
     pub fn resolveManagedCapabilityVenomTargetPath(self: *Session, venom_id: []const u8) !?[]u8 {
@@ -4041,6 +4106,23 @@ pub const Session = struct {
                 .provider_export_name = null,
             };
         }
+        if (try self.scopedVenomProxyPathForAbsolutePath(absolute_path)) |proxy| return proxy;
+        if (parseNodeVenomServicePath(absolute_path)) |value| {
+            if (!std.mem.eql(u8, value.node_id, "local")) {
+                const prefix = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ value.node_id, value.venom_id });
+                defer self.allocator.free(prefix);
+                const remote_path = if (std.mem.eql(u8, absolute_path, prefix))
+                    try self.allocator.dupe(u8, "/")
+                else
+                    try self.allocator.dupe(u8, absolute_path[prefix.len..]);
+                return .{
+                    .venom_id = value.venom_id,
+                    .remote_path = remote_path,
+                    .provider_node_id = value.node_id,
+                    .provider_export_name = value.venom_id,
+                };
+            }
+        }
         const workspace_match = parseWorkspaceScopedVenomAliasPrefix(self, absolute_path);
         if (workspace_match) |value| {
             return .{
@@ -4073,6 +4155,48 @@ pub const Session = struct {
             };
         }
         return null;
+    }
+
+    fn scopedVenomProxyPathForAbsolutePath(self: *Session, absolute_path: []const u8) !?BoundVenomProxyPath {
+        var best_binding: ?*const ScopedVenomBinding = null;
+        for (self.scoped_venom_bindings.items) |*binding| {
+            if (!pathMatchesPrefixBoundary(absolute_path, binding.venom_path)) continue;
+            if (best_binding) |existing| {
+                if (existing.venom_path.len >= binding.venom_path.len) continue;
+            }
+            best_binding = binding;
+        }
+        const binding = best_binding orelse return null;
+        const remote_path = if (std.mem.eql(u8, absolute_path, binding.venom_path))
+            try self.allocator.dupe(u8, "/")
+        else
+            try self.allocator.dupe(u8, absolute_path[binding.venom_path.len..]);
+        errdefer self.allocator.free(remote_path);
+
+        var proxy = BoundVenomProxyPath{
+            .venom_id = binding.venom_id,
+            .remote_path = remote_path,
+        };
+        if (std.mem.startsWith(u8, binding.venom_path, workspace_managed_venoms_absolute_prefix)) {
+            proxy.project_id = self.active_namespace_workspace_id orelse self.workspace_id;
+        } else if (parseEntityScopedVenomAliasPrefix(binding.venom_path, "/agents/", "/venoms/")) |agent_match| {
+            proxy.agent_id = agent_match.entity_id;
+        } else if (parseEntityScopedVenomAliasPrefix(binding.venom_path, "/.spiderweb/_compat/projects/", "/venoms/")) |project_match| {
+            proxy.project_id = project_match.entity_id;
+        }
+
+        if (binding.provider_node_id) |node_id| {
+            proxy.provider_node_id = node_id;
+            if (!std.mem.eql(u8, node_id, "local")) {
+                if (binding.provider_venom_path) |provider_path| {
+                    if (parseNodeVenomServicePath(provider_path)) |provider_service| {
+                        proxy.venom_id = provider_service.venom_id;
+                        proxy.provider_export_name = provider_service.venom_id;
+                    }
+                }
+            }
+        }
+        return proxy;
     }
 
     fn workspaceMountProxyPathForAbsolutePath(self: *Session, absolute_path: []const u8) !?BoundVenomProxyPath {
@@ -7238,6 +7362,21 @@ pub const Session = struct {
         self.scoped_venom_bindings = .{};
     }
 
+    fn clearScopedWorkspaceCapabilityBindings(self: *Session) void {
+        var index: usize = 0;
+        while (index < self.scoped_venom_bindings.items.len) {
+            const binding = self.scoped_venom_bindings.items[index];
+            if (!std.mem.eql(u8, binding.scope, "workspace_binding") or
+                !std.mem.startsWith(u8, binding.venom_path, workspace_managed_venoms_absolute_prefix))
+            {
+                index += 1;
+                continue;
+            }
+            var removed = self.scoped_venom_bindings.swapRemove(index);
+            removed.deinit(self.allocator);
+        }
+    }
+
     fn handleEventWaitConfigWrite(self: *Session, node_id: u32, raw_input: []const u8) !WriteOutcome {
         return .{ .written = try events_venom.handleWaitConfigWrite(self, node_id, raw_input) };
     }
@@ -8427,6 +8566,18 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"service\":\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"namespace_root\"") == null);
 
+    const bootstrap_via_mount = try session.readMountGraphFile("/.spiderweb/agent_bootstrap.json", 0, 8192);
+    defer allocator.free(bootstrap_via_mount);
+    try std.testing.expect(std.mem.indexOf(u8, bootstrap_via_mount, "\"preferred_root\":\"./.spiderweb/venoms\"") != null);
+
+    const providers_via_mount = try session.readMountGraphFile("/.spiderweb/catalog/providers.json", 0, 8192);
+    defer allocator.free(providers_via_mount);
+    try std.testing.expect(std.mem.indexOf(u8, providers_via_mount, "\"package_id\":\"terminal\"") != null);
+
+    const venoms_index_via_mount = try session.readMountGraphFile("/.spiderweb/venoms/VENOMS.json", 0, 8192);
+    defer allocator.free(venoms_index_via_mount);
+    try std.testing.expect(std.mem.indexOf(u8, venoms_index_via_mount, "\"venom_path\":\"/.spiderweb/venoms/terminal\"") != null);
+
     const workspace_bootstrap_paths = [_][]const u8{
         "/nodes/local/fs/.spiderweb/protocol.json",
         "/nodes/local/fs/.spiderweb/agent_bootstrap_quickref.json",
@@ -8720,6 +8871,38 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
     try std.testing.expect(bound_bindings != null);
     try std.testing.expect(std.mem.indexOf(u8, bound_bindings.?, "\"binding_path\":\"/.spiderweb/venoms/computer\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bound_bindings.?, "\"binding_path\":\"/.spiderweb/venoms/browser\"") != null);
+
+    const bound_venoms_index = try bound_session.tryReadInternalPath("/.spiderweb/_compat/global/venoms/VENOMS.json");
+    defer if (bound_venoms_index) |value| allocator.free(value);
+    try std.testing.expect(bound_venoms_index != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_venoms_index.?, "\"venom_path\":\"/.spiderweb/venoms/computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_venoms_index.?, "\"venom_path\":\"/.spiderweb/venoms/browser\"") != null);
+
+    const bound_bindings_via_mount = try bound_session.readMountGraphFile("/.spiderweb/catalog/bindings.json", 0, 8192);
+    defer allocator.free(bound_bindings_via_mount);
+    try std.testing.expect(std.mem.indexOf(u8, bound_bindings_via_mount, "\"binding_path\":\"/.spiderweb/venoms/computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_bindings_via_mount, "\"binding_path\":\"/.spiderweb/venoms/browser\"") != null);
+
+    const bound_venoms_index_via_mount = try bound_session.readMountGraphFile("/.spiderweb/venoms/VENOMS.json", 0, 8192);
+    defer allocator.free(bound_venoms_index_via_mount);
+    try std.testing.expect(std.mem.indexOf(u8, bound_venoms_index_via_mount, "\"venom_path\":\"/.spiderweb/venoms/computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_venoms_index_via_mount, "\"venom_path\":\"/.spiderweb/venoms/browser\"") != null);
+
+    const bound_computer_proxy = (try bound_session.boundVenomProxyPathForAbsolutePath("/.spiderweb/venoms/computer/control/invoke.json")) orelse return error.MissingNode;
+    defer bound_session.allocator.free(bound_computer_proxy.remote_path);
+    try std.testing.expectEqualStrings("computer-main", bound_computer_proxy.venom_id);
+    try std.testing.expectEqualStrings(node_id, bound_computer_proxy.provider_node_id.?);
+    try std.testing.expectEqualStrings("computer-main", bound_computer_proxy.provider_export_name.?);
+    try std.testing.expectEqualStrings("/control/invoke.json", bound_computer_proxy.remote_path);
+
+    const node_computer_proxy_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/venoms/computer-main/control/invoke.json", .{node_id});
+    defer allocator.free(node_computer_proxy_path);
+    const node_computer_proxy = (try bound_session.boundVenomProxyPathForAbsolutePath(node_computer_proxy_path)) orelse return error.MissingNode;
+    defer bound_session.allocator.free(node_computer_proxy.remote_path);
+    try std.testing.expectEqualStrings("computer-main", node_computer_proxy.venom_id);
+    try std.testing.expectEqualStrings(node_id, node_computer_proxy.provider_node_id.?);
+    try std.testing.expectEqualStrings("computer-main", node_computer_proxy.provider_export_name.?);
+    try std.testing.expectEqualStrings("/control/invoke.json", node_computer_proxy.remote_path);
 }
 
 test "acheron_session: control substrate surfaces expose runtime and package operations canonically" {

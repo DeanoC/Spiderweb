@@ -5420,20 +5420,23 @@ fn appendNodeVenomJson(
     venom: venom_catalog.VenomDescriptor,
     package_id: ?[]const u8,
 ) !void {
-    if (package_id == null or std.mem.eql(u8, package_id.?, venom.venom_id)) {
+    if (package_id == null) {
+        try venom_catalog.appendVenomJson(allocator, out, venom);
+        return;
+    }
+    if (venom.package_id) |existing_package_id| {
+        if (std.mem.eql(u8, existing_package_id, package_id.?)) {
+            try venom_catalog.appendVenomJson(allocator, out, venom);
+            return;
+        }
+    } else if (std.mem.eql(u8, package_id.?, venom.venom_id)) {
         try venom_catalog.appendVenomJson(allocator, out, venom);
         return;
     }
 
-    var base = std.ArrayListUnmanaged(u8){};
-    defer base.deinit(allocator);
-    try venom_catalog.appendVenomJson(allocator, &base, venom);
-    if (base.items.len == 0 or base.items[base.items.len - 1] != '}') return error.InvalidPayload;
-    base.items.len -= 1;
-    try out.appendSlice(allocator, base.items);
-    const escaped_package_id = try jsonEscape(allocator, package_id.?);
-    defer allocator.free(escaped_package_id);
-    try out.writer(allocator).print(",\"package_id\":\"{s}\"}}", .{escaped_package_id});
+    var rendered = venom;
+    rendered.package_id = @constCast(package_id.?);
+    try venom_catalog.appendVenomJson(allocator, out, rendered);
 }
 
 fn appendNodeJson(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), node: Node) !void {
@@ -8995,6 +8998,8 @@ test "acheron_control_plane: builtin computer and browser packages accept node e
     defer allocator.free(upserted);
     try std.testing.expect(std.mem.indexOf(u8, upserted, "\"venom_id\":\"computer-main\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, upserted, "\"venom_id\":\"browser-main\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, upserted, "\"package_id\":\"computer\""));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, upserted, "\"package_id\":\"browser\""));
 }
 
 test "acheron_control_plane: node venom upsert honors package_id alias" {

@@ -8,6 +8,7 @@ const macos_capability_venoms = @import("spiderweb_node").macos_capability_venom
 const local_node_supervisor_dirname = "local-node";
 const local_node_state_filename = "state.json";
 const local_node_manifests_dirname = "services.d";
+const local_node_bin_dirname = "bin";
 pub const local_node_default_name = "spiderweb-local";
 const local_node_service_binary_name = "spiderweb-local-service";
 const local_node_computer_binary_name = macos_capability_venoms.computer_driver_binary_name;
@@ -135,6 +136,49 @@ fn writeFileReplacing(path: []const u8, data: []const u8) !void {
     try file.writeAll(data);
 }
 
+fn openFileForRead(path: []const u8) !std.fs.File {
+    if (std.fs.path.isAbsolute(path)) {
+        return std.fs.openFileAbsolute(path, .{ .mode = .read_only });
+    }
+    return std.fs.cwd().openFile(path, .{ .mode = .read_only });
+}
+
+fn openOrCreateFileForWrite(path: []const u8) !std.fs.File {
+    const parent = std.fs.path.dirname(path) orelse return error.InvalidPath;
+    const base = std.fs.path.basename(path);
+    if (base.len == 0) return error.InvalidPath;
+    try ensureDirectoryExists(parent);
+
+    if (std.fs.path.isAbsolute(parent)) {
+        var dir = try std.fs.openDirAbsolute(parent, .{});
+        defer dir.close();
+        return dir.createFile(base, .{ .truncate = true });
+    }
+
+    var dir = try std.fs.cwd().openDir(parent, .{});
+    defer dir.close();
+    return dir.createFile(base, .{ .truncate = true });
+}
+
+fn stageExecutable(source_path: []const u8, staged_path: []const u8) !void {
+    var source_file = try openFileForRead(source_path);
+    defer source_file.close();
+
+    var staged_file = try openOrCreateFileForWrite(staged_path);
+    defer staged_file.close();
+
+    var buffer: [16 * 1024]u8 = undefined;
+    while (true) {
+        const read_len = try source_file.read(&buffer);
+        if (read_len == 0) break;
+        try staged_file.writeAll(buffer[0..read_len]);
+    }
+
+    if (builtin.os.tag != .windows and builtin.os.tag != .wasi) {
+        try staged_file.chmod(0o755);
+    }
+}
+
 fn terminateChildPid(child_id: std.process.Child.Id) void {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
     std.posix.kill(child_id, std.posix.SIG.KILL) catch {};
@@ -169,6 +213,9 @@ pub const LocalNodeSupervisor = struct {
     service_binary_path: []u8,
     computer_driver_binary_path: ?[]u8 = null,
     browser_driver_binary_path: ?[]u8 = null,
+    driver_bin_dir: []u8,
+    staged_computer_driver_path: ?[]u8 = null,
+    staged_browser_driver_path: ?[]u8 = null,
     export_root: []u8,
     export_name: []u8,
     profile: []u8,
@@ -203,6 +250,8 @@ pub const LocalNodeSupervisor = struct {
         errdefer allocator.free(state_path);
         const manifests_dir = try std.fs.path.join(allocator, &.{ state_dir, local_node_manifests_dirname });
         errdefer allocator.free(manifests_dir);
+        const driver_bin_dir = try std.fs.path.join(allocator, &.{ state_dir, local_node_bin_dirname });
+        errdefer allocator.free(driver_bin_dir);
 
         supervisor.* = .{
             .allocator = allocator,
@@ -222,6 +271,15 @@ pub const LocalNodeSupervisor = struct {
                 null,
             .browser_driver_binary_path = if (builtin.os.tag == .macos)
                 try resolveSiblingExecutablePath(allocator, local_node_browser_binary_name)
+            else
+                null,
+            .driver_bin_dir = driver_bin_dir,
+            .staged_computer_driver_path = if (builtin.os.tag == .macos)
+                try std.fs.path.join(allocator, &.{ driver_bin_dir, local_node_computer_binary_name })
+            else
+                null,
+            .staged_browser_driver_path = if (builtin.os.tag == .macos)
+                try std.fs.path.join(allocator, &.{ driver_bin_dir, local_node_browser_binary_name })
             else
                 null,
             .export_root = try allocator.dupe(u8, export_root_trimmed),
@@ -256,6 +314,9 @@ pub const LocalNodeSupervisor = struct {
         self.allocator.free(self.service_binary_path);
         if (self.computer_driver_binary_path) |value| self.allocator.free(value);
         if (self.browser_driver_binary_path) |value| self.allocator.free(value);
+        self.allocator.free(self.driver_bin_dir);
+        if (self.staged_computer_driver_path) |value| self.allocator.free(value);
+        if (self.staged_browser_driver_path) |value| self.allocator.free(value);
         self.allocator.free(self.export_root);
         self.allocator.free(self.export_name);
         self.allocator.free(self.profile);
@@ -301,6 +362,8 @@ pub const LocalNodeSupervisor = struct {
 
     fn prepareLaunch(self: *LocalNodeSupervisor) !void {
         try ensureDirectoryExists(self.state_dir);
+        try ensureDirectoryExists(self.driver_bin_dir);
+        try self.stageCapabilityDrivers();
         try deleteTreeIfPresent(self.manifests_dir);
         try ensureDirectoryExists(self.manifests_dir);
         const initial_join_payload = try self.control_plane.ensureNode(local_node_default_name, "", 15 * 60 * 1000);
@@ -323,12 +386,25 @@ pub const LocalNodeSupervisor = struct {
         try self.writeManifestFile("git", "git");
         try self.writeManifestFile("search_code", "search_code");
         if (builtin.os.tag == .macos) {
-            if (self.computer_driver_binary_path) |value| {
+            if (self.staged_computer_driver_path) |value| {
                 try self.writeCapabilityManifestFile("computer", value);
             }
-            if (self.browser_driver_binary_path) |value| {
+            if (self.staged_browser_driver_path) |value| {
                 try self.writeCapabilityManifestFile("browser", value);
             }
+        }
+    }
+
+    fn stageCapabilityDrivers(self: *LocalNodeSupervisor) !void {
+        if (builtin.os.tag != .macos) return;
+
+        if (self.computer_driver_binary_path) |source_path| {
+            const staged_path = self.staged_computer_driver_path orelse return error.InvalidArguments;
+            try stageExecutable(source_path, staged_path);
+        }
+        if (self.browser_driver_binary_path) |source_path| {
+            const staged_path = self.staged_browser_driver_path orelse return error.InvalidArguments;
+            try stageExecutable(source_path, staged_path);
         }
     }
 

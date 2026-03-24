@@ -2024,10 +2024,14 @@ pub const Session = struct {
     }
 
     pub fn refreshWorkspaceProjectionFromStatus(self: *Session, workspace_status_json: []const u8) !void {
-        if (self.last_workspace_projection_status_json) |cached| {
-            if (std.mem.eql(u8, cached, workspace_status_json)) return;
-        }
         try self.refreshWorkspaceBindsFromControlPlane();
+        if (self.last_workspace_projection_status_json) |cached| {
+            if (std.mem.eql(u8, cached, workspace_status_json)) {
+                try self.materializeProjectBindPrefixDirectories();
+                try self.refreshWorkspaceServiceDiscoveryFiles();
+                return;
+            }
+        }
         try self.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
         try self.materializeProjectBindPrefixDirectories();
         try self.refreshWorkspaceServiceDiscoveryFiles();

@@ -108,6 +108,7 @@ const workspace_compat_meta_absolute = workspace_compat_root_absolute ++ "/meta"
 const workspace_compat_meta_projected_absolute = workspace_compat_root_projected_absolute ++ "/meta";
 const workspace_managed_control_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_control_dir_name ++ "/";
 const workspace_managed_venoms_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_venoms_dir_name ++ "/";
+const workspace_managed_venoms_projected_prefix = workspace_managed_root_projected_absolute ++ "/" ++ workspace_managed_venoms_dir_name ++ "/";
 const workspace_agents_contract_path = session_workspace_contract.workspace_agents_contract_path;
 const workspace_agents_heading = session_workspace_contract.workspace_agents_heading;
 const workspace_agents_managed_begin = session_workspace_contract.workspace_agents_managed_begin;
@@ -2022,6 +2023,11 @@ pub const Session = struct {
 
     pub fn refreshWorkspaceProjectionFromStatus(self: *Session, workspace_status_json: []const u8) !void {
         try self.refreshWorkspaceBindsFromControlPlane();
+        self.clearProjectBindsByKind(.workspace_mount);
+        self.clearWorkspaceMountFsAuthTokens();
+        self.clearWorkspaceMountFsUrls();
+        self.clearWorkspaceMountProxyRoots();
+        try self.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
         if (self.last_workspace_projection_status_json) |cached| {
             if (std.mem.eql(u8, cached, workspace_status_json)) {
                 try self.materializeProjectBindPrefixDirectories();
@@ -2029,11 +2035,6 @@ pub const Session = struct {
                 return;
             }
         }
-        self.clearProjectBindsByKind(.workspace_mount);
-        self.clearWorkspaceMountFsAuthTokens();
-        self.clearWorkspaceMountFsUrls();
-        self.clearWorkspaceMountProxyRoots();
-        try self.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
         try self.materializeProjectBindPrefixDirectories();
         try self.refreshWorkspaceServiceDiscoveryFiles();
         try self.replaceOptionalOwnedString(&self.last_workspace_projection_status_json, workspace_status_json);
@@ -2170,9 +2171,9 @@ pub const Session = struct {
     fn registerExplicitWorkspaceCapabilityBindings(self: *Session) !void {
         for (self.workspace_binds.items) |bind| {
             if (bind.kind != .workspace) continue;
-            if (!std.mem.startsWith(u8, bind.bind_path, workspace_managed_venoms_absolute_prefix)) continue;
+            if (!std.mem.startsWith(u8, bind.bind_path, workspace_managed_venoms_projected_prefix)) continue;
 
-            const alias_tail = bind.bind_path[workspace_managed_venoms_absolute_prefix.len..];
+            const alias_tail = bind.bind_path[workspace_managed_venoms_projected_prefix.len..];
             if (alias_tail.len == 0 or std.mem.indexOfScalar(u8, alias_tail, '/') != null) continue;
             if (!venom_model.isCapabilityVenomId(alias_tail)) continue;
 
@@ -8898,6 +8899,17 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
     try std.testing.expectEqualStrings(node_id, bound_computer_proxy.provider_node_id.?);
     try std.testing.expectEqualStrings("computer-main", bound_computer_proxy.provider_export_name.?);
     try std.testing.expectEqualStrings("/control/invoke.json", bound_computer_proxy.remote_path);
+
+    var found_scoped_computer_binding = false;
+    const expected_provider_venom_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/venoms/computer-main", .{node_id});
+    defer allocator.free(expected_provider_venom_path);
+    for (bound_session.scoped_venom_bindings.items) |binding| {
+        if (!std.mem.eql(u8, binding.venom_path, "/.spiderweb/venoms/computer")) continue;
+        found_scoped_computer_binding = true;
+        try std.testing.expectEqualStrings(node_id, binding.provider_node_id.?);
+        try std.testing.expectEqualStrings(expected_provider_venom_path, binding.provider_venom_path.?);
+    }
+    try std.testing.expect(found_scoped_computer_binding);
 
     const node_computer_proxy_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/venoms/computer-main/control/invoke.json", .{node_id});
     defer allocator.free(node_computer_proxy_path);

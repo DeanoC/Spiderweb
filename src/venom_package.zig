@@ -5,6 +5,7 @@ pub const VenomPackage = struct {
     venom_id: []u8,
     kind: []u8,
     version: []u8,
+    enabled: bool = true,
     categories_json: []u8,
     host_roles_json: []u8,
     binding_scopes_json: []u8,
@@ -77,12 +78,13 @@ pub fn appendPackageJson(
         const escaped_help = try jsonEscape(allocator, help);
         defer allocator.free(escaped_help);
         try out.writer(allocator).print(
-            "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"help_md\":\"{s}\"}}",
+            "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":{},\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"help_md\":\"{s}\"}}",
             .{
                 escaped_venom_id,
                 escaped_venom_id,
                 escaped_kind,
                 escaped_version,
+                package.enabled,
                 package.categories_json,
                 package.host_roles_json,
                 package.binding_scopes_json,
@@ -100,12 +102,13 @@ pub fn appendPackageJson(
     }
 
     try out.writer(allocator).print(
-        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}}}",
+        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":{},\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}}}",
         .{
             escaped_venom_id,
             escaped_venom_id,
             escaped_kind,
             escaped_version,
+            package.enabled,
             package.categories_json,
             package.host_roles_json,
             package.binding_scopes_json,
@@ -125,6 +128,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
         .venom_id = undefined,
         .kind = undefined,
         .version = undefined,
+        .enabled = true,
         .categories_json = undefined,
         .host_roles_json = undefined,
         .binding_scopes_json = undefined,
@@ -171,6 +175,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     kind_set = true;
     package.version = try dupStringOrDefault(allocator, obj, "version", "1");
     version_set = true;
+    package.enabled = parseOptionalBool(obj, "enabled") orelse true;
     package.categories_json = try dupObjectFieldJsonOrDefault(allocator, obj, "categories", "[]");
     categories_set = true;
     package.host_roles_json = try dupObjectFieldJsonOrDefault(allocator, obj, "host_roles", "[]");
@@ -224,6 +229,12 @@ fn dupOptionalString(
     const value = obj.get(key) orelse return null;
     if (value != .string or value.string.len == 0) return error.InvalidPackage;
     return try allocator.dupe(u8, value.string);
+}
+
+fn parseOptionalBool(obj: std.json.ObjectMap, key: []const u8) ?bool {
+    const value = obj.get(key) orelse return null;
+    if (value != .bool) return null;
+    return value.bool;
 }
 
 fn dupObjectFieldJsonOrDefault(

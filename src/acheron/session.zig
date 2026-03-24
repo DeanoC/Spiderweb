@@ -54,6 +54,8 @@ const SpecialKind = enum {
     packages_list,
     packages_get,
     packages_install,
+    packages_enable,
+    packages_disable,
     packages_remove,
     workspaces_invoke,
     workspaces_list,
@@ -1211,7 +1213,7 @@ pub const Session = struct {
             .mounts_invoke, .mounts_list, .mounts_mount, .mounts_mkdir, .mounts_unmount, .mounts_bind, .mounts_unbind, .mounts_resolve => self.handleMountsNamespaceWrite(special, node_id, data),
             .home_invoke, .home_ensure => self.handleHomeNamespaceWrite(special, node_id, data),
             .runtimes_invoke, .runtimes_register, .runtimes_heartbeat, .runtimes_detach => self.handleRuntimesNamespaceWrite(special, node_id, data),
-            .packages_invoke, .packages_list, .packages_get, .packages_install, .packages_remove => self.handlePackagesNamespaceWrite(special, node_id, data),
+            .packages_invoke, .packages_list, .packages_get, .packages_install, .packages_enable, .packages_disable, .packages_remove => self.handlePackagesNamespaceWrite(special, node_id, data),
             .workspaces_invoke, .workspaces_list, .workspaces_get, .workspaces_up => self.handleWorkspacesNamespaceWrite(special, node_id, data),
             .git_invoke, .git_sync_checkout, .git_status, .git_diff_range => self.handleGitNamespaceWrite(special, node_id, data),
             .terminal_invoke => self.handleTerminalInvokeWrite(node_id, data),
@@ -8858,6 +8860,8 @@ test "acheron_session: control substrate surfaces expose runtime and package ope
     try std.testing.expect(packages_ops != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_install\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_enable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_disable\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"venom_packages_list\"") == null);
 
     const packages_status = try session.tryReadInternalPath("/nodes/local/fs/.spiderweb/control/packages/STATUS.json");

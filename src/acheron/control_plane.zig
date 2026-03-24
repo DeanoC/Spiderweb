@@ -1290,6 +1290,52 @@ pub const ControlPlane = struct {
         return self.renderSingleInstalledVenomPackageJsonLocked(package.venom_id);
     }
 
+    pub fn enableVenomPackage(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var payload = try parsePayload(self.allocator, payload_json);
+        defer payload.deinit();
+        const obj = payload.value.object;
+
+        const venom_id = getRequiredString(obj, "venom_id") catch return ControlPlaneError.MissingField;
+        try validateIdentifier(venom_id, 128);
+        if (venom_packages.findBuiltinPackage(venom_id) != null) {
+            return ControlPlaneError.VenomPackageBuiltinProtected;
+        }
+
+        for (self.installed_venom_packages.items) |*installed| {
+            if (!std.mem.eql(u8, installed.venom_id, venom_id)) continue;
+            installed.enabled = true;
+            self.persistSnapshotBestEffortLocked();
+            return self.renderSingleInstalledVenomPackageJsonLocked(venom_id);
+        }
+        return ControlPlaneError.VenomPackageNotFound;
+    }
+
+    pub fn disableVenomPackage(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var payload = try parsePayload(self.allocator, payload_json);
+        defer payload.deinit();
+        const obj = payload.value.object;
+
+        const venom_id = getRequiredString(obj, "venom_id") catch return ControlPlaneError.MissingField;
+        try validateIdentifier(venom_id, 128);
+        if (venom_packages.findBuiltinPackage(venom_id) != null) {
+            return ControlPlaneError.VenomPackageBuiltinProtected;
+        }
+
+        for (self.installed_venom_packages.items) |*installed| {
+            if (!std.mem.eql(u8, installed.venom_id, venom_id)) continue;
+            installed.enabled = false;
+            self.persistSnapshotBestEffortLocked();
+            return self.renderSingleInstalledVenomPackageJsonLocked(venom_id);
+        }
+        return ControlPlaneError.VenomPackageNotFound;
+    }
+
     pub fn removeVenomPackage(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -4060,6 +4106,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         venom_id: []const u8,
         kind: []const u8,
         version: []const u8,
+        enabled: bool,
         host_roles_json: []const u8,
         binding_scopes_json: []const u8,
         requirements_json: []const u8,
@@ -4073,6 +4120,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .venom_id = spec.venom_id,
                 .kind = spec.kind,
                 .version = spec.version,
+                .enabled = spec.enabled,
                 .host_roles_json = spec.hostRolesJson(),
                 .binding_scopes_json = spec.bindingScopesJson(),
                 .requirements_json = spec.requirements_json,
@@ -4082,10 +4130,12 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         }
         for (self.installed_venom_packages.items) |package| {
             if (!std.mem.eql(u8, package.venom_id, venom_id)) continue;
+            if (!package.enabled) return null;
             return .{
                 .venom_id = package.venom_id,
                 .kind = package.kind,
                 .version = package.version,
+                .enabled = package.enabled,
                 .host_roles_json = package.host_roles_json,
                 .binding_scopes_json = package.binding_scopes_json,
                 .requirements_json = package.requirements_json,
@@ -4104,10 +4154,12 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         if (try venom_packages.cloneBuiltinPackage(allocator, venom_id)) |package| return package;
         for (self.installed_venom_packages.items) |package| {
             if (!std.mem.eql(u8, package.venom_id, venom_id)) continue;
+            if (!package.enabled) return null;
             return .{
                 .venom_id = try allocator.dupe(u8, package.venom_id),
                 .kind = try allocator.dupe(u8, package.kind),
                 .version = try allocator.dupe(u8, package.version),
+                .enabled = package.enabled,
                 .categories_json = try allocator.dupe(u8, package.categories_json),
                 .host_roles_json = try allocator.dupe(u8, package.host_roles_json),
                 .binding_scopes_json = try allocator.dupe(u8, package.binding_scopes_json),
@@ -9052,6 +9104,24 @@ test "acheron_control_plane: venom package install list get remove" {
     const fetched = try plane.getVenomPackage("{\"venom_id\":\"camera_pkg\"}");
     defer allocator.free(fetched);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"kind\":\"camera\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"enabled\":true") != null);
+
+    const disabled = try plane.disableVenomPackage("{\"venom_id\":\"camera_pkg\"}");
+    defer allocator.free(disabled);
+    try std.testing.expect(std.mem.indexOf(u8, disabled, "\"enabled\":false") != null);
+    try std.testing.expectError(
+        ControlPlaneError.VenomPackageNotFound,
+        plane.validateRuntimeVenomInstantiation(&.{"camera_pkg"}),
+    );
+
+    const listed_disabled = try plane.listVenomPackages();
+    defer allocator.free(listed_disabled);
+    try std.testing.expect(std.mem.indexOf(u8, listed_disabled, "\"venom_id\":\"camera_pkg\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed_disabled, "\"enabled\":false") != null);
+
+    const enabled = try plane.enableVenomPackage("{\"venom_id\":\"camera_pkg\"}");
+    defer allocator.free(enabled);
+    try std.testing.expect(std.mem.indexOf(u8, enabled, "\"enabled\":true") != null);
 
     const removed = try plane.removeVenomPackage("{\"venom_id\":\"camera_pkg\"}");
     defer allocator.free(removed);

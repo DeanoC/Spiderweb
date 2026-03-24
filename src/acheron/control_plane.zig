@@ -1334,14 +1334,14 @@ pub const ControlPlane = struct {
         return null;
     }
 
-    pub fn validateWorkerVenomInstantiation(
+    pub fn validateRuntimeVenomInstantiation(
         self: *ControlPlane,
         requested_venoms: []const []const u8,
     ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const worker_host_capabilities = [_][]const u8{
+        const runtime_host_capabilities = [_][]const u8{
             "external_worker",
             "filesystem_loopback",
         };
@@ -1353,7 +1353,7 @@ pub const ControlPlane = struct {
                 "worker",
                 "worker_private",
                 requested_venoms,
-                worker_host_capabilities[0..],
+                runtime_host_capabilities[0..],
                 "{\"type\":\"external_worker\"}",
             );
         }
@@ -9007,7 +9007,7 @@ test "acheron_control_plane: platform-only node upsert revalidates existing veno
     try std.testing.expectError(ControlPlaneError.VenomPackageRequirementsUnmet, plane.nodeVenomUpsert(platform_only_req));
 }
 
-test "acheron_control_plane: worker venom instantiation requires package dependencies" {
+test "acheron_control_plane: runtime venom instantiation requires package dependencies" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -9019,10 +9019,10 @@ test "acheron_control_plane: worker venom instantiation requires package depende
 
     try std.testing.expectError(
         ControlPlaneError.VenomPackageRequirementsUnmet,
-        plane.validateWorkerVenomInstantiation(&.{"scratchpad"}),
+        plane.validateRuntimeVenomInstantiation(&.{"scratchpad"}),
     );
 
-    try plane.validateWorkerVenomInstantiation(&.{ "memory", "scratchpad" });
+    try plane.validateRuntimeVenomInstantiation(&.{ "memory", "scratchpad" });
 }
 
 test "acheron_control_plane: venom package install list get remove" {

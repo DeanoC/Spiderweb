@@ -191,7 +191,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
     try appendRequestedVenoms(self.allocator, &venoms, args_obj);
     if (venoms.items.len == 0) return error.InvalidPayload;
     if (self.control_plane) |control_plane| {
-        try control_plane.validateWorkerVenomInstantiation(venoms.items);
+        try control_plane.validateRuntimeVenomInstantiation(venoms.items);
     } else {
         for (venoms.items) |venom_id| {
             if (!isSupportedWorkerVenom(venom_id)) return error.InvalidPayload;

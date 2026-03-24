@@ -14,7 +14,7 @@ const default_worker_venoms = [_][]const u8{
 const default_worker_ttl_ms: u64 = 30_000;
 
 pub fn seedNamespace(self: anytype, workers_dir: u32) !void {
-    return seedNamespaceAt(self, workers_dir, "/global/workers");
+    return seedNamespaceAt(self, workers_dir, "/.spiderweb/_compat/global/runtimes");
 }
 
 pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !void {
@@ -22,46 +22,46 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
     defer self.allocator.free(escaped_base_path);
     const shape_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"kind\":\"venom\",\"venom_id\":\"workers\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,PERMISSIONS.json,STATUS.json,status.json,result.json,control/*}}\"}}",
+        "{{\"kind\":\"control_substrate\",\"surface_id\":\"runtimes\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,PERMISSIONS.json,STATUS.json,status.json,result.json,control/*}}\"}}",
         .{escaped_base_path},
     );
     defer self.allocator.free(shape_json);
     try self.addDirectoryDescriptors(
         workers_dir,
-        "Worker Nodes",
+        "Runtimes",
         shape_json,
-        "{\"invoke\":true,\"operations\":[\"workers_register\",\"workers_heartbeat\",\"workers_detach\"],\"discoverable\":true,\"project_scope\":true}",
-        "Register an attached external worker, heartbeat its lease, detach it, and project its private loopback venoms into /nodes/<worker_id>/venoms/*.",
+        "{\"invoke\":true,\"operations\":[\"runtime_attach\",\"runtime_heartbeat\",\"runtime_detach\"],\"discoverable\":true,\"workspace_scope\":true}",
+        "Attach an external runtime, heartbeat its lease, detach it, and project its private loopback venoms into /nodes/<runtime_id>/venoms/*.",
     );
     _ = try self.addFile(
         workers_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"register\":\"control/register.json\",\"heartbeat\":\"control/heartbeat.json\",\"detach\":\"control/detach.json\"},\"operations\":{\"register\":\"workers_register\",\"heartbeat\":\"workers_heartbeat\",\"detach\":\"workers_detach\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"register\":\"control/register.json\",\"heartbeat\":\"control/heartbeat.json\",\"detach\":\"control/detach.json\"},\"operations\":{\"register\":\"runtime_attach\",\"heartbeat\":\"runtime_heartbeat\",\"detach\":\"runtime_detach\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         workers_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"worker_nodes\"}",
+        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"runtime_attach_registry\"}",
         false,
         .none,
     );
     _ = try self.addFile(
         workers_dir,
         "PERMISSIONS.json",
-        "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"project\",\"project_token_required\":false}",
+        "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"workspace\",\"workspace_token_required\":false}",
         false,
         .none,
     );
     _ = try self.addFile(
         workers_dir,
         "STATUS.json",
-        "{\"venom_id\":\"workers\",\"state\":\"namespace\",\"has_invoke\":true}",
+        "{\"surface_id\":\"runtimes\",\"state\":\"namespace\",\"has_invoke\":true}",
         false,
         .none,
     );
-    self.workers_status_id = try self.addFile(
+    self.runtimes_status_id = try self.addFile(
         workers_dir,
         "status.json",
         "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}",
@@ -74,7 +74,7 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
         "{\"ok\":false,\"node_id\":null,\"node_path\":null,\"venoms\":[],\"expires_at_ms\":0,\"detached\":false}",
     );
     defer self.allocator.free(initial_result);
-    self.workers_result_id = try self.addFile(
+    self.runtimes_result_id = try self.addFile(
         workers_dir,
         "result.json",
         initial_result,
@@ -86,14 +86,14 @@ pub fn seedNamespaceAt(self: anytype, workers_dir: u32, base_path: []const u8) !
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Write registration or heartbeat payloads here to maintain a live worker node lease inside the mounted workspace.\n",
+        "Write attach or heartbeat payloads here to maintain a live runtime lease inside the mounted workspace.\n",
         false,
         .none,
     );
-    _ = try self.addFile(control_dir, "invoke.json", "", true, .workers_invoke);
-    _ = try self.addFile(control_dir, "register.json", "", true, .workers_register);
-    _ = try self.addFile(control_dir, "heartbeat.json", "", true, .workers_heartbeat);
-    _ = try self.addFile(control_dir, "detach.json", "", true, .workers_detach);
+    _ = try self.addFile(control_dir, "invoke.json", "", true, .runtimes_invoke);
+    _ = try self.addFile(control_dir, "register.json", "", true, .runtimes_register);
+    _ = try self.addFile(control_dir, "heartbeat.json", "", true, .runtimes_heartbeat);
+    _ = try self.addFile(control_dir, "detach.json", "", true, .runtimes_detach);
 }
 
 pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_input: []const u8) !usize {
@@ -107,10 +107,10 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
     const obj = parsed.value.object;
 
     const op = switch (special) {
-        .workers_register => Op.register,
-        .workers_heartbeat => Op.heartbeat,
-        .workers_detach => Op.detach,
-        .workers_invoke => blk: {
+        .runtimes_register => Op.register,
+        .runtimes_heartbeat => Op.heartbeat,
+        .runtimes_detach => Op.detach,
+        .runtimes_invoke => blk: {
             const op_raw = blk2: {
                 if (obj.get("op")) |value| if (value == .string and value.string.len > 0) break :blk2 value.string;
                 if (obj.get("operation")) |value| if (value == .string and value.string.len > 0) break :blk2 value.string;
@@ -140,37 +140,37 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
 
 fn parseOp(raw: []const u8) ?Op {
     const value = std.mem.trim(u8, raw, " \t\r\n");
-    if (std.mem.eql(u8, value, "register") or std.mem.eql(u8, value, "workers_register")) return .register;
-    if (std.mem.eql(u8, value, "heartbeat") or std.mem.eql(u8, value, "workers_heartbeat")) return .heartbeat;
-    if (std.mem.eql(u8, value, "detach") or std.mem.eql(u8, value, "workers_detach")) return .detach;
+    if (std.mem.eql(u8, value, "register") or std.mem.eql(u8, value, "attach") or std.mem.eql(u8, value, "workers_register") or std.mem.eql(u8, value, "runtime_attach")) return .register;
+    if (std.mem.eql(u8, value, "heartbeat") or std.mem.eql(u8, value, "workers_heartbeat") or std.mem.eql(u8, value, "runtime_heartbeat")) return .heartbeat;
+    if (std.mem.eql(u8, value, "detach") or std.mem.eql(u8, value, "workers_detach") or std.mem.eql(u8, value, "runtime_detach")) return .detach;
     return null;
 }
 
 fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, written: usize) !usize {
     const tool_name = switch (op) {
-        .register => "workers_register",
-        .heartbeat => "workers_heartbeat",
-        .detach => "workers_detach",
+        .register => "runtime_attach",
+        .heartbeat => "runtime_heartbeat",
+        .detach => "runtime_detach",
     };
     const running_status = try self.buildServiceInvokeStatusJson("running", tool_name, null);
     defer self.allocator.free(running_status);
-    try self.setMirroredFileContent(self.workers_status_id, self.workers_status_alias_id, running_status);
+    try self.setMirroredFileContent(self.runtimes_status_id, self.runtimes_status_alias_id, running_status);
 
     const result_payload = executeOpPayload(self, op, args_obj) catch |err| {
         const failed_status = try self.buildServiceInvokeStatusJson("failed", tool_name, @errorName(err));
         defer self.allocator.free(failed_status);
-        try self.setMirroredFileContent(self.workers_status_id, self.workers_status_alias_id, failed_status);
+        try self.setMirroredFileContent(self.runtimes_status_id, self.runtimes_status_alias_id, failed_status);
         const failed_result = try buildFailureResultJson(self, op, "invalid_payload", @errorName(err));
         defer self.allocator.free(failed_result);
-        try self.setMirroredFileContent(self.workers_result_id, self.workers_result_alias_id, failed_result);
+        try self.setMirroredFileContent(self.runtimes_result_id, self.runtimes_result_alias_id, failed_result);
         return err;
     };
     defer self.allocator.free(result_payload);
 
     const done_status = try self.buildServiceInvokeStatusJson("done", tool_name, null);
     defer self.allocator.free(done_status);
-    try self.setMirroredFileContent(self.workers_status_id, self.workers_status_alias_id, done_status);
-    try self.setMirroredFileContent(self.workers_result_id, self.workers_result_alias_id, result_payload);
+    try self.setMirroredFileContent(self.runtimes_status_id, self.runtimes_status_alias_id, done_status);
+    try self.setMirroredFileContent(self.runtimes_result_id, self.runtimes_result_alias_id, result_payload);
     return written;
 }
 

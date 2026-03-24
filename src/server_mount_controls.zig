@@ -59,6 +59,14 @@ pub fn handleMountAttachControl(
         return err;
     };
     defer allocator.free(workspace_json);
+    session.refreshWorkspaceProjectionFromStatus(workspace_json) catch |err| {
+        std.log.warn("mount_attach workspace projection refresh failed path={s} depth={d}: {s}", .{
+            requested_path,
+            requested_depth,
+            @errorName(err),
+        });
+        return err;
+    };
     return session.buildMountGraphSnapshotPayloadForPath(
         workspace_json,
         session_key,

@@ -2,6 +2,7 @@ const std = @import("std");
 const venom_catalog = @import("spiderweb_node").venom_catalog;
 const venom_package_model = @import("../venom_package.zig");
 const venom_packages = @import("../venom_packages.zig");
+const venom_model = @import("../venom_model.zig");
 
 const persistence_base_id = "spiderweb:control-plane:state";
 const persistence_kind = "control_plane_state_v1";
@@ -302,7 +303,7 @@ const WorkspaceBind = struct {
 const WorkspaceTemplateBindSpec = struct {
     bind_path: []const u8,
     venom_id: []const u8,
-    provider_scope: []const u8 = "host_local",
+    host_role: venom_model.HostRole = .spiderweb,
 };
 
 const WorkspaceTemplateSpec = struct {
@@ -312,25 +313,25 @@ const WorkspaceTemplateSpec = struct {
 };
 
 const core_workspace_bind_specs = [_]WorkspaceTemplateBindSpec{
-    .{ .bind_path = "/services/mounts", .venom_id = "mounts" },
-    .{ .bind_path = "/services/home", .venom_id = "home" },
-    .{ .bind_path = "/services/workers", .venom_id = "workers" },
-    .{ .bind_path = "/services/terminal", .venom_id = "terminal", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/git", .venom_id = "git", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/search_code", .venom_id = "search_code", .provider_scope = "node_export" },
-    .{ .bind_path = "/services/library", .venom_id = "library" },
-    .{ .bind_path = "/services/events", .venom_id = "events" },
+    .{ .bind_path = "/.spiderweb/control/workspace/mounts", .venom_id = "mounts" },
+    .{ .bind_path = "/.spiderweb/control/workspace/home", .venom_id = "home" },
+    .{ .bind_path = "/.spiderweb/control/runtimes", .venom_id = "runtimes" },
+    .{ .bind_path = "/.spiderweb/venoms/terminal", .venom_id = "terminal", .host_role = .node },
+    .{ .bind_path = "/.spiderweb/venoms/git", .venom_id = "git", .host_role = .node },
+    .{ .bind_path = "/.spiderweb/venoms/search_code", .venom_id = "search_code", .host_role = .node },
+    .{ .bind_path = "/.spiderweb/venoms/library", .venom_id = "library" },
+    .{ .bind_path = "/.spiderweb/venoms/events", .venom_id = "events" },
 };
 
 const builtin_workspace_templates = [_]WorkspaceTemplateSpec{
     .{
         .id = default_project_template_id,
-        .description = "Minimal external-agent workspace with the core services bound into /services.",
+        .description = "Minimal external-agent workspace with canonical control and venom bindings under /.spiderweb.",
         .bind_specs = core_workspace_bind_specs[0..],
     },
     .{
         .id = "dev",
-        .description = "Development workspace with the same external-agent core services bound into /services.",
+        .description = "Development workspace with canonical control and venom bindings under /.spiderweb.",
         .bind_specs = core_workspace_bind_specs[0..],
     },
 };
@@ -4059,10 +4060,12 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         venom_id: []const u8,
         kind: []const u8,
         version: []const u8,
-        hosts_json: []const u8,
+        host_roles_json: []const u8,
+        binding_scopes_json: []const u8,
         projection_modes_json: []const u8,
         requirements_json: []const u8,
         runtime_json: []const u8,
+        runtime_kind: venom_model.RuntimeKind,
     };
 
     fn lookupVenomPackageLocked(self: *ControlPlane, venom_id: []const u8) ?VenomPackageView {
@@ -4071,10 +4074,12 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .venom_id = spec.venom_id,
                 .kind = spec.kind,
                 .version = spec.version,
-                .hosts_json = spec.hosts_json,
-                .projection_modes_json = spec.projection_modes_json,
+                .host_roles_json = spec.hostRolesJson(),
+                .binding_scopes_json = spec.bindingScopesJson(),
+                .projection_modes_json = spec.legacyProjectionModesJson(),
                 .requirements_json = spec.requirements_json,
                 .runtime_json = spec.runtime_json,
+                .runtime_kind = spec.runtime_kind,
             };
         }
         for (self.installed_venom_packages.items) |package| {
@@ -4083,10 +4088,12 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .venom_id = package.venom_id,
                 .kind = package.kind,
                 .version = package.version,
-                .hosts_json = package.hosts_json,
+                .host_roles_json = package.hosts_json,
+                .binding_scopes_json = package.projection_modes_json,
                 .projection_modes_json = package.projection_modes_json,
                 .requirements_json = package.requirements_json,
                 .runtime_json = package.runtime_json,
+                .runtime_kind = if (std.mem.indexOf(u8, package.runtime_json, "\"type\":\"wasm\"") != null) .wasm else .native,
             };
         }
         return null;
@@ -4168,7 +4175,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         host_capabilities: []const []const u8,
         actual_runtime_json: ?[]const u8,
     ) !void {
-        if (!jsonArrayContainsString(allocator, package.hosts_json, host)) {
+        if (!jsonArrayContainsString(allocator, package.host_roles_json, host)) {
             return ControlPlaneError.VenomPackageHostUnsupported;
         }
         if (!jsonArrayContainsString(allocator, package.projection_modes_json, projection_mode)) {
@@ -5454,8 +5461,10 @@ fn appendWorkspaceTemplateBindJson(
     defer allocator.free(escaped_bind);
     const escaped_venom = try jsonEscape(allocator, bind_spec.venom_id);
     defer allocator.free(escaped_venom);
-    const escaped_scope = try jsonEscape(allocator, bind_spec.provider_scope);
-    defer allocator.free(escaped_scope);
+    const escaped_host_role = try jsonEscape(allocator, bind_spec.host_role.asString());
+    defer allocator.free(escaped_host_role);
+    const escaped_provider_scope = try jsonEscape(allocator, venom_model.legacyProviderScope(bind_spec.host_role, &.{venom_model.BindingScope.workspace}));
+    defer allocator.free(escaped_provider_scope);
     const target_path_json = if (resolveTemplateBindTargetPath(bind_spec)) |target_path| blk: {
         const escaped_target = try jsonEscape(allocator, target_path);
         defer allocator.free(escaped_target);
@@ -5464,8 +5473,8 @@ fn appendWorkspaceTemplateBindJson(
     defer allocator.free(target_path_json);
 
     try out.writer(allocator).print(
-        "{{\"bind_path\":\"{s}\",\"venom_id\":\"{s}\",\"provider_scope\":\"{s}\",\"target_path\":{s}}}",
-        .{ escaped_bind, escaped_venom, escaped_scope, target_path_json },
+        "{{\"bind_path\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"binding_scope\":\"workspace\",\"provider_scope\":\"{s}\",\"target_path\":{s}}}",
+        .{ escaped_bind, escaped_venom, escaped_host_role, escaped_provider_scope, target_path_json },
     );
 }
 
@@ -6261,7 +6270,7 @@ fn ensureBindSpecsLocked(
 }
 
 fn resolveTemplateBindTargetPath(spec: WorkspaceTemplateBindSpec) ?[]const u8 {
-    return venom_packages.resolveBuiltinTargetPath(spec.venom_id, spec.provider_scope);
+    return venom_packages.resolveBuiltinTargetPath(spec.venom_id, spec.host_role);
 }
 
 fn workspaceHasCanonicalMount(project: *const Workspace) bool {
@@ -6956,7 +6965,7 @@ test "acheron_control_plane: project bind lifecycle resolves bound paths" {
     const unbound = try plane.removeWorkspaceBind(unbind_req);
     defer allocator.free(unbound);
     try std.testing.expect(std.mem.indexOf(u8, unbound, "\"bind_path\":\"/repo\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, unbound, "\"bind_path\":\"/services/mounts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound, "\"bind_path\":\"/.spiderweb/control/workspace/mounts\"") != null);
 }
 
 test "acheron_control_plane: bind conflicts with existing mount path" {
@@ -8552,7 +8561,7 @@ test "acheron_control_plane: builtin ensure prunes legacy workspace alias when c
     try std.testing.expectEqualStrings("node-canonical", project.mounts.items[0].node_id);
 }
 
-test "acheron_control_plane: createWorkspace defaults to minimum template and seeds service binds" {
+test "acheron_control_plane: createWorkspace defaults to minimum template and seeds canonical control and venom binds" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -8560,11 +8569,12 @@ test "acheron_control_plane: createWorkspace defaults to minimum template and se
     const project_json = try plane.createWorkspace("{\"name\":\"TemplateMinimum\",\"vision\":\"TemplateMinimum\"}");
     defer allocator.free(project_json);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"template_id\":\"minimum\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/mounts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/workspace/mounts\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"target_path\":\"/nodes/local/venoms/mounts\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/chat\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/chat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/jobs\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/web_search\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/web_search\"") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, project_json, .{});
     defer parsed.deinit();
@@ -8573,7 +8583,7 @@ test "acheron_control_plane: createWorkspace defaults to minimum template and se
 
     const resolve_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"path\":\"/services/mounts/control/invoke.json\"}}",
+        "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"path\":\"/.spiderweb/control/workspace/mounts/control/invoke.json\"}}",
         .{ workspace_id, workspace_token },
     );
     defer allocator.free(resolve_req);
@@ -8596,9 +8606,9 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     const fetched = try plane.getWorkspaceTemplate("{\"template_id\":\"dev\"}");
     defer allocator.free(fetched);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"template_id\":\"dev\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/git\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/terminal\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/search_code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/git\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/terminal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/search_code\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"target_path\":\"/nodes/local/venoms/git\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"provider_scope\":\"node_export\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/chat\"") == null);
@@ -8608,7 +8618,7 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     try std.testing.expectError(ControlPlaneError.TemplateNotFound, plane.getWorkspaceTemplate("{\"template_id\":\"unknown\"}"));
 }
 
-test "acheron_control_plane: builtin host project seeds mounts service bind" {
+test "acheron_control_plane: builtin host project seeds mounts control bind" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -8619,11 +8629,11 @@ test "acheron_control_plane: builtin host project seeds mounts service bind" {
 
     const payload = try renderWorkspacePayload(allocator, project, false);
     defer allocator.free(payload);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"bind_path\":\"/services/mounts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"bind_path\":\"/.spiderweb/control/workspace/mounts\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"target_path\":\"/nodes/local/venoms/mounts\"") != null);
 }
 
-test "acheron_control_plane: dev template seeds development service binds" {
+test "acheron_control_plane: dev template seeds canonical development binds" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
@@ -8631,14 +8641,14 @@ test "acheron_control_plane: dev template seeds development service binds" {
     const project_json = try plane.createWorkspace("{\"name\":\"TemplateDev\",\"vision\":\"TemplateDev\",\"template_id\":\"dev\"}");
     defer allocator.free(project_json);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"template_id\":\"dev\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/mounts\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/home\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/workers\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/git\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/terminal\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/events\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/library\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/search_code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/workspace/mounts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/workspace/home\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/runtimes\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/git\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/terminal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/events\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/library\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/search_code\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/chat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/jobs\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/web_search\"") == null);

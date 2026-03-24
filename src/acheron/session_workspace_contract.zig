@@ -6,27 +6,24 @@ pub const workspace_entrypoint_relative_namespace_root = "../../..";
 pub const workspace_managed_root_name = ".spiderweb";
 pub const workspace_managed_root_relative = "./.spiderweb";
 pub const workspace_managed_shared_data_dir_name = "shared_data";
-pub const workspace_managed_services_dir_name = "services";
-pub const workspace_managed_local_venoms_dir_name = "local_venoms";
+pub const workspace_managed_control_dir_name = "control";
+pub const workspace_managed_catalog_dir_name = "catalog";
+pub const workspace_managed_venoms_dir_name = "venoms";
 pub const workspace_agents_contract_path = "/nodes/local/fs/AGENTS.md";
 pub const namespace_agents_contract_path = "/AGENTS.md";
 pub const workspace_agents_heading = "# Spiderweb Workspace Agent Contract";
 pub const workspace_agents_managed_begin = "<!-- SPIDERWEB:BEGIN MANAGED -->";
 pub const workspace_agents_managed_end = "<!-- SPIDERWEB:END MANAGED -->";
 
-pub const BootstrapRequiredService = struct {
+pub const BootstrapRequiredVenom = struct {
     venom_id: []const u8,
-    ensure_path: ?[]const u8 = null,
     invoke_path: ?[]const u8 = null,
 };
 
-pub const bootstrap_required_services = [_]BootstrapRequiredService{
-    .{ .venom_id = "home", .ensure_path = "/services/home/control/ensure.json", .invoke_path = "/services/home/control/invoke.json" },
-    .{ .venom_id = "mounts", .invoke_path = "/services/mounts/control/bind.json" },
-    .{ .venom_id = "workers", .invoke_path = "/services/workers/control/register.json" },
-    .{ .venom_id = "terminal", .invoke_path = "/services/terminal/control/invoke.json" },
-    .{ .venom_id = "git", .invoke_path = "/services/git/control/invoke.json" },
-    .{ .venom_id = "search_code", .invoke_path = "/services/search_code/control/invoke.json" },
+pub const bootstrap_required_venoms = [_]BootstrapRequiredVenom{
+    .{ .venom_id = "terminal", .invoke_path = "/.spiderweb/venoms/terminal/control/invoke.json" },
+    .{ .venom_id = "git", .invoke_path = "/.spiderweb/venoms/git/control/invoke.json" },
+    .{ .venom_id = "search_code", .invoke_path = "/.spiderweb/venoms/search_code/control/invoke.json" },
     .{ .venom_id = "library" },
     .{ .venom_id = "events" },
 };
@@ -37,17 +34,19 @@ const BootstrapContractPaths = struct {
     quickref_path: []const u8,
     bootstrap_path: []const u8,
     workspace_status_path: []const u8,
-    venom_packages_path: []const u8,
-    mounted_services_path: []const u8,
+    packages_path: []const u8,
+    providers_path: []const u8,
+    bindings_path: []const u8,
     shared_data_root: []const u8,
     world_seed_path: []const u8,
     items_seed_path: []const u8,
     puzzle_seed_path: []const u8,
-    service_root: []const u8,
+    control_root: []const u8,
+    catalog_root: []const u8,
+    venom_root: []const u8,
     ensure_home_path: []const u8,
     repair_bind_path: []const u8,
-    register_worker_path: []const u8,
-    local_venoms_root: []const u8,
+    register_runtime_path: []const u8,
     target_template: []const u8,
 
     fn init(allocator: std.mem.Allocator, workspace_id: []const u8) !BootstrapContractPaths {
@@ -58,18 +57,20 @@ const BootstrapContractPaths = struct {
             .quickref_path = try workspaceManagedPath(allocator, "agent_bootstrap_quickref.json"),
             .bootstrap_path = try workspaceManagedPath(allocator, "agent_bootstrap.json"),
             .workspace_status_path = try workspaceManagedPath(allocator, "workspace_status.json"),
-            .venom_packages_path = try workspaceManagedPath(allocator, "venom_packages.json"),
-            .mounted_services_path = try workspaceManagedPath(allocator, "mounted_services.json"),
+            .packages_path = try workspaceManagedCatalogPath(allocator, "packages.json"),
+            .providers_path = try workspaceManagedCatalogPath(allocator, "providers.json"),
+            .bindings_path = try workspaceManagedCatalogPath(allocator, "bindings.json"),
             .shared_data_root = try workspaceManagedPath(allocator, "shared_data"),
             .world_seed_path = try workspaceManagedSharedDataPath(allocator, "world_seed.json"),
             .items_seed_path = try workspaceManagedSharedDataPath(allocator, "items_seed.json"),
             .puzzle_seed_path = try workspaceManagedSharedDataPath(allocator, "puzzle_seed.json"),
-            .service_root = try workspaceManagedServicesPath(allocator, null),
-            .ensure_home_path = try workspaceManagedServicesPath(allocator, "home/control/ensure.json"),
-            .repair_bind_path = try workspaceManagedServicesPath(allocator, "mounts/control/bind.json"),
-            .register_worker_path = try workspaceManagedServicesPath(allocator, "workers/control/register.json"),
-            .local_venoms_root = try workspaceManagedChildPath(allocator, workspace_managed_local_venoms_dir_name, null),
-            .target_template = try workspaceManagedLocalVenomsPath(allocator, "{venom_id}"),
+            .control_root = try workspaceManagedControlPath(allocator, null),
+            .catalog_root = try workspaceManagedCatalogPath(allocator, null),
+            .venom_root = try workspaceManagedVenomsPath(allocator, null),
+            .ensure_home_path = try workspaceManagedControlPath(allocator, "workspace/home/control/ensure.json"),
+            .repair_bind_path = try workspaceManagedControlPath(allocator, "workspace/binds/control/bind.json"),
+            .register_runtime_path = try workspaceManagedControlPath(allocator, "runtimes/control/register.json"),
+            .target_template = try workspaceManagedVenomsPath(allocator, "{venom_id}"),
         };
     }
 
@@ -79,33 +80,24 @@ const BootstrapContractPaths = struct {
         allocator.free(self.quickref_path);
         allocator.free(self.bootstrap_path);
         allocator.free(self.workspace_status_path);
-        allocator.free(self.venom_packages_path);
-        allocator.free(self.mounted_services_path);
+        allocator.free(self.packages_path);
+        allocator.free(self.providers_path);
+        allocator.free(self.bindings_path);
         allocator.free(self.shared_data_root);
         allocator.free(self.world_seed_path);
         allocator.free(self.items_seed_path);
         allocator.free(self.puzzle_seed_path);
-        allocator.free(self.service_root);
+        allocator.free(self.control_root);
+        allocator.free(self.catalog_root);
+        allocator.free(self.venom_root);
         allocator.free(self.ensure_home_path);
         allocator.free(self.repair_bind_path);
-        allocator.free(self.register_worker_path);
-        allocator.free(self.local_venoms_root);
+        allocator.free(self.register_runtime_path);
         allocator.free(self.target_template);
     }
 };
 
 pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) ![]u8 {
-    const workspace_binds = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/binds.json", .{workspace_id});
-    defer session.allocator.free(workspace_binds);
-    const workspace_services = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/mounted_services.json", .{workspace_id});
-    defer session.allocator.free(workspace_services);
-    const venom_packages_path = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/venom_packages.json", .{workspace_id});
-    defer session.allocator.free(venom_packages_path);
-    const agent_bootstrap = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{workspace_id});
-    defer session.allocator.free(agent_bootstrap);
-    const agent_bootstrap_quickref = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{workspace_id});
-    defer session.allocator.free(agent_bootstrap_quickref);
-
     const workspace_metadata_files = [_][]const u8{
         "topology.json",
         "nodes.json",
@@ -122,8 +114,9 @@ pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) !
         "desired_mounts.json",
         "actual_mounts.json",
         "binds.json",
-        "mounted_services.json",
-        "venom_packages.json",
+        "packages.json",
+        "providers.json",
+        "bindings.json",
         "drift.json",
         "reconcile.json",
         "availability.json",
@@ -140,33 +133,33 @@ pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) !
     try jw.objectField("workspace_id");
     try jw.write(workspace_id);
     try jw.objectField("top_level_roots");
-    try jw.write(.{ "/nodes", "/agents", "/global", "/services" });
+    try jw.write(.{ "/.spiderweb" });
     try jw.objectField("workspace_metadata_files");
     try jw.write(workspace_metadata_files);
     try jw.objectField("links");
     try jw.beginObject();
-    try jw.objectField("nodes_root");
-    try jw.write("/nodes");
-    try jw.objectField("agents_root");
-    try jw.write("/agents");
-    try jw.objectField("global_root");
-    try jw.write("/global");
-    try jw.objectField("services_root");
-    try jw.write("/services");
-    try jw.objectField("workspace_control");
-    try jw.write("/global/workspaces");
+    try jw.objectField("managed_root");
+    try jw.write("/.spiderweb");
+    try jw.objectField("control_root");
+    try jw.write("/.spiderweb/control");
+    try jw.objectField("catalog_root");
+    try jw.write("/.spiderweb/catalog");
+    try jw.objectField("venoms_root");
+    try jw.write("/.spiderweb/venoms");
     try jw.objectField("workspace_status");
-    try jw.write("/global/workspaces/control/invoke.json");
+    try jw.write("/.spiderweb/workspace_status.json");
     try jw.objectField("workspace_binds");
-    try jw.write(workspace_binds);
-    try jw.objectField("workspace_services");
-    try jw.write(workspace_services);
-    try jw.objectField("venom_packages");
-    try jw.write(venom_packages_path);
+    try jw.write("/.spiderweb/catalog/bindings.json");
+    try jw.objectField("packages");
+    try jw.write("/.spiderweb/catalog/packages.json");
+    try jw.objectField("providers");
+    try jw.write("/.spiderweb/catalog/providers.json");
+    try jw.objectField("bindings");
+    try jw.write("/.spiderweb/catalog/bindings.json");
     try jw.objectField("agent_bootstrap");
-    try jw.write(agent_bootstrap);
+    try jw.write("/.spiderweb/agent_bootstrap.json");
     try jw.objectField("agent_bootstrap_quickref");
-    try jw.write(agent_bootstrap_quickref);
+    try jw.write("/.spiderweb/agent_bootstrap_quickref.json");
     try jw.objectField("workspace_agents_contract");
     try jw.write("/AGENTS.md");
     try jw.objectField("workspace_agents_contract_persisted");
@@ -177,15 +170,6 @@ pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) !
 }
 
 pub fn buildWorkspacePathsJson(session: anytype, policy: workspace_policy.WorkspacePolicy) ![]u8 {
-    const mounted_services_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/mounted_services.json", .{policy.workspace_id});
-    defer session.allocator.free(mounted_services_meta);
-    const packages_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/venom_packages.json", .{policy.workspace_id});
-    defer session.allocator.free(packages_meta);
-    const bootstrap_meta = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap.json", .{policy.workspace_id});
-    defer session.allocator.free(bootstrap_meta);
-    const bootstrap_quickref = try std.fmt.allocPrint(session.allocator, "/projects/{s}/meta/agent_bootstrap_quickref.json", .{policy.workspace_id});
-    defer session.allocator.free(bootstrap_quickref);
-
     var out = std.io.Writer.Allocating.init(session.allocator);
     errdefer out.deinit();
 
@@ -193,28 +177,43 @@ pub fn buildWorkspacePathsJson(session: anytype, policy: workspace_policy.Worksp
     try jw.beginObject();
     try jw.objectField("workspace_id");
     try jw.write(policy.workspace_id);
-    try jw.objectField("nodes_root");
-    try jw.write("/nodes");
-    try jw.objectField("agents_root");
-    try jw.write("/agents");
-    try jw.objectField("services");
+    try jw.objectField("managed_root");
+    try jw.write("/.spiderweb");
+    try jw.objectField("control");
     try jw.beginObject();
     try jw.objectField("root");
-    try jw.write("/services");
-    try jw.objectField("mounted_services_meta");
-    try jw.write(mounted_services_meta);
+    try jw.write("/.spiderweb/control");
+    try jw.objectField("workspace_home");
+    try jw.write("/.spiderweb/control/workspace/home");
+    try jw.objectField("workspace_mounts");
+    try jw.write("/.spiderweb/control/workspace/mounts");
+    try jw.objectField("workspace_binds");
+    try jw.write("/.spiderweb/control/workspace/binds");
+    try jw.objectField("runtimes");
+    try jw.write("/.spiderweb/control/runtimes");
     try jw.endObject();
-    try jw.objectField("packages");
+    try jw.objectField("catalog");
     try jw.beginObject();
-    try jw.objectField("meta");
-    try jw.write(packages_meta);
+    try jw.objectField("root");
+    try jw.write("/.spiderweb/catalog");
+    try jw.objectField("packages");
+    try jw.write("/.spiderweb/catalog/packages.json");
+    try jw.objectField("providers");
+    try jw.write("/.spiderweb/catalog/providers.json");
+    try jw.objectField("bindings");
+    try jw.write("/.spiderweb/catalog/bindings.json");
+    try jw.endObject();
+    try jw.objectField("venoms");
+    try jw.beginObject();
+    try jw.objectField("root");
+    try jw.write("/.spiderweb/venoms");
     try jw.endObject();
     try jw.objectField("bootstrap");
     try jw.beginObject();
     try jw.objectField("meta");
-    try jw.write(bootstrap_meta);
+    try jw.write("/.spiderweb/agent_bootstrap.json");
     try jw.objectField("quickref");
-    try jw.write(bootstrap_quickref);
+    try jw.write("/.spiderweb/agent_bootstrap_quickref.json");
     try jw.objectField("workspace_contract");
     try jw.beginObject();
     try jw.objectField("namespace_alias");
@@ -222,17 +221,6 @@ pub fn buildWorkspacePathsJson(session: anytype, policy: workspace_policy.Worksp
     try jw.objectField("workspace_path");
     try jw.write(workspace_agents_contract_path);
     try jw.endObject();
-    try jw.endObject();
-    try jw.objectField("global");
-    try jw.beginObject();
-    try jw.objectField("root");
-    try jw.write("/global");
-    try jw.objectField("library");
-    try jw.write("/global/library");
-    try jw.objectField("workspaces");
-    try jw.write("/global/workspaces");
-    try jw.objectField("mounts");
-    try jw.write("/global/mounts");
     try jw.endObject();
     try jw.endObject();
     return try out.toOwnedSlice();
@@ -267,8 +255,12 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, workspace_id: []const u
     try jw.write(".");
     try jw.objectField("shared_data_root");
     try jw.write(paths.shared_data_root);
-    try jw.objectField("service_root");
-    try jw.write(paths.service_root);
+    try jw.objectField("venom_root");
+    try jw.write(paths.venom_root);
+    try jw.objectField("control_root");
+    try jw.write(paths.control_root);
+    try jw.objectField("catalog_root");
+    try jw.write(paths.catalog_root);
 
     try jw.objectField("workspace_contract");
     try jw.beginObject();
@@ -290,14 +282,20 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, workspace_id: []const u
     try jw.write(paths.bootstrap_path);
     try jw.objectField("workspace_status");
     try jw.write(paths.workspace_status_path);
-    try jw.objectField("venom_packages");
-    try jw.write(paths.venom_packages_path);
-    try jw.objectField("mounted_services");
-    try jw.write(paths.mounted_services_path);
+    try jw.objectField("packages");
+    try jw.write(paths.packages_path);
+    try jw.objectField("providers");
+    try jw.write(paths.providers_path);
+    try jw.objectField("bindings");
+    try jw.write(paths.bindings_path);
     try jw.objectField("shared_data_root");
     try jw.write(paths.shared_data_root);
-    try jw.objectField("service_root");
-    try jw.write(paths.service_root);
+    try jw.objectField("venom_root");
+    try jw.write(paths.venom_root);
+    try jw.objectField("control_root");
+    try jw.write(paths.control_root);
+    try jw.objectField("catalog_root");
+    try jw.write(paths.catalog_root);
     try jw.objectField("workspace_write_root");
     try jw.write(".");
     try jw.endObject();
@@ -307,20 +305,22 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, workspace_id: []const u
 
     try jw.objectField("fallback_meta");
     try jw.beginObject();
-    try jw.objectField("mounted_services");
-    try jw.write(paths.mounted_services_path);
-    try jw.objectField("venom_packages");
-    try jw.write(paths.venom_packages_path);
+    try jw.objectField("packages");
+    try jw.write(paths.packages_path);
+    try jw.objectField("providers");
+    try jw.write(paths.providers_path);
+    try jw.objectField("bindings");
+    try jw.write(paths.bindings_path);
     try jw.endObject();
 
-    try jw.objectField("required_services");
-    const present_count = try writeBootstrapRequiredServices(session, &jw);
+    try jw.objectField("required_venoms");
+    const present_count = try writeBootstrapRequiredVenoms(session, &jw);
 
-    try jw.objectField("all_required_services_present");
-    try jw.write(present_count == bootstrap_required_services.len);
-    try jw.objectField("required_service_count");
-    try jw.write(bootstrap_required_services.len);
-    try jw.objectField("required_services_present_count");
+    try jw.objectField("all_required_venoms_present");
+    try jw.write(present_count == bootstrap_required_venoms.len);
+    try jw.objectField("required_venom_count");
+    try jw.write(bootstrap_required_venoms.len);
+    try jw.objectField("required_venoms_present_count");
     try jw.write(present_count);
 
     try jw.objectField("control_writes");
@@ -329,11 +329,13 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, workspace_id: []const u
     try jw.write(paths.ensure_home_path);
     try jw.objectField("repair_bind");
     try jw.write(paths.repair_bind_path);
+    try jw.objectField("runtime_attach");
+    try jw.write(paths.register_runtime_path);
     try jw.endObject();
 
     try jw.objectField("implementation_hint");
     try jw.beginObject();
-    try jw.objectField("prefer_quickref_over_raw_service_enumeration");
+    try jw.objectField("prefer_quickref_over_raw_catalog_enumeration");
     try jw.write(true);
     try jw.objectField("proceed_directly_when_ready");
     try jw.write(true);
@@ -357,13 +359,13 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
         paths.puzzle_seed_path,
     };
     const fallback_reads = [_][]const u8{
-        paths.mounted_services_path,
+        paths.packages_path,
+        paths.providers_path,
+        paths.bindings_path,
         paths.workspace_status_path,
-        paths.venom_packages_path,
     };
-    const required_service_ids = [_][]const u8{ "home", "mounts", "workers", "terminal", "git", "search_code", "library", "events" };
+    const required_venom_ids = [_][]const u8{ "terminal", "git", "search_code", "library", "events" };
     const default_worker_venoms = [_][]const u8{ "memory", "sub_brains" };
-    const fallback_roots = [_][]const u8{paths.local_venoms_root};
 
     var out = std.io.Writer.Allocating.init(session.allocator);
     errdefer out.deinit();
@@ -401,24 +403,28 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.write(paths.bootstrap_path);
     try jw.objectField("workspace_status");
     try jw.write(paths.workspace_status_path);
-    try jw.objectField("venom_packages");
-    try jw.write(paths.venom_packages_path);
-    try jw.objectField("mounted_services");
-    try jw.write(paths.mounted_services_path);
+    try jw.objectField("packages");
+    try jw.write(paths.packages_path);
+    try jw.objectField("providers");
+    try jw.write(paths.providers_path);
+    try jw.objectField("bindings");
+    try jw.write(paths.bindings_path);
     try jw.objectField("shared_data_root");
     try jw.write(paths.shared_data_root);
-    try jw.objectField("service_root");
-    try jw.write(paths.service_root);
+    try jw.objectField("control_root");
+    try jw.write(paths.control_root);
+    try jw.objectField("catalog_root");
+    try jw.write(paths.catalog_root);
+    try jw.objectField("venom_root");
+    try jw.write(paths.venom_root);
     try jw.objectField("workspace_write_root");
     try jw.write(".");
     try jw.endObject();
 
-    try jw.objectField("service_preference");
+    try jw.objectField("venom_preference");
     try jw.beginObject();
     try jw.objectField("preferred_root");
-    try jw.write(paths.service_root);
-    try jw.objectField("fallback_roots");
-    try jw.write(fallback_roots);
+    try jw.write(paths.venom_root);
     try jw.endObject();
 
     try jw.objectField("required_reads");
@@ -432,8 +438,8 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.beginObject();
     try jw.objectField("step");
     try jw.write("ensure_home");
-    try jw.objectField("service");
-    try jw.write("./.spiderweb/services/home");
+    try jw.objectField("control_path");
+    try jw.write("./.spiderweb/control/workspace/home");
     try jw.objectField("invoke_path");
     try jw.write(paths.ensure_home_path);
     try jw.objectField("payload");
@@ -449,11 +455,11 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
 
     try jw.beginObject();
     try jw.objectField("step");
-    try jw.write("verify_generic_services");
-    try jw.objectField("service");
-    try jw.write("./.spiderweb/services/mounts");
-    try jw.objectField("required_services");
-    try jw.write(required_service_ids);
+    try jw.write("verify_capability_bindings");
+    try jw.objectField("venom_root");
+    try jw.write("./.spiderweb/venoms");
+    try jw.objectField("required_venoms");
+    try jw.write(required_venom_ids);
     try jw.objectField("repair_invoke_path");
     try jw.write(paths.repair_bind_path);
     try jw.objectField("target_template");
@@ -464,11 +470,11 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
 
     try jw.beginObject();
     try jw.objectField("step");
-    try jw.write("optional_worker_register");
-    try jw.objectField("service");
-    try jw.write("./.spiderweb/services/workers");
+    try jw.write("optional_runtime_attach");
+    try jw.objectField("control_path");
+    try jw.write("./.spiderweb/control/runtimes");
     try jw.objectField("invoke_path");
-    try jw.write(paths.register_worker_path);
+    try jw.write(paths.register_runtime_path);
     try jw.objectField("default_venoms");
     try jw.write(default_worker_venoms);
     try jw.objectField("required");
@@ -554,17 +560,37 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
     if (std.mem.startsWith(u8, namespace_path, "/shared_data/")) {
         return workspaceManagedSharedDataPath(allocator, namespace_path["/shared_data/".len..]);
     }
-    if (std.mem.eql(u8, namespace_path, "/services")) {
-        return workspaceManagedServicesPath(allocator, null);
-    }
     if (std.mem.startsWith(u8, namespace_path, "/services/")) {
-        return workspaceManagedServicesPath(allocator, namespace_path["/services/".len..]);
-    }
-    if (std.mem.eql(u8, namespace_path, "/nodes/local/venoms")) {
-        return workspaceManagedChildPath(allocator, workspace_managed_local_venoms_dir_name, null);
+        const tail = namespace_path["/services/".len..];
+        if (std.mem.startsWith(u8, tail, "home")) {
+            return workspaceManagedControlPath(allocator, "workspace/home");
+        }
+        if (std.mem.startsWith(u8, tail, "mounts")) {
+            return workspaceManagedControlPath(allocator, "workspace/mounts");
+        }
+        if (std.mem.startsWith(u8, tail, "workers") or std.mem.startsWith(u8, tail, "runtimes")) {
+            return workspaceManagedControlPath(allocator, "runtimes");
+        }
+        if (std.mem.startsWith(u8, tail, "venom_packages") or std.mem.startsWith(u8, tail, "packages")) {
+            return workspaceManagedControlPath(allocator, "packages");
+        }
+        return workspaceManagedVenomsPath(allocator, tail);
     }
     if (std.mem.startsWith(u8, namespace_path, "/nodes/local/venoms/")) {
-        return workspaceManagedLocalVenomsPath(allocator, namespace_path["/nodes/local/venoms/".len..]);
+        const tail = namespace_path["/nodes/local/venoms/".len..];
+        if (std.mem.startsWith(u8, tail, "home")) {
+            return workspaceManagedControlPath(allocator, "workspace/home");
+        }
+        if (std.mem.startsWith(u8, tail, "mounts")) {
+            return workspaceManagedControlPath(allocator, "workspace/mounts");
+        }
+        if (std.mem.startsWith(u8, tail, "workers") or std.mem.startsWith(u8, tail, "runtimes")) {
+            return workspaceManagedControlPath(allocator, "runtimes");
+        }
+        if (std.mem.startsWith(u8, tail, "venom_packages") or std.mem.startsWith(u8, tail, "packages")) {
+            return workspaceManagedControlPath(allocator, "packages");
+        }
+        return workspaceManagedVenomsPath(allocator, tail);
     }
     if (std.mem.endsWith(u8, namespace_path, "/meta/agent_bootstrap_quickref.json")) {
         return workspaceManagedPath(allocator, "agent_bootstrap_quickref.json");
@@ -575,11 +601,20 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
     if (std.mem.endsWith(u8, namespace_path, "/meta/workspace_status.json")) {
         return workspaceManagedPath(allocator, "workspace_status.json");
     }
+    if (std.mem.endsWith(u8, namespace_path, "/meta/packages.json")) {
+        return workspaceManagedCatalogPath(allocator, "packages.json");
+    }
+    if (std.mem.endsWith(u8, namespace_path, "/meta/providers.json")) {
+        return workspaceManagedCatalogPath(allocator, "providers.json");
+    }
+    if (std.mem.endsWith(u8, namespace_path, "/meta/bindings.json")) {
+        return workspaceManagedCatalogPath(allocator, "bindings.json");
+    }
     if (std.mem.endsWith(u8, namespace_path, "/meta/mounted_services.json")) {
-        return workspaceManagedPath(allocator, "mounted_services.json");
+        return workspaceManagedCatalogPath(allocator, "bindings.json");
     }
     if (std.mem.endsWith(u8, namespace_path, "/meta/venom_packages.json")) {
-        return workspaceManagedPath(allocator, "venom_packages.json");
+        return workspaceManagedCatalogPath(allocator, "packages.json");
     }
     if (std.mem.eql(u8, namespace_path, "/nodes/local/fs")) {
         return allocator.dupe(u8, ".");
@@ -614,47 +649,41 @@ fn workspaceManagedSharedDataPath(allocator: std.mem.Allocator, leaf: []const u8
     return workspaceManagedChildPath(allocator, workspace_managed_shared_data_dir_name, leaf);
 }
 
-fn workspaceManagedServicesPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
-    return workspaceManagedChildPath(allocator, workspace_managed_services_dir_name, leaf);
+fn workspaceManagedControlPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
+    return workspaceManagedChildPath(allocator, workspace_managed_control_dir_name, leaf);
 }
 
-fn workspaceManagedLocalVenomsPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
-    return workspaceManagedChildPath(allocator, workspace_managed_local_venoms_dir_name, leaf);
+fn workspaceManagedCatalogPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
+    return workspaceManagedChildPath(allocator, workspace_managed_catalog_dir_name, leaf);
 }
 
-fn writeBootstrapRequiredServices(session: anytype, jw: *std.json.Stringify) !usize {
+fn workspaceManagedVenomsPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
+    return workspaceManagedChildPath(allocator, workspace_managed_venoms_dir_name, leaf);
+}
+
+fn writeBootstrapRequiredVenoms(session: anytype, jw: *std.json.Stringify) !usize {
     var present_count: usize = 0;
     try jw.beginArray();
-    for (bootstrap_required_services) |service| {
-        const bind_namespace_path = try std.fmt.allocPrint(session.allocator, "/services/{s}", .{service.venom_id});
-        defer session.allocator.free(bind_namespace_path);
-        const bind_path = try namespacePathToEntrypointRelative(session.allocator, bind_namespace_path);
+    for (bootstrap_required_venoms) |venom| {
+        const bind_path = try workspaceManagedVenomsPath(session.allocator, venom.venom_id);
         defer session.allocator.free(bind_path);
 
-        const present = session.hasWorkspaceBindPath(bind_namespace_path);
+        const present = session.resolveManagedCapabilityVenomTargetPath(venom.venom_id) catch null != null;
         if (present) present_count += 1;
 
-        const ensure_path = if (service.ensure_path) |value|
-            try namespacePathToEntrypointRelative(session.allocator, value)
-        else
-            null;
-        defer if (ensure_path) |value| session.allocator.free(value);
-
-        const invoke_path = if (service.invoke_path) |value|
-            try namespacePathToEntrypointRelative(session.allocator, value)
+        const invoke_path = if (venom.invoke_path) |value|
+            try session.allocator.dupe(u8, value)
         else
             null;
         defer if (invoke_path) |value| session.allocator.free(value);
 
         try jw.beginObject();
-        try jw.objectField("service_id");
-        try jw.write(service.venom_id);
+        try jw.objectField("venom_id");
+        try jw.write(venom.venom_id);
         try jw.objectField("path");
         try jw.write(bind_path);
         try jw.objectField("present");
         try jw.write(present);
-        try jw.objectField("ensure_path");
-        try jw.write(ensure_path);
         try jw.objectField("invoke_path");
         try jw.write(invoke_path);
         try jw.endObject();
@@ -672,10 +701,10 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, workspace_id: []const u8) 
     var missing_services = std.ArrayListUnmanaged(u8){};
     defer missing_services.deinit(session.allocator);
 
-    for (bootstrap_required_services) |service| {
-        const bind_path = try std.fmt.allocPrint(session.allocator, "/services/{s}", .{service.venom_id});
+    for (bootstrap_required_venoms) |service| {
+        const bind_path = try std.fmt.allocPrint(session.allocator, "/.spiderweb/venoms/{s}", .{service.venom_id});
         defer session.allocator.free(bind_path);
-        const target = if (session.hasWorkspaceBindPath(bind_path)) &available_services else &missing_services;
+        const target = if ((session.resolveManagedCapabilityVenomTargetPath(service.venom_id) catch null) != null) &available_services else &missing_services;
         if (target.items.len != 0) try target.appendSlice(session.allocator, ", ");
         try target.appendSlice(session.allocator, service.venom_id);
     }
@@ -699,7 +728,7 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, workspace_id: []const u8) 
         \\
         \\## What This Folder Is
         \\You are in a mounted Spiderweb workspace. The workspace itself is the durable collaboration surface; agents may come and go.
-        \\In the normal interactive flow, the agent starts in this directory, so `.` is the workspace write root. Spiderweb projects the required bootstrap and service surfaces into `./.spiderweb/` as part of this same mounted workspace contract, so you do not need to climb out of this directory with `..`.
+        \\In the normal interactive flow, the agent starts in this directory, so `.` is the workspace write root. Spiderweb projects the required bootstrap, control, catalog, and venom surfaces into `./.spiderweb/` as part of this same mounted workspace contract, so you do not need to climb out of this directory with `..`.
         \\
         \\## Workspace Intent
         \\{s}
@@ -713,26 +742,27 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, workspace_id: []const u8) 
         \\   - `{s}`
         \\   - `{s}`
         \\   - `{s}`
-        \\3. Use `{s}/*` as the preferred service surface. Only use fallback roots from `agent_bootstrap.json` if a required service is missing.
-        \\4. If `{s}` succeeds and `agent_bootstrap_quickref.json` says `all_required_services_present=true`, treat bootstrap as complete immediately and start implementation. Do not keep exploring or re-probing services after that point.
+        \\3. Use `{s}/*` as the preferred capability surface, `{s}/*` for workspace/runtime control, and `{s}/*` for discovery metadata.
+        \\4. If `{s}` succeeds and `agent_bootstrap_quickref.json` says `all_required_venoms_present=true`, treat bootstrap as complete immediately and start implementation. Do not keep exploring or re-probing after that point.
         \\5. Keep workspace writes inside the current directory `.` unless the user prompt explicitly says otherwise.
         \\6. When creating or fixing workspace files, rewrite the whole target file in one pass. Do not append partial repair fragments to an existing file. If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
         \\7. If `game.py` fails `py_compile` or the walkthrough run, delete and recreate `game.py` from scratch before retrying. If a regenerated `game.py` still fails `py_compile`, replace it with another full rewrite immediately instead of inspecting the broken file tail or attempting partial edits.
         \\8. Once `python3 -m py_compile game.py` succeeds, do not rewrite `game.py` again unless `python3 game.py < walkthrough.txt` or `python3 validate_game.py --workspace . --shared-data {s} --output game_validation.json` exits non-zero.
         \\9. Treat `python3 game.py < walkthrough.txt` as successful when it exits with code `0`, even if stdout contains repeated input prompts such as `> `. Treat `python3 validate_game.py --workspace . --shared-data {s} --output game_validation.json` as successful when it exits with code `0`. Do not rerun either command through nested shell wrappers or alternate redirection forms unless the command itself failed.
-        \\10. Do not run broad scans such as `find`, `rg --files`, or recursive `ls` across `services/`, `projects/`, or `meta/`. Read only the exact listed files directly.
+        \\10. Do not run broad scans such as `find`, `rg --files`, or recursive `ls` across `/.spiderweb/control`, `/.spiderweb/catalog`, or `/.spiderweb/venoms`. Read only the exact listed files directly.
         \\
         \\## Namespace Paths
         \\- Current working directory: `.`
         \\- This file: `./AGENTS.md`
         \\- Spiderweb-managed entrypoint root: `./.spiderweb`
         \\- Shared data root from here: `{s}`
-        \\- Service root from here: `{s}`
-        \\- Fallback local venom root from here: `{s}`
+        \\- Control root from here: `{s}`
+        \\- Catalog root from here: `{s}`
+        \\- Venom root from here: `{s}`
         \\
-        \\## Current Service Surface
-        \\- Present required services: {s}
-        \\- Missing optional/repairable services: {s}
+        \\## Current Capability Surface
+        \\- Present required venoms: {s}
+        \\- Missing optional/repairable venoms: {s}
         \\
         \\## Task Source
         \\For this milestone, the concrete task comes from the user prompt after bootstrap. Do not assume there is a `TASK.md`.
@@ -762,13 +792,16 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, workspace_id: []const u8) 
             paths.world_seed_path,
             paths.items_seed_path,
             paths.puzzle_seed_path,
-            paths.service_root,
+            paths.venom_root,
+            paths.control_root,
+            paths.catalog_root,
             paths.ensure_home_path,
             paths.shared_data_root,
             paths.shared_data_root,
             paths.shared_data_root,
-            paths.service_root,
-            paths.local_venoms_root,
+            paths.control_root,
+            paths.catalog_root,
+            paths.venom_root,
             available_text,
             missing_text,
             paths.shared_data_root,

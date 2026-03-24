@@ -11,7 +11,7 @@ pub const Op = enum {
 };
 
 pub fn seedNamespace(self: anytype, packages_dir: u32) !void {
-    return seedNamespaceAt(self, packages_dir, "/global/venom_packages");
+    return seedNamespaceAt(self, packages_dir, "/.spiderweb/_compat/global/packages");
 }
 
 pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) !void {
@@ -19,28 +19,28 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     defer self.allocator.free(escaped_base_path);
     const shape_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"kind\":\"venom\",\"venom_id\":\"venom_packages\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,PERMISSIONS.json,STATUS.json,status.json,result.json,control/*}}\"}}",
+        "{{\"kind\":\"control_substrate\",\"surface_id\":\"packages\",\"shape\":\"{s}/{{README.md,SCHEMA.json,CAPS.json,OPS.json,PERMISSIONS.json,STATUS.json,status.json,result.json,control/*}}\"}}",
         .{escaped_base_path},
     );
     defer self.allocator.free(shape_json);
     try self.addDirectoryDescriptors(
         packages_dir,
-        "Venom Package Registry",
+        "Packages",
         shape_json,
-        "{\"invoke\":true,\"operations\":[\"venom_packages_list\",\"venom_packages_get\",\"venom_packages_install\",\"venom_packages_remove\"],\"discoverable\":true}",
-        "List, inspect, install, and remove Venom package definitions available to this Spiderweb host.",
+        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_get\",\"packages_install\",\"packages_remove\"],\"discoverable\":true}",
+        "List, inspect, install, and remove package definitions available to this Spiderweb host.",
     );
     _ = try self.addFile(
         packages_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"venom_packages_list\",\"get\":\"venom_packages_get\",\"install\":\"venom_packages_install\",\"remove\":\"venom_packages_remove\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"get\":\"packages_get\",\"install\":\"packages_install\",\"remove\":\"packages_remove\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         packages_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"venom_packages_registry\"}",
+        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"package_registry\"}",
         false,
         .none,
     );
@@ -54,11 +54,11 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(
         packages_dir,
         "STATUS.json",
-        "{\"venom_id\":\"venom_packages\",\"state\":\"namespace\",\"has_invoke\":true}",
+        "{\"surface_id\":\"packages\",\"state\":\"namespace\",\"has_invoke\":true}",
         false,
         .none,
     );
-    self.venom_packages_status_id = try self.addFile(
+    self.packages_status_id = try self.addFile(
         packages_dir,
         "status.json",
         "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}",
@@ -67,7 +67,7 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     );
     const initial_result = try buildListResultJson(self);
     defer self.allocator.free(initial_result);
-    self.venom_packages_result_id = try self.addFile(
+    self.packages_result_id = try self.addFile(
         packages_dir,
         "result.json",
         initial_result,
@@ -83,11 +83,11 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
         false,
         .none,
     );
-    _ = try self.addFile(control_dir, "invoke.json", "", true, .venom_packages_invoke);
-    _ = try self.addFile(control_dir, "list.json", "", true, .venom_packages_list);
-    _ = try self.addFile(control_dir, "get.json", "", true, .venom_packages_get);
-    _ = try self.addFile(control_dir, "install.json", "", true, .venom_packages_install);
-    _ = try self.addFile(control_dir, "remove.json", "", true, .venom_packages_remove);
+    _ = try self.addFile(control_dir, "invoke.json", "", true, .packages_invoke);
+    _ = try self.addFile(control_dir, "list.json", "", true, .packages_list);
+    _ = try self.addFile(control_dir, "get.json", "", true, .packages_get);
+    _ = try self.addFile(control_dir, "install.json", "", true, .packages_install);
+    _ = try self.addFile(control_dir, "remove.json", "", true, .packages_remove);
 }
 
 pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_input: []const u8) !usize {
@@ -101,11 +101,11 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
     const obj = parsed.value.object;
 
     const op = switch (special) {
-        .venom_packages_list => Op.list,
-        .venom_packages_get => Op.get,
-        .venom_packages_install => Op.install,
-        .venom_packages_remove => Op.remove,
-        .venom_packages_invoke => blk: {
+        .packages_list => Op.list,
+        .packages_get => Op.get,
+        .packages_install => Op.install,
+        .packages_remove => Op.remove,
+        .packages_invoke => blk: {
             const op_raw = blk2: {
                 if (obj.get("op")) |value| if (value == .string and value.string.len > 0) break :blk2 value.string;
                 if (obj.get("operation")) |value| if (value == .string and value.string.len > 0) break :blk2 value.string;
@@ -135,10 +135,10 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
 
 fn parseOp(raw: []const u8) ?Op {
     const value = std.mem.trim(u8, raw, " \t\r\n");
-    if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "venom_packages_list")) return .list;
-    if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "venom_packages_get")) return .get;
-    if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "venom_packages_install")) return .install;
-    if (std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "venom_packages_remove")) return .remove;
+    if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "packages_list") or std.mem.eql(u8, value, "venom_packages_list")) return .list;
+    if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "packages_get") or std.mem.eql(u8, value, "venom_packages_get")) return .get;
+    if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "packages_install") or std.mem.eql(u8, value, "venom_packages_install")) return .install;
+    if (std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "packages_remove") or std.mem.eql(u8, value, "venom_packages_remove")) return .remove;
     return null;
 }
 
@@ -146,7 +146,7 @@ fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload: []con
     const tool_name = statusToolName(op);
     const running_status = try self.buildServiceInvokeStatusJson("running", tool_name, null);
     defer self.allocator.free(running_status);
-    try self.setMirroredFileContent(self.venom_packages_status_id, self.venom_packages_status_alias_id, running_status);
+    try self.setMirroredFileContent(self.packages_status_id, self.packages_status_alias_id, running_status);
 
     const result_payload = executeOpPayload(self, op, args_obj, payload) catch |err| {
         const error_code = switch (err) {
@@ -157,18 +157,18 @@ fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload: []con
         };
         const failed_status = try self.buildServiceInvokeStatusJson("failed", tool_name, @errorName(err));
         defer self.allocator.free(failed_status);
-        try self.setMirroredFileContent(self.venom_packages_status_id, self.venom_packages_status_alias_id, failed_status);
+        try self.setMirroredFileContent(self.packages_status_id, self.packages_status_alias_id, failed_status);
         const failed_result = try buildFailureResultJson(self, op, error_code, @errorName(err));
         defer self.allocator.free(failed_result);
-        try self.setMirroredFileContent(self.venom_packages_result_id, self.venom_packages_result_alias_id, failed_result);
+        try self.setMirroredFileContent(self.packages_result_id, self.packages_result_alias_id, failed_result);
         return err;
     };
     defer self.allocator.free(result_payload);
 
     const done_status = try self.buildServiceInvokeStatusJson("done", tool_name, null);
     defer self.allocator.free(done_status);
-    try self.setMirroredFileContent(self.venom_packages_status_id, self.venom_packages_status_alias_id, done_status);
-    try self.setMirroredFileContent(self.venom_packages_result_id, self.venom_packages_result_alias_id, result_payload);
+    try self.setMirroredFileContent(self.packages_status_id, self.packages_status_alias_id, done_status);
+    try self.setMirroredFileContent(self.packages_result_id, self.packages_result_alias_id, result_payload);
     try self.refreshWorkspaceServiceDiscoveryFiles();
     return payload.len;
 }
@@ -276,10 +276,10 @@ fn operationName(op: Op) []const u8 {
 
 fn statusToolName(op: Op) []const u8 {
     return switch (op) {
-        .list => "venom_packages_list",
-        .get => "venom_packages_get",
-        .install => "venom_packages_install",
-        .remove => "venom_packages_remove",
+        .list => "packages_list",
+        .get => "packages_get",
+        .install => "packages_install",
+        .remove => "packages_remove",
     };
 }
 

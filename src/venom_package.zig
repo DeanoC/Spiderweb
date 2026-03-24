@@ -7,9 +7,7 @@ pub const VenomPackage = struct {
     version: []u8,
     categories_json: []u8,
     host_roles_json: []u8,
-    hosts_json: []u8,
     binding_scopes_json: []u8,
-    projection_modes_json: []u8,
     runtime_kind: venom_model.RuntimeKind,
     requirements_json: []u8,
     capabilities_json: []u8,
@@ -25,9 +23,7 @@ pub const VenomPackage = struct {
         allocator.free(self.version);
         allocator.free(self.categories_json);
         allocator.free(self.host_roles_json);
-        allocator.free(self.hosts_json);
         allocator.free(self.binding_scopes_json);
-        allocator.free(self.projection_modes_json);
         allocator.free(self.requirements_json);
         allocator.free(self.capabilities_json);
         allocator.free(self.ops_json);
@@ -81,7 +77,7 @@ pub fn appendPackageJson(
         const escaped_help = try jsonEscape(allocator, help);
         defer allocator.free(escaped_help);
         try out.writer(allocator).print(
-            "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"hosts\":{s},\"binding_scopes\":{s},\"projection_modes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"help_md\":\"{s}\"}}",
+            "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"help_md\":\"{s}\"}}",
             .{
                 escaped_venom_id,
                 escaped_venom_id,
@@ -89,9 +85,7 @@ pub fn appendPackageJson(
                 escaped_version,
                 package.categories_json,
                 package.host_roles_json,
-                package.hosts_json,
                 package.binding_scopes_json,
-                package.projection_modes_json,
                 package.runtime_kind.asString(),
                 package.requirements_json,
                 package.capabilities_json,
@@ -106,7 +100,7 @@ pub fn appendPackageJson(
     }
 
     try out.writer(allocator).print(
-        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"hosts\":{s},\"binding_scopes\":{s},\"projection_modes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}}}",
+        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}}}",
         .{
             escaped_venom_id,
             escaped_venom_id,
@@ -114,9 +108,7 @@ pub fn appendPackageJson(
             escaped_version,
             package.categories_json,
             package.host_roles_json,
-            package.hosts_json,
             package.binding_scopes_json,
-            package.projection_modes_json,
             package.runtime_kind.asString(),
             package.requirements_json,
             package.capabilities_json,
@@ -135,9 +127,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
         .version = undefined,
         .categories_json = undefined,
         .host_roles_json = undefined,
-        .hosts_json = undefined,
         .binding_scopes_json = undefined,
-        .projection_modes_json = undefined,
         .runtime_kind = .native,
         .requirements_json = undefined,
         .capabilities_json = undefined,
@@ -152,7 +142,6 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     var version_set = false;
     var categories_set = false;
     var hosts_set = false;
-    var projection_modes_set = false;
     var requirements_set = false;
     var capabilities_set = false;
     var ops_set = false;
@@ -165,9 +154,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
         if (version_set) allocator.free(package.version);
         if (categories_set) allocator.free(package.categories_json);
         if (hosts_set) allocator.free(package.host_roles_json);
-        if (hosts_set) allocator.free(package.hosts_json);
-        if (projection_modes_set) allocator.free(package.binding_scopes_json);
-        if (projection_modes_set) allocator.free(package.projection_modes_json);
+        if (hosts_set) allocator.free(package.binding_scopes_json);
         if (requirements_set) allocator.free(package.requirements_json);
         if (capabilities_set) allocator.free(package.capabilities_json);
         if (ops_set) allocator.free(package.ops_json);
@@ -185,23 +172,9 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     version_set = true;
     package.categories_json = try dupObjectFieldJsonOrDefault(allocator, obj, "categories", "[]");
     categories_set = true;
-    package.host_roles_json = try dupObjectFieldJsonOrFallback(allocator, obj, "host_roles", "hosts", "[]");
+    package.host_roles_json = try dupObjectFieldJsonOrDefault(allocator, obj, "host_roles", "[]");
     hosts_set = true;
-    package.hosts_json = if (obj.get("hosts") != null)
-        try dupObjectFieldJsonOrDefault(allocator, obj, "hosts", "[]")
-    else
-        try allocator.dupe(u8, package.host_roles_json);
-    package.binding_scopes_json = if (obj.get("binding_scopes")) |_|
-        try dupObjectFieldJsonOrDefault(allocator, obj, "binding_scopes", "[]")
-    else if (obj.get("projection_modes")) |value|
-        try deriveBindingScopesJsonFromLegacyProjectionModes(allocator, value)
-    else
-        try allocator.dupe(u8, "[]");
-    projection_modes_set = true;
-    package.projection_modes_json = if (obj.get("projection_modes") != null)
-        try dupObjectFieldJsonOrDefault(allocator, obj, "projection_modes", "[]")
-    else
-        try deriveLegacyProjectionModesJson(allocator, package.host_roles_json, package.binding_scopes_json);
+    package.binding_scopes_json = try dupObjectFieldJsonOrDefault(allocator, obj, "binding_scopes", "[]");
     package.requirements_json = try dupObjectFieldJsonOrDefault(allocator, obj, "requirements", "{}");
     requirements_set = true;
     package.capabilities_json = try dupObjectFieldJsonOrDefault(allocator, obj, "capabilities", "{}");
@@ -251,18 +224,6 @@ fn dupOptionalString(
     return try allocator.dupe(u8, value.string);
 }
 
-fn dupObjectFieldJsonOrFallback(
-    allocator: std.mem.Allocator,
-    obj: std.json.ObjectMap,
-    primary_key: []const u8,
-    fallback_key: []const u8,
-    default_json: []const u8,
-) ![]u8 {
-    if (obj.get(primary_key) != null) return dupObjectFieldJsonOrDefault(allocator, obj, primary_key, default_json);
-    if (obj.get(fallback_key) != null) return dupObjectFieldJsonOrDefault(allocator, obj, fallback_key, default_json);
-    return allocator.dupe(u8, default_json);
-}
-
 fn dupObjectFieldJsonOrDefault(
     allocator: std.mem.Allocator,
     obj: std.json.ObjectMap,
@@ -291,85 +252,6 @@ fn parseRuntimeKind(obj: std.json.ObjectMap, runtime_json: []const u8) !venom_mo
         }
     }
     return .native;
-}
-
-fn deriveBindingScopesJsonFromLegacyProjectionModes(
-    allocator: std.mem.Allocator,
-    value: std.json.Value,
-) ![]u8 {
-    if (value != .array) return error.InvalidPackage;
-    var has_workspace = false;
-    var has_agent = false;
-    var has_client = false;
-    var has_node = false;
-    for (value.array.items) |item| {
-        if (item != .string) return error.InvalidPackage;
-        if (std.mem.eql(u8, item.string, "workspace_service") or std.mem.eql(u8, item.string, "host_local")) has_workspace = true;
-        if (std.mem.eql(u8, item.string, "runtime_private")) has_agent = true;
-        if (std.mem.eql(u8, item.string, "client_private")) has_client = true;
-        if (std.mem.eql(u8, item.string, "node_export")) has_node = true;
-    }
-    var out = std.ArrayListUnmanaged(u8){};
-    errdefer out.deinit(allocator);
-    try out.append(allocator, '[');
-    var first = true;
-    if (has_workspace) {
-        if (!first) try out.append(allocator, ',');
-        first = false;
-        try out.appendSlice(allocator, "\"workspace\"");
-    }
-    if (has_agent) {
-        if (!first) try out.append(allocator, ',');
-        first = false;
-        try out.appendSlice(allocator, "\"agent\"");
-    }
-    if (has_client) {
-        if (!first) try out.append(allocator, ',');
-        first = false;
-        try out.appendSlice(allocator, "\"client\"");
-    }
-    if (has_node) {
-        if (!first) try out.append(allocator, ',');
-        first = false;
-        try out.appendSlice(allocator, "\"node\"");
-    }
-    try out.append(allocator, ']');
-    return out.toOwnedSlice(allocator);
-}
-
-fn parsePrimaryHostRole(host_roles_json: []const u8) venom_model.HostRole {
-    var parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, host_roles_json, .{}) catch return .spiderweb;
-    defer parsed.deinit();
-    if (parsed.value != .array) return .spiderweb;
-    for (parsed.value.array.items) |item| {
-        if (item == .string and item.string.len > 0) return venom_model.HostRole.fromString(item.string);
-    }
-    return .spiderweb;
-}
-
-fn parseBindingScopes(allocator: std.mem.Allocator, binding_scopes_json: []const u8) !std.ArrayListUnmanaged(venom_model.BindingScope) {
-    var scopes = std.ArrayListUnmanaged(venom_model.BindingScope){};
-    errdefer scopes.deinit(allocator);
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, binding_scopes_json, .{}) catch return scopes;
-    defer parsed.deinit();
-    if (parsed.value == .array) {
-        for (parsed.value.array.items) |item| {
-            if (item != .string or item.string.len == 0) continue;
-            try scopes.append(allocator, venom_model.BindingScope.fromString(item.string));
-        }
-    }
-    return scopes;
-}
-
-fn deriveLegacyProjectionModesJson(
-    allocator: std.mem.Allocator,
-    host_roles_json: []const u8,
-    binding_scopes_json: []const u8,
-) ![]u8 {
-    const host_role = parsePrimaryHostRole(host_roles_json);
-    var binding_scopes = try parseBindingScopes(allocator, binding_scopes_json);
-    defer binding_scopes.deinit(allocator);
-    return allocator.dupe(u8, venom_model.legacyProjectionModesJson(host_role, binding_scopes.items));
 }
 
 fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {

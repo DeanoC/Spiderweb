@@ -144,9 +144,7 @@ pub fn cloneBuiltinPackage(
         .version = try allocator.dupe(u8, spec.version),
         .categories_json = try allocator.dupe(u8, spec.categories_json),
         .host_roles_json = try allocator.dupe(u8, spec.hostRolesJson()),
-        .hosts_json = try allocator.dupe(u8, spec.hostRolesJson()),
         .binding_scopes_json = try allocator.dupe(u8, spec.bindingScopesJson()),
-        .projection_modes_json = try allocator.dupe(u8, spec.legacyProjectionModesJson()),
         .runtime_kind = spec.runtime_kind,
         .requirements_json = try allocator.dupe(u8, spec.requirements_json),
         .capabilities_json = try allocator.dupe(u8, spec.capabilities_json),
@@ -169,8 +167,6 @@ fn appendPackageJson(
     defer allocator.free(escaped_kind);
     const escaped_version = try jsonEscape(allocator, spec.version);
     defer allocator.free(escaped_version);
-    const escaped_provider_scope = try jsonEscape(allocator, spec.legacyDefaultProviderScope());
-    defer allocator.free(escaped_provider_scope);
     const target_path_json = if (spec.default_target_path) |value| blk: {
         const escaped = try jsonEscape(allocator, value);
         defer allocator.free(escaped);
@@ -179,7 +175,7 @@ fn appendPackageJson(
     defer allocator.free(target_path_json);
 
     try out.writer(allocator).print(
-        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"hosts\":{s},\"binding_scopes\":{s},\"projection_modes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"default_host_role\":\"{s}\",\"default_provider_scope\":\"{s}\",\"default_target_path\":{s}",
+        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"default_host_role\":\"{s}\",\"default_target_path\":{s}",
         .{
             escaped_venom_id,
             escaped_venom_id,
@@ -187,9 +183,7 @@ fn appendPackageJson(
             escaped_version,
             spec.categories_json,
             spec.hostRolesJson(),
-            spec.hostRolesJson(),
             spec.bindingScopesJson(),
-            spec.legacyProjectionModesJson(),
             spec.runtime_kind.asString(),
             spec.requirements_json,
             spec.capabilities_json,
@@ -198,7 +192,6 @@ fn appendPackageJson(
             spec.permissions_json,
             spec.schema_json,
             spec.default_host_role.asString(),
-            escaped_provider_scope,
             target_path_json,
         },
     );

@@ -34,9 +34,9 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         defer session.allocator.free(escaped_kind);
         const escaped_version = try unified.jsonEscape(session.allocator, version);
         defer session.allocator.free(escaped_version);
-        const host_roles_json = try normalizedHostRolesJson(session.allocator, item.object.get("host_roles") orelse item.object.get("hosts"));
+        const host_roles_json = try normalizedHostRolesJson(session.allocator, item.object.get("host_roles"));
         defer session.allocator.free(host_roles_json);
-        const binding_scopes_json = try normalizedBindingScopesJson(session.allocator, item.object.get("binding_scopes") orelse item.object.get("projection_modes"));
+        const binding_scopes_json = try normalizedBindingScopesJson(session.allocator, item.object.get("binding_scopes"));
         defer session.allocator.free(binding_scopes_json);
         const help_json = if (help_md) |value| blk: {
             const escaped = try unified.jsonEscape(session.allocator, value);
@@ -253,25 +253,19 @@ fn normalizedRuntimeKindFromObject(obj: std.json.ObjectMap) venom_model.RuntimeK
     return venom_model.RuntimeKind.fromRuntimeType(runtime_type);
 }
 
-fn normalizedHostRolesJson(allocator: std.mem.Allocator, maybe_hosts: ?std.json.Value) ![]u8 {
+fn normalizedHostRolesJson(allocator: std.mem.Allocator, maybe_host_roles: ?std.json.Value) ![]u8 {
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(allocator);
     try out.append(allocator, '[');
 
     var first = true;
-    if (maybe_hosts) |hosts_value| {
-        if (hosts_value == .array) {
-            for (hosts_value.array.items) |item| {
+    if (maybe_host_roles) |host_roles_value| {
+        if (host_roles_value == .array) {
+            for (host_roles_value.array.items) |item| {
                 if (item != .string) continue;
-                const mapped = if (std.mem.eql(u8, item.string, "worker") or std.mem.eql(u8, item.string, "client"))
-                    venom_model.HostRole.client
-                else if (std.mem.eql(u8, item.string, "node"))
-                    venom_model.HostRole.node
-                else
-                    venom_model.HostRole.spiderweb;
                 if (!first) try out.append(allocator, ',');
                 first = false;
-                try out.writer(allocator).print("\"{s}\"", .{mapped.asString()});
+                try out.writer(allocator).print("\"{s}\"", .{venom_model.HostRole.fromString(item.string).asString()});
             }
         }
     }
@@ -281,24 +275,20 @@ fn normalizedHostRolesJson(allocator: std.mem.Allocator, maybe_hosts: ?std.json.
     return out.toOwnedSlice(allocator);
 }
 
-fn normalizedBindingScopesJson(allocator: std.mem.Allocator, maybe_binding_scopes_or_projection_modes: ?std.json.Value) ![]u8 {
+fn normalizedBindingScopesJson(allocator: std.mem.Allocator, maybe_binding_scopes: ?std.json.Value) ![]u8 {
     var has_workspace = false;
     var has_agent = false;
     var has_client = false;
     var has_node = false;
 
-    if (maybe_binding_scopes_or_projection_modes) |projection_modes| {
-        if (projection_modes == .array) {
-            for (projection_modes.array.items) |item| {
+    if (maybe_binding_scopes) |binding_scopes| {
+        if (binding_scopes == .array) {
+            for (binding_scopes.array.items) |item| {
                 if (item != .string) continue;
                 if (std.mem.eql(u8, item.string, venom_model.BindingScope.workspace.asString())) has_workspace = true;
                 if (std.mem.eql(u8, item.string, venom_model.BindingScope.agent.asString())) has_agent = true;
                 if (std.mem.eql(u8, item.string, venom_model.BindingScope.client.asString())) has_client = true;
                 if (std.mem.eql(u8, item.string, venom_model.BindingScope.node.asString())) has_node = true;
-                if (std.mem.eql(u8, item.string, "workspace_service")) has_workspace = true;
-                if (std.mem.eql(u8, item.string, "runtime_private")) has_agent = true;
-                if (std.mem.eql(u8, item.string, "host_local")) has_node = true;
-                if (std.mem.eql(u8, item.string, "node_export")) has_workspace = true;
             }
         }
     }
@@ -352,7 +342,7 @@ fn providerHostRoleForDir(session: anytype, node_id: []const u8, venom_dir_id: u
             var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, package_node.content, .{}) catch return venom_model.defaultHostRoleForNodeId(node_id);
             defer parsed.deinit();
             if (parsed.value == .object) {
-                if (firstHostRoleFromValue(parsed.value.object.get("host_roles") orelse parsed.value.object.get("hosts"))) |host_role| {
+                if (firstHostRoleFromValue(parsed.value.object.get("host_roles"))) |host_role| {
                     return host_role;
                 }
             }
@@ -370,7 +360,7 @@ fn providerBindingEligibilityJson(session: anytype, venom_dir_id: u32) ![]u8 {
             if (parsed.value == .object) {
                 return normalizedBindingScopesJson(
                     session.allocator,
-                    parsed.value.object.get("binding_scopes") orelse parsed.value.object.get("projection_modes"),
+                    parsed.value.object.get("binding_scopes"),
                 );
             }
         }

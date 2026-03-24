@@ -4061,7 +4061,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         kind: []const u8,
         version: []const u8,
         host_roles_json: []const u8,
-        legacy_projection_modes_json: []const u8,
+        binding_scopes_json: []const u8,
         requirements_json: []const u8,
         runtime_json: []const u8,
         runtime_kind: venom_model.RuntimeKind,
@@ -4074,7 +4074,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .kind = spec.kind,
                 .version = spec.version,
                 .host_roles_json = spec.hostRolesJson(),
-                .legacy_projection_modes_json = spec.legacyProjectionModesJson(),
+                .binding_scopes_json = spec.bindingScopesJson(),
                 .requirements_json = spec.requirements_json,
                 .runtime_json = spec.runtime_json,
                 .runtime_kind = spec.runtime_kind,
@@ -4087,7 +4087,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .kind = package.kind,
                 .version = package.version,
                 .host_roles_json = package.host_roles_json,
-                .legacy_projection_modes_json = package.projection_modes_json,
+                .binding_scopes_json = package.binding_scopes_json,
                 .requirements_json = package.requirements_json,
                 .runtime_json = package.runtime_json,
                 .runtime_kind = if (std.mem.indexOf(u8, package.runtime_json, "\"type\":\"wasm\"") != null) .wasm else .native,
@@ -4110,9 +4110,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .version = try allocator.dupe(u8, package.version),
                 .categories_json = try allocator.dupe(u8, package.categories_json),
                 .host_roles_json = try allocator.dupe(u8, package.host_roles_json),
-                .hosts_json = try allocator.dupe(u8, package.hosts_json),
                 .binding_scopes_json = try allocator.dupe(u8, package.binding_scopes_json),
-                .projection_modes_json = try allocator.dupe(u8, package.projection_modes_json),
                 .runtime_kind = package.runtime_kind,
                 .requirements_json = try allocator.dupe(u8, package.requirements_json),
                 .capabilities_json = try allocator.dupe(u8, package.capabilities_json),
@@ -4178,7 +4176,17 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         if (!jsonArrayContainsString(allocator, package.host_roles_json, host)) {
             return ControlPlaneError.VenomPackageHostUnsupported;
         }
-        if (!jsonArrayContainsString(allocator, package.legacy_projection_modes_json, legacy_projection_mode)) {
+        const required_scope = if (std.mem.eql(u8, legacy_projection_mode, "node_export"))
+            "node"
+        else if (std.mem.eql(u8, legacy_projection_mode, "workspace_service") or std.mem.eql(u8, legacy_projection_mode, "host_local"))
+            "workspace"
+        else if (std.mem.eql(u8, legacy_projection_mode, "runtime_private"))
+            "agent"
+        else if (std.mem.eql(u8, legacy_projection_mode, "client_private"))
+            "client"
+        else
+            legacy_projection_mode;
+        if (!jsonArrayContainsString(allocator, package.binding_scopes_json, required_scope)) {
             return ControlPlaneError.VenomPackageProjectionUnsupported;
         }
         if (!requirementsSatisfied(allocator, package.requirements_json, available_venoms, host_capabilities)) {
@@ -5464,8 +5472,6 @@ fn appendWorkspaceTemplateBindJson(
     defer allocator.free(escaped_venom);
     const escaped_host_role = try jsonEscape(allocator, bind_spec.host_role.asString());
     defer allocator.free(escaped_host_role);
-    const escaped_provider_scope = try jsonEscape(allocator, venom_model.legacyProviderScope(bind_spec.host_role, &.{venom_model.BindingScope.workspace}));
-    defer allocator.free(escaped_provider_scope);
     const target_path_json = if (resolveTemplateBindTargetPath(bind_spec)) |target_path| blk: {
         const escaped_target = try jsonEscape(allocator, target_path);
         defer allocator.free(escaped_target);
@@ -5474,8 +5480,8 @@ fn appendWorkspaceTemplateBindJson(
     defer allocator.free(target_path_json);
 
     try out.writer(allocator).print(
-        "{{\"bind_path\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"binding_scope\":\"workspace\",\"provider_scope\":\"{s}\",\"target_path\":{s}}}",
-        .{ escaped_bind, escaped_venom, escaped_host_role, escaped_provider_scope, target_path_json },
+        "{{\"bind_path\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"binding_scope\":\"workspace\",\"target_path\":{s}}}",
+        .{ escaped_bind, escaped_venom, escaped_host_role, target_path_json },
     );
 }
 

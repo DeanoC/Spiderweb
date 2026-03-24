@@ -2064,6 +2064,8 @@ pub const Session = struct {
         defer self.allocator.free(providers_target);
         const bindings_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/bindings.json", .{ workspace_compat_projects_absolute, workspace_id });
         defer self.allocator.free(bindings_target);
+        const node_venom_events_target = try std.fmt.allocPrint(self.allocator, "{s}/venoms/node-venom-events.ndjson", .{workspace_compat_global_absolute});
+        defer self.allocator.free(node_venom_events_target);
 
         const managed_bind_specs = [_]struct { bind_path: []const u8, target_path: []const u8 }{
             .{ .bind_path = workspace_managed_root_absolute ++ "/protocol.json", .target_path = workspace_compat_meta_absolute ++ "/protocol.json" },
@@ -2124,6 +2126,7 @@ pub const Session = struct {
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/packages.json", packages_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/providers.json", providers_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/bindings.json", bindings_target);
+        try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/node-venom-events.ndjson", node_venom_events_target);
     }
 
     pub fn resolveManagedCapabilityVenomTargetPath(self: *Session, venom_id: []const u8) !?[]u8 {
@@ -8651,6 +8654,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"venom_root\":\"./.spiderweb/venoms\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"control_root\":\"./.spiderweb/control\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"catalog_root\":\"./.spiderweb/catalog\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"node_venom_events\":\"./.spiderweb/catalog/node-venom-events.ndjson\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"required_venoms\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"./AGENTS.md\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"protocol\":\"./.spiderweb/protocol.json\"") != null);
@@ -8679,6 +8683,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
         "/nodes/local/fs/.spiderweb/catalog/packages.json",
         "/nodes/local/fs/.spiderweb/catalog/providers.json",
         "/nodes/local/fs/.spiderweb/catalog/bindings.json",
+        "/nodes/local/fs/.spiderweb/catalog/node-venom-events.ndjson",
         "/nodes/local/fs/.spiderweb/control/workspace/home/control/ensure.json",
         "/nodes/local/fs/.spiderweb/control/workspace/mounts/control/bind.json",
         "/nodes/local/fs/.spiderweb/control/runtimes/control/register.json",

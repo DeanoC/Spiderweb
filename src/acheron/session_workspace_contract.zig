@@ -156,6 +156,8 @@ pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) !
     try jw.write("/.spiderweb/catalog/providers.json");
     try jw.objectField("bindings");
     try jw.write("/.spiderweb/catalog/bindings.json");
+    try jw.objectField("node_venom_events");
+    try jw.write("/.spiderweb/catalog/node-venom-events.ndjson");
     try jw.objectField("agent_bootstrap");
     try jw.write("/.spiderweb/agent_bootstrap.json");
     try jw.objectField("agent_bootstrap_quickref");

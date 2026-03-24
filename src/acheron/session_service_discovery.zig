@@ -95,6 +95,7 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
             const endpoint_path = try providerEndpointPathForDir(session, node_id, venom_id, venom_dir_id);
             defer if (endpoint_path) |value| session.allocator.free(value);
             const runtime_kind = try providerRuntimeKindForDir(session, venom_dir_id);
+            const host_role = try providerHostRoleForDir(session, node_id, venom_dir_id);
             const provider_id = try std.fmt.allocPrint(session.allocator, "{s}:{s}", .{ node_id, venom_id });
             defer session.allocator.free(provider_id);
 
@@ -123,7 +124,7 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
                     provider_id_escaped,
                     package_id_escaped,
                     venom_id_escaped,
-                    venom_model.defaultHostRoleForNodeId(node_id).asString(),
+                    host_role.asString(),
                     node_id_escaped,
                     runtime_kind.asString(),
                     if (std.mem.eql(u8, state, "offline")) "false" else "true",
@@ -329,11 +330,28 @@ fn packageIdForProvider(session: anytype, venom_dir_id: u32, venom_id: []const u
             var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, package_node.content, .{}) catch return session.allocator.dupe(u8, venom_id);
             defer parsed.deinit();
             if (parsed.value == .object) {
+                if (getString(parsed.value.object, "package_id")) |value| return session.allocator.dupe(u8, value);
                 if (getString(parsed.value.object, "venom_id")) |value| return session.allocator.dupe(u8, value);
             }
         }
     }
     return session.allocator.dupe(u8, venom_id);
+}
+
+fn providerHostRoleForDir(session: anytype, node_id: []const u8, venom_dir_id: u32) !venom_model.HostRole {
+    if (session.lookupChild(venom_dir_id, "PACKAGE.json")) |package_id| {
+        const package_node = session.nodes.get(package_id) orelse return venom_model.defaultHostRoleForNodeId(node_id);
+        if (package_node.kind == .file and package_node.content.len != 0) {
+            var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, package_node.content, .{}) catch return venom_model.defaultHostRoleForNodeId(node_id);
+            defer parsed.deinit();
+            if (parsed.value == .object) {
+                if (firstHostRoleFromValue(parsed.value.object.get("host_roles") orelse parsed.value.object.get("hosts"))) |host_role| {
+                    return host_role;
+                }
+            }
+        }
+    }
+    return venom_model.defaultHostRoleForNodeId(node_id);
 }
 
 fn providerStateForDir(session: anytype, venom_dir_id: u32) ![]u8 {
@@ -362,4 +380,14 @@ fn providerRuntimeKindForDir(session: anytype, venom_dir_id: u32) !venom_model.R
     if (parsed.value != .object) return .native;
     const runtime_type = getString(parsed.value.object, "type") orelse return .native;
     return venom_model.RuntimeKind.fromRuntimeType(runtime_type);
+}
+
+fn firstHostRoleFromValue(maybe_hosts: ?std.json.Value) ?venom_model.HostRole {
+    const hosts_value = maybe_hosts orelse return null;
+    if (hosts_value != .array) return null;
+    for (hosts_value.array.items) |item| {
+        if (item != .string) continue;
+        return venom_model.HostRole.fromString(item.string);
+    }
+    return null;
 }

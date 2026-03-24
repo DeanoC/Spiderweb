@@ -1,5 +1,6 @@
 const std = @import("std");
 const unified = @import("spider-protocol").unified;
+const venom_model = @import("../venom_model.zig");
 
 pub fn refreshScopedVenomIndexes(session: anytype) !void {
     try refreshVenomsIndexFile(session, session.agent_venoms_index_id, "/.spiderweb/venoms/", "workspace");
@@ -44,6 +45,7 @@ pub fn buildScopedVenomsIndexJson(session: anytype, binding_prefix: []const u8, 
         var venom_it = services_root.children.iterator();
         while (venom_it.next()) |venom_entry| {
             const venom_id = venom_entry.key_ptr.*;
+            if (!venom_model.isCapabilityVenomId(venom_id)) continue;
             const venom_dir_id = venom_entry.value_ptr.*;
             const venom_dir = session.nodes.get(venom_dir_id) orelse continue;
             if (venom_dir.kind != .dir) continue;
@@ -160,6 +162,7 @@ fn appendScopedVenomBindingIndexEntriesForPrefix(
 ) !void {
     for (session.scoped_venom_bindings.items) |binding| {
         if (!std.mem.startsWith(u8, binding.venom_path, binding_prefix)) continue;
+        if (!venom_model.isCapabilityVenomId(binding.venom_id)) continue;
         try appendAgentVenomIndexEntry(
             session,
             out,

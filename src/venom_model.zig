@@ -78,9 +78,14 @@ pub const production_priority_capability_ids = [_][]const u8{
     "terminal",
     "git",
     "search_code",
-    "events",
-    "library",
 };
+
+fn matchesVenomFamilyOrInstance(venom_id: []const u8, family_id: []const u8) bool {
+    if (std.mem.eql(u8, venom_id, family_id)) return true;
+    return std.mem.startsWith(u8, venom_id, family_id) and
+        venom_id.len > family_id.len and
+        venom_id[family_id.len] == '-';
+}
 
 pub fn isControlSubstrateVenomId(venom_id: []const u8) bool {
     inline for (control_substrate_ids) |candidate| {
@@ -90,11 +95,16 @@ pub fn isControlSubstrateVenomId(venom_id: []const u8) bool {
 }
 
 pub fn isCapabilityVenomId(venom_id: []const u8) bool {
-    if (isControlSubstrateVenomId(venom_id)) return false;
+    inline for (production_priority_capability_ids) |candidate| {
+        if (matchesVenomFamilyOrInstance(venom_id, candidate)) return true;
+    }
+    inline for (control_substrate_ids) |candidate| {
+        if (std.mem.eql(u8, venom_id, candidate)) return false;
+    }
     inline for (non_production_capability_ids) |candidate| {
         if (std.mem.eql(u8, venom_id, candidate)) return false;
     }
-    return venom_id.len != 0;
+    return false;
 }
 
 pub fn defaultHostRoleForNodeId(node_id: []const u8) HostRole {
@@ -144,8 +154,16 @@ test "venom_model classifies substrate and production capability venoms" {
     try std.testing.expect(isControlSubstrateVenomId("mounts"));
     try std.testing.expect(isControlSubstrateVenomId("runtimes"));
     try std.testing.expect(!isCapabilityVenomId("mounts"));
+    try std.testing.expect(!isCapabilityVenomId("mounts-main"));
     try std.testing.expect(!isCapabilityVenomId("memory"));
+    try std.testing.expect(!isCapabilityVenomId("memory-main"));
+    try std.testing.expect(!isCapabilityVenomId("events"));
+    try std.testing.expect(!isCapabilityVenomId("library"));
+    try std.testing.expect(!isCapabilityVenomId("camera-main"));
     try std.testing.expect(isCapabilityVenomId("terminal"));
+    try std.testing.expect(isCapabilityVenomId("terminal-main"));
+    try std.testing.expect(isCapabilityVenomId("git-main"));
+    try std.testing.expect(isCapabilityVenomId("search_code-main"));
     try std.testing.expectEqualStrings("spiderweb", defaultHostRoleForNodeId("local").asString());
     try std.testing.expectEqualStrings("node", defaultHostRoleForNodeId("node-2").asString());
     try std.testing.expectEqualStrings("workspace", defaultBindingScopeForPath("/.spiderweb/venoms/terminal").asString());

@@ -24,8 +24,6 @@ pub const bootstrap_required_venoms = [_]BootstrapRequiredVenom{
     .{ .venom_id = "terminal", .invoke_path = "/.spiderweb/venoms/terminal/control/invoke.json" },
     .{ .venom_id = "git", .invoke_path = "/.spiderweb/venoms/git/control/invoke.json" },
     .{ .venom_id = "search_code", .invoke_path = "/.spiderweb/venoms/search_code/control/invoke.json" },
-    .{ .venom_id = "library" },
-    .{ .venom_id = "events" },
 };
 
 const BootstrapContractPaths = struct {
@@ -366,7 +364,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
         paths.bindings_path,
         paths.workspace_status_path,
     };
-    const required_venom_ids = [_][]const u8{ "terminal", "git", "search_code", "library", "events" };
+    const required_venom_ids = [_][]const u8{ "terminal", "git", "search_code" };
     const default_runtime_venoms = [_][]const u8{ "memory", "sub_brains" };
 
     var out = std.io.Writer.Allocating.init(session.allocator);

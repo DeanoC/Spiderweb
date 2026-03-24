@@ -320,8 +320,6 @@ const core_workspace_bind_specs = [_]WorkspaceTemplateBindSpec{
     .{ .bind_path = "/.spiderweb/venoms/terminal", .venom_id = "terminal", .host_role = .node },
     .{ .bind_path = "/.spiderweb/venoms/git", .venom_id = "git", .host_role = .node },
     .{ .bind_path = "/.spiderweb/venoms/search_code", .venom_id = "search_code", .host_role = .node },
-    .{ .bind_path = "/.spiderweb/venoms/library", .venom_id = "library" },
-    .{ .bind_path = "/.spiderweb/venoms/events", .venom_id = "events" },
 };
 
 const builtin_workspace_templates = [_]WorkspaceTemplateSpec{
@@ -8710,9 +8708,9 @@ test "acheron_control_plane: dev template seeds canonical development binds" {
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/runtimes\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/git\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/terminal\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/events\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/library\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/search_code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/events\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/library\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/chat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/jobs\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/web_search\"") == null);

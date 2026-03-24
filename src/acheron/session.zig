@@ -5898,6 +5898,13 @@ pub const Session = struct {
             );
         }
 
+        const snapshot_root_node_id = if (std.mem.eql(u8, normalized_requested_path, "/"))
+            self.root_id
+        else blk: {
+            const root_index = path_to_index.get(normalized_requested_path) orelse return error.MissingNode;
+            break :blk nodes.items[root_index].id;
+        };
+
         std.mem.sort(MountGraphSourceRecord, sources.items, {}, struct {
             fn lessThan(_: void, lhs: MountGraphSourceRecord, rhs: MountGraphSourceRecord) bool {
                 return std.mem.lessThan(u8, lhs.mount_path, rhs.mount_path);
@@ -5926,7 +5933,7 @@ pub const Session = struct {
         const payload_without_generation = try std.fmt.allocPrint(
             self.allocator,
             "{{\"mount_session_id\":\"{s}\",\"graph_generation\":0,\"root_node_id\":{d},\"nodes\":{s},\"sources\":{s}}}",
-            .{ escaped_mount_session_id, self.root_id, nodes_json, sources_json },
+            .{ escaped_mount_session_id, snapshot_root_node_id, nodes_json, sources_json },
         );
         defer self.allocator.free(payload_without_generation);
         const graph_generation = std.hash.Wyhash.hash(0, payload_without_generation);
@@ -5934,7 +5941,7 @@ pub const Session = struct {
         return std.fmt.allocPrint(
             self.allocator,
             "{{\"mount_session_id\":\"{s}\",\"graph_generation\":{d},\"root_node_id\":{d},\"nodes\":{s},\"sources\":{s}}}",
-            .{ escaped_mount_session_id, graph_generation, self.root_id, nodes_json, sources_json },
+            .{ escaped_mount_session_id, graph_generation, snapshot_root_node_id, nodes_json, sources_json },
         );
     }
 
@@ -9955,6 +9962,74 @@ test "acheron_session: projected workspace .spiderweb snapshot keeps protocol fi
     }
 
     try std.testing.expect(found_protocol);
+}
+
+test "acheron_session: mount graph snapshot root_node_id matches the requested non-root path" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/.spiderweb/AGENTS.md",
+        .data = "agents\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[]}",
+        "mount-test",
+        "/.spiderweb/AGENTS.md",
+        0,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+
+    const root_node_id = parsed_snapshot.value.object.get("root_node_id") orelse return error.MissingNode;
+    try std.testing.expect(root_node_id == .integer);
+
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var matched_requested_path = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        const id_value = node_value.object.get("id") orelse continue;
+        if (path_value != .string or id_value != .integer) continue;
+        if (!std.mem.eql(u8, path_value.string, "/.spiderweb/AGENTS.md")) continue;
+        matched_requested_path = true;
+        try std.testing.expectEqual(id_value.integer, root_node_id.integer);
+    }
+
+    try std.testing.expect(matched_requested_path);
 }
 
 test "acheron_session: projected managed .spiderweb survives broader workspace mount rebound" {

@@ -5853,6 +5853,7 @@ pub const Session = struct {
                 &export_root_writable,
                 &next_overlay_id,
                 max_depth,
+                false,
             );
         } else {
             var requested_target = try self.resolveMountGraphRequestedTarget(normalized_requested_path);
@@ -5885,6 +5886,7 @@ pub const Session = struct {
                         &export_root_writable,
                         &next_overlay_id,
                         max_depth,
+                        true,
                     );
             }
         }
@@ -6441,6 +6443,7 @@ pub const Session = struct {
         export_root_writable: *const std.StringHashMapUnmanaged(bool),
         next_overlay_id: *u64,
         remaining_depth: u32,
+        allow_export_root_children: bool,
     ) anyerror!void {
         try self.appendMountGraphNode(
             nodes,
@@ -6451,7 +6454,12 @@ pub const Session = struct {
         );
 
         const node = self.nodes.get(node_id) orelse return error.MissingNode;
-        if (remaining_depth == 0 or export_root_writable.contains(absolute_path) or node.kind != .dir) return;
+        if (remaining_depth == 0 or
+            (!allow_export_root_children and export_root_writable.contains(absolute_path)) or
+            node.kind != .dir)
+        {
+            return;
+        }
         const current_index = path_to_index.get(absolute_path) orelse return error.MissingNode;
         const current_parent_id = nodes.items[current_index].id;
 
@@ -6540,6 +6548,7 @@ pub const Session = struct {
                         export_root_writable,
                         next_overlay_id,
                         remaining_depth - 1,
+                        false,
                     );
                 } else {
                     try self.appendProjectedMountGraphSubtree(
@@ -10030,6 +10039,236 @@ test "acheron_session: mount graph snapshot root_node_id matches the requested n
     }
 
     try std.testing.expect(matched_requested_path);
+}
+
+test "acheron_session: mount graph snapshot lists children for a non-root local fs directory" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb-ltm");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/.spiderweb-ltm/state.json",
+        .data = "{}\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[]}",
+        "mount-test",
+        "/nodes/local/fs/.spiderweb-ltm",
+        1,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+
+    const root_node_id = parsed_snapshot.value.object.get("root_node_id") orelse return error.MissingNode;
+    try std.testing.expect(root_node_id == .integer);
+
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var saw_requested_dir = false;
+    var saw_child_file = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb-ltm")) {
+            saw_requested_dir = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("id").?.integer);
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb-ltm/state.json")) {
+            saw_child_file = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("parent_id").?.integer);
+        }
+    }
+
+    try std.testing.expect(saw_requested_dir);
+    try std.testing.expect(saw_child_file);
+}
+
+test "acheron_session: mount graph snapshot lists children for the local fs export root" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb-ltm");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/.spiderweb-ltm/state.json",
+        .data = "{}\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[]}",
+        "mount-test",
+        "/nodes/local/fs",
+        1,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+
+    const root_node_id = parsed_snapshot.value.object.get("root_node_id") orelse return error.MissingNode;
+    try std.testing.expect(root_node_id == .integer);
+
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var saw_requested_dir = false;
+    var saw_child_dir = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs")) {
+            saw_requested_dir = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("id").?.integer);
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb-ltm")) {
+            saw_child_dir = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("parent_id").?.integer);
+        }
+    }
+
+    try std.testing.expect(saw_requested_dir);
+    try std.testing.expect(saw_child_dir);
+}
+
+test "acheron_session: mount graph snapshot lists children for a non-root node fs directory" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const remote_export_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared", .{remote_node_id});
+    defer allocator.free(remote_export_path);
+    const remote_export_dir = session.resolveAbsolutePathNoBinds(remote_export_path) orelse return error.MissingNode;
+    const ltm_dir = try session.addDir(remote_export_dir, ".spiderweb-ltm", false);
+    _ = try session.addFile(ltm_dir, "state.json", "{}\n", false, .none);
+
+    const requested_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared/.spiderweb-ltm", .{remote_node_id});
+    defer allocator.free(requested_path);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[]}",
+        "mount-test",
+        requested_path,
+        1,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+
+    const root_node_id = parsed_snapshot.value.object.get("root_node_id") orelse return error.MissingNode;
+    try std.testing.expect(root_node_id == .integer);
+
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    const child_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared/.spiderweb-ltm/state.json", .{remote_node_id});
+    defer allocator.free(child_path);
+
+    var saw_requested_dir = false;
+    var saw_child_file = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, requested_path)) {
+            saw_requested_dir = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("id").?.integer);
+        } else if (std.mem.eql(u8, path_value.string, child_path)) {
+            saw_child_file = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("parent_id").?.integer);
+        }
+    }
+
+    try std.testing.expect(saw_requested_dir);
+    try std.testing.expect(saw_child_file);
 }
 
 test "acheron_session: projected managed .spiderweb survives broader workspace mount rebound" {

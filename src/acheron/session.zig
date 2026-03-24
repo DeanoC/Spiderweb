@@ -2390,6 +2390,15 @@ pub const Session = struct {
     fn seedLocalCatalogServiceNamespaces(self: *Session, global_root: u32) !void {
         const local_venoms_root = self.lookupLocalNodeVenomsRoot() orelse return;
 
+        const library_dir = if (self.lookupChild(global_root, "library")) |existing|
+            existing
+        else
+            try self.addDir(global_root, "library", false);
+        self.seedLibraryNamespace(library_dir) catch |err| {
+            std.log.warn("seedLocalCatalogServiceNamespaces library namespace failed: {s}", .{@errorName(err)});
+            return err;
+        };
+
         const packages_dir = try self.addDir(local_venoms_root, "packages", false);
         self.seedPackagesNamespaceAt(packages_dir, "/nodes/local/venoms/packages") catch |err| {
             std.log.warn("seedLocalCatalogServiceNamespaces packages namespace failed: {s}", .{@errorName(err)});
@@ -8813,6 +8822,16 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/events\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/library\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/global/git\"") == null);
+
+    const internal_library_index = try session.tryReadInternalPath("/.spiderweb/_compat/global/library/Index.md");
+    defer if (internal_library_index) |value| allocator.free(value);
+    try std.testing.expect(internal_library_index != null);
+    try std.testing.expect(std.mem.indexOf(u8, internal_library_index.?, "/.spiderweb/_compat/global/library/topics/getting-started.md") != null);
+
+    const internal_library_topic = try session.tryReadInternalPath("/.spiderweb/_compat/global/library/topics/service-discovery.md");
+    defer if (internal_library_topic) |value| allocator.free(value);
+    try std.testing.expect(internal_library_topic != null);
+    try std.testing.expect(std.mem.indexOf(u8, internal_library_topic.?, "Production capability venoms include: terminal, git, and search_code.") != null);
 }
 
 test "acheron_session: control substrate surfaces expose runtime and package operations canonically" {

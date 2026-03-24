@@ -243,7 +243,7 @@ pub fn seedPassiveRuntimeMemoryNamespaceAt(
     defer self.allocator.free(shape_json);
     const runtime_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"type\":\"external_worker\",\"component\":\"spider_monkey\",\"subject\":\"runtime_memory\",\"runtime_id\":\"{s}\",\"agent_id\":\"{s}\"}}",
+        "{{\"type\":\"external_runtime\",\"component\":\"spider_monkey\",\"subject\":\"runtime_memory\",\"runtime_id\":\"{s}\",\"agent_id\":\"{s}\"}}",
         .{ runtime_id, agent_id },
     );
     defer self.allocator.free(runtime_json);
@@ -253,7 +253,7 @@ pub fn seedPassiveRuntimeMemoryNamespaceAt(
     try ensureFile(self, memory_dir, "CAPS.json", "{\"invoke\":true,\"operations\":[\"memory_create\",\"memory_load\",\"memory_versions\",\"memory_mutate\",\"memory_evict\",\"memory_search\"],\"discoverable\":true,\"runtime_owned\":true}", false, .none);
     try ensureFile(self, memory_dir, "OPS.json", "{\"model\":\"filesystem_loopback\",\"invoke\":\"control/invoke.json\",\"transport\":\"filesystem\",\"paths\":{\"create\":\"control/create.json\",\"load\":\"control/load.json\",\"versions\":\"control/versions.json\",\"mutate\":\"control/mutate.json\",\"evict\":\"control/evict.json\",\"search\":\"control/search.json\"},\"operations\":{\"create\":\"create\",\"load\":\"load\",\"versions\":\"versions\",\"mutate\":\"mutate\",\"evict\":\"evict\",\"search\":\"search\"}}", false, .none);
     try ensureFile(self, memory_dir, "RUNTIME.json", runtime_json, false, .none);
-    try ensureFile(self, memory_dir, "PERMISSIONS.json", "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"worker\"}", false, .none);
+    try ensureFile(self, memory_dir, "PERMISSIONS.json", "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"runtime\"}", false, .none);
     try ensureFile(self, memory_dir, "STATUS.json", "{\"venom_id\":\"memory\",\"state\":\"runtime_loopback\",\"has_invoke\":true,\"owner\":\"runtime\"}", false, .none);
     try ensureFile(self, memory_dir, "status.json", "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}", true, .none);
     try ensureFile(self, memory_dir, "result.json", "{\"ok\":false,\"result\":null,\"error\":null}", true, .none);
@@ -291,7 +291,7 @@ pub fn seedPassiveRuntimeSubBrainsNamespaceAt(
     defer self.allocator.free(shape_json);
     const runtime_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"type\":\"external_worker\",\"component\":\"spider_monkey\",\"subject\":\"runtime_sub_brains\",\"runtime_id\":\"{s}\",\"agent_id\":\"{s}\"}}",
+        "{{\"type\":\"external_runtime\",\"component\":\"spider_monkey\",\"subject\":\"runtime_sub_brains\",\"runtime_id\":\"{s}\",\"agent_id\":\"{s}\"}}",
         .{ runtime_id, agent_id },
     );
     defer self.allocator.free(runtime_json);
@@ -301,7 +301,7 @@ pub fn seedPassiveRuntimeSubBrainsNamespaceAt(
     try ensureFile(self, sub_brains_dir, "CAPS.json", "{\"invoke\":true,\"operations\":[\"sub_brains_list\",\"sub_brains_upsert\",\"sub_brains_delete\"],\"discoverable\":true,\"runtime_owned\":true}", false, .none);
     try ensureFile(self, sub_brains_dir, "OPS.json", "{\"model\":\"filesystem_loopback\",\"invoke\":\"control/invoke.json\",\"transport\":\"filesystem\",\"paths\":{\"list\":\"control/list.json\",\"upsert\":\"control/upsert.json\",\"delete\":\"control/delete.json\"},\"operations\":{\"list\":\"list\",\"upsert\":\"upsert\",\"delete\":\"delete\"}}", false, .none);
     try ensureFile(self, sub_brains_dir, "RUNTIME.json", runtime_json, false, .none);
-    try ensureFile(self, sub_brains_dir, "PERMISSIONS.json", "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"worker\"}", false, .none);
+    try ensureFile(self, sub_brains_dir, "PERMISSIONS.json", "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"runtime\"}", false, .none);
     try ensureFile(self, sub_brains_dir, "STATUS.json", "{\"venom_id\":\"sub_brains\",\"state\":\"runtime_loopback\",\"has_invoke\":true,\"owner\":\"runtime\"}", false, .none);
     try ensureFile(self, sub_brains_dir, "status.json", "{\"state\":\"idle\",\"tool\":null,\"updated_at_ms\":0,\"error\":null}", true, .none);
     try ensureFile(self, sub_brains_dir, "result.json", "{\"ok\":false,\"result\":null,\"error\":null}", true, .none);

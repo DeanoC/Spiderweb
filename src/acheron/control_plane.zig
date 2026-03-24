@@ -1342,6 +1342,7 @@ pub const ControlPlane = struct {
         defer self.mutex.unlock();
 
         const runtime_host_capabilities = [_][]const u8{
+            "external_runtime",
             "external_worker",
             "filesystem_loopback",
         };
@@ -1350,11 +1351,11 @@ pub const ControlPlane = struct {
             try validateVenomPackageInstantiationLocked(
                 self.allocator,
                 package,
-                "worker",
-                "worker_private",
+                "client",
+                "runtime_private",
                 requested_venoms,
                 runtime_host_capabilities[0..],
-                "{\"type\":\"external_worker\"}",
+                "{\"type\":\"external_runtime\"}",
             );
         }
     }
@@ -4261,7 +4262,13 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         defer parsed.deinit();
         if (parsed.value != .array) return false;
         for (parsed.value.array.items) |item| {
-            if (item == .string and std.mem.eql(u8, item.string, needle)) return true;
+            if (item != .string) continue;
+            if (std.mem.eql(u8, item.string, needle)) return true;
+            if ((std.mem.eql(u8, needle, "runtime_private") and std.mem.eql(u8, item.string, "worker_private")) or
+                (std.mem.eql(u8, needle, "worker_private") and std.mem.eql(u8, item.string, "runtime_private")))
+            {
+                return true;
+            }
         }
         return false;
     }
@@ -4281,7 +4288,13 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             if (actual_type_value != .string or actual_type_value.string.len == 0) break :blk "builtin";
             break :blk actual_type_value.string;
         };
-        return std.mem.eql(u8, expected_type_value.string, actual_type);
+        if (std.mem.eql(u8, expected_type_value.string, actual_type)) return true;
+        if ((std.mem.eql(u8, expected_type_value.string, "external_runtime") and std.mem.eql(u8, actual_type, "external_worker")) or
+            (std.mem.eql(u8, expected_type_value.string, "external_worker") and std.mem.eql(u8, actual_type, "external_runtime")))
+        {
+            return true;
+        }
+        return false;
     }
 
     fn containsString(haystack: []const []const u8, needle: []const u8) bool {
@@ -9013,7 +9026,7 @@ test "acheron_control_plane: runtime venom instantiation requires package depend
     defer plane.deinit();
 
     const installed = try plane.installVenomPackage(
-        \\{"package":{"venom_id":"scratchpad","kind":"memory_ext","version":"1","categories":["memory"],"host_roles":["client"],"binding_scopes":["agent"],"runtime_kind":"native","requirements":{"venoms":["memory"]},"capabilities":{"invoke":true},"ops":{"model":"filesystem_loopback"},"runtime":{"type":"external_worker"},"permissions":{},"schema":{}}}
+        \\{"package":{"venom_id":"scratchpad","kind":"memory_ext","version":"1","categories":["memory"],"host_roles":["client"],"binding_scopes":["agent"],"runtime_kind":"native","requirements":{"venoms":["memory"]},"capabilities":{"invoke":true},"ops":{"model":"filesystem_loopback"},"runtime":{"type":"external_runtime"},"permissions":{},"schema":{}}}
     );
     defer allocator.free(installed);
 

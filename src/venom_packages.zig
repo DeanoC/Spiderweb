@@ -6,6 +6,7 @@ pub const BuiltinPackageSpec = struct {
     venom_id: []const u8,
     kind: []const u8,
     version: []const u8 = "1",
+    enabled: bool = true,
     default_host_role: venom_model.HostRole,
     binding_scopes: []const venom_model.BindingScope = &.{venom_model.BindingScope.workspace},
     runtime_kind: venom_model.RuntimeKind = .native,
@@ -142,6 +143,7 @@ pub fn cloneBuiltinPackage(
         .venom_id = try allocator.dupe(u8, spec.venom_id),
         .kind = try allocator.dupe(u8, spec.kind),
         .version = try allocator.dupe(u8, spec.version),
+        .enabled = spec.enabled,
         .categories_json = try allocator.dupe(u8, spec.categories_json),
         .host_roles_json = try allocator.dupe(u8, spec.hostRolesJson()),
         .binding_scopes_json = try allocator.dupe(u8, spec.bindingScopesJson()),
@@ -175,12 +177,13 @@ fn appendPackageJson(
     defer allocator.free(target_path_json);
 
     try out.writer(allocator).print(
-        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"default_host_role\":\"{s}\",\"default_target_path\":{s}",
+        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":{},\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"default_host_role\":\"{s}\",\"default_target_path\":{s}",
         .{
             escaped_venom_id,
             escaped_venom_id,
             escaped_kind,
             escaped_version,
+            spec.enabled,
             spec.categories_json,
             spec.hostRolesJson(),
             spec.bindingScopesJson(),

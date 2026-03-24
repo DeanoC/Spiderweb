@@ -355,10 +355,10 @@ def run_control_runtime_order(host: str, port: int, auth_token=None) -> None:
             err_msg = conn.read_json()
             expect_type(err_msg, "acheron", "acheron.error")
             err = err_msg.get("error") or {}
-            require(err.get("code") == "external_runtime_required", f"unexpected acheron error code: {err}")
+            require(err.get("code") == "unsupported_transport", f"unexpected acheron error code: {err}")
             err_message = str(err.get("message", ""))
             require(
-                "spiderweb-fs-mount" in err_message or "control.session_attach" in err_message,
+                "control.mount_*" in err_message or "spiderweb-fs" in err_message,
                 f"unexpected acheron error message: {err}",
             )
             opcode, _ = conn.read_frame()
@@ -397,10 +397,10 @@ def run_control_runtime_order(host: str, port: int, auth_token=None) -> None:
             err_msg = conn.read_json()
             expect_type(err_msg, "acheron", "acheron.error")
             err = err_msg.get("error") or {}
-            require(err.get("code") == "external_runtime_required", f"unexpected acheron version error: {err}")
+            require(err.get("code") == "unsupported_transport", f"unexpected acheron version error: {err}")
             err_message = str(err.get("message", ""))
             require(
-                "Spider Monkey" in err_message or "control.session_attach" in err_message,
+                "control.mount_*" in err_message or "spiderweb-fs" in err_message,
                 f"unexpected acheron version message: {err}",
             )
             opcode, _ = conn.read_frame()

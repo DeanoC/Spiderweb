@@ -37,19 +37,19 @@ pub fn seedNamespaceAt(self: anytype, mounts_dir: u32, base_path: []const u8) !v
         "Mounts and Binds",
         shape_json,
         "{\"invoke\":true,\"operations\":[\"list\",\"mount\",\"mkdir\",\"unmount\",\"bind\",\"unbind\",\"resolve\"],\"discoverable\":true,\"project_scope\":true}",
-        "Manage project mounts and path binds through Acheron control files.",
+        "Manage workspace mounts and path binds through Spiderweb control files.",
     );
     _ = try self.addFile(
         mounts_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"list\":\"control/list.json\",\"mount\":\"control/mount.json\",\"mkdir\":\"control/mkdir.json\",\"unmount\":\"control/unmount.json\",\"bind\":\"control/bind.json\",\"unbind\":\"control/unbind.json\",\"resolve\":\"control/resolve.json\"},\"operations\":{\"list\":\"list\",\"mount\":\"mount\",\"mkdir\":\"mkdir\",\"unmount\":\"unmount\",\"bind\":\"bind\",\"unbind\":\"unbind\",\"resolve\":\"resolve\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"mount\":\"control/mount.json\",\"mkdir\":\"control/mkdir.json\",\"unmount\":\"control/unmount.json\",\"bind\":\"control/bind.json\",\"unbind\":\"control/unbind.json\",\"resolve\":\"control/resolve.json\"},\"operations\":{\"list\":\"list\",\"mount\":\"mount\",\"mkdir\":\"mkdir\",\"unmount\":\"unmount\",\"bind\":\"bind\",\"unbind\":\"unbind\",\"resolve\":\"resolve\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         mounts_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"project_mounts_binds\"}",
+        "{\"type\":\"namespace_local\",\"component\":\"namespace_session\",\"subject\":\"workspace_mounts_binds\"}",
         false,
         .none,
     );

@@ -1,6 +1,6 @@
-# Acheron Layer
+# Namespace Layer
 
-This folder contains Spiderweb-owned Acheron glue.
+This folder contains Spiderweb-owned namespace and mount glue.
 
 It is responsible for:
 
@@ -8,7 +8,7 @@ It is responsible for:
 - control-plane integration
 - filesystem-style routing and mounting
 - standalone namespace client mounting for `spiderweb-fs-mount`
-- client/protocol helpers used by the Acheron surface
+- client/protocol helpers used by Spiderweb's namespace surfaces
 
 It is not the authoritative node runtime implementation.
 That lives in `../SpiderNode/src/spiderweb_node/`.

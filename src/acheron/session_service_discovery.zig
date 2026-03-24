@@ -22,6 +22,9 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
     for (parsed.value.array.items) |item| {
         if (item != .object) continue;
         const package_id = getString(item.object, "venom_id") orelse continue;
+        if (item.object.get("enabled")) |enabled| {
+            if (enabled == .bool and !enabled.bool) continue;
+        }
         if (!venom_model.isCapabilityVenomId(package_id)) continue;
 
         const kind = getString(item.object, "kind") orelse package_id;
@@ -48,7 +51,7 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         if (!first) try out.append(session.allocator, ',');
         first = false;
         try out.writer(session.allocator).print(
-            "{{\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"help_md\":{s}}}",
+            "{{\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":true,\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"help_md\":{s}}}",
             .{
                 escaped_package_id,
                 escaped_kind,

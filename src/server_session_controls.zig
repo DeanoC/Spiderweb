@@ -1,6 +1,6 @@
 const std = @import("std");
 const unified = @import("spider-protocol").unified;
-const acheron_session_mod = @import("acheron/session.zig");
+const namespace_session_mod = @import("acheron/session.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
 const server_control_payloads = @import("server_control_payloads.zig");
 const server_namespace_sessions = @import("server_namespace_sessions.zig");
@@ -68,7 +68,7 @@ pub fn handleSessionAttachControl(
     runtime_registry: anytype,
     session_bindings: *std.StringHashMapUnmanaged(server_session_bindings.SessionBinding),
     active_session_key: *[]u8,
-    namespace_session: *?acheron_session_mod.Session,
+    namespace_session: *?namespace_session_mod.Session,
     principal: anytype,
     connection_venom_id: []const u8,
     control_service_attached: bool,
@@ -211,7 +211,7 @@ pub fn handleSessionResumeControl(
     runtime_registry: anytype,
     session_bindings: *std.StringHashMapUnmanaged(server_session_bindings.SessionBinding),
     active_session_key: *[]u8,
-    namespace_session: *?acheron_session_mod.Session,
+    namespace_session: *?namespace_session_mod.Session,
     principal: anytype,
     connection_venom_id: []const u8,
     control_service_attached: bool,
@@ -307,7 +307,7 @@ pub fn handleSessionCloseControl(
     runtime_registry: anytype,
     session_bindings: *std.StringHashMapUnmanaged(server_session_bindings.SessionBinding),
     active_session_key: *[]u8,
-    namespace_session: *?acheron_session_mod.Session,
+    namespace_session: *?namespace_session_mod.Session,
     principal: anytype,
     connection_venom_id: []const u8,
     control_service_attached: bool,

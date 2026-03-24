@@ -6,7 +6,7 @@ const protocol = @import("spider-protocol").protocol;
 const runtime_handle_mod = @import("runtime_handle.zig");
 const websocket_transport = @import("websocket_transport.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
-const acheron_session_mod = @import("acheron/session.zig");
+const namespace_session_mod = @import("acheron/session.zig");
 const server_protocol_validation = @import("server_protocol_validation.zig");
 const server_control_scope = @import("server_control_scope.zig");
 const server_audit_records = @import("server_audit_records.zig");
@@ -521,7 +521,7 @@ const NodeTunnelRegistry = struct {
         }
         self.mutex.unlock();
 
-        const rewritten = rewriteAcheronTag(self.allocator, request_payload, upstream_tag) catch |err| {
+        const rewritten = rewriteLegacyRuntimeTransportTag(self.allocator, request_payload, upstream_tag) catch |err| {
             self.mutex.lock();
             if (self.tunnels.get(node_id)) |tunnel| {
                 if (tunnel.generation == generation) {
@@ -580,7 +580,7 @@ const NodeTunnelRegistry = struct {
         }
 
         defer self.allocator.free(response_payload.?);
-        const response_rewritten = try rewriteAcheronTag(self.allocator, response_payload.?, client_tag);
+        const response_rewritten = try rewriteLegacyRuntimeTransportTag(self.allocator, response_payload.?, client_tag);
         return response_rewritten;
     }
 
@@ -1199,7 +1199,7 @@ fn isValidNodeIdentifier(node_id: []const u8) bool {
     return true;
 }
 
-fn rewriteAcheronTag(
+fn rewriteLegacyRuntimeTransportTag(
     allocator: std.mem.Allocator,
     raw_json: []const u8,
     next_tag: u32,
@@ -3646,7 +3646,7 @@ fn handleWebSocketConnection(
     var active_session_key = try allocator.dupe(u8, "main");
     defer allocator.free(active_session_key);
     var control_protocol_negotiated = false;
-    var namespace_session: ?acheron_session_mod.Session = null;
+    var namespace_session: ?namespace_session_mod.Session = null;
     defer resetNamespaceSession(&namespace_session);
     var connection_write_mutex: std.Thread.Mutex = .{};
     const connection_venom_id = try std.fmt.allocPrint(
@@ -4724,58 +4724,16 @@ fn handleWebSocketConnection(
                         }
                     },
                     .acheron => {
-                        if (!control_protocol_negotiated) {
-                            const response = try unified.buildFsrpcError(
-                                allocator,
-                                parsed.tag,
-                                "protocol_mismatch",
-                                "control.version must be negotiated first",
-                            );
-                            defer allocator.free(response);
-                            try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                            try writeFrameLocked(stream, &connection_write_mutex, "", .close);
-                            return;
-                        }
-
-                        const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
-                        if (active_binding.workspace_id == null) {
-                            const response = try unified.buildFsrpcError(
-                                allocator,
-                                parsed.tag,
-                                "external_runtime_required",
-                                "embedded runtime websocket access is removed; call control.session_attach with a workspace_id before using namespace fsrpc",
-                            );
-                            defer allocator.free(response);
-                            try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                            try writeFrameLocked(stream, &connection_write_mutex, "", .close);
-                            return;
-                        }
-
-                        if (namespace_session == null) {
-                            namespace_session = initNamespaceSessionForBinding(
-                                allocator,
-                                runtime_registry,
-                                active_binding,
-                                active_session_key,
-                                trustedNamespaceMountUrl(runtime_registry.workspace_url, connection_workspace_url),
-                                principal.role == .access,
-                            ) catch |err| {
-                                const response = try unified.buildFsrpcError(
-                                    allocator,
-                                    parsed.tag,
-                                    "execution_failed",
-                                    @errorName(err),
-                                );
-                                defer allocator.free(response);
-                                try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                                continue;
-                            };
-                        }
-
-                        const response = try namespace_session.?.handle(&parsed);
+                        const response = try unified.buildFsrpcError(
+                            allocator,
+                            parsed.tag,
+                            "unsupported_transport",
+                            "public acheron transport is removed; use control.mount_* for workspace filesystem access and spiderweb-fs for node exports",
+                        );
                         defer allocator.free(response);
                         try writeFrameLocked(stream, &connection_write_mutex, response, .text);
-                        continue;
+                        try writeFrameLocked(stream, &connection_write_mutex, "", .close);
+                        return;
                     },
                 }
             },
@@ -5348,12 +5306,12 @@ fn fsrpcConnectAndAttach(allocator: std.mem.Allocator, client: *std.net.Stream, 
     try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"ok\":true") != null);
 }
 
-fn expectLegacyAcheronRejected(allocator: std.mem.Allocator, client: *std.net.Stream) !void {
+fn expectRemovedRuntimeTransportRejected(allocator: std.mem.Allocator, client: *std.net.Stream) !void {
     try writeClientTextFrameMasked(client, "{\"channel\":\"acheron\",\"type\":\"acheron.t_version\",\"tag\":1,\"msize\":1048576,\"version\":\"acheron-1\"}");
     var rejection = try readServerFrame(allocator, client);
     defer rejection.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, rejection.payload, "\"type\":\"acheron.r_error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rejection.payload, "\"code\":\"external_runtime_required\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rejection.payload, "\"type\":\"acheron.error\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rejection.payload, "\"code\":\"unsupported_transport\"") != null);
 
     var close_reply = try readServerFrame(allocator, client);
     defer close_reply.deinit(allocator);
@@ -5499,7 +5457,7 @@ test "server: base websocket path handles unified control and rejects legacy run
     try std.testing.expect(std.mem.indexOf(u8, legacy_reply.payload, "\"type\":\"control.error\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, legacy_reply.payload, "\"code\":\"unsupported_legacy_api\"") != null);
 
-    try expectLegacyAcheronRejected(allocator, &client);
+    try expectRemovedRuntimeTransportRejected(allocator, &client);
 
     try std.testing.expect(server_ctx.err_name == null);
 }
@@ -5696,12 +5654,12 @@ test "server: base websocket rejects legacy acheron runtime session" {
 
     try performClientHandshakeWithBearerToken(allocator, &client, "/", "access-secret");
     try fsrpcConnectAndAttach(allocator, &client, "fid-survive");
-    try expectLegacyAcheronRejected(allocator, &client);
+    try expectRemovedRuntimeTransportRejected(allocator, &client);
 
     try std.testing.expect(server_ctx.err_name == null);
 }
 
-test "server: base websocket supports namespace attach after session_attach" {
+test "server: base websocket rejects legacy acheron after session_attach" {
     const allocator = std.testing.allocator;
     var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
         .state_directory = "",
@@ -5775,20 +5733,7 @@ test "server: base websocket supports namespace attach after session_attach" {
     try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"runtime_ready\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"mount_ready\":true") != null);
 
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"acheron\",\"type\":\"acheron.t_version\",\"tag\":1,\"msize\":1048576,\"version\":\"acheron-1\"}");
-    var acheron_version = try readServerFrame(allocator, &client);
-    defer acheron_version.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, acheron_version.payload, "\"type\":\"acheron.r_version\"") != null);
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"acheron\",\"type\":\"acheron.t_attach\",\"tag\":2,\"fid\":1}");
-    var acheron_attach = try readServerFrame(allocator, &client);
-    defer acheron_attach.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, acheron_attach.payload, "\"type\":\"acheron.r_attach\"") != null);
-
-    try writeClientTextFrameMasked(&client, "{\"channel\":\"acheron\",\"type\":\"acheron.t_walk\",\"tag\":3,\"fid\":1,\"newfid\":2,\"path\":[\"services\"]}");
-    var acheron_walk = try readServerFrame(allocator, &client);
-    defer acheron_walk.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, acheron_walk.payload, "\"type\":\"acheron.r_walk\"") != null);
+    try expectRemovedRuntimeTransportRejected(allocator, &client);
 
     try websocket_transport.writeFrame(&client, "", .close);
     var close_reply = try readServerFrame(allocator, &client);
@@ -6501,7 +6446,7 @@ test "server: base path rejects legacy runtime connections cleanly across reconn
         try performClientHandshakeWithBearerToken(allocator, &client, "/", "access-secret");
 
         try fsrpcConnectAndAttach(allocator, &client, "a-connect");
-        try expectLegacyAcheronRejected(allocator, &client);
+        try expectRemovedRuntimeTransportRejected(allocator, &client);
     }
 
     {
@@ -6513,7 +6458,7 @@ test "server: base path rejects legacy runtime connections cleanly across reconn
         try performClientHandshakeWithBearerToken(allocator, &client, "/", "access-secret");
 
         try fsrpcConnectAndAttach(allocator, &client, "b-connect");
-        try expectLegacyAcheronRejected(allocator, &client);
+        try expectRemovedRuntimeTransportRejected(allocator, &client);
     }
 
     try std.testing.expectEqual(@as(usize, 0), runtime_registry.by_agent.count());
@@ -6924,10 +6869,10 @@ test "server: buildInternalNodeFsUrl produces routed fs path" {
     try std.testing.expectEqualStrings("ws://127.0.0.1:18790/fs/node/node-17", routed);
 }
 
-test "server: rewriteAcheronTag rewrites top-level tag" {
+test "server: rewriteLegacyRuntimeTransportTag rewrites top-level tag" {
     const allocator = std.testing.allocator;
     const raw = "{\"channel\":\"acheron\",\"type\":\"acheron.t_fs_lookup\",\"tag\":7,\"payload\":{\"name\":\"a\"}}";
-    const rewritten = try rewriteAcheronTag(allocator, raw, 99);
+    const rewritten = try rewriteLegacyRuntimeTransportTag(allocator, raw, 99);
     defer allocator.free(rewritten);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"tag\":99") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"type\":\"acheron.t_fs_lookup\"") != null);
@@ -7277,6 +7222,153 @@ test "server: mount file read can read projected workspace managed files after s
     try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"type\":\"control.mount_file_read\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"data_b64\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, mount_read_ack.payload, "\"n\":0") == null);
+
+    try websocket_transport.writeFrame(&client, "", .close);
+    var close_reply = try readServerFrame(allocator, &client);
+    defer close_reply.deinit(allocator);
+    try std.testing.expectEqual(@as(u8, 0x8), close_reply.opcode);
+
+    try std.testing.expect(server_ctx.err_name == null);
+}
+
+test "server: mount attach exposes canonical packages path after session attach" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("spiderweb-runtime");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const spiderweb_runtime_root = try std.fs.path.join(allocator, &.{ root, "spiderweb-runtime" });
+    defer allocator.free(spiderweb_runtime_root);
+
+    var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
+        .state_directory = "",
+        .state_db_filename = "",
+        .spider_web_root = spiderweb_runtime_root,
+    }, null);
+    defer runtime_registry.deinit();
+    try setAuthTokensForTests(&runtime_registry, "access-secret");
+
+    const join_payload = try runtime_registry.control_plane.ensureNode("workspace-node", "ws://127.0.0.1:18891/fs", 60_000);
+    defer allocator.free(join_payload);
+    const node_registration = try parseNodeRegistrationFromJoinPayload(allocator, join_payload);
+    defer {
+        allocator.free(node_registration.node_id);
+        allocator.free(node_registration.node_secret);
+    }
+
+    const project_up = try runtime_registry.control_plane.workspaceUpWithRole(
+        "mount-agent",
+        try std.fmt.allocPrint(
+            allocator,
+            "{{\"name\":\"ProjectedPackagesPath\",\"vision\":\"Projected canonical package controls must be visible over control.mount_attach\",\"activate\":false,\"desired_mounts\":[{{\"mount_path\":\"/nodes/local/fs\",\"node_id\":\"{s}\",\"export_name\":\"workspace\"}}]}}",
+            .{node_registration.node_id},
+        ),
+        true,
+    );
+    defer allocator.free(project_up);
+    const project_id = try extractInternalProjectIdForTests(allocator, project_up);
+    defer allocator.free(project_id);
+
+    var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
+    defer listener.deinit();
+
+    var server_ctx = WsTestServerCtx{
+        .allocator = allocator,
+        .runtime_registry = &runtime_registry,
+        .listener = &listener,
+    };
+    defer server_ctx.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, runSingleWsConnection, .{&server_ctx});
+    defer server_thread.join();
+
+    var client = try std.net.tcpConnectToAddress(listener.listen_address);
+    defer client.close();
+    try performClientHandshakeWithBearerToken(allocator, &client, "/", "access-secret");
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"pkg-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
+    var version_ack = try readServerFrame(allocator, &client);
+    defer version_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.connect\",\"id\":\"pkg-connect\"}");
+    var connect_ack = try readServerFrame(allocator, &client);
+    defer connect_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
+
+    const attach_payload = try std.fmt.allocPrint(
+        allocator,
+        "{{\"channel\":\"control\",\"type\":\"control.session_attach\",\"id\":\"pkg-attach-session\",\"payload\":{{\"session_key\":\"fskit\",\"agent_id\":\"mount-agent\",\"workspace_id\":\"{s}\"}}}}",
+        .{project_id},
+    );
+    defer allocator.free(attach_payload);
+    try writeClientTextFrameMasked(&client, attach_payload);
+    var attach_ack = try readServerFrame(allocator, &client);
+    defer attach_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, attach_ack.payload, "\"type\":\"control.session_attach\"") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_attach\",\"id\":\"pkg-mount-attach\",\"payload\":{\"path\":\"/.spiderweb/control\",\"depth\":2}}");
+    var mount_attach_ack = try readServerFrame(allocator, &client);
+    defer mount_attach_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"type\":\"control.mount_attach\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"/.spiderweb/control/packages\"") != null);
+
+    try websocket_transport.writeFrame(&client, "", .close);
+    var close_reply = try readServerFrame(allocator, &client);
+    defer close_reply.deinit(allocator);
+    try std.testing.expectEqual(@as(u8, 0x8), close_reply.opcode);
+
+    try std.testing.expect(server_ctx.err_name == null);
+}
+
+test "server: mount attach exposes canonical packages path on main session after connect" {
+    const allocator = std.testing.allocator;
+    var runtime_registry = AgentRuntimeRegistry.init(allocator, .{
+        .state_directory = "",
+        .state_db_filename = "",
+    }, null);
+    defer runtime_registry.deinit();
+    try setAuthTokensForTests(&runtime_registry, "access-secret");
+    try seedRememberedTargetForTests(&runtime_registry, runtime_registry.default_agent_id);
+
+    var listener = try (try std.net.Address.parseIp("127.0.0.1", 0)).listen(.{ .reuse_address = true });
+    defer listener.deinit();
+
+    var server_ctx = WsTestServerCtx{
+        .allocator = allocator,
+        .runtime_registry = &runtime_registry,
+        .listener = &listener,
+    };
+    defer server_ctx.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, runSingleWsConnection, .{&server_ctx});
+    defer server_thread.join();
+
+    var client = try std.net.tcpConnectToAddress(listener.listen_address);
+    defer client.close();
+    try performClientHandshakeWithBearerToken(allocator, &client, "/", "access-secret");
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.version\",\"id\":\"pkg-main-version\",\"payload\":{\"protocol\":\"spiderweb-control\"}}");
+    var version_ack = try readServerFrame(allocator, &client);
+    defer version_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, version_ack.payload, "\"type\":\"control.version_ack\"") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.connect\",\"id\":\"pkg-main-connect\"}");
+    var connect_ack = try readServerFrame(allocator, &client);
+    defer connect_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"type\":\"control.connect_ack\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"session\":\"main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, connect_ack.payload, "\"workspace_id\":\"ws-") != null);
+
+    try writeClientTextFrameMasked(&client, "{\"channel\":\"control\",\"type\":\"control.mount_attach\",\"id\":\"pkg-main-mount-attach\",\"payload\":{\"path\":\"/.spiderweb/control\",\"depth\":2}}");
+    var mount_attach_ack = try readServerFrame(allocator, &client);
+    defer mount_attach_ack.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"type\":\"control.mount_attach\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"mount_session_id\":\"mount-v2:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_attach_ack.payload, "\"/.spiderweb/control/packages\"") != null);
 
     try websocket_transport.writeFrame(&client, "", .close);
     var close_reply = try readServerFrame(allocator, &client);

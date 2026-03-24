@@ -26,19 +26,19 @@ pub fn seedNamespaceAt(self: anytype, workspaces_dir: u32, base_path: []const u8
         "Workspace Management",
         shape_json,
         "{\"invoke\":true,\"operations\":[\"workspaces_list\",\"workspaces_get\",\"workspaces_up\"],\"discoverable\":true}",
-        "List, inspect, and create/update workspaces through Acheron control files.",
+        "List, inspect, and create/update workspaces through Spiderweb control files.",
     );
     _ = try self.addFile(
         workspaces_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"up\":\"control/up.json\"},\"operations\":{\"list\":\"workspaces_list\",\"get\":\"workspaces_get\",\"up\":\"workspaces_up\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"up\":\"control/up.json\"},\"operations\":{\"list\":\"workspaces_list\",\"get\":\"workspaces_get\",\"up\":\"workspaces_up\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         workspaces_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"control_plane_workspaces\"}",
+        "{\"type\":\"namespace_local\",\"component\":\"namespace_session\",\"subject\":\"control_plane_workspaces\"}",
         false,
         .none,
     );

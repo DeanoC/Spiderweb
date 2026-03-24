@@ -42,21 +42,21 @@ pub fn seedNamespaceAt(self: anytype, git_dir: u32, base_path: []const u8) !void
     _ = try self.addFile(
         git_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"sync_checkout\":\"control/sync_checkout.json\",\"status\":\"control/status.json\",\"diff_range\":\"control/diff_range.json\"},\"operations\":{\"sync_checkout\":\"git_sync_checkout\",\"status\":\"git_status\",\"diff_range\":\"git_diff_range\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"sync_checkout\":\"control/sync_checkout.json\",\"status\":\"control/status.json\",\"diff_range\":\"control/diff_range.json\"},\"operations\":{\"sync_checkout\":\"git_sync_checkout\",\"status\":\"git_status\",\"diff_range\":\"git_diff_range\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         git_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"git_repo_service\",\"tool_backend\":\"shell_exec\"}",
+        "{\"type\":\"namespace_local\",\"component\":\"namespace_session\",\"subject\":\"git_repo_service\",\"tool_backend\":\"shell_exec\"}",
         false,
         .none,
     );
     _ = try self.addFile(
         git_dir,
         "HOST.json",
-        "{\"runtime_kind\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"git_repo_service\",\"tool_backend\":\"shell_exec\"}",
+        "{\"runtime_kind\":\"namespace_local\",\"component\":\"namespace_session\",\"subject\":\"git_repo_service\",\"tool_backend\":\"shell_exec\"}",
         false,
         .none,
     );

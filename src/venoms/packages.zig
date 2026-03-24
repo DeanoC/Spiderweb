@@ -7,6 +7,8 @@ pub const Op = enum {
     list,
     get,
     install,
+    enable,
+    disable,
     remove,
 };
 
@@ -27,20 +29,20 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
         packages_dir,
         "Packages",
         shape_json,
-        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_get\",\"packages_install\",\"packages_remove\"],\"discoverable\":true}",
-        "List, inspect, install, and remove package definitions available to this Spiderweb host.",
+        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_get\",\"packages_install\",\"packages_enable\",\"packages_disable\",\"packages_remove\"],\"discoverable\":true}",
+        "List, inspect, install, enable, disable, and remove package definitions available to this Spiderweb host.",
     );
     _ = try self.addFile(
         packages_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"acheron-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"get\":\"packages_get\",\"install\":\"packages_install\",\"remove\":\"packages_remove\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"enable\":\"control/enable.json\",\"disable\":\"control/disable.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"get\":\"packages_get\",\"install\":\"packages_install\",\"enable\":\"packages_enable\",\"disable\":\"packages_disable\",\"remove\":\"packages_remove\"}}",
         false,
         .none,
     );
     _ = try self.addFile(
         packages_dir,
         "RUNTIME.json",
-        "{\"type\":\"acheron_local\",\"component\":\"acheron_session\",\"subject\":\"package_registry\"}",
+        "{\"type\":\"namespace_local\",\"component\":\"namespace_session\",\"subject\":\"package_registry\"}",
         false,
         .none,
     );
@@ -79,7 +81,7 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Use list/get/install/remove operation files, or invoke.json with op=list|get|install|remove plus arguments.\n",
+        "Use list/get/install/enable/disable/remove operation files, or invoke.json with op=list|get|install|enable|disable|remove plus arguments.\n",
         false,
         .none,
     );
@@ -87,6 +89,8 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(control_dir, "list.json", "", true, .packages_list);
     _ = try self.addFile(control_dir, "get.json", "", true, .packages_get);
     _ = try self.addFile(control_dir, "install.json", "", true, .packages_install);
+    _ = try self.addFile(control_dir, "enable.json", "", true, .packages_enable);
+    _ = try self.addFile(control_dir, "disable.json", "", true, .packages_disable);
     _ = try self.addFile(control_dir, "remove.json", "", true, .packages_remove);
 }
 
@@ -104,6 +108,8 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
         .packages_list => Op.list,
         .packages_get => Op.get,
         .packages_install => Op.install,
+        .packages_enable => Op.enable,
+        .packages_disable => Op.disable,
         .packages_remove => Op.remove,
         .packages_invoke => blk: {
             const op_raw = blk2: {
@@ -138,6 +144,8 @@ fn parseOp(raw: []const u8) ?Op {
     if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "packages_list")) return .list;
     if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "packages_get")) return .get;
     if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "packages_install")) return .install;
+    if (std.mem.eql(u8, value, "enable") or std.mem.eql(u8, value, "packages_enable")) return .enable;
+    if (std.mem.eql(u8, value, "disable") or std.mem.eql(u8, value, "packages_disable")) return .disable;
     if (std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "packages_remove")) return .remove;
     return null;
 }
@@ -209,6 +217,38 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
             defer self.allocator.free(package_json);
             break :blk buildSinglePackageResultJson(self, .install, package_json);
         },
+        .enable => blk: {
+            const control = plane orelse return error.InvalidPayload;
+            const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
+            const request = try std.fmt.allocPrint(self.allocator, "{{\"venom_id\":\"{s}\"}}", .{venom_id});
+            defer self.allocator.free(request);
+            const package_json = control.enableVenomPackage(request) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.VenomPackageBuiltinProtected => return error.AccessDenied,
+                control_plane_mod.ControlPlaneError.VenomPackageNotFound,
+                control_plane_mod.ControlPlaneError.InvalidPayload,
+                control_plane_mod.ControlPlaneError.MissingField,
+                => return error.InvalidPayload,
+                else => return err,
+            };
+            defer self.allocator.free(package_json);
+            break :blk buildSinglePackageResultJson(self, .enable, package_json);
+        },
+        .disable => blk: {
+            const control = plane orelse return error.InvalidPayload;
+            const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
+            const request = try std.fmt.allocPrint(self.allocator, "{{\"venom_id\":\"{s}\"}}", .{venom_id});
+            defer self.allocator.free(request);
+            const package_json = control.disableVenomPackage(request) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.VenomPackageBuiltinProtected => return error.AccessDenied,
+                control_plane_mod.ControlPlaneError.VenomPackageNotFound,
+                control_plane_mod.ControlPlaneError.InvalidPayload,
+                control_plane_mod.ControlPlaneError.MissingField,
+                => return error.InvalidPayload,
+                else => return err,
+            };
+            defer self.allocator.free(package_json);
+            break :blk buildSinglePackageResultJson(self, .disable, package_json);
+        },
         .remove => blk: {
             const control = plane orelse return error.InvalidPayload;
             const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
@@ -270,6 +310,8 @@ fn operationName(op: Op) []const u8 {
         .list => "list",
         .get => "get",
         .install => "install",
+        .enable => "enable",
+        .disable => "disable",
         .remove => "remove",
     };
 }
@@ -279,6 +321,8 @@ fn statusToolName(op: Op) []const u8 {
         .list => "packages_list",
         .get => "packages_get",
         .install => "packages_install",
+        .enable => "packages_enable",
+        .disable => "packages_disable",
         .remove => "packages_remove",
     };
 }

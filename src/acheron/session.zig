@@ -54,6 +54,8 @@ const SpecialKind = enum {
     packages_list,
     packages_get,
     packages_install,
+    packages_enable,
+    packages_disable,
     packages_remove,
     workspaces_invoke,
     workspaces_list,
@@ -90,6 +92,7 @@ const max_signal_events: usize = events_venom.max_signal_events;
 const local_fs_world_prefix = "/nodes/local/fs";
 const workspace_managed_root_name = session_workspace_contract.workspace_managed_root_name;
 const workspace_managed_root_absolute = local_fs_world_prefix ++ "/" ++ workspace_managed_root_name;
+const workspace_managed_root_projected_absolute = "/" ++ workspace_managed_root_name;
 const workspace_managed_shared_data_dir_name = session_workspace_contract.workspace_managed_shared_data_dir_name;
 const workspace_managed_control_dir_name = session_workspace_contract.workspace_managed_control_dir_name;
 const workspace_managed_catalog_dir_name = session_workspace_contract.workspace_managed_catalog_dir_name;
@@ -498,6 +501,7 @@ pub const Session = struct {
     workspace_mount_fs_auth_tokens: std.StringHashMapUnmanaged([]u8) = .{},
     workspace_mount_fs_urls: std.StringHashMapUnmanaged([]u8) = .{},
     workspace_mount_proxy_roots: std.StringHashMapUnmanaged(WorkspaceMountProxyRoot) = .{},
+    last_workspace_projection_status_json: ?[]u8 = null,
     namespace_mount_dir: ?[]u8 = null,
     namespace_mount_point: ?[]u8 = null,
     namespace_mount_child: ?std.process.Child = null,
@@ -622,6 +626,7 @@ pub const Session = struct {
         self.clearWorkspaceMountFsAuthTokens();
         self.clearWorkspaceMountFsUrls();
         self.clearWorkspaceMountProxyRoots();
+        if (self.last_workspace_projection_status_json) |value| self.allocator.free(value);
         var it = self.nodes.iterator();
         while (it.next()) |entry| {
             var node = entry.value_ptr.*;
@@ -1211,7 +1216,7 @@ pub const Session = struct {
             .mounts_invoke, .mounts_list, .mounts_mount, .mounts_mkdir, .mounts_unmount, .mounts_bind, .mounts_unbind, .mounts_resolve => self.handleMountsNamespaceWrite(special, node_id, data),
             .home_invoke, .home_ensure => self.handleHomeNamespaceWrite(special, node_id, data),
             .runtimes_invoke, .runtimes_register, .runtimes_heartbeat, .runtimes_detach => self.handleRuntimesNamespaceWrite(special, node_id, data),
-            .packages_invoke, .packages_list, .packages_get, .packages_install, .packages_remove => self.handlePackagesNamespaceWrite(special, node_id, data),
+            .packages_invoke, .packages_list, .packages_get, .packages_install, .packages_enable, .packages_disable, .packages_remove => self.handlePackagesNamespaceWrite(special, node_id, data),
             .workspaces_invoke, .workspaces_list, .workspaces_get, .workspaces_up => self.handleWorkspacesNamespaceWrite(special, node_id, data),
             .git_invoke, .git_sync_checkout, .git_status, .git_diff_range => self.handleGitNamespaceWrite(special, node_id, data),
             .terminal_invoke => self.handleTerminalInvokeWrite(node_id, data),
@@ -2020,9 +2025,17 @@ pub const Session = struct {
 
     pub fn refreshWorkspaceProjectionFromStatus(self: *Session, workspace_status_json: []const u8) !void {
         try self.refreshWorkspaceBindsFromControlPlane();
+        if (self.last_workspace_projection_status_json) |cached| {
+            if (std.mem.eql(u8, cached, workspace_status_json)) {
+                try self.materializeProjectBindPrefixDirectories();
+                try self.refreshWorkspaceServiceDiscoveryFiles();
+                return;
+            }
+        }
         try self.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
         try self.materializeProjectBindPrefixDirectories();
         try self.refreshWorkspaceServiceDiscoveryFiles();
+        try self.replaceOptionalOwnedString(&self.last_workspace_projection_status_json, workspace_status_json);
     }
 
     fn appendProjectBind(self: *Session, kind: PathBindKind, bind_path: []const u8, target_path: []const u8) !void {
@@ -2078,6 +2091,23 @@ pub const Session = struct {
         };
 
         for (managed_bind_specs) |spec| {
+            try self.appendProjectBindIfMissing(.managed_entrypoint, spec.bind_path, spec.target_path);
+        }
+
+        const projected_managed_bind_specs = [_]struct { bind_path: []const u8, target_path: []const u8 }{
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/protocol.json", .target_path = workspace_compat_meta_absolute ++ "/protocol.json" },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/shared_data", .target_path = "/shared_data" },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/control/packages", .target_path = workspace_compat_global_absolute ++ "/packages" },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/agent_bootstrap_quickref.json", .target_path = quickref_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/agent_bootstrap.json", .target_path = bootstrap_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/workspace_status.json", .target_path = workspace_status_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/packages.json", .target_path = packages_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/providers.json", .target_path = providers_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/bindings.json", .target_path = bindings_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/node-venom-events.ndjson", .target_path = node_venom_events_target },
+        };
+
+        for (projected_managed_bind_specs) |spec| {
             try self.appendProjectBindIfMissing(.managed_entrypoint, spec.bind_path, spec.target_path);
         }
 
@@ -3123,7 +3153,7 @@ pub const Session = struct {
             "Library",
             shape_json,
             "{\"invoke\":false,\"operations\":[],\"discoverable\":true,\"read_only\":true}",
-            "Stable, system-wide documentation for common Spiderweb/Acheron operations.",
+            "Stable, system-wide documentation for common Spiderweb namespace operations.",
         );
         _ = try self.addFile(
             library_dir,
@@ -4298,6 +4328,8 @@ pub const Session = struct {
     }
 
     fn refreshBoundVenomProxyDirectory(self: *Session, dir_id: u32) !void {
+        if ((try self.localFsNodeHostPath(dir_id)) != null) return;
+
         const absolute_path = try self.nodeAbsolutePath(dir_id);
         defer self.allocator.free(absolute_path);
 
@@ -4306,15 +4338,6 @@ pub const Session = struct {
 
         var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return;
         defer router.deinit();
-        std.log.warn(
-            "mounted export refresh start: path={s} remote={s} node={s} export={s}",
-            .{
-                absolute_path,
-                proxy.remote_path,
-                proxy.provider_node_id orelse "(none)",
-                proxy.provider_export_name orelse "(none)",
-            },
-        );
 
         var seen_names = std.ArrayListUnmanaged([]u8){};
         defer {
@@ -4331,10 +4354,6 @@ pub const Session = struct {
                 return;
             };
             defer self.allocator.free(listing_json);
-            std.log.warn(
-                "mounted export refresh page: path={s} remote={s} cookie={d} bytes={d}",
-                .{ absolute_path, proxy.remote_path, cookie, listing_json.len },
-            );
             const next_cookie = try self.applyBoundVenomProxyListing(dir_id, listing_json, &seen_names);
             if (next_cookie == 0 or next_cookie <= cookie) break;
             cookie = next_cookie;
@@ -5833,6 +5852,7 @@ pub const Session = struct {
                 &export_root_writable,
                 &next_overlay_id,
                 max_depth,
+                false,
             );
         } else {
             var requested_target = try self.resolveMountGraphRequestedTarget(normalized_requested_path);
@@ -5865,6 +5885,7 @@ pub const Session = struct {
                         &export_root_writable,
                         &next_overlay_id,
                         max_depth,
+                        true,
                     );
             }
         }
@@ -5877,6 +5898,13 @@ pub const Session = struct {
                 &next_overlay_id,
             );
         }
+
+        const snapshot_root_node_id = if (std.mem.eql(u8, normalized_requested_path, "/"))
+            self.root_id
+        else blk: {
+            const root_index = path_to_index.get(normalized_requested_path) orelse return error.MissingNode;
+            break :blk nodes.items[root_index].id;
+        };
 
         std.mem.sort(MountGraphSourceRecord, sources.items, {}, struct {
             fn lessThan(_: void, lhs: MountGraphSourceRecord, rhs: MountGraphSourceRecord) bool {
@@ -5906,7 +5934,7 @@ pub const Session = struct {
         const payload_without_generation = try std.fmt.allocPrint(
             self.allocator,
             "{{\"mount_session_id\":\"{s}\",\"graph_generation\":0,\"root_node_id\":{d},\"nodes\":{s},\"sources\":{s}}}",
-            .{ escaped_mount_session_id, self.root_id, nodes_json, sources_json },
+            .{ escaped_mount_session_id, snapshot_root_node_id, nodes_json, sources_json },
         );
         defer self.allocator.free(payload_without_generation);
         const graph_generation = std.hash.Wyhash.hash(0, payload_without_generation);
@@ -5914,7 +5942,7 @@ pub const Session = struct {
         return std.fmt.allocPrint(
             self.allocator,
             "{{\"mount_session_id\":\"{s}\",\"graph_generation\":{d},\"root_node_id\":{d},\"nodes\":{s},\"sources\":{s}}}",
-            .{ escaped_mount_session_id, graph_generation, self.root_id, nodes_json, sources_json },
+            .{ escaped_mount_session_id, graph_generation, snapshot_root_node_id, nodes_json, sources_json },
         );
     }
 
@@ -6414,6 +6442,7 @@ pub const Session = struct {
         export_root_writable: *const std.StringHashMapUnmanaged(bool),
         next_overlay_id: *u64,
         remaining_depth: u32,
+        allow_export_root_children: bool,
     ) anyerror!void {
         try self.appendMountGraphNode(
             nodes,
@@ -6424,7 +6453,12 @@ pub const Session = struct {
         );
 
         const node = self.nodes.get(node_id) orelse return error.MissingNode;
-        if (remaining_depth == 0 or export_root_writable.contains(absolute_path) or node.kind != .dir) return;
+        if (remaining_depth == 0 or
+            (!allow_export_root_children and export_root_writable.contains(absolute_path)) or
+            node.kind != .dir)
+        {
+            return;
+        }
         const current_index = path_to_index.get(absolute_path) orelse return error.MissingNode;
         const current_parent_id = nodes.items[current_index].id;
 
@@ -6513,6 +6547,7 @@ pub const Session = struct {
                         export_root_writable,
                         next_overlay_id,
                         remaining_depth - 1,
+                        false,
                     );
                 } else {
                     try self.appendProjectedMountGraphSubtree(
@@ -8858,12 +8893,70 @@ test "acheron_session: control substrate surfaces expose runtime and package ope
     try std.testing.expect(packages_ops != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_list\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_install\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_enable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"packages_disable\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_ops.?, "\"venom_packages_list\"") == null);
 
     const packages_status = try session.tryReadInternalPath("/nodes/local/fs/.spiderweb/control/packages/STATUS.json");
     defer if (packages_status) |value| allocator.free(value);
     try std.testing.expect(packages_status != null);
     try std.testing.expect(std.mem.indexOf(u8, packages_status.?, "\"surface_id\":\"packages\"") != null);
+}
+
+test "acheron_session: projected mount graph exposes canonical packages control path" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const workspace_json = try control_plane.createWorkspace(
+        "{\"name\":\"ProjectedPackages\",\"vision\":\"Projected mount graph should expose canonical package controls\"}",
+    );
+    defer allocator.free(workspace_json);
+
+    var parsed_workspace = try std.json.parseFromSlice(std.json.Value, allocator, workspace_json, .{});
+    defer parsed_workspace.deinit();
+    const workspace_id = parsed_workspace.value.object.get("workspace_id").?.string;
+    const workspace_token = parsed_workspace.value.object.get("workspace_token").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = workspace_id,
+            .project_token = workspace_token,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{workspace_id});
+    defer allocator.free(workspace_req);
+    const status_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(status_json);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        status_json,
+        "mount-test",
+        "/.spiderweb/control",
+        2,
+    );
+    defer allocator.free(snapshot_json);
+
+    try std.testing.expect(std.mem.indexOf(u8, snapshot_json, "\"/.spiderweb/control/packages\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot_json, "\"/.spiderweb/control/runtimes\"") != null);
 }
 
 test "acheron_session: workspace mount aliases project live mounts into the namespace" {
@@ -9877,6 +9970,304 @@ test "acheron_session: projected workspace .spiderweb snapshot keeps protocol fi
     }
 
     try std.testing.expect(found_protocol);
+}
+
+test "acheron_session: mount graph snapshot root_node_id matches the requested non-root path" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/.spiderweb/AGENTS.md",
+        .data = "agents\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[]}",
+        "mount-test",
+        "/.spiderweb/AGENTS.md",
+        0,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+
+    const root_node_id = parsed_snapshot.value.object.get("root_node_id") orelse return error.MissingNode;
+    try std.testing.expect(root_node_id == .integer);
+
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var matched_requested_path = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        const id_value = node_value.object.get("id") orelse continue;
+        if (path_value != .string or id_value != .integer) continue;
+        if (!std.mem.eql(u8, path_value.string, "/.spiderweb/AGENTS.md")) continue;
+        matched_requested_path = true;
+        try std.testing.expectEqual(id_value.integer, root_node_id.integer);
+    }
+
+    try std.testing.expect(matched_requested_path);
+}
+
+test "acheron_session: mount graph snapshot lists children for a non-root local fs directory" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb-ltm");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/.spiderweb-ltm/state.json",
+        .data = "{}\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[]}",
+        "mount-test",
+        "/nodes/local/fs/.spiderweb-ltm",
+        1,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+
+    const root_node_id = parsed_snapshot.value.object.get("root_node_id") orelse return error.MissingNode;
+    try std.testing.expect(root_node_id == .integer);
+
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var saw_requested_dir = false;
+    var saw_child_file = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb-ltm")) {
+            saw_requested_dir = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("id").?.integer);
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb-ltm/state.json")) {
+            saw_child_file = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("parent_id").?.integer);
+        }
+    }
+
+    try std.testing.expect(saw_requested_dir);
+    try std.testing.expect(saw_child_file);
+}
+
+test "acheron_session: mount graph snapshot lists children for the local fs export root" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports/.spiderweb-ltm");
+    try tmp_dir.dir.writeFile(.{
+        .sub_path = "exports/.spiderweb-ltm/state.json",
+        .data = "{}\n",
+    });
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[]}",
+        "mount-test",
+        "/nodes/local/fs",
+        1,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+
+    const root_node_id = parsed_snapshot.value.object.get("root_node_id") orelse return error.MissingNode;
+    try std.testing.expect(root_node_id == .integer);
+
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    var saw_requested_dir = false;
+    var saw_child_dir = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs")) {
+            saw_requested_dir = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("id").?.integer);
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb-ltm")) {
+            saw_child_dir = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("parent_id").?.integer);
+        }
+    }
+
+    try std.testing.expect(saw_requested_dir);
+    try std.testing.expect(saw_child_dir);
+}
+
+test "acheron_session: mount graph snapshot lists children for a non-root node fs directory" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const remote_joined = try control_plane.ensureNode("edge-remote", "ws://127.0.0.1:28891/fs", 60_000);
+    defer allocator.free(remote_joined);
+    var remote_parsed = try std.json.parseFromSlice(std.json.Value, allocator, remote_joined, .{});
+    defer remote_parsed.deinit();
+    const remote_node_id = remote_parsed.value.object.get("node_id").?.string;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    const remote_export_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared", .{remote_node_id});
+    defer allocator.free(remote_export_path);
+    const remote_export_dir = session.resolveAbsolutePathNoBinds(remote_export_path) orelse return error.MissingNode;
+    const ltm_dir = try session.addDir(remote_export_dir, ".spiderweb-ltm", false);
+    _ = try session.addFile(ltm_dir, "state.json", "{}\n", false, .none);
+
+    const requested_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared/.spiderweb-ltm", .{remote_node_id});
+    defer allocator.free(requested_path);
+
+    const snapshot_json = try session.buildMountGraphSnapshotPayloadForPath(
+        "{\"mounts\":[]}",
+        "mount-test",
+        requested_path,
+        1,
+    );
+    defer allocator.free(snapshot_json);
+
+    var parsed_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{});
+    defer parsed_snapshot.deinit();
+
+    const root_node_id = parsed_snapshot.value.object.get("root_node_id") orelse return error.MissingNode;
+    try std.testing.expect(root_node_id == .integer);
+
+    const nodes_value = parsed_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(nodes_value == .array);
+
+    const child_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/shared/.spiderweb-ltm/state.json", .{remote_node_id});
+    defer allocator.free(child_path);
+
+    var saw_requested_dir = false;
+    var saw_child_file = false;
+    for (nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, requested_path)) {
+            saw_requested_dir = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("id").?.integer);
+        } else if (std.mem.eql(u8, path_value.string, child_path)) {
+            saw_child_file = true;
+            try std.testing.expectEqual(root_node_id.integer, node_value.object.get("parent_id").?.integer);
+        }
+    }
+
+    try std.testing.expect(saw_requested_dir);
+    try std.testing.expect(saw_child_file);
 }
 
 test "acheron_session: projected managed .spiderweb survives broader workspace mount rebound" {

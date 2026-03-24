@@ -4177,7 +4177,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             return ControlPlaneError.VenomPackageHostUnsupported;
         }
         const required_scope = if (std.mem.eql(u8, legacy_projection_mode, "node_export"))
-            "node"
+            "workspace"
         else if (std.mem.eql(u8, legacy_projection_mode, "workspace_service") or std.mem.eql(u8, legacy_projection_mode, "host_local"))
             "workspace"
         else if (std.mem.eql(u8, legacy_projection_mode, "runtime_private"))

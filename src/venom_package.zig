@@ -142,6 +142,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     var version_set = false;
     var categories_set = false;
     var hosts_set = false;
+    var binding_scopes_set = false;
     var requirements_set = false;
     var capabilities_set = false;
     var ops_set = false;
@@ -154,7 +155,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
         if (version_set) allocator.free(package.version);
         if (categories_set) allocator.free(package.categories_json);
         if (hosts_set) allocator.free(package.host_roles_json);
-        if (hosts_set) allocator.free(package.binding_scopes_json);
+        if (binding_scopes_set) allocator.free(package.binding_scopes_json);
         if (requirements_set) allocator.free(package.requirements_json);
         if (capabilities_set) allocator.free(package.capabilities_json);
         if (ops_set) allocator.free(package.ops_json);
@@ -175,6 +176,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     package.host_roles_json = try dupObjectFieldJsonOrDefault(allocator, obj, "host_roles", "[]");
     hosts_set = true;
     package.binding_scopes_json = try dupObjectFieldJsonOrDefault(allocator, obj, "binding_scopes", "[]");
+    binding_scopes_set = true;
     package.requirements_json = try dupObjectFieldJsonOrDefault(allocator, obj, "requirements", "{}");
     requirements_set = true;
     package.capabilities_json = try dupObjectFieldJsonOrDefault(allocator, obj, "capabilities", "{}");

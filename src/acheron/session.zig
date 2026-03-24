@@ -501,6 +501,7 @@ pub const Session = struct {
     workspace_mount_fs_auth_tokens: std.StringHashMapUnmanaged([]u8) = .{},
     workspace_mount_fs_urls: std.StringHashMapUnmanaged([]u8) = .{},
     workspace_mount_proxy_roots: std.StringHashMapUnmanaged(WorkspaceMountProxyRoot) = .{},
+    last_workspace_projection_status_json: ?[]u8 = null,
     namespace_mount_dir: ?[]u8 = null,
     namespace_mount_point: ?[]u8 = null,
     namespace_mount_child: ?std.process.Child = null,
@@ -625,6 +626,7 @@ pub const Session = struct {
         self.clearWorkspaceMountFsAuthTokens();
         self.clearWorkspaceMountFsUrls();
         self.clearWorkspaceMountProxyRoots();
+        if (self.last_workspace_projection_status_json) |value| self.allocator.free(value);
         var it = self.nodes.iterator();
         while (it.next()) |entry| {
             var node = entry.value_ptr.*;
@@ -2022,10 +2024,14 @@ pub const Session = struct {
     }
 
     pub fn refreshWorkspaceProjectionFromStatus(self: *Session, workspace_status_json: []const u8) !void {
+        if (self.last_workspace_projection_status_json) |cached| {
+            if (std.mem.eql(u8, cached, workspace_status_json)) return;
+        }
         try self.refreshWorkspaceBindsFromControlPlane();
         try self.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
         try self.materializeProjectBindPrefixDirectories();
         try self.refreshWorkspaceServiceDiscoveryFiles();
+        try self.replaceOptionalOwnedString(&self.last_workspace_projection_status_json, workspace_status_json);
     }
 
     fn appendProjectBind(self: *Session, kind: PathBindKind, bind_path: []const u8, target_path: []const u8) !void {

@@ -8617,7 +8617,7 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/search_code\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"target_path\":\"/nodes/local/venoms/git\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"provider_scope\":\"node_export\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"provider_scope\":") == null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/chat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/jobs\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/web_search\"") == null);
@@ -8902,7 +8902,7 @@ test "acheron_control_plane: builtin terminal package accepts local node export 
 
     const upsert_req = try std.fmt.allocPrint(
         allocator,
-        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"spiderweb\"}},\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"package_id\":\"terminal\",\"provider_scope\":\"node_export\",\"hosts\":[\"node\"],\"projection_modes\":[\"node_export\",\"workspace_service\"],\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/terminal\"],\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/venoms/terminal\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"discoverable\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"allow-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}]}}",
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"spiderweb\"}},\"venoms\":[{{\"venom_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"package_id\":\"terminal\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/terminal\"],\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/venoms/terminal\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"discoverable\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"allow-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}]}}",
         .{ node_id, node_secret, node_id, node_id },
     );
     defer allocator.free(upsert_req);

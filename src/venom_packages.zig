@@ -80,17 +80,10 @@ pub fn allBuiltinPackages() []const BuiltinPackageSpec {
 }
 
 pub fn findBuiltinPackage(venom_id: []const u8) ?BuiltinPackageSpec {
-    const normalized_id = normalizeBuiltinPackageId(venom_id);
     for (builtin_packages) |spec| {
-        if (std.mem.eql(u8, spec.venom_id, normalized_id)) return spec;
+        if (std.mem.eql(u8, spec.venom_id, venom_id)) return spec;
     }
     return null;
-}
-
-fn normalizeBuiltinPackageId(venom_id: []const u8) []const u8 {
-    if (std.mem.eql(u8, venom_id, "venom_packages")) return "packages";
-    if (std.mem.eql(u8, venom_id, "workers")) return "runtimes";
-    return venom_id;
 }
 
 pub fn resolveBuiltinTargetPath(venom_id: []const u8, host_role: venom_model.HostRole) ?[]const u8 {
@@ -250,9 +243,7 @@ test "venom_packages: builtins render through shared package parser" {
 
     try std.testing.expect(packages.items.len >= 5);
     try std.testing.expect(findBuiltinPackage("runtimes") != null);
-    try std.testing.expect(findBuiltinPackage("workers") != null);
     try std.testing.expect(findBuiltinPackage("packages") != null);
-    try std.testing.expect(findBuiltinPackage("venom_packages") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"venom_id\":\"memory\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"package_id\":\"terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"venom_id\":\"packages\"") != null);

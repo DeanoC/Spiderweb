@@ -1343,7 +1343,6 @@ pub const ControlPlane = struct {
 
         const runtime_host_capabilities = [_][]const u8{
             "external_runtime",
-            "external_worker",
             "filesystem_loopback",
         };
         for (requested_venoms) |venom_id| {
@@ -4264,11 +4263,6 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         for (parsed.value.array.items) |item| {
             if (item != .string) continue;
             if (std.mem.eql(u8, item.string, needle)) return true;
-            if ((std.mem.eql(u8, needle, "runtime_private") and std.mem.eql(u8, item.string, "worker_private")) or
-                (std.mem.eql(u8, needle, "worker_private") and std.mem.eql(u8, item.string, "runtime_private")))
-            {
-                return true;
-            }
         }
         return false;
     }
@@ -4288,13 +4282,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             if (actual_type_value != .string or actual_type_value.string.len == 0) break :blk "builtin";
             break :blk actual_type_value.string;
         };
-        if (std.mem.eql(u8, expected_type_value.string, actual_type)) return true;
-        if ((std.mem.eql(u8, expected_type_value.string, "external_runtime") and std.mem.eql(u8, actual_type, "external_worker")) or
-            (std.mem.eql(u8, expected_type_value.string, "external_worker") and std.mem.eql(u8, actual_type, "external_runtime")))
-        {
-            return true;
-        }
-        return false;
+        return std.mem.eql(u8, expected_type_value.string, actual_type);
     }
 
     fn containsString(haystack: []const []const u8, needle: []const u8) bool {

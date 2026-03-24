@@ -292,7 +292,7 @@ fn normalizedBindingScopesJson(allocator: std.mem.Allocator, maybe_binding_scope
                 if (std.mem.eql(u8, item.string, venom_model.BindingScope.client.asString())) has_client = true;
                 if (std.mem.eql(u8, item.string, venom_model.BindingScope.node.asString())) has_node = true;
                 if (std.mem.eql(u8, item.string, "workspace_service")) has_workspace = true;
-                if (std.mem.eql(u8, item.string, "worker_private") or std.mem.eql(u8, item.string, "runtime_private")) has_agent = true;
+                if (std.mem.eql(u8, item.string, "runtime_private")) has_agent = true;
                 if (std.mem.eql(u8, item.string, "host_local")) has_node = true;
                 if (std.mem.eql(u8, item.string, "node_export")) has_workspace = true;
             }

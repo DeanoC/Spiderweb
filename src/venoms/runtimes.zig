@@ -140,9 +140,9 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
 
 fn parseOp(raw: []const u8) ?Op {
     const value = std.mem.trim(u8, raw, " \t\r\n");
-    if (std.mem.eql(u8, value, "register") or std.mem.eql(u8, value, "attach") or std.mem.eql(u8, value, "workers_register") or std.mem.eql(u8, value, "runtime_attach")) return .register;
-    if (std.mem.eql(u8, value, "heartbeat") or std.mem.eql(u8, value, "workers_heartbeat") or std.mem.eql(u8, value, "runtime_heartbeat")) return .heartbeat;
-    if (std.mem.eql(u8, value, "detach") or std.mem.eql(u8, value, "workers_detach") or std.mem.eql(u8, value, "runtime_detach")) return .detach;
+    if (std.mem.eql(u8, value, "register") or std.mem.eql(u8, value, "attach") or std.mem.eql(u8, value, "runtime_attach")) return .register;
+    if (std.mem.eql(u8, value, "heartbeat") or std.mem.eql(u8, value, "runtime_heartbeat")) return .heartbeat;
+    if (std.mem.eql(u8, value, "detach") or std.mem.eql(u8, value, "runtime_detach")) return .detach;
     return null;
 }
 
@@ -175,7 +175,7 @@ fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, written: usize
 }
 
 fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
-    const runtime_id = extractOptionalStringByNames(args_obj, &[_][]const u8{ "runtime_id", "worker_id", "node_id" }) orelse return error.InvalidPayload;
+    const runtime_id = extractOptionalStringByNames(args_obj, &[_][]const u8{ "runtime_id", "node_id" }) orelse return error.InvalidPayload;
     if (!isValidIdentifier(runtime_id)) return error.InvalidPayload;
     const agent_id = extractOptionalStringByNames(args_obj, &[_][]const u8{"agent_id"}) orelse self.agent_id;
     if (!isValidIdentifier(agent_id)) return error.InvalidPayload;

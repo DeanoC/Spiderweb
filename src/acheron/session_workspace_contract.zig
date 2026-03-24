@@ -568,10 +568,10 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
         if (std.mem.startsWith(u8, tail, "mounts")) {
             return workspaceManagedControlPath(allocator, "workspace/mounts");
         }
-        if (std.mem.startsWith(u8, tail, "workers") or std.mem.startsWith(u8, tail, "runtimes")) {
+        if (std.mem.startsWith(u8, tail, "runtimes")) {
             return workspaceManagedControlPath(allocator, "runtimes");
         }
-        if (std.mem.startsWith(u8, tail, "venom_packages") or std.mem.startsWith(u8, tail, "packages")) {
+        if (std.mem.startsWith(u8, tail, "packages")) {
             return workspaceManagedControlPath(allocator, "packages");
         }
         return workspaceManagedVenomsPath(allocator, tail);
@@ -596,9 +596,6 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
     }
     if (std.mem.endsWith(u8, namespace_path, "/meta/mounted_services.json")) {
         return workspaceManagedCatalogPath(allocator, "bindings.json");
-    }
-    if (std.mem.endsWith(u8, namespace_path, "/meta/venom_packages.json")) {
-        return workspaceManagedCatalogPath(allocator, "packages.json");
     }
     if (std.mem.eql(u8, namespace_path, "/nodes/local/fs")) {
         return allocator.dupe(u8, ".");

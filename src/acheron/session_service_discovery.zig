@@ -96,6 +96,8 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
             defer if (endpoint_path) |value| session.allocator.free(value);
             const runtime_kind = try providerRuntimeKindForDir(session, venom_dir_id);
             const host_role = try providerHostRoleForDir(session, node_id, venom_dir_id);
+            const binding_eligibility_json = try providerBindingEligibilityJson(session, venom_dir_id);
+            defer session.allocator.free(binding_eligibility_json);
             const provider_id = try std.fmt.allocPrint(session.allocator, "{s}:{s}", .{ node_id, venom_id });
             defer session.allocator.free(provider_id);
 
@@ -119,7 +121,7 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
             if (!first) try out.append(session.allocator, ',');
             first = false;
             try out.writer(session.allocator).print(
-                "{{\"provider_id\":\"{s}\",\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"host_id\":\"{s}\",\"runtime_kind\":\"{s}\",\"install\":{{\"installed\":true,\"enabled\":{s}}},\"state\":\"{s}\",\"health\":\"{s}\",\"binding_eligibility\":[\"workspace\",\"agent\",\"client\",\"node\"],\"endpoint_path\":{s}}}",
+                "{{\"provider_id\":\"{s}\",\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"host_id\":\"{s}\",\"runtime_kind\":\"{s}\",\"install\":{{\"installed\":true,\"enabled\":{s}}},\"state\":\"{s}\",\"health\":\"{s}\",\"binding_eligibility\":{s},\"endpoint_path\":{s}}}",
                 .{
                     provider_id_escaped,
                     package_id_escaped,
@@ -130,6 +132,7 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
                     if (std.mem.eql(u8, state, "offline")) "false" else "true",
                     state_escaped,
                     state_escaped,
+                    binding_eligibility_json,
                     endpoint_json,
                 },
             );
@@ -352,6 +355,23 @@ fn providerHostRoleForDir(session: anytype, node_id: []const u8, venom_dir_id: u
         }
     }
     return venom_model.defaultHostRoleForNodeId(node_id);
+}
+
+fn providerBindingEligibilityJson(session: anytype, venom_dir_id: u32) ![]u8 {
+    if (session.lookupChild(venom_dir_id, "PACKAGE.json")) |package_id| {
+        const package_node = session.nodes.get(package_id) orelse return session.allocator.dupe(u8, "[\"workspace\",\"agent\",\"client\",\"node\"]");
+        if (package_node.kind == .file and package_node.content.len != 0) {
+            var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, package_node.content, .{}) catch return session.allocator.dupe(u8, "[\"workspace\",\"agent\",\"client\",\"node\"]");
+            defer parsed.deinit();
+            if (parsed.value == .object) {
+                return normalizedBindingScopesJson(
+                    session.allocator,
+                    parsed.value.object.get("binding_scopes") orelse parsed.value.object.get("projection_modes"),
+                );
+            }
+        }
+    }
+    return session.allocator.dupe(u8, "[\"workspace\",\"agent\",\"client\",\"node\"]");
 }
 
 fn providerStateForDir(session: anytype, venom_dir_id: u32) ![]u8 {

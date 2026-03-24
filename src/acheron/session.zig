@@ -2032,6 +2032,7 @@ pub const Session = struct {
         try self.refreshWorkspaceBindsFromControlPlane();
         try self.appendWorkspaceMountAliasesFromWorkspaceStatus(workspace_status_json);
         try self.materializeProjectBindPrefixDirectories();
+        try self.refreshWorkspaceServiceDiscoveryFiles();
     }
 
     fn appendProjectBind(self: *Session, kind: PathBindKind, bind_path: []const u8, target_path: []const u8) !void {
@@ -7489,8 +7490,22 @@ pub const Session = struct {
         endpoint_path: ?[]const u8,
         invoke_path: ?[]const u8,
     ) !void {
-        for (self.scoped_venom_bindings.items) |binding| {
-            if (std.mem.eql(u8, binding.venom_path, venom_path)) return;
+        for (self.scoped_venom_bindings.items) |*binding| {
+            if (!std.mem.eql(u8, binding.venom_path, venom_path)) continue;
+
+            if (!std.mem.eql(u8, binding.venom_id, venom_id)) {
+                self.allocator.free(binding.venom_id);
+                binding.venom_id = try self.allocator.dupe(u8, venom_id);
+            }
+            if (!std.mem.eql(u8, binding.scope, scope)) {
+                self.allocator.free(binding.scope);
+                binding.scope = try self.allocator.dupe(u8, scope);
+            }
+            try self.replaceOptionalOwnedString(&binding.provider_node_id, provider_node_id);
+            try self.replaceOptionalOwnedString(&binding.provider_venom_path, provider_venom_path);
+            try self.replaceOptionalOwnedString(&binding.endpoint_path, endpoint_path);
+            try self.replaceOptionalOwnedString(&binding.invoke_path, invoke_path);
+            return;
         }
         try self.registerScopedVenomBinding(
             venom_id,

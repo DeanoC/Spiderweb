@@ -29,7 +29,7 @@ pub fn seedGenericRuntimeLoopbackVenomNamespaceAt(
     session: anytype,
     venom_dir_id: u32,
     base_path: []const u8,
-    worker_id: []const u8,
+    runtime_id: []const u8,
     agent_id: []const u8,
     package: venom_package.VenomPackage,
 ) !void {
@@ -53,8 +53,8 @@ pub fn seedGenericRuntimeLoopbackVenomNamespaceAt(
 
     const status_json = try std.fmt.allocPrint(
         session.allocator,
-        "{{\"venom_id\":\"{s}\",\"state\":\"worker_loopback\",\"has_invoke\":true,\"owner\":\"worker\",\"worker_id\":\"{s}\",\"agent_id\":\"{s}\"}}",
-        .{ package.venom_id, worker_id, agent_id },
+        "{{\"venom_id\":\"{s}\",\"state\":\"runtime_loopback\",\"has_invoke\":true,\"owner\":\"runtime\",\"runtime_id\":\"{s}\",\"agent_id\":\"{s}\"}}",
+        .{ package.venom_id, runtime_id, agent_id },
     );
     defer session.allocator.free(status_json);
     try session.ensureRuntimeFile(venom_dir_id, "STATUS.json", status_json, false, .none);

@@ -2881,7 +2881,7 @@ pub const Session = struct {
                     try self.addDir(venoms_root_id, "memory", false);
                 const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/memory", .{runtime_id});
                 defer self.allocator.free(base_path);
-                try runtimes_venom.seedPassiveWorkerMemoryNamespaceAt(self, memory_dir_id, base_path, runtime_id, agent_id);
+                try runtimes_venom.seedPassiveRuntimeMemoryNamespaceAt(self, memory_dir_id, base_path, runtime_id, agent_id);
                 try self.seedBuiltinPackageMetadata(memory_dir_id, "memory");
             } else if (std.mem.eql(u8, venom_id, "sub_brains")) {
                 const sub_brains_dir_id = if (self.lookupChild(venoms_root_id, "sub_brains")) |existing|
@@ -2890,7 +2890,7 @@ pub const Session = struct {
                     try self.addDir(venoms_root_id, "sub_brains", false);
                 const base_path = try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/sub_brains", .{runtime_id});
                 defer self.allocator.free(base_path);
-                try runtimes_venom.seedPassiveWorkerSubBrainsNamespaceAt(self, sub_brains_dir_id, base_path, runtime_id, agent_id);
+                try runtimes_venom.seedPassiveRuntimeSubBrainsNamespaceAt(self, sub_brains_dir_id, base_path, runtime_id, agent_id);
                 try self.seedBuiltinPackageMetadata(sub_brains_dir_id, "sub_brains");
             } else {
                 var package = (try self.cloneRuntimeVenomPackage(venom_id)) orelse continue;
@@ -7684,7 +7684,7 @@ fn defaultLibraryTopicGettingStarted() []const u8 {
     return "# Getting Started\n\n" ++
         "1. Discover capability bindings in `/.spiderweb/catalog/bindings.json` and available providers in `/.spiderweb/catalog/providers.json`.\n" ++
         "2. Use `/.spiderweb/venoms/<venom_id>` as the canonical capability path.\n" ++
-        "3. Register external runtimes through `/.spiderweb/control/runtimes/control/register.json` before expecting worker-owned venoms like memory or sub_brains to appear.\n" ++
+        "3. Register external runtimes through `/.spiderweb/control/runtimes/control/register.json` before expecting runtime-private venoms like memory or sub_brains to appear.\n" ++
         "4. Read each Venom `README.md`, `SCHEMA.json`, `TEMPLATE.json`, `HOST.json`, and `CAPS.json` before using it.\n" ++
         "5. Use `/.spiderweb/venoms/library` for system guides.\n";
 }
@@ -7718,7 +7718,7 @@ fn defaultLibraryTopicTerminalWorkflows() []const u8 {
 
 fn defaultLibraryTopicMemoryWorkflows() []const u8 {
     return "# Memory Workflows\n\n" ++
-        "Use worker-owned memory venom paths after registering a worker node (for example `/nodes/<worker-node>/venoms/memory/control/*.json`). Spiderweb does not provide a canonical shared memory venom for Spider Monkey.\n" ++
+        "Use runtime-private memory venom paths after registering an external runtime (for example `/nodes/<runtime-id>/venoms/memory/control/*.json`). Spiderweb does not provide a canonical shared memory venom for Spider Monkey.\n" ++
         "Use `search` before creating duplicate memories.\n";
 }
 
@@ -7731,7 +7731,7 @@ fn defaultLibraryTopicWorkspaceMountsAndBinds() []const u8 {
 fn defaultLibraryTopicAgentManagementAndSubBrains() []const u8 {
     return "# Agent Management and Sub-Brains\n\n" ++
         "Spiderweb no longer provisions or manages internal agents.\n" ++
-        "Use `/.spiderweb/control/runtimes` for runtime attach/detach and worker-owned `/nodes/<worker-node>/venoms/sub_brains/*` for private sub-brain control.\n";
+        "Use `/.spiderweb/control/runtimes` for runtime attach/detach and runtime-private `/nodes/<runtime-id>/venoms/sub_brains/*` for private sub-brain control.\n";
 }
 
 fn pathMatchesPrefixBoundary(path: []const u8, prefix: []const u8) bool {

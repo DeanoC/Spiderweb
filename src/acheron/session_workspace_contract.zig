@@ -365,7 +365,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
         paths.workspace_status_path,
     };
     const required_venom_ids = [_][]const u8{ "terminal", "git", "search_code", "library", "events" };
-    const default_worker_venoms = [_][]const u8{ "memory", "sub_brains" };
+    const default_runtime_venoms = [_][]const u8{ "memory", "sub_brains" };
 
     var out = std.io.Writer.Allocating.init(session.allocator);
     errdefer out.deinit();
@@ -476,7 +476,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.objectField("invoke_path");
     try jw.write(paths.register_runtime_path);
     try jw.objectField("default_venoms");
-    try jw.write(default_worker_venoms);
+    try jw.write(default_runtime_venoms);
     try jw.objectField("required");
     try jw.write(false);
     try jw.endObject();
@@ -491,7 +491,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.write("persistent");
     try jw.objectField("agent_home");
     try jw.write("durable_per_agent");
-    try jw.objectField("worker_loopback");
+    try jw.objectField("runtime_loopback");
     try jw.write("ephemeral");
     try jw.endObject();
 
@@ -499,7 +499,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.beginObject();
     try jw.objectField("shared_changes");
     try jw.write("keep");
-    try jw.objectField("worker_state");
+    try jw.objectField("runtime_state");
     try jw.write("detach_or_ttl_cleanup");
     try jw.endObject();
 

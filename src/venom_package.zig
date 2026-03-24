@@ -305,7 +305,7 @@ fn deriveBindingScopesJsonFromLegacyProjectionModes(
     for (value.array.items) |item| {
         if (item != .string) return error.InvalidPackage;
         if (std.mem.eql(u8, item.string, "workspace_service") or std.mem.eql(u8, item.string, "host_local")) has_workspace = true;
-        if (std.mem.eql(u8, item.string, "worker_private")) has_agent = true;
+        if (std.mem.eql(u8, item.string, "worker_private") or std.mem.eql(u8, item.string, "runtime_private")) has_agent = true;
         if (std.mem.eql(u8, item.string, "client_private")) has_client = true;
         if (std.mem.eql(u8, item.string, "node_export")) has_node = true;
     }

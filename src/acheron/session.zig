@@ -3069,186 +3069,6 @@ pub const Session = struct {
         return events_venom.seedNamespaceAt(self, events_dir, base_path);
     }
 
-    fn seedLibraryNamespace(self: *Session, library_dir: u32) !void {
-        return self.seedLibraryNamespaceAt(library_dir, "/.spiderweb/_compat/global/library");
-    }
-
-    fn seedLibraryNamespaceAt(self: *Session, library_dir: u32, base_path: []const u8) !void {
-        const escaped_base_path = try unified.jsonEscape(self.allocator, base_path);
-        defer self.allocator.free(escaped_base_path);
-        const shape_json = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"kind\":\"venom\",\"venom_id\":\"library\",\"shape\":\"{s}/{{Index.md,README.md,SCHEMA.json,CAPS.json,OPS.json,PERMISSIONS.json,STATUS.json,topics/*,use-cases/*}}\"}}",
-            .{escaped_base_path},
-        );
-        defer self.allocator.free(shape_json);
-        try self.addDirectoryDescriptors(
-            library_dir,
-            "Library",
-            shape_json,
-            "{\"invoke\":false,\"operations\":[],\"discoverable\":true,\"read_only\":true}",
-            "Stable, system-wide documentation for common Spiderweb namespace operations.",
-        );
-        _ = try self.addFile(
-            library_dir,
-            "OPS.json",
-            "{\"model\":\"static_docs\",\"transport\":\"filesystem\",\"paths\":{\"index\":\"Index.md\",\"topics\":\"topics/*\",\"use_cases\":\"use-cases/*\"},\"operations\":{}}",
-            false,
-            .none,
-        );
-        _ = try self.addFile(
-            library_dir,
-            "PERMISSIONS.json",
-            "{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"global\"}",
-            false,
-            .none,
-        );
-        _ = try self.addFile(
-            library_dir,
-            "STATUS.json",
-            "{\"venom_id\":\"library\",\"state\":\"namespace\",\"has_invoke\":false}",
-            false,
-            .none,
-        );
-        const topics_dir = try self.addDir(library_dir, "topics", false);
-        const index_content = try self.loadGlobalLibraryIndexFromAssets();
-        defer self.allocator.free(index_content);
-        _ = try self.addFile(
-            library_dir,
-            "Index.md",
-            index_content,
-            false,
-            .none,
-        );
-
-        const loaded_topics = try self.seedGlobalLibraryTopicsFromAssets(topics_dir);
-        if (!loaded_topics) try self.seedDefaultGlobalLibraryTopics(topics_dir);
-
-        const use_cases_dir = try self.addDir(library_dir, "use-cases", false);
-        _ = try self.seedGlobalLibrarySubtreeFromAssets(use_cases_dir, "use-cases");
-    }
-
-    fn loadGlobalLibraryIndexFromAssets(self: *Session) ![]u8 {
-        const index_path = try std.fs.path.join(self.allocator, &.{ self.assets_dir, "library", "Index.md" });
-        defer self.allocator.free(index_path);
-        return std.fs.cwd().readFileAlloc(self.allocator, index_path, 512 * 1024) catch
-            self.allocator.dupe(u8, defaultLibraryIndexMd());
-    }
-
-    fn seedGlobalLibraryTopicsFromAssets(self: *Session, topics_dir: u32) !bool {
-        const topics_path = try std.fs.path.join(self.allocator, &.{ self.assets_dir, "library", "topics" });
-        defer self.allocator.free(topics_path);
-
-        var topics_fs = std.fs.cwd().openDir(topics_path, .{ .iterate = true }) catch return false;
-        defer topics_fs.close();
-
-        var iterator = topics_fs.iterate();
-        var loaded_any = false;
-        while (try iterator.next()) |entry| {
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
-            const content = topics_fs.readFileAlloc(self.allocator, entry.name, 512 * 1024) catch continue;
-            defer self.allocator.free(content);
-            _ = try self.addFile(topics_dir, entry.name, content, false, .none);
-            loaded_any = true;
-        }
-        return loaded_any;
-    }
-
-    fn seedGlobalLibrarySubtreeFromAssets(
-        self: *Session,
-        parent_dir: u32,
-        relative_subtree: []const u8,
-    ) !bool {
-        const host_path = try std.fs.path.join(self.allocator, &.{ self.assets_dir, "library", relative_subtree });
-        defer self.allocator.free(host_path);
-
-        var host_dir = std.fs.cwd().openDir(host_path, .{ .iterate = true }) catch return false;
-        defer host_dir.close();
-
-        var iterator = host_dir.iterate();
-        var loaded_any = false;
-        while (try iterator.next()) |entry| {
-            switch (entry.kind) {
-                .file => {
-                    const content = host_dir.readFileAlloc(self.allocator, entry.name, 512 * 1024) catch continue;
-                    defer self.allocator.free(content);
-                    _ = try self.addFile(parent_dir, entry.name, content, false, .none);
-                    loaded_any = true;
-                },
-                .directory => {
-                    const child_dir = try self.addDir(parent_dir, entry.name, false);
-                    const child_relative = try std.fs.path.join(self.allocator, &.{ relative_subtree, entry.name });
-                    defer self.allocator.free(child_relative);
-                    if (try self.seedGlobalLibrarySubtreeFromAssets(child_dir, child_relative)) {
-                        loaded_any = true;
-                    }
-                },
-                else => {},
-            }
-        }
-        return loaded_any;
-    }
-
-    fn seedDefaultGlobalLibraryTopics(self: *Session, topics_dir: u32) !void {
-        _ = try self.addFile(
-            topics_dir,
-            "getting-started.md",
-            defaultLibraryTopicGettingStarted(),
-            false,
-            .none,
-        );
-        _ = try self.addFile(
-            topics_dir,
-            "service-discovery.md",
-            defaultLibraryTopicServiceDiscovery(),
-            false,
-            .none,
-        );
-        _ = try self.addFile(
-            topics_dir,
-            "events-and-waits.md",
-            defaultLibraryTopicEventsAndWaits(),
-            false,
-            .none,
-        );
-        _ = try self.addFile(
-            topics_dir,
-            "search-services.md",
-            defaultLibraryTopicSearchServices(),
-            false,
-            .none,
-        );
-        _ = try self.addFile(
-            topics_dir,
-            "terminal-workflows.md",
-            defaultLibraryTopicTerminalWorkflows(),
-            false,
-            .none,
-        );
-        _ = try self.addFile(
-            topics_dir,
-            "memory-workflows.md",
-            defaultLibraryTopicMemoryWorkflows(),
-            false,
-            .none,
-        );
-        _ = try self.addFile(
-            topics_dir,
-            "workspace-mounts-and-binds.md",
-            defaultLibraryTopicWorkspaceMountsAndBinds(),
-            false,
-            .none,
-        );
-        _ = try self.addFile(
-            topics_dir,
-            "agent-management-and-sub-brains.md",
-            defaultLibraryTopicAgentManagementAndSubBrains(),
-            false,
-            .none,
-        );
-    }
-
     fn handleTerminalInvokeWrite(self: *Session, invoke_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
         return .{ .written = try terminal_venom.handleInvokeWrite(self, invoke_node_id, raw_input) };
     }
@@ -7665,71 +7485,6 @@ fn isWorldAbsolutePath(path: []const u8) bool {
         std.mem.startsWith(u8, path, "/.spiderweb/");
 }
 
-fn defaultLibraryIndexMd() []const u8 {
-    return "# Spiderweb Internal Library\n\n" ++
-        "This reference content remains available for internal/runtime guidance, but it is not part of the normal external-agent capability surface.\n\n" ++
-        "- [Getting Started](/.spiderweb/_compat/global/library/topics/getting-started.md)\n" ++
-        "- [Service Discovery](/.spiderweb/_compat/global/library/topics/service-discovery.md)\n" ++
-        "- [Search Services](/.spiderweb/_compat/global/library/topics/search-services.md)\n" ++
-        "- [Terminal Workflows](/.spiderweb/_compat/global/library/topics/terminal-workflows.md)\n" ++
-        "- [Memory Workflows](/.spiderweb/_compat/global/library/topics/memory-workflows.md)\n" ++
-        "- [Workspace Mounts and Binds](/.spiderweb/_compat/global/library/topics/workspace-mounts-and-binds.md)\n" ++
-        "- [Agent Management and Sub-Brains](/.spiderweb/_compat/global/library/topics/agent-management-and-sub-brains.md)\n";
-}
-
-fn defaultLibraryTopicGettingStarted() []const u8 {
-    return "# Getting Started\n\n" ++
-        "1. Discover capability bindings in `/.spiderweb/catalog/bindings.json` and available providers in `/.spiderweb/catalog/providers.json`.\n" ++
-        "2. Use `/.spiderweb/venoms/<venom_id>` as the canonical capability path.\n" ++
-        "3. Register external runtimes through `/.spiderweb/control/runtimes/control/register.json` before expecting runtime-private venoms like memory or sub_brains to appear.\n" ++
-        "4. Read each Venom `README.md`, `SCHEMA.json`, `TEMPLATE.json`, `HOST.json`, and `CAPS.json` before using it.\n";
-}
-
-fn defaultLibraryTopicServiceDiscovery() []const u8 {
-    return "# Venom Discovery\n\n" ++
-        "- Canonical venom bindings: `/.spiderweb/venoms/<venom_id>`\n" ++
-        "- Discovery metadata: `/.spiderweb/catalog/{packages.json,providers.json,bindings.json}`\n" ++
-        "- Workspace and runtime control: `/.spiderweb/control/...`\n" ++
-        "- Start with `/.spiderweb/catalog/bindings.json` and `/.spiderweb/catalog/providers.json`.\n" ++
-        "- Production capability venoms include: terminal, git, and search_code.\n";
-}
-
-fn defaultLibraryTopicEventsAndWaits() []const u8 {
-    return "# Events and Waits\n\n" ++
-        "Use single-source blocking reads first for deterministic waits.\n" ++
-        "Use workspace state files and retained node event feeds such as `/.spiderweb/catalog/node-venom-events.ndjson` when coordinating across providers.\n";
-}
-
-fn defaultLibraryTopicSearchServices() []const u8 {
-    return "# Search Services\n\n" ++
-        "Use `/.spiderweb/venoms/search_code` for repository-local search.\n" ++
-        "Drive it through `control/invoke.json`, then check `status.json` and `result.json`.\n";
-}
-
-fn defaultLibraryTopicTerminalWorkflows() []const u8 {
-    return "# Terminal Workflows\n\n" ++
-        "Use `/.spiderweb/venoms/terminal/control/*.json` for sessionized shell execution.\n" ++
-        "Prefer `create` + `write/read` for interactive loops and `exec` for single command tasks.\n";
-}
-
-fn defaultLibraryTopicMemoryWorkflows() []const u8 {
-    return "# Memory Workflows\n\n" ++
-        "Use runtime-private memory venom paths after registering an external runtime (for example `/nodes/<runtime-id>/venoms/memory/control/*.json`). Spiderweb does not provide a canonical shared memory venom for Spider Monkey.\n" ++
-        "Use `search` before creating duplicate memories.\n";
-}
-
-fn defaultLibraryTopicWorkspaceMountsAndBinds() []const u8 {
-    return "# Workspace Mounts and Binds\n\n" ++
-        "Use `/.spiderweb/control/workspace/mounts/control/mount.json`, `mkdir.json`, and `unmount.json` for workspace mounts.\n" ++
-        "Use `/.spiderweb/control/workspace/binds/control/bind.json` and `resolve.json` for stable workspace paths.\n";
-}
-
-fn defaultLibraryTopicAgentManagementAndSubBrains() []const u8 {
-    return "# Agent Management and Sub-Brains\n\n" ++
-        "Spiderweb no longer provisions or manages internal agents.\n" ++
-        "Use `/.spiderweb/control/runtimes` for runtime attach/detach and runtime-private `/nodes/<runtime-id>/venoms/sub_brains/*` for private sub-brain control.\n";
-}
-
 fn pathMatchesPrefixBoundary(path: []const u8, prefix: []const u8) bool {
     if (std.mem.eql(u8, path, prefix)) return true;
     if (prefix.len == 0) return false;
@@ -8813,6 +8568,14 @@ test "acheron_session: workspace catalog exposes canonical capability-only venom
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/events\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/.spiderweb/venoms/library\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, venoms_index_json.?, "\"venom_path\":\"/global/git\"") == null);
+
+    const internal_library_index = try session.tryReadInternalPath("/.spiderweb/_compat/global/library/Index.md");
+    defer if (internal_library_index) |value| allocator.free(value);
+    try std.testing.expect(internal_library_index == null);
+
+    const internal_library_topic = try session.tryReadInternalPath("/.spiderweb/_compat/global/library/topics/service-discovery.md");
+    defer if (internal_library_topic) |value| allocator.free(value);
+    try std.testing.expect(internal_library_topic == null);
 }
 
 test "acheron_session: control substrate surfaces expose runtime and package operations canonically" {

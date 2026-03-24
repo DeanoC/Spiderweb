@@ -2090,14 +2090,14 @@ pub const Session = struct {
         }
 
         inline for (venom_model.production_priority_capability_ids) |venom_id| {
+            const bind_path = try std.fmt.allocPrint(
+                self.allocator,
+                "{s}/venoms/{s}",
+                .{ workspace_managed_root_absolute, venom_id },
+            );
+            defer self.allocator.free(bind_path);
             if (try self.resolveManagedCapabilityVenomTargetPath(venom_id)) |target_path| {
                 defer self.allocator.free(target_path);
-                const bind_path = try std.fmt.allocPrint(
-                    self.allocator,
-                    "{s}/venoms/{s}",
-                    .{ workspace_managed_root_absolute, venom_id },
-                );
-                defer self.allocator.free(bind_path);
                 try self.appendProjectBindIfMissing(.managed_entrypoint, bind_path, target_path);
 
                 const preferred_provider_node_id = try self.resolvePreferredBoundVenomNodeId(venom_id);
@@ -2123,6 +2123,8 @@ pub const Session = struct {
                     provider_path,
                     invoke_path,
                 );
+            } else {
+                self.removeScopedVenomBindingByPath(bind_path);
             }
         }
 
@@ -7516,6 +7518,18 @@ pub const Session = struct {
             endpoint_path,
             invoke_path,
         );
+    }
+
+    fn removeScopedVenomBindingByPath(self: *Session, venom_path: []const u8) void {
+        var index: usize = 0;
+        while (index < self.scoped_venom_bindings.items.len) {
+            if (!std.mem.eql(u8, self.scoped_venom_bindings.items[index].venom_path, venom_path)) {
+                index += 1;
+                continue;
+            }
+            var removed = self.scoped_venom_bindings.swapRemove(index);
+            removed.deinit(self.allocator);
+        }
     }
 
     fn registerExistingGlobalVenomBinding(

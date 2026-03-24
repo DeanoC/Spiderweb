@@ -1602,16 +1602,6 @@ pub const Session = struct {
                 return err;
             };
         }
-        if (self.lookupChild(self.root_id, "services")) |services_root| {
-            try self.addDirectoryDescriptors(
-                services_root,
-                "Services",
-                "{\"kind\":\"collection\",\"entries\":\"workspace service binds\",\"shape\":\"/services/<venom_id>/{README.md,SCHEMA.json,CAPS.json,OPS.json,STATUS.json,status.json,result.json,control/*}\"}",
-                "{\"read\":true,\"write\":false}",
-                "Workspace-bound service paths projected from the active workspace binds.",
-            );
-        }
-
         self.registerExistingGlobalVenomBinding(compat_global_root, "events", "workspace_namespace") catch |err| {
             std.log.warn("seedNamespace registerExistingGlobalVenomBinding(events) failed: {s}", .{@errorName(err)});
             return err;
@@ -2145,12 +2135,6 @@ pub const Session = struct {
             return target_path;
         }
 
-        const service_path = try std.fmt.allocPrint(self.allocator, "/services/{s}", .{venom_id});
-        defer self.allocator.free(service_path);
-        if (try self.resolveBoundPathOnce(service_path)) |target_path| {
-            return target_path;
-        }
-
         const global_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/_compat/global/{s}", .{venom_id});
         defer self.allocator.free(global_path);
         if (self.resolveAbsolutePathNoBinds(global_path) != null) {
@@ -2394,7 +2378,7 @@ pub const Session = struct {
         const local_venoms_root = self.lookupLocalNodeVenomsRoot() orelse return;
 
         const library_dir = try self.addDir(local_venoms_root, "library", false);
-        self.seedGlobalLibraryNamespaceAt(library_dir, "/nodes/local/venoms/library") catch |err| {
+        self.seedLibraryNamespaceAt(library_dir, "/nodes/local/venoms/library") catch |err| {
             std.log.warn("seedLocalCatalogServiceNamespaces library namespace failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -3118,11 +3102,11 @@ pub const Session = struct {
         return events_venom.seedNamespaceAt(self, events_dir, base_path);
     }
 
-    fn seedGlobalLibraryNamespace(self: *Session, library_dir: u32) !void {
-        return self.seedGlobalLibraryNamespaceAt(library_dir, "/.spiderweb/_compat/global/library");
+    fn seedLibraryNamespace(self: *Session, library_dir: u32) !void {
+        return self.seedLibraryNamespaceAt(library_dir, "/.spiderweb/_compat/global/library");
     }
 
-    fn seedGlobalLibraryNamespaceAt(self: *Session, library_dir: u32, base_path: []const u8) !void {
+    fn seedLibraryNamespaceAt(self: *Session, library_dir: u32, base_path: []const u8) !void {
         const escaped_base_path = try unified.jsonEscape(self.allocator, base_path);
         defer self.allocator.free(escaped_base_path);
         const shape_json = try std.fmt.allocPrint(
@@ -3133,7 +3117,7 @@ pub const Session = struct {
         defer self.allocator.free(shape_json);
         try self.addDirectoryDescriptors(
             library_dir,
-            "Global Library",
+            "Library",
             shape_json,
             "{\"invoke\":false,\"operations\":[],\"discoverable\":true,\"read_only\":true}",
             "Stable, system-wide documentation for common Spiderweb/Acheron operations.",
@@ -3181,7 +3165,7 @@ pub const Session = struct {
         const index_path = try std.fs.path.join(self.allocator, &.{ self.assets_dir, "library", "Index.md" });
         defer self.allocator.free(index_path);
         return std.fs.cwd().readFileAlloc(self.allocator, index_path, 512 * 1024) catch
-            self.allocator.dupe(u8, defaultGlobalLibraryIndexMd());
+            self.allocator.dupe(u8, defaultLibraryIndexMd());
     }
 
     fn seedGlobalLibraryTopicsFromAssets(self: *Session, topics_dir: u32) !bool {
@@ -3243,56 +3227,56 @@ pub const Session = struct {
         _ = try self.addFile(
             topics_dir,
             "getting-started.md",
-            defaultGlobalLibraryTopicGettingStarted(),
+            defaultLibraryTopicGettingStarted(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "service-discovery.md",
-            defaultGlobalLibraryTopicServiceDiscovery(),
+            defaultLibraryTopicServiceDiscovery(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "events-and-waits.md",
-            defaultGlobalLibraryTopicEventsAndWaits(),
+            defaultLibraryTopicEventsAndWaits(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "search-services.md",
-            defaultGlobalLibraryTopicSearchServices(),
+            defaultLibraryTopicSearchServices(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "terminal-workflows.md",
-            defaultGlobalLibraryTopicTerminalWorkflows(),
+            defaultLibraryTopicTerminalWorkflows(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "memory-workflows.md",
-            defaultGlobalLibraryTopicMemoryWorkflows(),
+            defaultLibraryTopicMemoryWorkflows(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "workspace-mounts-and-binds.md",
-            defaultGlobalLibraryTopicWorkspaceMountsAndBinds(),
+            defaultLibraryTopicWorkspaceMountsAndBinds(),
             false,
             .none,
         );
         _ = try self.addFile(
             topics_dir,
             "agent-management-and-sub-brains.md",
-            defaultGlobalLibraryTopicAgentManagementAndSubBrains(),
+            defaultLibraryTopicAgentManagementAndSubBrains(),
             false,
             .none,
         );
@@ -4245,12 +4229,12 @@ pub const Session = struct {
                 .provider_export_name = null,
             };
         }
-        const service_match = parseServiceScopedVenomAliasPrefix(self, absolute_path);
-        if (service_match) |value| {
+        const workspace_match = parseWorkspaceScopedVenomAliasPrefix(self, absolute_path);
+        if (workspace_match) |value| {
             return .{
                 .venom_id = value.venom_id,
                 .remote_path = try self.allocator.dupe(u8, value.remote_path),
-                .project_id = value.project_id,
+                .project_id = value.workspace_id,
             };
         }
         const global_match = parseScopedVenomAliasPrefix(absolute_path, "/.spiderweb/_compat/global/");
@@ -7681,13 +7665,11 @@ pub const Session = struct {
 fn isWorldAbsolutePath(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "/nodes/") or
         std.mem.startsWith(u8, path, "/agents/") or
-        std.mem.startsWith(u8, path, "/services/") or
-        std.mem.startsWith(u8, path, "/global/") or
         std.mem.startsWith(u8, path, "/.spiderweb/");
 }
 
-fn defaultGlobalLibraryIndexMd() []const u8 {
-    return "# Spiderweb Global Library\n\n" ++
+fn defaultLibraryIndexMd() []const u8 {
+    return "# Spiderweb Library\n\n" ++
         "- [Getting Started](/.spiderweb/venoms/library/topics/getting-started.md)\n" ++
         "- [Service Discovery](/.spiderweb/venoms/library/topics/service-discovery.md)\n" ++
         "- [Events and Waits](/.spiderweb/venoms/library/topics/events-and-waits.md)\n" ++
@@ -7698,7 +7680,7 @@ fn defaultGlobalLibraryIndexMd() []const u8 {
         "- [Agent Management and Sub-Brains](/.spiderweb/venoms/library/topics/agent-management-and-sub-brains.md)\n";
 }
 
-fn defaultGlobalLibraryTopicGettingStarted() []const u8 {
+fn defaultLibraryTopicGettingStarted() []const u8 {
     return "# Getting Started\n\n" ++
         "1. Discover capability bindings in `/.spiderweb/catalog/bindings.json` and available providers in `/.spiderweb/catalog/providers.json`.\n" ++
         "2. Use `/.spiderweb/venoms/<venom_id>` as the canonical capability path.\n" ++
@@ -7707,7 +7689,7 @@ fn defaultGlobalLibraryTopicGettingStarted() []const u8 {
         "5. Use `/.spiderweb/venoms/library` for system guides.\n";
 }
 
-fn defaultGlobalLibraryTopicServiceDiscovery() []const u8 {
+fn defaultLibraryTopicServiceDiscovery() []const u8 {
     return "# Venom Discovery\n\n" ++
         "- Canonical venom bindings: `/.spiderweb/venoms/<venom_id>`\n" ++
         "- Discovery metadata: `/.spiderweb/catalog/{packages.json,providers.json,bindings.json}`\n" ++
@@ -7716,37 +7698,37 @@ fn defaultGlobalLibraryTopicServiceDiscovery() []const u8 {
         "- Production capability venoms include: terminal, git, search_code, library, and events.\n";
 }
 
-fn defaultGlobalLibraryTopicEventsAndWaits() []const u8 {
+fn defaultLibraryTopicEventsAndWaits() []const u8 {
     return "# Events and Waits\n\n" ++
         "Use single-source blocking reads first for deterministic waits.\n" ++
         "Use `/.spiderweb/venoms/events/control/wait.json` + `/.spiderweb/venoms/events/next.json`.\n";
 }
 
-fn defaultGlobalLibraryTopicSearchServices() []const u8 {
+fn defaultLibraryTopicSearchServices() []const u8 {
     return "# Search Services\n\n" ++
         "Use `/.spiderweb/venoms/search_code` for repository-local search.\n" ++
         "Drive it through `control/invoke.json`, then check `status.json` and `result.json`.\n";
 }
 
-fn defaultGlobalLibraryTopicTerminalWorkflows() []const u8 {
+fn defaultLibraryTopicTerminalWorkflows() []const u8 {
     return "# Terminal Workflows\n\n" ++
         "Use `/.spiderweb/venoms/terminal/control/*.json` for sessionized shell execution.\n" ++
         "Prefer `create` + `write/read` for interactive loops and `exec` for single command tasks.\n";
 }
 
-fn defaultGlobalLibraryTopicMemoryWorkflows() []const u8 {
+fn defaultLibraryTopicMemoryWorkflows() []const u8 {
     return "# Memory Workflows\n\n" ++
         "Use worker-owned memory venom paths after registering a worker node (for example `/nodes/<worker-node>/venoms/memory/control/*.json`). Spiderweb does not provide a canonical shared memory venom for Spider Monkey.\n" ++
         "Use `search` before creating duplicate memories.\n";
 }
 
-fn defaultGlobalLibraryTopicWorkspaceMountsAndBinds() []const u8 {
+fn defaultLibraryTopicWorkspaceMountsAndBinds() []const u8 {
     return "# Workspace Mounts and Binds\n\n" ++
         "Use `/.spiderweb/control/workspace/mounts/control/mount.json`, `mkdir.json`, and `unmount.json` for workspace mounts.\n" ++
         "Use `/.spiderweb/control/workspace/binds/control/bind.json` and `resolve.json` for stable workspace paths.\n";
 }
 
-fn defaultGlobalLibraryTopicAgentManagementAndSubBrains() []const u8 {
+fn defaultLibraryTopicAgentManagementAndSubBrains() []const u8 {
     return "# Agent Management and Sub-Brains\n\n" ++
         "Spiderweb no longer provisions or manages internal agents.\n" ++
         "Use `/.spiderweb/control/runtimes` for runtime attach/detach and worker-owned `/nodes/<worker-node>/venoms/sub_brains/*` for private sub-brain control.\n";
@@ -7811,8 +7793,8 @@ const ParsedEntityScopedVenomAlias = struct {
     remote_path: []const u8,
 };
 
-const ParsedServiceScopedVenomAlias = struct {
-    project_id: []const u8,
+const ParsedWorkspaceScopedVenomAlias = struct {
+    workspace_id: []const u8,
     venom_id: []const u8,
     remote_path: []const u8,
 };
@@ -7866,13 +7848,12 @@ fn parseEntityScopedVenomAliasPrefix(
     };
 }
 
-fn parseServiceScopedVenomAliasPrefix(self: *Session, path: []const u8) ?ParsedServiceScopedVenomAlias {
-    const project_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return null;
-    const parsed = parseScopedVenomAliasPrefix(path, "/services/") orelse
-        parseScopedVenomAliasPrefix(path, workspace_managed_venoms_absolute_prefix) orelse
+fn parseWorkspaceScopedVenomAliasPrefix(self: *Session, path: []const u8) ?ParsedWorkspaceScopedVenomAlias {
+    const workspace_id = self.active_namespace_workspace_id orelse self.workspace_id orelse return null;
+    const parsed = parseScopedVenomAliasPrefix(path, workspace_managed_venoms_absolute_prefix) orelse
         return null;
     return .{
-        .project_id = project_id,
+        .workspace_id = workspace_id,
         .venom_id = parsed.venom_id,
         .remote_path = parsed.remote_path,
     };

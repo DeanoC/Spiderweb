@@ -560,22 +560,6 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
     if (std.mem.startsWith(u8, namespace_path, "/shared_data/")) {
         return workspaceManagedSharedDataPath(allocator, namespace_path["/shared_data/".len..]);
     }
-    if (std.mem.startsWith(u8, namespace_path, "/services/")) {
-        const tail = namespace_path["/services/".len..];
-        if (std.mem.startsWith(u8, tail, "home")) {
-            return workspaceManagedControlPath(allocator, "workspace/home");
-        }
-        if (std.mem.startsWith(u8, tail, "mounts")) {
-            return workspaceManagedControlPath(allocator, "workspace/mounts");
-        }
-        if (std.mem.startsWith(u8, tail, "workers") or std.mem.startsWith(u8, tail, "runtimes")) {
-            return workspaceManagedControlPath(allocator, "runtimes");
-        }
-        if (std.mem.startsWith(u8, tail, "venom_packages") or std.mem.startsWith(u8, tail, "packages")) {
-            return workspaceManagedControlPath(allocator, "packages");
-        }
-        return workspaceManagedVenomsPath(allocator, tail);
-    }
     if (std.mem.startsWith(u8, namespace_path, "/nodes/local/venoms/")) {
         const tail = namespace_path["/nodes/local/venoms/".len..];
         if (std.mem.startsWith(u8, tail, "home")) {

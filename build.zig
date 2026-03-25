@@ -278,6 +278,19 @@ pub fn build(b: *std.Build) void {
     }
     b.installArtifact(spiderweb_browser_driver);
 
+    // MCP bridge executable (one-shot, translates Spider invoke to MCP JSON-RPC)
+    const mcp_bridge_mod = b.createModule(.{
+        .root_source_file = b.path("src/mcp_bridge_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const spiderweb_mcp_bridge = b.addExecutable(.{
+        .name = "spiderweb-mcp-bridge",
+        .root_module = mcp_bridge_mod,
+    });
+    spiderweb_mcp_bridge.linkLibC();
+    b.installArtifact(spiderweb_mcp_bridge);
+
     // Distributed filesystem mount/router executable
     const fs_mount_mod = b.createModule(.{
         .root_source_file = b.path("src/acheron/mount_main.zig"),
@@ -441,4 +454,11 @@ pub fn build(b: *std.Build) void {
     fs_helper_tests.linkLibC();
     const run_fs_helper_tests = b.addRunArtifact(fs_helper_tests);
     test_step.dependOn(&run_fs_helper_tests.step);
+
+    const mcp_bridge_tests = b.addTest(.{
+        .root_module = mcp_bridge_mod,
+    });
+    mcp_bridge_tests.linkLibC();
+    const run_mcp_bridge_tests = b.addRunArtifact(mcp_bridge_tests);
+    test_step.dependOn(&run_mcp_bridge_tests.step);
 }

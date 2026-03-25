@@ -1,5 +1,63 @@
 const std = @import("std");
 
+/// Default wall-clock timeout for a single MCP request/response round-trip.
+const response_timeout_ms: u32 = 30_000;
+
+/// Watchdog that kills a child process after a deadline, unblocking any read
+/// that is blocked on its stdout pipe. Heap-allocated so the timer thread can
+/// safely outlive the stack frame that started it.
+const WatchdogContext = struct {
+    allocator: std.mem.Allocator,
+    child: *?std.process.Child,
+    timeout_ns: u64,
+    /// Set to true by the owner before the timer fires to suppress the kill.
+    cancelled: std.atomic.Value(bool),
+    /// Set to true by the timer thread when it fires (and actually kills).
+    did_fire: std.atomic.Value(bool),
+
+    fn start(
+        allocator: std.mem.Allocator,
+        child: *?std.process.Child,
+        timeout_ms: u32,
+    ) !*WatchdogContext {
+        const ctx = try allocator.create(WatchdogContext);
+        ctx.* = .{
+            .allocator = allocator,
+            .child = child,
+            .timeout_ns = @as(u64, timeout_ms) * std.time.ns_per_ms,
+            .cancelled = std.atomic.Value(bool).init(false),
+            .did_fire = std.atomic.Value(bool).init(false),
+        };
+        const thread = std.Thread.spawn(.{}, WatchdogContext.run, .{ctx}) catch {
+            allocator.destroy(ctx);
+            return error.WatchdogSpawnFailed;
+        };
+        thread.detach();
+        return ctx;
+    }
+
+    /// Signal the watchdog not to kill the child. Must be called exactly once.
+    /// Frees the context; the timer thread will also free it if it fires first.
+    fn cancel(ctx: *WatchdogContext) void {
+        ctx.cancelled.store(true, .release);
+        // ctx may be freed by the timer thread at any moment after this store;
+        // do not touch ctx fields after this point.
+    }
+
+    fn fired(ctx: *const WatchdogContext) bool {
+        return ctx.did_fire.load(.acquire);
+    }
+
+    fn run(ctx: *WatchdogContext) void {
+        std.Thread.sleep(ctx.timeout_ns);
+        if (!ctx.cancelled.load(.acquire)) {
+            ctx.did_fire.store(true, .release);
+            if (ctx.child.*) |*child| _ = child.kill() catch {};
+        }
+        ctx.allocator.destroy(ctx);
+    }
+};
+
 /// MCP JSON-RPC 2.0 client over stdio.
 ///
 /// Manages a child MCP server process, sends JSON-RPC requests on its stdin
@@ -153,8 +211,21 @@ pub const McpClient = struct {
         const stdin = child.stdin orelse return error.NotConnected;
         try stdin.writeAll(req.items);
 
-        // Read response lines until we find one matching our id.
-        return self.readResponseForId(id);
+        // Arm a watchdog timer. If the read blocks for longer than
+        // response_timeout_ms, the timer kills the child process so that
+        // streamDelimiter receives EOF and readResponseForId returns
+        // error.McpResponseTimeout instead of hanging forever.
+        const wdog = try WatchdogContext.start(self.allocator, &self.child, response_timeout_ms);
+        defer wdog.cancel();
+
+        const result = self.readResponseForId(id);
+
+        // If the watchdog fired we know the child was killed; map the
+        // resulting McpServerClosed back to the more descriptive timeout error.
+        if (wdog.fired()) {
+            if (result == error.McpServerClosed) return error.McpResponseTimeout;
+        }
+        return result;
     }
 
     fn sendNotification(self: *McpClient, method: []const u8, params_json: []const u8) !void {

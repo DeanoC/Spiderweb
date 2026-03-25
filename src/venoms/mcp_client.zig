@@ -6,6 +6,12 @@ const response_timeout_ms: u32 = 30_000;
 /// Watchdog that kills a child process after a deadline, unblocking any read
 /// that is blocked on its stdout pipe. Heap-allocated so the timer thread can
 /// safely outlive the stack frame that started it.
+///
+/// Ownership is shared between the caller and the timer thread via ref_count
+/// (starts at 2). Each side calls release() exactly once; the last release
+/// frees the allocation. This prevents the use-after-free that would occur if
+/// the timer thread freed the context before the caller finished reading
+/// did_fire.
 const WatchdogContext = struct {
     allocator: std.mem.Allocator,
     child: *?std.process.Child,
@@ -14,6 +20,8 @@ const WatchdogContext = struct {
     cancelled: std.atomic.Value(bool),
     /// Set to true by the timer thread when it fires (and actually kills).
     did_fire: std.atomic.Value(bool),
+    /// Reference count: 2 on start (caller + timer). Freed when it reaches 0.
+    ref_count: std.atomic.Value(u32),
 
     fn start(
         allocator: std.mem.Allocator,
@@ -27,6 +35,7 @@ const WatchdogContext = struct {
             .timeout_ns = @as(u64, timeout_ms) * std.time.ns_per_ms,
             .cancelled = std.atomic.Value(bool).init(false),
             .did_fire = std.atomic.Value(bool).init(false),
+            .ref_count = std.atomic.Value(u32).init(2),
         };
         const thread = std.Thread.spawn(.{}, WatchdogContext.run, .{ctx}) catch {
             allocator.destroy(ctx);
@@ -36,16 +45,21 @@ const WatchdogContext = struct {
         return ctx;
     }
 
-    /// Signal the watchdog not to kill the child. Must be called exactly once.
-    /// Frees the context; the timer thread will also free it if it fires first.
+    /// Drop the caller's reference. Sets cancelled so the timer suppresses
+    /// the kill, then releases. Safe to call after fired() has been read.
     fn cancel(ctx: *WatchdogContext) void {
         ctx.cancelled.store(true, .release);
-        // ctx may be freed by the timer thread at any moment after this store;
-        // do not touch ctx fields after this point.
+        ctx.release();
     }
 
     fn fired(ctx: *const WatchdogContext) bool {
         return ctx.did_fire.load(.acquire);
+    }
+
+    fn release(ctx: *WatchdogContext) void {
+        if (ctx.ref_count.fetchSub(1, .acq_rel) == 1) {
+            ctx.allocator.destroy(ctx);
+        }
     }
 
     fn run(ctx: *WatchdogContext) void {
@@ -54,7 +68,7 @@ const WatchdogContext = struct {
             ctx.did_fire.store(true, .release);
             if (ctx.child.*) |*child| _ = child.kill() catch {};
         }
-        ctx.allocator.destroy(ctx);
+        ctx.release();
     }
 };
 
@@ -216,13 +230,15 @@ pub const McpClient = struct {
         // streamDelimiter receives EOF and readResponseForId returns
         // error.McpResponseTimeout instead of hanging forever.
         const wdog = try WatchdogContext.start(self.allocator, &self.child, response_timeout_ms);
-        defer wdog.cancel();
 
         const result = self.readResponseForId(id);
 
-        // If the watchdog fired we know the child was killed; map the
-        // resulting McpServerClosed back to the more descriptive timeout error.
-        if (wdog.fired()) {
+        // Read fired() before cancel(): cancel() drops the caller's ref and
+        // may free the context, so we must not touch wdog after that call.
+        const timed_out = wdog.fired();
+        wdog.cancel();
+
+        if (timed_out) {
             if (result == error.McpServerClosed) return error.McpResponseTimeout;
         }
         return result;

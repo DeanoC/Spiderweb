@@ -452,11 +452,22 @@ pub const LocalNodeSupervisor = struct {
     }
 
     fn writeCapabilityManifestFile(self: *LocalNodeSupervisor, family_id: []const u8, executable_path: []const u8) !void {
-        const manifest_json = if (std.mem.eql(u8, family_id, "computer"))
-            try macos_capability_venoms.renderComputerManifestJson(self.allocator, executable_path)
-        else if (std.mem.eql(u8, family_id, "browser"))
-            try macos_capability_venoms.renderBrowserManifestJson(self.allocator, executable_path)
-        else
+        const manifest_json = if (std.mem.eql(u8, family_id, "computer")) blk: {
+            break :blk try macos_capability_venoms.renderComputerManifestJson(self.allocator, executable_path);
+        } else if (std.mem.eql(u8, family_id, "browser")) blk: {
+            const browser_state_path = try std.fs.path.join(self.allocator, &.{ self.state_dir, "browser", "state.json" });
+            defer self.allocator.free(browser_state_path);
+            const browser_profile_dir = try std.fs.path.join(self.allocator, &.{ self.state_dir, "browser", "profile" });
+            defer self.allocator.free(browser_profile_dir);
+            break :blk try macos_capability_venoms.renderBrowserManifestJsonWithRuntimePaths(
+                self.allocator,
+                executable_path,
+                .{
+                    .state_path = browser_state_path,
+                    .profile_dir = browser_profile_dir,
+                },
+            );
+        } else
             return error.InvalidArguments;
         defer self.allocator.free(manifest_json);
         const manifest_name = try std.fmt.allocPrint(self.allocator, "{s}.json", .{family_id});

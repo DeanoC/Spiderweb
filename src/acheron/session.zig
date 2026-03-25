@@ -1025,6 +1025,8 @@ pub const Session = struct {
                 .previous_stale = previous_stale,
             };
         };
+        const absolute_path = try self.nodeAbsolutePath(dir_id);
+        defer self.allocator.free(absolute_path);
         defer {
             if (self.nodes.getPtr(dir_id)) |node| {
                 node.dynamic_refresh_in_progress = false;
@@ -1038,8 +1040,10 @@ pub const Session = struct {
         }
         var timer = try std.time.Timer.start();
 
-        try self.reapExpiredRuntimeNodes();
-        try self.refreshRuntimePresenceStatuses();
+        if (self.shouldRefreshGlobalDynamicState(dir_id, absolute_path)) {
+            try self.reapExpiredRuntimeNodes();
+            try self.refreshRuntimePresenceStatuses();
+        }
         if (dir_id == self.nodes_root_id) {
             try self.addNodeDirectoriesFromControlPlane(self.nodes_root_id);
         }
@@ -1053,10 +1057,15 @@ pub const Session = struct {
 
         const elapsed_ms = timer.read() / std.time.ns_per_ms;
         if (elapsed_ms >= slow_dynamic_directory_refresh_warn_ms) {
-            const absolute_path = try self.nodeAbsolutePath(dir_id);
-            defer self.allocator.free(absolute_path);
             std.log.warn("slow dynamic directory refresh: {d}ms path={s}", .{ elapsed_ms, absolute_path });
         }
+    }
+
+    fn shouldRefreshGlobalDynamicState(self: *Session, dir_id: u32, absolute_path: []const u8) bool {
+        if (dir_id == self.nodes_root_id) return true;
+        if (std.mem.eql(u8, absolute_path, "/nodes")) return true;
+        if (std.mem.eql(u8, absolute_path, workspace_managed_root_absolute ++ "/control/runtimes")) return true;
+        return false;
     }
 
     fn dynamicDirectoryRefreshMinIntervalMs(self: *Session, dir_id: u32) i64 {
@@ -4241,6 +4250,8 @@ pub const Session = struct {
         const absolute_path = try self.nodeAbsolutePath(dir_id);
         defer self.allocator.free(absolute_path);
 
+        if (self.shouldSkipSeededNodeVenomProxyRefresh(dir_id, absolute_path)) return;
+
         const proxy = (try self.boundVenomProxyPathForAbsolutePath(absolute_path)) orelse return;
         defer self.allocator.free(proxy.remote_path);
 
@@ -4267,6 +4278,35 @@ pub const Session = struct {
             cookie = next_cookie;
         }
         try self.pruneBoundVenomProxyChildren(dir_id, seen_names.items);
+    }
+
+    fn shouldSkipSeededNodeVenomProxyRefresh(self: *Session, dir_id: u32, absolute_path: []const u8) bool {
+        if (!std.mem.startsWith(u8, absolute_path, "/nodes/")) return false;
+        const after_nodes = absolute_path["/nodes/".len..];
+        const node_sep = std.mem.indexOfScalar(u8, after_nodes, '/') orelse return false;
+        const after_node = after_nodes[node_sep + 1 ..];
+        if (!std.mem.startsWith(u8, after_node, "venoms/")) return false;
+        const after_venoms = after_node["venoms/".len..];
+        if (after_venoms.len == 0) return false;
+        const venom_sep = std.mem.indexOfScalar(u8, after_venoms, '/') orelse after_venoms.len;
+        const remainder = if (venom_sep < after_venoms.len) after_venoms[venom_sep + 1 ..] else "";
+
+        const node = self.nodes.get(dir_id) orelse return false;
+        if (node.kind != .dir or node.children.count() == 0) return false;
+
+        if (remainder.len == 0) {
+            return node.children.contains("control") and
+                node.children.contains("status.json") and
+                node.children.contains("result.json") and
+                node.children.contains("health.json");
+        }
+        if (std.mem.eql(u8, remainder, "control")) {
+            return node.children.contains("invoke.json");
+        }
+        if (std.mem.eql(u8, remainder, "artifacts")) {
+            return node.children.count() != 0;
+        }
+        return false;
     }
 
     fn boundVenomRouterForProxy(self: *Session, proxy: BoundVenomProxyPath, route_mode: BoundVenomRouteMode) !?acheron_router.Router {
@@ -12330,6 +12370,75 @@ test "acheron_session: dynamic refresh skips recent clean refreshes until marked
     session.markDynamicDirectoryStale(local_fs_dir);
     try session.refreshDynamicDirectory(local_fs_dir);
     try std.testing.expect(session.lookupChild(local_fs_dir, "second.txt") != null);
+}
+
+test "acheron_session: global dynamic maintenance only runs on top-level node surfaces" {
+    const allocator = std.testing.allocator;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    const nodes_root_id = session.resolveAbsolutePathNoBinds("/nodes") orelse return error.MissingNode;
+    const runtimes_id = session.resolveAbsolutePathNoBinds("/nodes/local/fs/.spiderweb/control/runtimes") orelse return error.MissingNode;
+
+    try std.testing.expect(session.shouldRefreshGlobalDynamicState(nodes_root_id, "/nodes"));
+    try std.testing.expect(session.shouldRefreshGlobalDynamicState(runtimes_id, "/nodes/local/fs/.spiderweb/control/runtimes"));
+    try std.testing.expect(!session.shouldRefreshGlobalDynamicState(session.root_id, "/nodes/node-2/venoms/browser-main"));
+    try std.testing.expect(!session.shouldRefreshGlobalDynamicState(session.root_id, "/nodes/node-2/venoms/browser-main/control"));
+}
+
+test "acheron_session: seeded node venom directories skip proxy listing refresh" {
+    const allocator = std.testing.allocator;
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    const nodes_id = session.resolveAbsolutePathNoBinds("/nodes") orelse return error.MissingNode;
+    const node_id = try session.addDir(nodes_id, "node-test", false);
+    const venoms_id = try session.addDir(node_id, "venoms", false);
+    const computer_id = try session.addDir(venoms_id, "computer-main", false);
+    const control_id = try session.addDir(computer_id, "control", false);
+    const artifacts_id = try session.addDir(computer_id, "artifacts", false);
+    _ = try session.addFile(control_id, "invoke.json", "", true, .none);
+    _ = try session.addFile(computer_id, "status.json", "", false, .none);
+    _ = try session.addFile(computer_id, "result.json", "", false, .none);
+    _ = try session.addFile(computer_id, "health.json", "", false, .none);
+    _ = try session.addFile(artifacts_id, "last_observation.json", "", false, .none);
+
+    try std.testing.expect(session.shouldSkipSeededNodeVenomProxyRefresh(computer_id, "/nodes/node-test/venoms/computer-main"));
+    try std.testing.expect(session.shouldSkipSeededNodeVenomProxyRefresh(control_id, "/nodes/node-test/venoms/computer-main/control"));
+    try std.testing.expect(session.shouldSkipSeededNodeVenomProxyRefresh(artifacts_id, "/nodes/node-test/venoms/computer-main/artifacts"));
+    try std.testing.expect(!session.shouldSkipSeededNodeVenomProxyRefresh(venoms_id, "/nodes/node-test/venoms"));
 }
 
 test "acheron_session: local fs backed write invalidates recent directory refresh" {

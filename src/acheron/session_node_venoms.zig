@@ -955,6 +955,85 @@ fn addNodeVenomEntry(
     );
     defer session.allocator.free(status);
     _ = try session.addFile(venom_dir, "STATUS.json", status, false, .none);
+    try seedNodeVenomServiceNamespace(session, venom_dir, caps_json, ops_json, schema_json);
+}
+
+fn seedNodeVenomServiceNamespace(
+    session: anytype,
+    venom_dir: u32,
+    caps_json: []const u8,
+    ops_json: []const u8,
+    schema_json: []const u8,
+) !void {
+    if (!nodeVenomHasInvoke(caps_json, ops_json)) return;
+
+    const control_dir = try session.addDir(venom_dir, "control", false);
+    _ = try session.addFile(control_dir, "invoke.json", "", true, .none);
+    _ = try session.addFile(venom_dir, "status.json", "", false, .none);
+    _ = try session.addFile(venom_dir, "result.json", "", false, .none);
+    _ = try session.addFile(venom_dir, "health.json", "", false, .none);
+    _ = try session.addFile(venom_dir, "last_error.txt", "", false, .none);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, schema_json, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const artifacts = parsed.value.object.get("artifacts") orelse return;
+    if (artifacts != .object) return;
+
+    const artifacts_dir = try session.addDir(venom_dir, "artifacts", false);
+    var it = artifacts.object.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* != .string) continue;
+        try seedRelativeServicePath(session, artifacts_dir, entry.value_ptr.*.string, "artifacts/");
+    }
+}
+
+fn seedRelativeServicePath(
+    session: anytype,
+    base_dir: u32,
+    relative_path: []const u8,
+    required_prefix: []const u8,
+) !void {
+    if (!std.mem.startsWith(u8, relative_path, required_prefix)) return;
+    const tail = relative_path[required_prefix.len..];
+    if (tail.len == 0) return;
+
+    var current_dir = base_dir;
+    var iter = std.mem.splitScalar(u8, tail, '/');
+    while (iter.next()) |segment| {
+        if (segment.len == 0) continue;
+        const rest = iter.rest();
+        if (rest.len == 0) {
+            _ = try session.addFile(current_dir, segment, "", false, .none);
+            return;
+        }
+        current_dir = try session.addDir(current_dir, segment, false);
+    }
+}
+
+fn nodeVenomHasInvoke(caps_json: []const u8, ops_json: []const u8) bool {
+    var caps = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, caps_json, .{}) catch return false;
+    defer caps.deinit();
+    if (caps.value == .object) {
+        if (caps.value.object.get("invoke")) |value| {
+            if (value == .bool and value.bool) return true;
+        }
+    }
+
+    var ops = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, ops_json, .{}) catch return false;
+    defer ops.deinit();
+    if (ops.value != .object) return false;
+    if (ops.value.object.get("invoke")) |value| {
+        if (value == .string and value.string.len != 0) return true;
+    }
+    if (ops.value.object.get("paths")) |value| {
+        if (value == .object) {
+            if (value.object.get("invoke")) |invoke_value| {
+                return invoke_value == .string and invoke_value.string.len != 0;
+            }
+        }
+    }
+    return false;
 }
 
 fn renderNodeVenomPackageJson(

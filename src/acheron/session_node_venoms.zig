@@ -1007,6 +1007,12 @@ fn seedRelativeServicePath(
             _ = try session.addFile(current_dir, segment, "", false, .none);
             return;
         }
+        if (session.lookupChild(current_dir, segment)) |existing| {
+            const child = session.nodes.get(existing) orelse return error.MissingNode;
+            if (child.kind != .dir) return error.InvalidPayload;
+            current_dir = existing;
+            continue;
+        }
         current_dir = try session.addDir(current_dir, segment, false);
     }
 }

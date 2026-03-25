@@ -95,6 +95,15 @@ fn dispatch(
     }
 }
 
+/// Return the JSON-RPC error detail from the client if available, else fall back
+/// to the Zig error name.  The returned slice is valid until the next client call.
+fn mcpErrorMessage(client: *mcp_client.McpClient, err: anyerror) []const u8 {
+    if (err == error.McpRpcError) {
+        if (client.last_rpc_error) |msg| return msg;
+    }
+    return @errorName(err);
+}
+
 fn handleToolsCall(
     allocator: std.mem.Allocator,
     client: *mcp_client.McpClient,
@@ -110,7 +119,7 @@ fn handleToolsCall(
     defer allocator.free(arguments_json);
 
     const mcp_result = client.callTool(tool_name, arguments_json) catch |err|
-        return buildResultError(allocator, "mcp_call_failed", @errorName(err));
+        return buildResultError(allocator, "mcp_call_failed", mcpErrorMessage(client, err));
     defer allocator.free(mcp_result);
 
     return buildResultOk(allocator, "tools/call", tool_name, mcp_result);
@@ -121,7 +130,7 @@ fn handleToolsList(
     client: *mcp_client.McpClient,
 ) ![]u8 {
     const mcp_result = client.listTools() catch |err|
-        return buildResultError(allocator, "mcp_list_failed", @errorName(err));
+        return buildResultError(allocator, "mcp_list_failed", mcpErrorMessage(client, err));
     defer allocator.free(mcp_result);
 
     return buildResultOk(allocator, "tools/list", null, mcp_result);
@@ -132,7 +141,7 @@ fn handleResourcesList(
     client: *mcp_client.McpClient,
 ) ![]u8 {
     const mcp_result = client.listResources() catch |err|
-        return buildResultError(allocator, "mcp_list_failed", @errorName(err));
+        return buildResultError(allocator, "mcp_list_failed", mcpErrorMessage(client, err));
     defer allocator.free(mcp_result);
 
     return buildResultOk(allocator, "resources/list", null, mcp_result);
@@ -147,7 +156,7 @@ fn handleResourcesRead(
         return buildResultError(allocator, "invalid_payload", "missing 'uri' field");
 
     const mcp_result = client.readResource(uri) catch |err|
-        return buildResultError(allocator, "mcp_read_failed", @errorName(err));
+        return buildResultError(allocator, "mcp_read_failed", mcpErrorMessage(client, err));
     defer allocator.free(mcp_result);
 
     return buildResultOk(allocator, "resources/read", null, mcp_result);

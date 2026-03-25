@@ -13,6 +13,8 @@ pub const McpClient = struct {
     /// Buffer for reading child stdout lines.
     stdout_buf: std.ArrayListUnmanaged(u8) = .{},
     server_capabilities: ?[]u8 = null,
+    /// Populated when sendRequest returns error.McpRpcError; freed on next call or deinit.
+    last_rpc_error: ?[]u8 = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -30,6 +32,7 @@ pub const McpClient = struct {
         self.shutdown();
         self.stdout_buf.deinit(self.allocator);
         if (self.server_capabilities) |cap| self.allocator.free(cap);
+        if (self.last_rpc_error) |msg| self.allocator.free(msg);
     }
 
     /// Spawn the MCP server subprocess and perform the initialize handshake.
@@ -44,7 +47,9 @@ pub const McpClient = struct {
         var child = std.process.Child.init(argv.items, self.allocator);
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
+        // Inherit stderr so MCP server log output goes to the bridge's stderr
+        // rather than filling a pipe buffer and causing the child to deadlock.
+        child.stderr_behavior = .Inherit;
         try child.spawn();
         self.child = child;
 
@@ -105,20 +110,20 @@ pub const McpClient = struct {
     /// Shut down the MCP server subprocess.
     pub fn shutdown(self: *McpClient) void {
         if (self.child) |*child| {
-            // Try graceful shutdown: close stdin so the server sees EOF.
+            // Close stdin to signal EOF to the server.
             if (child.stdin) |stdin| {
                 stdin.close();
                 child.stdin = null;
             }
-            // Wait briefly, then terminate.
+            // Kill the child to ensure it exits promptly, then reap it.
+            // Many MCP servers do not exit on stdin EOF, so we must not
+            // rely on them doing so — an indefinite wait would hang the
+            // one-shot bridge process.
+            _ = child.kill() catch {};
             _ = child.wait() catch {};
             if (child.stdout) |stdout| {
                 stdout.close();
                 child.stdout = null;
-            }
-            if (child.stderr) |stderr| {
-                stderr.close();
-                child.stderr = null;
             }
             self.child = null;
         }
@@ -214,9 +219,15 @@ pub const McpClient = struct {
             };
             if (msg_id != expected_id) continue;
 
-            // Check for error.
-            if (obj.get("error")) |_| {
-                return self.allocator.dupe(u8, line);
+            // JSON-RPC error response: surface as an error so callers report ok=false.
+            if (obj.get("error")) |err_value| {
+                if (self.last_rpc_error) |old| self.allocator.free(old);
+                self.last_rpc_error = std.fmt.allocPrint(
+                    self.allocator,
+                    "{f}",
+                    .{std.json.fmt(err_value, .{})},
+                ) catch null;
+                return error.McpRpcError;
             }
 
             // Extract "result" field.

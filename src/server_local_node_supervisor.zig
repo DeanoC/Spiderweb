@@ -546,9 +546,13 @@ pub const LocalNodeSupervisor = struct {
 
         const manifest_name = std.fs.path.basename(manifest_rel_path);
         if (manifest_name.len == 0) return error.InvalidBundleRelease;
+        const owned_name = try self.allocator.dupe(u8, manifest_name);
+        errdefer self.allocator.free(owned_name);
+        const owned_contents = try self.allocator.dupe(u8, rendered_manifest);
+        errdefer self.allocator.free(owned_contents);
         try outputs.append(self.allocator, .{
-            .name = try self.allocator.dupe(u8, manifest_name),
-            .contents = try self.allocator.dupe(u8, rendered_manifest),
+            .name = owned_name,
+            .contents = owned_contents,
         });
     }
 

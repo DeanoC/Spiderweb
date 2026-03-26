@@ -343,6 +343,8 @@ uint64_t spiderweb_fi_get_fh(struct fuse_file_info *fi);
 void spiderweb_fi_set_fh(struct fuse_file_info *fi, uint64_t fh);
 void spiderweb_fi_set_nonseekable(struct fuse_file_info *fi, int enabled);
 void spiderweb_fi_set_cache_readdir(struct fuse_file_info *fi, int enabled);
+void spiderweb_fi_set_direct_io(struct fuse_file_info *fi, int enabled);
+void spiderweb_fi_set_keep_cache(struct fuse_file_info *fi, int enabled);
 
 #ifdef __cplusplus
 }

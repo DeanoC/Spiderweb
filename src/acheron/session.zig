@@ -97,6 +97,7 @@ const workspace_managed_shared_data_dir_name = session_workspace_contract.worksp
 const workspace_managed_control_dir_name = session_workspace_contract.workspace_managed_control_dir_name;
 const workspace_managed_catalog_dir_name = session_workspace_contract.workspace_managed_catalog_dir_name;
 const workspace_managed_venoms_dir_name = session_workspace_contract.workspace_managed_venoms_dir_name;
+const workspace_managed_targets_dir_name = session_workspace_contract.workspace_managed_targets_dir_name;
 const workspace_compat_root_name = "_compat";
 const workspace_compat_root_absolute = workspace_managed_root_absolute ++ "/" ++ workspace_compat_root_name;
 const workspace_compat_root_projected_absolute = workspace_managed_root_projected_absolute ++ "/" ++ workspace_compat_root_name;
@@ -109,6 +110,8 @@ const workspace_compat_meta_projected_absolute = workspace_compat_root_projected
 const workspace_managed_control_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_control_dir_name ++ "/";
 const workspace_managed_venoms_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_venoms_dir_name ++ "/";
 const workspace_managed_venoms_projected_prefix = workspace_managed_root_projected_absolute ++ "/" ++ workspace_managed_venoms_dir_name ++ "/";
+const workspace_managed_targets_absolute_prefix = workspace_managed_root_absolute ++ "/" ++ workspace_managed_targets_dir_name ++ "/";
+const workspace_managed_targets_projected_prefix = workspace_managed_root_projected_absolute ++ "/" ++ workspace_managed_targets_dir_name ++ "/";
 const workspace_agents_contract_path = session_workspace_contract.workspace_agents_contract_path;
 const workspace_agents_heading = session_workspace_contract.workspace_agents_heading;
 const workspace_agents_managed_begin = session_workspace_contract.workspace_agents_managed_begin;
@@ -148,6 +151,7 @@ const BoundVenomProxyAttrSummary = struct {
 
 const PathBindKind = enum {
     workspace,
+    workspace_projected,
     workspace_mount,
     managed_entrypoint,
 };
@@ -689,7 +693,7 @@ pub const Session = struct {
             self.sandbox_fs_mount_bin != null;
     }
 
-    fn buildUnsupportedInteractiveTerminalError(self: *Session, tag: u16) ![]u8 {
+    fn buildUnsupportedInteractiveTerminalError(self: *Session, tag: ?u32) ![]u8 {
         return unified.buildFsrpcError(
             self.allocator,
             tag,
@@ -1155,7 +1159,7 @@ pub const Session = struct {
         special: SpecialKind,
         err: anyerror,
     ) ![]u8 {
-        const tag: u16 = @intCast(raw_tag orelse 0);
+        const tag = raw_tag;
         return switch (special) {
             .terminal_invoke => switch (err) {
                 error.InvalidPayload => unified.buildFsrpcError(
@@ -1501,7 +1505,7 @@ pub const Session = struct {
         try self.addDirectoryDescriptors(
             project_meta_dir,
             "Workspace Metadata",
-            "{\"kind\":\"metadata\",\"files\":[\"topology.json\",\"nodes.json\",\"agents.json\",\"sources.json\",\"contracts.json\",\"paths.json\",\"summary.json\",\"agent_bootstrap.json\",\"agent_bootstrap_quickref.json\",\"alerts.json\",\"workspace_status.json\",\"mounts.json\",\"desired_mounts.json\",\"actual_mounts.json\",\"binds.json\",\"packages.json\",\"providers.json\",\"bindings.json\",\"drift.json\",\"reconcile.json\",\"availability.json\",\"health.json\"]}",
+            "{\"kind\":\"metadata\",\"files\":[\"topology.json\",\"nodes.json\",\"agents.json\",\"sources.json\",\"contracts.json\",\"paths.json\",\"summary.json\",\"agent_bootstrap.json\",\"agent_bootstrap_quickref.json\",\"alerts.json\",\"workspace_status.json\",\"mounts.json\",\"desired_mounts.json\",\"actual_mounts.json\",\"binds.json\",\"packages.json\",\"providers.json\",\"bindings.json\",\"targets.json\",\"drift.json\",\"reconcile.json\",\"availability.json\",\"health.json\"]}",
             "{\"read\":true,\"write\":false}",
             "Workspace topology, bootstrap guidance, and availability metadata.",
         );
@@ -1552,7 +1556,7 @@ pub const Session = struct {
         try self.addDirectoryDescriptors(
             compat_meta_root,
             "Meta",
-            "{\"kind\":\"meta\",\"entries\":[\"protocol.json\",\"view.json\",\"agent_bootstrap.json\",\"agent_bootstrap_quickref.json\",\"workspace_status.json\",\"workspace_availability.json\",\"workspace_health.json\",\"workspace_alerts.json\",\"workspace_binds.json\",\"packages.json\",\"providers.json\",\"bindings.json\"]}",
+            "{\"kind\":\"meta\",\"entries\":[\"protocol.json\",\"view.json\",\"agent_bootstrap.json\",\"agent_bootstrap_quickref.json\",\"workspace_status.json\",\"workspace_availability.json\",\"workspace_health.json\",\"workspace_alerts.json\",\"workspace_binds.json\",\"packages.json\",\"providers.json\",\"bindings.json\",\"targets.json\"]}",
             "{\"read\":true,\"write\":false}",
             "Hidden compatibility metadata for legacy namespace readers.",
         );
@@ -1809,6 +1813,11 @@ pub const Session = struct {
         defer self.allocator.free(bindings_json);
         _ = try self.addFile(workspace_meta_dir, "bindings.json", bindings_json, false, .none);
         _ = try self.addFile(meta_root, "bindings.json", bindings_json, false, .none);
+
+        const targets_json = try self.buildCatalogTargetsJson();
+        defer self.allocator.free(targets_json);
+        _ = try self.addFile(workspace_meta_dir, "targets.json", targets_json, false, .none);
+        _ = try self.addFile(meta_root, "targets.json", targets_json, false, .none);
     }
 
     pub fn refreshWorkspaceServiceDiscoveryFiles(self: *Session) !void {
@@ -1832,6 +1841,10 @@ pub const Session = struct {
 
     fn buildCatalogBindingsJson(self: *Session) ![]u8 {
         return session_service_discovery.buildCatalogBindingsJson(self);
+    }
+
+    fn buildCatalogTargetsJson(self: *Session) ![]u8 {
+        return session_service_discovery.buildCatalogTargetsJson(self);
     }
 
     fn buildWorkspaceBindsArrayJson(self: *Session) ![]u8 {
@@ -2000,6 +2013,7 @@ pub const Session = struct {
         defer self.allocator.free(payload);
 
         self.clearProjectBindsByKind(.workspace);
+        self.clearProjectBindsByKind(.workspace_projected);
         const binds_json = plane.listWorkspaceBindsWithRole(payload, self.is_admin) catch return;
         defer self.allocator.free(binds_json);
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, binds_json, .{}) catch return;
@@ -2014,6 +2028,15 @@ pub const Session = struct {
             if (bind_path != .string or bind_path.string.len == 0) continue;
             if (target_path != .string or target_path.string.len == 0) continue;
             try self.appendProjectBind(.workspace, bind_path.string, target_path.string);
+            if (session_service_discovery.parseTargetBindingForSession(bind_path.string)) |_| {
+                const projected_bind_path = try std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}{s}",
+                    .{ local_fs_world_prefix, bind_path.string },
+                );
+                defer self.allocator.free(projected_bind_path);
+                try self.appendProjectBind(.workspace_projected, projected_bind_path, target_path.string);
+            }
         }
         try self.appendManagedWorkspaceEntrypointBinds();
     }
@@ -2089,6 +2112,8 @@ pub const Session = struct {
         defer self.allocator.free(providers_target);
         const bindings_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/bindings.json", .{ workspace_compat_projects_projected_absolute, workspace_id });
         defer self.allocator.free(bindings_target);
+        const targets_target = try std.fmt.allocPrint(self.allocator, "{s}/{s}/meta/targets.json", .{ workspace_compat_projects_projected_absolute, workspace_id });
+        defer self.allocator.free(targets_target);
         const node_venom_events_target = try std.fmt.allocPrint(self.allocator, "{s}/venoms/node-venom-events.ndjson", .{workspace_compat_global_projected_absolute});
         defer self.allocator.free(node_venom_events_target);
         const venoms_index_target = try std.fmt.allocPrint(self.allocator, "{s}/venoms/VENOMS.json", .{workspace_compat_global_projected_absolute});
@@ -2119,6 +2144,7 @@ pub const Session = struct {
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/packages.json", .target_path = packages_target },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/providers.json", .target_path = providers_target },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/bindings.json", .target_path = bindings_target },
+            .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/targets.json", .target_path = targets_target },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/catalog/node-venom-events.ndjson", .target_path = node_venom_events_target },
             .{ .bind_path = workspace_managed_root_projected_absolute ++ "/venoms/VENOMS.json", .target_path = venoms_index_target },
         };
@@ -2174,19 +2200,45 @@ pub const Session = struct {
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/packages.json", packages_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/providers.json", providers_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/bindings.json", bindings_target);
+        try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/targets.json", targets_target);
         try self.appendProjectBind(.managed_entrypoint, workspace_managed_root_absolute ++ "/catalog/node-venom-events.ndjson", node_venom_events_target);
     }
 
     fn registerExplicitWorkspaceCapabilityBindings(self: *Session) !void {
         for (self.workspace_binds.items) |bind| {
-            if (bind.kind != .workspace) continue;
-            if (!std.mem.startsWith(u8, bind.bind_path, workspace_managed_venoms_projected_prefix)) continue;
-
-            const alias_tail = bind.bind_path[workspace_managed_venoms_projected_prefix.len..];
-            if (alias_tail.len == 0 or std.mem.indexOfScalar(u8, alias_tail, '/') != null) continue;
-            if (!venom_model.isCapabilityVenomId(alias_tail)) continue;
+            if (bind.kind != .workspace and bind.kind != .workspace_projected) continue;
+            const session_bind_path = if (std.mem.startsWith(u8, bind.bind_path, local_fs_world_prefix ++ "/"))
+                bind.bind_path[local_fs_world_prefix.len..]
+            else
+                bind.bind_path;
+            const binding_venom_id = blk: {
+                if (std.mem.startsWith(u8, bind.bind_path, workspace_managed_venoms_projected_prefix) or
+                    std.mem.startsWith(u8, bind.bind_path, workspace_managed_venoms_absolute_prefix))
+                {
+                    const prefix = if (std.mem.startsWith(u8, bind.bind_path, workspace_managed_venoms_projected_prefix))
+                        workspace_managed_venoms_projected_prefix
+                    else
+                        workspace_managed_venoms_absolute_prefix;
+                    const alias_tail = bind.bind_path[prefix.len..];
+                    if (alias_tail.len == 0 or std.mem.indexOfScalar(u8, alias_tail, '/') != null) continue;
+                    if (!venom_model.isCapabilityVenomId(alias_tail)) continue;
+                    break :blk alias_tail;
+                }
+                if (std.mem.startsWith(u8, bind.bind_path, workspace_managed_targets_projected_prefix) or
+                    std.mem.startsWith(u8, bind.bind_path, workspace_managed_targets_absolute_prefix))
+                {
+                    const target_binding = session_service_discovery.parseTargetBindingForSession(session_bind_path) orelse continue;
+                    break :blk target_binding.capability;
+                }
+                continue;
+            };
 
             const target_service = parseNodeVenomServicePath(bind.target_path) orelse continue;
+            const resolved_provider_node_id = if (try self.resolveCatalogControlPlaneNodeIdForVenom(target_service.node_id, target_service.venom_id)) |value|
+                value
+            else
+                try self.allocator.dupe(u8, target_service.node_id);
+            defer self.allocator.free(resolved_provider_node_id);
             const endpoint_path = blk: {
                 const nodes_root = self.lookupChild(self.root_id, "nodes") orelse break :blk try self.allocator.dupe(u8, bind.target_path);
                 const node_dir_id = self.lookupChild(nodes_root, target_service.node_id) orelse break :blk try self.allocator.dupe(u8, bind.target_path);
@@ -2202,15 +2254,15 @@ pub const Session = struct {
                 const node_dir_id = self.lookupChild(nodes_root, target_service.node_id) orelse break :blk try self.pathWithInvokeSuffix(bind.target_path);
                 const venoms_root_id = self.lookupChild(node_dir_id, "venoms") orelse break :blk try self.pathWithInvokeSuffix(bind.target_path);
                 const provider_dir_id = self.lookupChild(venoms_root_id, target_service.venom_id) orelse break :blk try self.pathWithInvokeSuffix(bind.target_path);
-                break :blk try self.deriveVenomInvokePath(target_service.node_id, target_service.venom_id, provider_dir_id);
+                break :blk try self.deriveVenomInvokePath(resolved_provider_node_id, target_service.venom_id, provider_dir_id);
             };
             defer if (invoke_path) |value| self.allocator.free(value);
 
             try self.registerScopedVenomBindingIfMissing(
-                alias_tail,
+                binding_venom_id,
                 "workspace_binding",
                 bind.bind_path,
-                target_service.node_id,
+                resolved_provider_node_id,
                 bind.target_path,
                 endpoint_path,
                 invoke_path,
@@ -2456,6 +2508,30 @@ pub const Session = struct {
     pub fn resolveCatalogControlPlaneNodeId(self: *Session, node_id: []const u8) !?[]u8 {
         if (!std.mem.eql(u8, node_id, "local")) return try self.allocator.dupe(u8, node_id);
         return self.resolvePreferredLocalCatalogProviderNodeId("fs");
+    }
+
+    pub fn resolveCatalogControlPlaneNodeIdForVenom(self: *Session, node_id: []const u8, venom_id: []const u8) !?[]u8 {
+        if (!std.mem.eql(u8, node_id, "local")) return try self.allocator.dupe(u8, node_id);
+
+        if (self.lookupLocalNodeVenomsRoot()) |local_venoms_root| {
+            if (self.lookupChild(local_venoms_root, venom_id)) |local_venom_dir_id| {
+                if (self.node_aliases.get(local_venom_dir_id)) |aliased_dir_id| {
+                    const aliased_dir = self.nodes.get(aliased_dir_id) orelse return null;
+                    const aliased_parent_id = aliased_dir.parent orelse return null;
+                    const aliased_parent = self.nodes.get(aliased_parent_id) orelse return null;
+                    if (std.mem.eql(u8, aliased_parent.name, "venoms")) {
+                        const node_dir_id = aliased_parent.parent orelse return null;
+                        const node_dir = self.nodes.get(node_dir_id) orelse return null;
+                        if (!std.mem.eql(u8, node_dir.name, "local")) {
+                            return try self.allocator.dupe(u8, node_dir.name);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (try self.resolvePreferredBoundVenomNodeId(venom_id)) |resolved| return resolved;
+        return self.resolveCatalogControlPlaneNodeId(node_id);
     }
 
     fn registerLocalCatalogVenomBinding(self: *Session, venom_id: []const u8, scope: []const u8) !void {
@@ -3649,13 +3725,20 @@ pub const Session = struct {
             defer if (resolved_path) |value| self.allocator.free(value);
             if (resolved_path) |value| {
                 if (!std.mem.eql(u8, value, child_path)) {
-                    if (self.resolveAbsolutePathNoBinds(value)) |resolved_id| return resolved_id;
+                    if (try self.resolveAbsolutePathForMountGraphNoBinds(value)) |resolved_id| return resolved_id;
                 }
             }
         }
 
         if (self.lookupChild(parent_id, name)) |child| return child;
         if (self.workspace_binds.items.len == 0) return null;
+
+        // Bound aliases can resolve to dynamic provider directories under /nodes/*.
+        // Refresh the provider-backed parent before a second lookup so projected
+        // target paths like .spiderweb/targets/<id>/computer/control materialize.
+        self.refreshDynamicDirectory(parent_id) catch {};
+
+        if (self.lookupChild(parent_id, name)) |child| return child;
 
         const projected_parent_path = try self.resolveProjectedPathForBoundTarget(parent_path);
         defer if (projected_parent_path) |value| self.allocator.free(value);
@@ -3671,7 +3754,7 @@ pub const Session = struct {
                 defer if (rebound) |resolved| self.allocator.free(resolved);
                 if (rebound) |resolved| {
                     if (!std.mem.eql(u8, resolved, projected_child_path)) {
-                        if (self.resolveAbsolutePathNoBinds(resolved)) |resolved_id| return resolved_id;
+                        if (try self.resolveAbsolutePathForMountGraphNoBinds(resolved)) |resolved_id| return resolved_id;
                     }
                 }
 
@@ -3843,6 +3926,8 @@ pub const Session = struct {
     }
 
     fn renderDirListing(self: *Session, node_id: u32) ![]u8 {
+        self.refreshDynamicDirectory(node_id) catch {};
+
         const node = self.nodes.get(node_id) orelse return error.MissingNode;
         if (node.kind != .dir) return error.NotDir;
 
@@ -3959,7 +4044,21 @@ pub const Session = struct {
         const absolute_path = try self.nodeAbsolutePath(node_id);
         defer self.allocator.free(absolute_path);
 
-        if (try self.readBoundVenomProxyFileByPath(absolute_path)) |value| return value;
+        if (try self.readBoundVenomProxyFileByPath(absolute_path)) |value| {
+            if (std.mem.indexOf(u8, absolute_path, "/.spiderweb/targets/") != null or
+                std.mem.indexOf(u8, absolute_path, "/venoms/computer-main/") != null or
+                std.mem.indexOf(u8, absolute_path, "/venoms/browser-main/") != null)
+            {
+                std.log.warn("bound proxy read hit path={s} bytes={d}", .{ absolute_path, value.len });
+            }
+            return value;
+        }
+        if (std.mem.indexOf(u8, absolute_path, "/.spiderweb/targets/") != null or
+            std.mem.indexOf(u8, absolute_path, "/venoms/computer-main/") != null or
+            std.mem.indexOf(u8, absolute_path, "/venoms/browser-main/") != null)
+        {
+            std.log.warn("bound proxy read miss path={s}", .{absolute_path});
+        }
         return null;
     }
 
@@ -3995,10 +4094,16 @@ pub const Session = struct {
     ) !?WriteOutcome {
         var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return null;
         defer router.deinit();
+        const requires_commit_on_close = isSpecialControlProxyWritePath(proxy.remote_path);
         const file = router.open(proxy.remote_path, 1) catch return null;
-        defer router.close(file) catch {};
+        errdefer router.close(file) catch {};
         const result_json = router.writeResult(file, offset, data) catch return null;
         defer self.allocator.free(result_json);
+        if (requires_commit_on_close) {
+            try router.close(file);
+        } else {
+            router.close(file) catch {};
+        }
 
         var outcome = WriteOutcome{ .written = data.len };
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, result_json, .{}) catch return outcome;
@@ -4021,8 +4126,51 @@ pub const Session = struct {
         defer self.allocator.free(proxy.remote_path);
         if (std.mem.eql(u8, proxy.remote_path, "/")) return false;
 
+        if (std.mem.indexOf(u8, absolute_path, "/.spiderweb/targets/") != null or
+            std.mem.indexOf(u8, absolute_path, "/venoms/computer-main/") != null or
+            std.mem.indexOf(u8, absolute_path, "/venoms/browser-main/") != null)
+        {
+            std.log.warn(
+                "bound mount write proxy path={s} resolved={s} venom={s} node={s} remote={s}",
+                .{
+                    absolute_path,
+                    resolved_path,
+                    proxy.venom_id,
+                    proxy.provider_node_id orelse "local",
+                    proxy.remote_path,
+                },
+            );
+        }
+
         var router = (try self.boundVenomRouterForProxy(proxy, .server_internal)) orelse return false;
         defer router.deinit();
+
+        if (isSpecialControlProxyWritePath(proxy.remote_path)) {
+            const open_file = router.open(proxy.remote_path, 2) catch |err| switch (err) {
+                error.FileNotFound => router.create(proxy.remote_path, 0o100644, 2) catch |create_err| return switch (create_err) {
+                    error.FileNotFound,
+                    error.OperationNotSupported,
+                    => false,
+                    else => create_err,
+                },
+                error.OperationNotSupported => return false,
+                else => return err,
+            };
+            errdefer router.close(open_file) catch {};
+            // Control payload files are mounted as ordinary JSON files, so shell
+            // redirections and other whole-file rewrites must not leave stale
+            // bytes from the previous payload behind.
+            try router.truncate(proxy.remote_path, 0);
+            if (data.len != 0) {
+                const written = try router.write(open_file, 0, data);
+                if (written != data.len) return error.InvalidPayload;
+            }
+            try router.truncate(proxy.remote_path, data.len);
+            try router.close(open_file);
+            self.markMountGraphParentStale(absolute_path);
+            if (!std.mem.eql(u8, resolved_path, absolute_path)) self.markMountGraphParentStale(resolved_path);
+            return true;
+        }
 
         const existing = router.open(proxy.remote_path, 2) catch |err| switch (err) {
             error.FileNotFound => null,
@@ -4309,6 +4457,11 @@ pub const Session = struct {
         return false;
     }
 
+    fn isSpecialControlProxyWritePath(remote_path: []const u8) bool {
+        return std.mem.startsWith(u8, remote_path, "/control/") and
+            std.mem.endsWith(u8, remote_path, ".json");
+    }
+
     fn boundVenomRouterForProxy(self: *Session, proxy: BoundVenomProxyPath, route_mode: BoundVenomRouteMode) !?acheron_router.Router {
         if (proxy.provider_node_id) |node_id| {
             if (proxy.provider_export_name == null) {
@@ -4465,8 +4618,14 @@ pub const Session = struct {
         route_mode: BoundVenomRouteMode,
     ) !?acheron_router.Router {
         const workspace_mount_auth_token = self.workspace_mount_fs_auth_tokens.get(node_id);
+        const node_secret_auth_token = if (workspace_mount_auth_token == null)
+            try plane.copyNodeSecret(self.allocator, node_id)
+        else
+            null;
+        defer if (node_secret_auth_token) |value| self.allocator.free(value);
+        const fs_auth_token = workspace_mount_auth_token orelse node_secret_auth_token;
         const workspace_mount_fs_url = self.workspace_mount_fs_urls.get(node_id);
-        const routed_fs_url = if (workspace_mount_auth_token != null)
+        const routed_fs_url = if (fs_auth_token != null)
             try self.buildNamespaceRoutedNodeFsUrl(node_id)
         else
             null;
@@ -4505,7 +4664,7 @@ pub const Session = struct {
                     node_id,
                     export_name.?,
                     fs_url,
-                    if (workspace_mount_auth_token != null) "present" else "missing",
+                    if (fs_auth_token != null) "present" else "missing",
                 },
             );
         }
@@ -4516,7 +4675,7 @@ pub const Session = struct {
             .url = fs_url,
             .export_name = selected_export_name,
             .mount_path = "/",
-            .auth_token = workspace_mount_auth_token,
+            .auth_token = fs_auth_token,
         }});
     }
 
@@ -6435,6 +6594,8 @@ pub const Session = struct {
         next_overlay_id: *u64,
         remaining_depth: u32,
     ) anyerror!void {
+        self.refreshDynamicDirectory(source_node_id) catch {};
+
         const source_node = self.nodes.get(source_node_id) orelse return error.MissingNode;
 
         var child_names = std.ArrayListUnmanaged([]const u8){};
@@ -6883,13 +7044,9 @@ pub const Session = struct {
     }
 
     fn tryResolveMutableLocalFsBackedHostPath(self: *Session, absolute_path: []const u8) !?[]u8 {
-        const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
-        if (!pathMatchesPrefixBoundary(normalized_path, local_fs_world_prefix)) return null;
-        if (std.mem.eql(u8, normalized_path, local_fs_world_prefix)) return null;
-
-        if (std.mem.startsWith(u8, normalized_path, workspace_managed_root_absolute)) return null;
-
-        return self.resolveWorkspaceHostPath(normalized_path) catch null;
+        const resolved_path = try self.resolveMutableLocalFsBackedAbsolutePath(absolute_path) orelse return null;
+        defer self.allocator.free(resolved_path);
+        return self.resolveWorkspaceHostPath(resolved_path) catch null;
     }
 
     fn markDynamicDirectoryStale(self: *Session, node_id: u32) void {
@@ -6905,10 +7062,62 @@ pub const Session = struct {
     }
 
     fn tryResolveReadableLocalFsBackedHostPath(self: *Session, absolute_path: []const u8) !?[]u8 {
+        const resolved_path = try self.resolveReadableLocalFsBackedAbsolutePath(absolute_path) orelse return null;
+        defer self.allocator.free(resolved_path);
+        return self.resolveWorkspaceHostPath(resolved_path) catch null;
+    }
+
+    fn resolveMutableLocalFsBackedAbsolutePath(self: *Session, absolute_path: []const u8) !?[]u8 {
+        const resolved_path = try self.resolveReadableLocalFsBackedAbsolutePath(absolute_path) orelse return null;
+        errdefer self.allocator.free(resolved_path);
+        if (std.mem.startsWith(u8, resolved_path, workspace_managed_root_absolute)) {
+            self.allocator.free(resolved_path);
+            return null;
+        }
+        return resolved_path;
+    }
+
+    fn resolveReadableLocalFsBackedAbsolutePath(self: *Session, absolute_path: []const u8) !?[]u8 {
         const normalized_path = std.mem.trimRight(u8, absolute_path, "/");
-        if (!pathMatchesPrefixBoundary(normalized_path, local_fs_world_prefix)) return null;
-        if (std.mem.eql(u8, normalized_path, local_fs_world_prefix)) return null;
-        return self.resolveWorkspaceHostPath(normalized_path) catch null;
+
+        if (pathMatchesPrefixBoundary(normalized_path, local_fs_world_prefix)) {
+            if (std.mem.eql(u8, normalized_path, local_fs_world_prefix)) return null;
+            const duplicated = try self.allocator.dupe(u8, normalized_path);
+            return duplicated;
+        }
+
+        if (try self.projectedWorkspaceRootPathToLocalFsAbsolute(normalized_path)) |projected_path| {
+            return projected_path;
+        }
+
+        const rebound = try self.resolveBoundPath(normalized_path) orelse return null;
+        errdefer self.allocator.free(rebound);
+        if (!pathMatchesPrefixBoundary(rebound, local_fs_world_prefix)) {
+            self.allocator.free(rebound);
+            return null;
+        }
+        if (std.mem.eql(u8, rebound, local_fs_world_prefix)) {
+            self.allocator.free(rebound);
+            return null;
+        }
+        return rebound;
+    }
+
+    fn projectedWorkspaceRootPathToLocalFsAbsolute(self: *Session, normalized_path: []const u8) !?[]u8 {
+        if (normalized_path.len == 0 or normalized_path[0] != '/') return null;
+        if (std.mem.eql(u8, normalized_path, "/")) return null;
+
+        const reserved_roots = [_][]const u8{
+            "/nodes",
+            "/agents",
+            "/shared_data",
+        };
+        for (reserved_roots) |reserved_root| {
+            if (pathMatchesPrefixBoundary(normalized_path, reserved_root)) return null;
+        }
+
+        const projected_path = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ local_fs_world_prefix, normalized_path });
+        return projected_path;
     }
 
     fn namespaceAbsolutePathParent(path: []const u8) ?[]const u8 {
@@ -8573,6 +8782,8 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/control/workspace/home/control/ensure.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/venoms/terminal") != null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/catalog/packages.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/catalog/targets.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/targets/<target_id>/*") != null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/services") == null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "./.spiderweb/local_venoms") == null);
     try std.testing.expect(std.mem.indexOf(u8, namespace_agents.?, "../../..") == null);
@@ -8590,6 +8801,8 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"venom_root\":\"./.spiderweb/venoms\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"control_root\":\"./.spiderweb/control\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"catalog_root\":\"./.spiderweb/catalog\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"targets\":\"./.spiderweb/catalog/targets.json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"targets_root\":\"./.spiderweb/targets\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"node_venom_events\":\"./.spiderweb/catalog/node-venom-events.ndjson\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"required_venoms\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, quickref_json.?, "\"./AGENTS.md\"") != null);
@@ -8606,6 +8819,8 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
     try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"control_path\":\"./.spiderweb/control/workspace/home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"venom_root\":\"./.spiderweb/venoms\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"./.spiderweb/catalog/packages.json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"targets_catalog\":\"./.spiderweb/catalog/targets.json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"targets_root\":\"./.spiderweb/targets\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"fallback_roots\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"required_venoms\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bootstrap_json.?, "\"service\":\"") == null);
@@ -8631,6 +8846,7 @@ test "acheron_session: workspace AGENTS contract is seeded and preserves user no
         "/nodes/local/fs/.spiderweb/catalog/packages.json",
         "/nodes/local/fs/.spiderweb/catalog/providers.json",
         "/nodes/local/fs/.spiderweb/catalog/bindings.json",
+        "/nodes/local/fs/.spiderweb/catalog/targets.json",
         "/nodes/local/fs/.spiderweb/catalog/node-venom-events.ndjson",
         "/nodes/local/fs/.spiderweb/control/workspace/home/control/ensure.json",
         "/nodes/local/fs/.spiderweb/control/workspace/mounts/control/bind.json",
@@ -8856,12 +9072,19 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
     try std.testing.expect(unbound_providers != null);
     try std.testing.expect(std.mem.indexOf(u8, unbound_providers.?, "\"package_id\":\"computer\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, unbound_providers.?, "\"package_id\":\"browser\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_providers.?, "\"node_name\":\"mac-capabilities\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unbound_providers.?, "\"platform\":{\"os\":\"macos\",\"arch\":\"arm64\",\"runtime_kind\":\"native\"}") != null);
 
     const unbound_bindings = try unbound_session.tryReadInternalPath("/nodes/local/fs/.spiderweb/catalog/bindings.json");
     defer if (unbound_bindings) |value| allocator.free(value);
     try std.testing.expect(unbound_bindings != null);
     try std.testing.expect(std.mem.indexOf(u8, unbound_bindings.?, "\"binding_path\":\"/.spiderweb/venoms/computer\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, unbound_bindings.?, "\"binding_path\":\"/.spiderweb/venoms/browser\"") == null);
+
+    const unbound_targets = try unbound_session.tryReadInternalPath("/nodes/local/fs/.spiderweb/catalog/targets.json");
+    defer if (unbound_targets) |value| allocator.free(value);
+    try std.testing.expect(unbound_targets != null);
+    try std.testing.expectEqualStrings("[]", unbound_targets.?);
 
     const unbound_venoms_index = try unbound_session.tryReadInternalPath("/.spiderweb/_compat/global/venoms/VENOMS.json");
     defer if (unbound_venoms_index) |value| allocator.free(value);
@@ -8887,6 +9110,42 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
     const bound_browser = try control_plane.setWorkspaceBind(bind_browser_req);
     defer allocator.free(bound_browser);
 
+    const bind_target_computer_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"bind_path\":\"/.spiderweb/targets/macos/computer\",\"target_path\":\"/nodes/{s}/venoms/computer-main\"}}",
+        .{ workspace_id, workspace_token, node_id },
+    );
+    defer allocator.free(bind_target_computer_req);
+    const bound_target_computer = try control_plane.setWorkspaceBind(bind_target_computer_req);
+    defer allocator.free(bound_target_computer);
+
+    const bind_target_browser_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"bind_path\":\"/.spiderweb/targets/macos/browser\",\"target_path\":\"/nodes/{s}/venoms/browser-main\"}}",
+        .{ workspace_id, workspace_token, node_id },
+    );
+    defer allocator.free(bind_target_browser_req);
+    const bound_target_browser = try control_plane.setWorkspaceBind(bind_target_browser_req);
+    defer allocator.free(bound_target_browser);
+
+    const bind_local_target_computer_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"bind_path\":\"/.spiderweb/targets/linux/computer\",\"target_path\":\"/nodes/local/venoms/computer-main\"}}",
+        .{ workspace_id, workspace_token },
+    );
+    defer allocator.free(bind_local_target_computer_req);
+    const bound_local_target_computer = try control_plane.setWorkspaceBind(bind_local_target_computer_req);
+    defer allocator.free(bound_local_target_computer);
+
+    const bind_local_target_browser_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\",\"bind_path\":\"/.spiderweb/targets/linux/browser\",\"target_path\":\"/nodes/local/venoms/browser-main\"}}",
+        .{ workspace_id, workspace_token },
+    );
+    defer allocator.free(bind_local_target_browser_req);
+    const bound_local_target_browser = try control_plane.setWorkspaceBind(bind_local_target_browser_req);
+    defer allocator.free(bound_local_target_browser);
+
     var bound_session = try Session.initWithOptions(
         allocator,
         runtime_handle,
@@ -8902,6 +9161,29 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
         },
     );
     defer bound_session.deinit();
+
+    var mount_style_session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "mounted-agent",
+        .{
+            .project_id = workspace_id,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "mounted-agent",
+        },
+    );
+    defer mount_style_session.deinit();
+
+    const mount_style_providers = try mount_style_session.tryReadInternalPath("/nodes/local/fs/.spiderweb/catalog/providers.json");
+    defer if (mount_style_providers) |value| allocator.free(value);
+    try std.testing.expect(mount_style_providers != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_style_providers.?, "\"provider_id\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_style_providers.?, "\"package_id\":\"computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_style_providers.?, "\"package_id\":\"browser\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mount_style_providers.?, "\"node_name\":\"mac-capabilities\"") != null);
 
     const bound_computer_path = try bound_session.resolvePreferredServicePath("computer", "/control/invoke.json");
     defer allocator.free(bound_computer_path);
@@ -8928,10 +9210,67 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
     try std.testing.expect(std.mem.indexOf(u8, bound_bindings_via_mount, "\"binding_path\":\"/.spiderweb/venoms/computer\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bound_bindings_via_mount, "\"binding_path\":\"/.spiderweb/venoms/browser\"") != null);
 
+    const bound_targets_json = try bound_session.tryReadInternalPath("/nodes/local/fs/.spiderweb/catalog/targets.json");
+    defer if (bound_targets_json) |value| allocator.free(value);
+    try std.testing.expect(bound_targets_json != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_targets_json.?, "\"target_id\":\"macos\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_targets_json.?, "\"target_id\":\"linux\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_targets_json.?, "\"computer\":\"/.spiderweb/targets/macos/computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_targets_json.?, "\"browser\":\"/.spiderweb/targets/macos/browser\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_targets_json.?, "\"computer\":\"/.spiderweb/targets/linux/computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_targets_json.?, "\"browser\":\"/.spiderweb/targets/linux/browser\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_targets_json.?, "\"provider_ids\":{\"computer\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bound_targets_json.?, "\"availability\":{\"computer\":\"online\",\"browser\":\"online\"}") != null);
+    const expected_local_provider_id = try std.fmt.allocPrint(allocator, "\"provider_ids\":{{\"computer\":\"{s}:computer-main\",\"browser\":\"{s}:browser-main\"}}", .{ node_id, node_id });
+    defer allocator.free(expected_local_provider_id);
+    try std.testing.expect(std.mem.indexOf(u8, bound_targets_json.?, expected_local_provider_id) != null);
+
     const bound_venoms_index_via_mount = try bound_session.readMountGraphFile("/.spiderweb/venoms/VENOMS.json", 0, 8192);
     defer allocator.free(bound_venoms_index_via_mount);
     try std.testing.expect(std.mem.indexOf(u8, bound_venoms_index_via_mount, "\"venom_path\":\"/.spiderweb/venoms/computer\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bound_venoms_index_via_mount, "\"venom_path\":\"/.spiderweb/venoms/browser\"") != null);
+
+    const bound_target_control_via_mount = try bound_session.readMountGraphFile(
+        "/nodes/local/fs/.spiderweb/targets/macos/computer/control/invoke.json",
+        0,
+        64,
+    );
+    defer allocator.free(bound_target_control_via_mount);
+
+    const workspace_req = try std.fmt.allocPrint(allocator, "{{\"workspace_id\":\"{s}\"}}", .{workspace_id});
+    defer allocator.free(workspace_req);
+    const workspace_status_json = try control_plane.workspaceStatusWithRole("codex", workspace_req, true);
+    defer allocator.free(workspace_status_json);
+
+    const target_snapshot_json = try bound_session.buildMountGraphSnapshotPayloadForPath(
+        workspace_status_json,
+        "mount-test",
+        "/nodes/local/fs/.spiderweb/targets/macos/computer",
+        2,
+    );
+    defer allocator.free(target_snapshot_json);
+
+    var parsed_target_snapshot = try std.json.parseFromSlice(std.json.Value, allocator, target_snapshot_json, .{});
+    defer parsed_target_snapshot.deinit();
+    const target_nodes_value = parsed_target_snapshot.value.object.get("nodes") orelse return error.MissingNode;
+    try std.testing.expect(target_nodes_value == .array);
+
+    var found_target_control_dir = false;
+    var found_target_invoke_file = false;
+    for (target_nodes_value.array.items) |node_value| {
+        if (node_value != .object) continue;
+        const path_value = node_value.object.get("path") orelse continue;
+        if (path_value != .string) continue;
+
+        if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/targets/macos/computer/control")) {
+            found_target_control_dir = true;
+        } else if (std.mem.eql(u8, path_value.string, "/nodes/local/fs/.spiderweb/targets/macos/computer/control/invoke.json")) {
+            found_target_invoke_file = true;
+        }
+    }
+
+    try std.testing.expect(found_target_control_dir);
+    try std.testing.expect(found_target_invoke_file);
 
     const bound_computer_proxy = (try bound_session.boundVenomProxyPathForAbsolutePath("/.spiderweb/venoms/computer/control/invoke.json")) orelse return error.MissingNode;
     defer bound_session.allocator.free(bound_computer_proxy.remote_path);
@@ -8939,6 +9278,27 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
     try std.testing.expectEqualStrings(node_id, bound_computer_proxy.provider_node_id.?);
     try std.testing.expectEqualStrings("computer-main", bound_computer_proxy.provider_export_name.?);
     try std.testing.expectEqualStrings("/control/invoke.json", bound_computer_proxy.remote_path);
+
+    const target_computer_proxy = (try bound_session.boundVenomProxyPathForAbsolutePath("/.spiderweb/targets/macos/computer/control/invoke.json")) orelse return error.MissingNode;
+    defer bound_session.allocator.free(target_computer_proxy.remote_path);
+    try std.testing.expectEqualStrings("computer-main", target_computer_proxy.venom_id);
+    try std.testing.expectEqualStrings(node_id, target_computer_proxy.provider_node_id.?);
+    try std.testing.expectEqualStrings("computer-main", target_computer_proxy.provider_export_name.?);
+    try std.testing.expectEqualStrings("/control/invoke.json", target_computer_proxy.remote_path);
+
+    const local_target_computer_proxy = (try bound_session.boundVenomProxyPathForAbsolutePath("/.spiderweb/targets/linux/computer/control/invoke.json")) orelse return error.MissingNode;
+    defer bound_session.allocator.free(local_target_computer_proxy.remote_path);
+    try std.testing.expectEqualStrings("computer-main", local_target_computer_proxy.venom_id);
+    try std.testing.expectEqualStrings(node_id, local_target_computer_proxy.provider_node_id.?);
+    try std.testing.expectEqualStrings("computer-main", local_target_computer_proxy.provider_export_name.?);
+    try std.testing.expectEqualStrings("/control/invoke.json", local_target_computer_proxy.remote_path);
+
+    const mounted_target_computer_proxy = (try bound_session.boundVenomProxyPathForAbsolutePath("/nodes/local/fs/.spiderweb/targets/macos/computer/control/invoke.json")) orelse return error.MissingNode;
+    defer bound_session.allocator.free(mounted_target_computer_proxy.remote_path);
+    try std.testing.expectEqualStrings("computer-main", mounted_target_computer_proxy.venom_id);
+    try std.testing.expectEqualStrings(node_id, mounted_target_computer_proxy.provider_node_id.?);
+    try std.testing.expectEqualStrings("computer-main", mounted_target_computer_proxy.provider_export_name.?);
+    try std.testing.expectEqualStrings("/control/invoke.json", mounted_target_computer_proxy.remote_path);
 
     var found_scoped_computer_binding = false;
     const expected_provider_venom_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/venoms/computer-main", .{node_id});
@@ -8951,6 +9311,16 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
     }
     try std.testing.expect(found_scoped_computer_binding);
 
+    var found_scoped_target_binding = false;
+    for (bound_session.scoped_venom_bindings.items) |binding| {
+        if (!std.mem.eql(u8, binding.venom_path, "/.spiderweb/targets/macos/computer")) continue;
+        found_scoped_target_binding = true;
+        try std.testing.expectEqualStrings("computer", binding.venom_id);
+        try std.testing.expectEqualStrings(node_id, binding.provider_node_id.?);
+        try std.testing.expectEqualStrings(expected_provider_venom_path, binding.provider_venom_path.?);
+    }
+    try std.testing.expect(found_scoped_target_binding);
+
     const node_computer_proxy_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/venoms/computer-main/control/invoke.json", .{node_id});
     defer allocator.free(node_computer_proxy_path);
     const node_computer_proxy = (try bound_session.boundVenomProxyPathForAbsolutePath(node_computer_proxy_path)) orelse return error.MissingNode;
@@ -8959,6 +9329,105 @@ test "acheron_session: computer and browser stay explicit-bind-only until worksp
     try std.testing.expectEqualStrings(node_id, node_computer_proxy.provider_node_id.?);
     try std.testing.expectEqualStrings("computer-main", node_computer_proxy.provider_export_name.?);
     try std.testing.expectEqualStrings("/control/invoke.json", node_computer_proxy.remote_path);
+
+    const provider_result_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/venoms/computer-main/result.json", .{node_id});
+    defer allocator.free(provider_result_path);
+    const provider_status_path = try std.fmt.allocPrint(allocator, "/nodes/{s}/venoms/computer-main/status.json", .{node_id});
+    defer allocator.free(provider_status_path);
+
+    const provider_result_id = bound_session.resolveAbsolutePathNoBinds(provider_result_path) orelse return error.MissingNode;
+    const provider_status_id = bound_session.resolveAbsolutePathNoBinds(provider_status_path) orelse return error.MissingNode;
+    try bound_session.setFileContent(provider_result_id, "{\"state\":\"provider-result\"}");
+    try bound_session.setFileContent(provider_status_id, "{\"state\":\"provider-status\"}");
+    try bound_session.refreshWorkspaceProjectionFromStatus(workspace_status_json);
+
+    const raw_provider_result_via_mount = try bound_session.readMountGraphFile(provider_result_path, 0, 4096);
+    defer allocator.free(raw_provider_result_via_mount);
+    try std.testing.expectEqualStrings("{\"state\":\"provider-result\"}", raw_provider_result_via_mount);
+
+    const target_result_via_mount = try bound_session.readMountGraphFile("/.spiderweb/targets/macos/computer/result.json", 0, 4096);
+    defer allocator.free(target_result_via_mount);
+    try std.testing.expectEqualStrings("{\"state\":\"provider-result\"}", target_result_via_mount);
+
+    const target_status_via_mount = try bound_session.readMountGraphFile("/.spiderweb/targets/macos/computer/status.json", 0, 4096);
+    defer allocator.free(target_status_via_mount);
+    try std.testing.expectEqualStrings("{\"state\":\"provider-status\"}", target_status_via_mount);
+
+    const projected_target_result_via_mount = try bound_session.readMountGraphFile("/nodes/local/fs/.spiderweb/targets/macos/computer/result.json", 0, 4096);
+    defer allocator.free(projected_target_result_via_mount);
+    try std.testing.expectEqualStrings("{\"state\":\"provider-result\"}", projected_target_result_via_mount);
+}
+
+test "acheron_session: remote capability routers use routed node fs urls with node-secret auth" {
+    const allocator = std.testing.allocator;
+
+    var control_plane = control_plane_mod.ControlPlane.init(allocator);
+    defer control_plane.deinit();
+
+    const joined = try control_plane.ensureNode("cross-mac-capabilities", "", 60_000);
+    defer allocator.free(joined);
+    var parsed_node = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
+    defer parsed_node.deinit();
+    const node_id = parsed_node.value.object.get("node_id").?.string;
+    const node_secret = parsed_node.value.object.get("node_secret").?.string;
+
+    const upsert_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"macos\",\"arch\":\"arm64\",\"runtime_kind\":\"native\"}},\"venoms\":[" ++
+            "{{\"venom_id\":\"computer-main\",\"package_id\":\"computer\",\"kind\":\"computer\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"endpoints\":[\"/nodes/{s}/venoms/computer-main\"],\"mounts\":[{{\"mount_id\":\"computer-main\",\"mount_path\":\"/nodes/{s}/venoms/computer-main\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true,\"observe\":true,\"act\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"computer-observe-act-v1\"}}}}" ++
+            "]}}",
+        .{ node_id, node_secret, node_id, node_id },
+    );
+    defer allocator.free(upsert_req);
+    const upserted = try control_plane.nodeVenomUpsert(upsert_req);
+    defer allocator.free(upserted);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "codex",
+        .{
+            .project_id = "proj-1",
+            .project_token = "ws-token-demo",
+            .namespace_mount_url = "ws://127.0.0.1:18790/",
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+            .control_plane = &control_plane,
+            .actor_type = "agent",
+            .actor_id = "codex",
+        },
+    );
+    defer session.deinit();
+
+    var router = (try session.boundVenomRouterForNode(
+        &control_plane,
+        "computer-main",
+        node_id,
+        "computer-main",
+        .server_internal,
+    )) orelse return error.TestExpectedResponse;
+    defer router.deinit();
+
+    const status_json = try router.statusJson(false);
+    defer allocator.free(status_json);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"url\":\"ws://127.0.0.1:18790/fs/node/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"export\":\"computer-main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_json, "\"has_auth\":true") != null);
+}
+
+test "acheron_session: special control proxy writes are detected" {
+    try std.testing.expect(Session.isSpecialControlProxyWritePath("/control/invoke.json"));
+    try std.testing.expect(Session.isSpecialControlProxyWritePath("/control/observe.json"));
+    try std.testing.expect(!Session.isSpecialControlProxyWritePath("/result.json"));
+    try std.testing.expect(!Session.isSpecialControlProxyWritePath("/artifacts/last_observation.json"));
+    try std.testing.expect(!Session.isSpecialControlProxyWritePath("/control"));
 }
 
 test "acheron_session: long-lived sessions refresh explicit-bind packages after node publication" {
@@ -12221,6 +12690,85 @@ test "acheron_session: local fs backed mount writes can create missing project f
     try std.testing.expectEqualStrings("print('ok')\n", created.?);
 }
 
+test "acheron_session: local fs backed mount writes can create projected root files" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expect(try session.tryWriteLocalFsBackedMountFile("/demo-summary.json", "{\"ok\":true}\n"));
+
+    const host_path = try std.fs.path.join(allocator, &.{ exports_dir, "demo-summary.json" });
+    defer allocator.free(host_path);
+    const host_bytes = try std.fs.readFileAlloc(allocator, host_path, 1024);
+    defer allocator.free(host_bytes);
+    try std.testing.expectEqualStrings("{\"ok\":true}\n", host_bytes);
+}
+
+test "acheron_session: local fs backed mount mkdir can create projected root directories" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.makePath("exports");
+
+    const root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    const exports_dir = try std.fs.path.join(allocator, &.{ root, "exports" });
+    defer allocator.free(exports_dir);
+
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .local_fs_export_root = exports_dir,
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    try std.testing.expect(try session.tryMkdirLocalFsBackedMountPath("/artifacts"));
+
+    const host_path = try std.fs.path.join(allocator, &.{ exports_dir, "artifacts" });
+    defer allocator.free(host_path);
+    const stat = try std.fs.statFileAbsolute(host_path);
+    try std.testing.expect(stat.kind == .directory);
+}
+
 test "acheron_session: local fs backed mount writes do not materialize projected shared_data" {
     const allocator = std.testing.allocator;
 
@@ -12536,4 +13084,32 @@ test "acheron_session: bootstrap required venoms match the external-agent core" 
     for (expected, 0..) |venom_id, idx| {
         try std.testing.expectEqualStrings(venom_id, bootstrap_required_venoms[idx].venom_id);
     }
+}
+
+test "session: special write errors preserve large fsrpc tags" {
+    const allocator = std.testing.allocator;
+    const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+        allocator,
+        "execution_failed",
+        "runtime unavailable",
+    );
+    defer runtime_handle.destroy();
+
+    var session = try Session.initWithOptions(
+        allocator,
+        runtime_handle,
+        "default",
+        .{
+            .local_fs_export_root = ".",
+            .agents_dir = ".does-not-exist",
+            .projects_dir = ".does-not-exist",
+        },
+    );
+    defer session.deinit();
+
+    const response = try session.specialWriteErrorResponse(70000, .terminal_invoke, error.InvalidPayload);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"tag\":70000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"code\":\"invalid\"") != null);
 }

@@ -58,6 +58,13 @@ zig build
   --auth-token <admin-or-user-token> \
   mount /mnt/spiderweb-demo
 
+# Inspect a workspace-bound venom directly over the control socket
+./zig-out/bin/spiderweb-control \
+  --auth-token <admin-or-user-token> \
+  --workspace-id <workspace-id> \
+  mount_file_read \
+  '{"path":"/.spiderweb/venoms/computer/health.json","offset":0,"length":4096}'
+
 # macOS local mount example (auto prefers native FSKit when ready)
 ./zig-out/bin/spiderweb-fs-mount \
   --workspace-url ws://127.0.0.1:18790/ \

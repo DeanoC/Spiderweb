@@ -482,6 +482,25 @@ pub const FuseAdapter = struct {
     }
 };
 
+fn invalidateInvokeSideEffects(adapter: *FuseAdapter, path: []const u8) void {
+    if (!std.mem.endsWith(u8, path, "/control/invoke.json")) return;
+    const control_dir = parentPath(path);
+    const service_root = parentPath(control_dir);
+    adapter.path_cache.invalidatePathAndParent(path);
+    adapter.path_cache.invalidatePath(control_dir);
+    adapter.path_cache.invalidatePathAndParent(service_root);
+    adapter.path_cache.invalidateTree(service_root);
+}
+
+fn parentPath(path: []const u8) []const u8 {
+    if (path.len <= 1) return "/";
+    const trimmed = std.mem.trimRight(u8, path, "/");
+    if (trimmed.len <= 1) return "/";
+    const slash_index = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse return "/";
+    if (slash_index == 0) return "/";
+    return trimmed[0..slash_index];
+}
+
 const StableFusePath = struct {
     slice: []const u8,
     owned: ?[]u8 = null,
@@ -703,6 +722,25 @@ fn hasWriteIntentOnOpen(flags: u32) bool {
     if (access_mode != 0) return true;
     if ((flags & 0x200) != 0) return true;
     return hasCreateOnOpenFlag(flags);
+}
+
+fn isDynamicNamespaceFilePath(path: []const u8) bool {
+    if (std.mem.startsWith(u8, path, "/.spiderweb/targets/")) return true;
+    if (std.mem.startsWith(u8, path, "/.spiderweb/venoms/")) return true;
+    if (std.mem.startsWith(u8, path, "/.spiderweb/control/")) return true;
+    if (!std.mem.startsWith(u8, path, "/nodes/")) return false;
+    return std.mem.indexOf(u8, path, "/venoms/") != null;
+}
+
+fn disableKernelFileCache(fi: *c.struct_fuse_file_info) void {
+    c.spiderweb_fi_set_direct_io(fi, 1);
+    c.spiderweb_fi_set_keep_cache(fi, 0);
+}
+
+fn shouldDisableKernelFileCache(path: []const u8, flags: u32) bool {
+    if (isDynamicNamespaceFilePath(path)) return true;
+    if (builtin.os.tag != .linux) return false;
+    return hasWriteIntentOnOpen(flags);
 }
 
 fn openForFuse(adapter: *FuseAdapter, path: []const u8, flags: u32) !mount_provider.OpenFile {
@@ -1162,6 +1200,7 @@ fn cOpen(path_c: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int
     const flags = if (fi) |info| @as(u32, @intCast(c.spiderweb_fi_get_flags(info))) else @as(u32, 0);
     fuseTrace("open path={s} flags={d}", .{ path, flags });
     if (fi) |info| {
+        if (shouldDisableKernelFileCache(path, flags)) disableKernelFileCache(info);
         const opened = openForFuse(adapter, path, flags) catch |err| return toFuseError(err);
         const local_id = adapter.storeOpenHandle(opened) catch |err| {
             adapter.release(opened) catch {};
@@ -1303,6 +1342,7 @@ fn cWrite(path_c: [*c]const u8, buf: [*c]const u8, size: usize, off: c.off_t, fi
         );
         return -fs_protocol.Errno.EIO;
     }
+    invalidateInvokeSideEffects(adapter, path);
     adapter.path_cache.invalidatePath(path);
     return @intCast(written);
 }
@@ -1341,6 +1381,7 @@ fn cWriteWin(path_c: [*c]const u8, buf: [*c]const u8, size: usize, off: c.fuse_o
 
     const input = if (size == 0) "" else buf[0..size];
     const written = adapter.write(open_file, @intCast(off), input) catch |err| return toFuseError(err);
+    invalidateInvokeSideEffects(adapter, path);
     adapter.path_cache.invalidatePath(path);
     return @intCast(written);
 }
@@ -1372,6 +1413,7 @@ fn cCreate(path_c: [*c]const u8, mode: c.mode_t, fi: ?*c.struct_fuse_file_info) 
     const path = stable_path.slice;
     const flags = if (fi) |info| @as(u32, @intCast(c.spiderweb_fi_get_flags(info))) else @as(u32, 2);
     if (fi) |info| {
+        if (shouldDisableKernelFileCache(path, flags)) disableKernelFileCache(info);
         const local_id = adapter.createAndStoreHandle(path, @intCast(mode), flags) catch |err| return toFuseError(err);
         c.spiderweb_fi_set_fh(info, local_id);
     } else {
@@ -1389,6 +1431,7 @@ fn cCreateWin(path_c: [*c]const u8, mode: c.fuse_mode_t, fi: ?*c.struct_fuse_fil
     const path = stable_path.slice;
     const flags = if (fi) |info| @as(u32, @intCast(c.spiderweb_fi_get_flags(info))) else @as(u32, 2);
     if (fi) |info| {
+        if (shouldDisableKernelFileCache(path, flags)) disableKernelFileCache(info);
         const local_id = adapter.createAndStoreHandle(path, @intCast(mode), flags) catch |err| return toFuseError(err);
         c.spiderweb_fi_set_fh(info, local_id);
     } else {
@@ -1863,6 +1906,14 @@ test "fs_fuse_adapter: safeStatCast clamps oversized values" {
     try std.testing.expectEqual(@as(u8, 255), safeStatCast(u8, 1024));
     try std.testing.expectEqual(@as(i16, 32767), safeStatCast(i16, 100_000));
     try std.testing.expectEqual(@as(u32, 42), safeStatCast(u32, 42));
+}
+
+test "fs_fuse_adapter: identifies dynamic namespace file paths" {
+    try std.testing.expect(isDynamicNamespaceFilePath("/.spiderweb/targets/linux/computer/result.json"));
+    try std.testing.expect(isDynamicNamespaceFilePath("/.spiderweb/venoms/git/status.json"));
+    try std.testing.expect(isDynamicNamespaceFilePath("/.spiderweb/control/workspace/home/result.json"));
+    try std.testing.expect(isDynamicNamespaceFilePath("/nodes/node-3/venoms/browser-main/SCHEMA.json"));
+    try std.testing.expect(!isDynamicNamespaceFilePath("/nodes/local/fs/game.py"));
 }
 
 fn parseStatfs(allocator: std.mem.Allocator, json: []const u8) !ParsedStatfs {

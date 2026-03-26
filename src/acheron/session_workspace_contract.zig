@@ -8,6 +8,7 @@ pub const workspace_managed_root_relative = "./.spiderweb";
 pub const workspace_managed_shared_data_dir_name = "shared_data";
 pub const workspace_managed_control_dir_name = "control";
 pub const workspace_managed_catalog_dir_name = "catalog";
+pub const workspace_managed_targets_dir_name = "targets";
 pub const workspace_managed_venoms_dir_name = "venoms";
 pub const workspace_agents_contract_path = "/nodes/local/fs/AGENTS.md";
 pub const namespace_agents_contract_path = "/AGENTS.md";
@@ -35,12 +36,14 @@ const BootstrapContractPaths = struct {
     packages_path: []const u8,
     providers_path: []const u8,
     bindings_path: []const u8,
+    targets_path: []const u8,
     shared_data_root: []const u8,
     world_seed_path: []const u8,
     items_seed_path: []const u8,
     puzzle_seed_path: []const u8,
     control_root: []const u8,
     catalog_root: []const u8,
+    targets_root: []const u8,
     venom_root: []const u8,
     ensure_home_path: []const u8,
     repair_bind_path: []const u8,
@@ -58,15 +61,17 @@ const BootstrapContractPaths = struct {
             .packages_path = try workspaceManagedCatalogPath(allocator, "packages.json"),
             .providers_path = try workspaceManagedCatalogPath(allocator, "providers.json"),
             .bindings_path = try workspaceManagedCatalogPath(allocator, "bindings.json"),
+            .targets_path = try workspaceManagedCatalogPath(allocator, "targets.json"),
             .shared_data_root = try workspaceManagedPath(allocator, "shared_data"),
             .world_seed_path = try workspaceManagedSharedDataPath(allocator, "world_seed.json"),
             .items_seed_path = try workspaceManagedSharedDataPath(allocator, "items_seed.json"),
             .puzzle_seed_path = try workspaceManagedSharedDataPath(allocator, "puzzle_seed.json"),
             .control_root = try workspaceManagedControlPath(allocator, null),
             .catalog_root = try workspaceManagedCatalogPath(allocator, null),
+            .targets_root = try workspaceManagedTargetsPath(allocator, null),
             .venom_root = try workspaceManagedVenomsPath(allocator, null),
             .ensure_home_path = try workspaceManagedControlPath(allocator, "workspace/home/control/ensure.json"),
-            .repair_bind_path = try workspaceManagedControlPath(allocator, "workspace/binds/control/bind.json"),
+            .repair_bind_path = try workspaceManagedControlPath(allocator, "workspace/mounts/control/bind.json"),
             .register_runtime_path = try workspaceManagedControlPath(allocator, "runtimes/control/register.json"),
             .target_template = try workspaceManagedVenomsPath(allocator, "{venom_id}"),
         };
@@ -81,12 +86,14 @@ const BootstrapContractPaths = struct {
         allocator.free(self.packages_path);
         allocator.free(self.providers_path);
         allocator.free(self.bindings_path);
+        allocator.free(self.targets_path);
         allocator.free(self.shared_data_root);
         allocator.free(self.world_seed_path);
         allocator.free(self.items_seed_path);
         allocator.free(self.puzzle_seed_path);
         allocator.free(self.control_root);
         allocator.free(self.catalog_root);
+        allocator.free(self.targets_root);
         allocator.free(self.venom_root);
         allocator.free(self.ensure_home_path);
         allocator.free(self.repair_bind_path);
@@ -115,6 +122,7 @@ pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) !
         "packages.json",
         "providers.json",
         "bindings.json",
+        "targets.json",
         "drift.json",
         "reconcile.json",
         "availability.json",
@@ -154,8 +162,12 @@ pub fn buildWorkspaceContractsJson(session: anytype, workspace_id: []const u8) !
     try jw.write("/.spiderweb/catalog/providers.json");
     try jw.objectField("bindings");
     try jw.write("/.spiderweb/catalog/bindings.json");
+    try jw.objectField("targets");
+    try jw.write("/.spiderweb/catalog/targets.json");
     try jw.objectField("node_venom_events");
     try jw.write("/.spiderweb/catalog/node-venom-events.ndjson");
+    try jw.objectField("targets_root");
+    try jw.write("/.spiderweb/targets");
     try jw.objectField("agent_bootstrap");
     try jw.write("/.spiderweb/agent_bootstrap.json");
     try jw.objectField("agent_bootstrap_quickref");
@@ -202,6 +214,15 @@ pub fn buildWorkspacePathsJson(session: anytype, policy: workspace_policy.Worksp
     try jw.write("/.spiderweb/catalog/providers.json");
     try jw.objectField("bindings");
     try jw.write("/.spiderweb/catalog/bindings.json");
+    try jw.objectField("targets");
+    try jw.write("/.spiderweb/catalog/targets.json");
+    try jw.endObject();
+    try jw.objectField("targets");
+    try jw.beginObject();
+    try jw.objectField("root");
+    try jw.write("/.spiderweb/targets");
+    try jw.objectField("catalog");
+    try jw.write("/.spiderweb/catalog/targets.json");
     try jw.endObject();
     try jw.objectField("venoms");
     try jw.beginObject();
@@ -261,6 +282,8 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, workspace_id: []const u
     try jw.write(paths.control_root);
     try jw.objectField("catalog_root");
     try jw.write(paths.catalog_root);
+    try jw.objectField("targets_root");
+    try jw.write(paths.targets_root);
 
     try jw.objectField("workspace_contract");
     try jw.beginObject();
@@ -288,6 +311,8 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, workspace_id: []const u
     try jw.write(paths.providers_path);
     try jw.objectField("bindings");
     try jw.write(paths.bindings_path);
+    try jw.objectField("targets");
+    try jw.write(paths.targets_path);
     try jw.objectField("shared_data_root");
     try jw.write(paths.shared_data_root);
     try jw.objectField("venom_root");
@@ -296,6 +321,8 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, workspace_id: []const u
     try jw.write(paths.control_root);
     try jw.objectField("catalog_root");
     try jw.write(paths.catalog_root);
+    try jw.objectField("targets_root");
+    try jw.write(paths.targets_root);
     try jw.objectField("workspace_write_root");
     try jw.write(".");
     try jw.endObject();
@@ -311,6 +338,8 @@ pub fn buildAgentBootstrapQuickrefJson(session: anytype, workspace_id: []const u
     try jw.write(paths.providers_path);
     try jw.objectField("bindings");
     try jw.write(paths.bindings_path);
+    try jw.objectField("targets");
+    try jw.write(paths.targets_path);
     try jw.endObject();
 
     try jw.objectField("required_venoms");
@@ -362,6 +391,7 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
         paths.packages_path,
         paths.providers_path,
         paths.bindings_path,
+        paths.targets_path,
         paths.workspace_status_path,
     };
     const required_venom_ids = [_][]const u8{ "terminal", "git", "search_code" };
@@ -409,12 +439,16 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.write(paths.providers_path);
     try jw.objectField("bindings");
     try jw.write(paths.bindings_path);
+    try jw.objectField("targets");
+    try jw.write(paths.targets_path);
     try jw.objectField("shared_data_root");
     try jw.write(paths.shared_data_root);
     try jw.objectField("control_root");
     try jw.write(paths.control_root);
     try jw.objectField("catalog_root");
     try jw.write(paths.catalog_root);
+    try jw.objectField("targets_root");
+    try jw.write(paths.targets_root);
     try jw.objectField("venom_root");
     try jw.write(paths.venom_root);
     try jw.objectField("workspace_write_root");
@@ -425,6 +459,16 @@ pub fn buildAgentBootstrapJson(session: anytype, workspace_id: []const u8, agent
     try jw.beginObject();
     try jw.objectField("preferred_root");
     try jw.write(paths.venom_root);
+    try jw.endObject();
+
+    try jw.objectField("target_preference");
+    try jw.beginObject();
+    try jw.objectField("targets_catalog");
+    try jw.write(paths.targets_path);
+    try jw.objectField("targets_root");
+    try jw.write(paths.targets_root);
+    try jw.objectField("prefer_stable_target_paths");
+    try jw.write(true);
     try jw.endObject();
 
     try jw.objectField("required_reads");
@@ -594,6 +638,9 @@ fn namespacePathToEntrypointRelative(allocator: std.mem.Allocator, namespace_pat
     if (std.mem.endsWith(u8, namespace_path, "/meta/bindings.json")) {
         return workspaceManagedCatalogPath(allocator, "bindings.json");
     }
+    if (std.mem.endsWith(u8, namespace_path, "/meta/targets.json")) {
+        return workspaceManagedCatalogPath(allocator, "targets.json");
+    }
     if (std.mem.endsWith(u8, namespace_path, "/meta/mounted_services.json")) {
         return workspaceManagedCatalogPath(allocator, "bindings.json");
     }
@@ -640,6 +687,10 @@ fn workspaceManagedCatalogPath(allocator: std.mem.Allocator, leaf: ?[]const u8) 
 
 fn workspaceManagedVenomsPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
     return workspaceManagedChildPath(allocator, workspace_managed_venoms_dir_name, leaf);
+}
+
+fn workspaceManagedTargetsPath(allocator: std.mem.Allocator, leaf: ?[]const u8) ![]u8 {
+    return workspaceManagedChildPath(allocator, workspace_managed_targets_dir_name, leaf);
 }
 
 fn writeBootstrapRequiredVenoms(session: anytype, jw: *std.json.Stringify) !usize {
@@ -724,6 +775,7 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, workspace_id: []const u8) 
         \\   - `{s}`
         \\   - `{s}`
         \\3. Use `{s}/*` as the preferred capability surface, `{s}/*` for workspace/runtime control, and `{s}/*` for discovery metadata.
+        \\   For multi-machine automation, read `{s}` after bootstrap and then use stable target paths under `{s}/<target_id>/*` instead of raw `/nodes/...` provider paths whenever the target catalog is present.
         \\4. If `{s}` succeeds and `agent_bootstrap_quickref.json` says `all_required_venoms_present=true`, treat bootstrap as complete immediately and start implementation. Do not keep exploring or re-probing after that point.
         \\5. Keep workspace writes inside the current directory `.` unless the user prompt explicitly says otherwise.
         \\6. When creating or fixing workspace files, rewrite the whole target file in one pass. Do not append partial repair fragments to an existing file. If you need to create multiple files, write them in separate commands so one long shell command cannot partially fail the whole set.
@@ -739,6 +791,7 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, workspace_id: []const u8) 
         \\- Shared data root from here: `{s}`
         \\- Control root from here: `{s}`
         \\- Catalog root from here: `{s}`
+        \\- Target root from here: `{s}`
         \\- Venom root from here: `{s}`
         \\
         \\## Current Capability Surface
@@ -776,12 +829,15 @@ fn buildWorkspaceAgentsManagedBlock(session: anytype, workspace_id: []const u8) 
             paths.venom_root,
             paths.control_root,
             paths.catalog_root,
+            paths.targets_path,
+            paths.targets_root,
             paths.ensure_home_path,
             paths.shared_data_root,
             paths.shared_data_root,
             paths.shared_data_root,
             paths.control_root,
             paths.catalog_root,
+            paths.targets_root,
             paths.venom_root,
             available_text,
             missing_text,

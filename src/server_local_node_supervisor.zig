@@ -396,6 +396,7 @@ pub const LocalNodeSupervisor = struct {
     fn prepareLaunch(self: *LocalNodeSupervisor) !void {
         try ensureDirectoryExists(self.state_dir);
         try ensureDirectoryExists(self.driver_bin_dir);
+        try ensureDirectoryExists(self.export_root);
         try self.stageCapabilityDrivers();
         try deleteTreeIfPresent(self.manifests_dir);
         try ensureDirectoryExists(self.manifests_dir);

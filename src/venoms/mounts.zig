@@ -204,14 +204,16 @@ fn parseOp(raw: []const u8) ?Op {
     return null;
 }
 
-fn resolveProjectScope(args_obj: std.json.ObjectMap) !MountProjectScope {
-    const project_id_raw = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_id"}) orelse
+fn resolveProjectScope(self: anytype, args_obj: std.json.ObjectMap) !MountProjectScope {
+    const project_id_raw = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_id", "project_id"}) orelse
+        self.active_namespace_workspace_id orelse
+        self.workspace_id orelse
         return error.InvalidPayload;
     const project_id = std.mem.trim(u8, project_id_raw, " \t\r\n");
     if (project_id.len == 0) return error.InvalidPayload;
     return .{
         .project_id = project_id,
-        .project_token = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_token"}),
+        .project_token = extractOptionalStringByNames(args_obj, &[_][]const u8{"workspace_token", "project_token"}) orelse self.workspace_token,
     };
 }
 
@@ -267,7 +269,7 @@ fn executeOp(self: anytype, op: Op, args_obj: std.json.ObjectMap, written: usize
 }
 
 fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap) ![]u8 {
-    const scope = try resolveProjectScope(args_obj);
+    const scope = try resolveProjectScope(self, args_obj);
     switch (op) {
         .list => return buildListResultJson(self, scope.project_id, scope.project_token),
         .mount => {
@@ -588,7 +590,7 @@ fn statusToolName(op: Op) []const u8 {
 
 fn buildListResultJson(self: anytype, project_id_override: ?[]const u8, project_token_override: ?[]const u8) ![]u8 {
     const plane = self.control_plane orelse return buildSuccessResultJson(self, .list, "{\"workspace_id\":null,\"mounts\":[],\"binds\":[]}");
-    const project_id = project_id_override orelse self.workspace_id orelse return buildSuccessResultJson(self, .list, "{\"workspace_id\":null,\"mounts\":[],\"binds\":[]}");
+    const project_id = project_id_override orelse self.active_namespace_workspace_id orelse self.workspace_id orelse return buildSuccessResultJson(self, .list, "{\"workspace_id\":null,\"mounts\":[],\"binds\":[]}");
     const project_token = if (project_token_override) |value| value else self.workspace_token;
     const escaped_project = try unified.jsonEscape(self.allocator, project_id);
     defer self.allocator.free(escaped_project);

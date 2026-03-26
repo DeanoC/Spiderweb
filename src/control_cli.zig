@@ -30,6 +30,10 @@ pub fn main() !void {
     var url: []const u8 = default_ws_url;
     var operator_token: ?[]const u8 = null;
     var auth_token: ?[]const u8 = null;
+    var attach_workspace_id: ?[]const u8 = null;
+    var attach_workspace_token: ?[]const u8 = null;
+    var attach_session_key: []const u8 = "main";
+    var attach_agent_id: ?[]const u8 = null;
     var op_arg: ?[]const u8 = null;
     var payload_arg: ?[]const u8 = null;
 
@@ -54,6 +58,30 @@ pub fn main() !void {
             auth_token = args[i];
             continue;
         }
+        if (std.mem.eql(u8, arg, "--workspace-id")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            attach_workspace_id = args[i];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--workspace-token")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            attach_workspace_token = args[i];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--session-key")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            attach_session_key = args[i];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--agent-id")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            attach_agent_id = args[i];
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printHelp();
             return;
@@ -74,6 +102,12 @@ pub fn main() !void {
         try printHelp();
         return error.InvalidArguments;
     };
+    if (attach_workspace_id == null) {
+        if (attach_workspace_token != null or attach_agent_id != null or !std.mem.eql(u8, attach_session_key, "main")) {
+            try printHelp();
+            return error.InvalidArguments;
+        }
+    }
 
     const op_type = try normalizeControlType(allocator, op_input);
     defer allocator.free(op_type);
@@ -123,6 +157,32 @@ pub fn main() !void {
     const connect_reply = try readControlReplyForId(allocator, &stream, "control-cli-connect");
     defer allocator.free(connect_reply);
     try ensureControlReplyType(allocator, connect_reply, "control.connect_ack");
+
+    if (attach_workspace_id != null and !std.mem.eql(u8, op_type, "control.session_attach")) {
+        const effective_agent_id = attach_agent_id orelse try connectReplyAgentId(allocator, connect_reply);
+        defer if (attach_agent_id == null) allocator.free(effective_agent_id);
+        const attach_payload_json = try buildSessionAttachPayloadJson(
+            allocator,
+            attach_session_key,
+            effective_agent_id,
+            attach_workspace_id.?,
+            attach_workspace_token,
+        );
+        defer allocator.free(attach_payload_json);
+
+        try sendControlMessage(
+            allocator,
+            &stream,
+            .{
+                .request_id = "control-cli-session-attach",
+                .msg_type = "control.session_attach",
+                .payload_json = attach_payload_json,
+            },
+        );
+        const attach_reply = try readControlReplyForId(allocator, &stream, "control-cli-session-attach");
+        defer allocator.free(attach_reply);
+        try ensureControlReplyType(allocator, attach_reply, "control.session_attach");
+    }
 
     try sendControlMessage(
         allocator,
@@ -235,6 +295,51 @@ test "control_cli: buildPayloadJson injects operator token for workspace bind se
     );
 }
 
+test "control_cli: buildSessionAttachPayloadJson renders workspace attach without workspace token" {
+    const allocator = std.testing.allocator;
+    const payload = try buildSessionAttachPayloadJson(
+        allocator,
+        "main",
+        "codex",
+        "ws-123",
+        null,
+    );
+    defer allocator.free(payload);
+
+    try std.testing.expectEqualStrings(
+        "{\"session_key\":\"main\",\"agent_id\":\"codex\",\"workspace_id\":\"ws-123\"}",
+        payload,
+    );
+}
+
+test "control_cli: buildSessionAttachPayloadJson renders optional workspace token" {
+    const allocator = std.testing.allocator;
+    const payload = try buildSessionAttachPayloadJson(
+        allocator,
+        "secondary",
+        "codex",
+        "ws-123",
+        "ws-token-abc",
+    );
+    defer allocator.free(payload);
+
+    try std.testing.expectEqualStrings(
+        "{\"session_key\":\"secondary\",\"agent_id\":\"codex\",\"workspace_id\":\"ws-123\",\"workspace_token\":\"ws-token-abc\"}",
+        payload,
+    );
+}
+
+test "control_cli: connectReplyAgentId reads agent id from connect ack" {
+    const allocator = std.testing.allocator;
+    const agent_id = try connectReplyAgentId(
+        allocator,
+        "{\"channel\":\"control\",\"type\":\"control.connect_ack\",\"id\":\"connect\",\"payload\":{\"agent_id\":\"codex\"}}",
+    );
+    defer allocator.free(agent_id);
+
+    try std.testing.expectEqualStrings("codex", agent_id);
+}
+
 const ControlSend = struct {
     request_id: []const u8,
     msg_type: []const u8,
@@ -284,6 +389,50 @@ fn controlReplyType(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     const type_val = parsed.value.object.get("type") orelse return error.InvalidResponse;
     if (type_val != .string or type_val.string.len == 0) return error.InvalidResponse;
     return allocator.dupe(u8, type_val.string);
+}
+
+fn connectReplyAgentId(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidResponse;
+
+    const payload = parsed.value.object.get("payload") orelse return error.InvalidResponse;
+    if (payload != .object) return error.InvalidResponse;
+
+    const agent_id = payload.object.get("agent_id") orelse return error.InvalidResponse;
+    if (agent_id != .string or agent_id.string.len == 0) return error.InvalidResponse;
+    return allocator.dupe(u8, agent_id.string);
+}
+
+fn buildSessionAttachPayloadJson(
+    allocator: std.mem.Allocator,
+    session_key: []const u8,
+    agent_id: []const u8,
+    workspace_id: []const u8,
+    workspace_token: ?[]const u8,
+) ![]u8 {
+    const escaped_session_key = try jsonEscape(allocator, session_key);
+    defer allocator.free(escaped_session_key);
+    const escaped_agent_id = try jsonEscape(allocator, agent_id);
+    defer allocator.free(escaped_agent_id);
+    const escaped_workspace_id = try jsonEscape(allocator, workspace_id);
+    defer allocator.free(escaped_workspace_id);
+
+    if (workspace_token) |token| {
+        const escaped_workspace_token = try jsonEscape(allocator, token);
+        defer allocator.free(escaped_workspace_token);
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"workspace_token\":\"{s}\"}}",
+            .{ escaped_session_key, escaped_agent_id, escaped_workspace_id, escaped_workspace_token },
+        );
+    }
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"session_key\":\"{s}\",\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\"}}",
+        .{ escaped_session_key, escaped_agent_id, escaped_workspace_id },
+    );
 }
 
 fn readControlReplyForId(allocator: std.mem.Allocator, stream: *std.net.Stream, request_id: []const u8) ![]u8 {
@@ -549,16 +698,18 @@ fn printHelp() !void {
         \\spiderweb-control - Unified v2 control-plane CLI
         \\
         \\Usage:
-        \\  spiderweb-control [--url <ws-url>] [--auth-token <token>] [--operator-token <token>] <operation> [payload-json]
+        \\  spiderweb-control [--url <ws-url>] [--auth-token <token>] [--operator-token <token>] [--workspace-id <id>] [--workspace-token <token>] [--session-key <key>] [--agent-id <id>] <operation> [payload-json]
         \\
         \\Notes:
         \\  - Automatically negotiates control.version and control.connect before the operation.
+        \\  - When --workspace-id is provided, the CLI also does control.session_attach on the same websocket before the requested operation.
         \\  - Provide auth via --auth-token or SPIDERWEB_AUTH_TOKEN.
         \\  - <operation> may be passed as either "workspace_status" or "control.workspace_status".
         \\  - Prints the full control reply envelope as JSON.
         \\
         \\Examples:
         \\  spiderweb-control workspace_status
+        \\  spiderweb-control --workspace-id ws-7 mount_file_read '{"path":"/.spiderweb/venoms/computer/health.json","offset":0,"length":4096}'
         \\  spiderweb-control --auth-token sw-admin-... auth_status
         \\  spiderweb-control workspace_list
         \\  spiderweb-control workspace_create '{"name":"Demo","vision":"Track and deliver demo milestones"}'

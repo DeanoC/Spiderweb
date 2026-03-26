@@ -568,7 +568,7 @@ fn buildInstallReleaseJson(
             getRequiredString(release_entry, "digest") orelse return error.InvalidBundleRelease,
             std.json.fmt(release_entry.get("signature") orelse return error.InvalidBundleRelease, .{}),
             std.json.fmt(release_entry.get("trust") orelse return error.InvalidBundleRelease, .{}),
-            std.json.fmt(.{ .object = manifest }, .{}),
+            std.json.fmt(std.json.Value{ .object = manifest }, .{}),
         },
     );
 }

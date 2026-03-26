@@ -7,6 +7,7 @@ pub const Op = enum {
     list,
     catalog,
     updates,
+    update,
     get,
     channel_get,
     channel_set,
@@ -36,13 +37,13 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
         packages_dir,
         "Packages",
         shape_json,
-        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_catalog\",\"packages_updates\",\"packages_get\",\"packages_channel_get\",\"packages_channel_set\",\"packages_channel_clear\",\"packages_install\",\"packages_enable\",\"packages_switch\",\"packages_disable\",\"packages_rollback\",\"packages_remove\"],\"discoverable\":true}",
-        "List, inspect, install, enable, switch, disable, rollback, remove, and manage registry channel policy for package definitions available to this Spiderweb host.",
+        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_catalog\",\"packages_updates\",\"packages_update\",\"packages_get\",\"packages_channel_get\",\"packages_channel_set\",\"packages_channel_clear\",\"packages_install\",\"packages_enable\",\"packages_switch\",\"packages_disable\",\"packages_rollback\",\"packages_remove\"],\"discoverable\":true}",
+        "List, inspect, discover updates for, install, update, enable, switch, disable, rollback, remove, and manage registry channel policy for package definitions available to this Spiderweb host.",
     );
     _ = try self.addFile(
         packages_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"catalog\":\"control/catalog.json\",\"updates\":\"control/updates.json\",\"get\":\"control/get.json\",\"channel_get\":\"control/channel_get.json\",\"channel_set\":\"control/channel_set.json\",\"channel_clear\":\"control/channel_clear.json\",\"install\":\"control/install.json\",\"enable\":\"control/enable.json\",\"switch\":\"control/switch.json\",\"disable\":\"control/disable.json\",\"rollback\":\"control/rollback.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"catalog\":\"packages_catalog\",\"updates\":\"packages_updates\",\"get\":\"packages_get\",\"channel_get\":\"packages_channel_get\",\"channel_set\":\"packages_channel_set\",\"channel_clear\":\"packages_channel_clear\",\"install\":\"packages_install\",\"enable\":\"packages_enable\",\"switch\":\"packages_switch\",\"disable\":\"packages_disable\",\"rollback\":\"packages_rollback\",\"remove\":\"packages_remove\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"catalog\":\"control/catalog.json\",\"updates\":\"control/updates.json\",\"update\":\"control/update.json\",\"get\":\"control/get.json\",\"channel_get\":\"control/channel_get.json\",\"channel_set\":\"control/channel_set.json\",\"channel_clear\":\"control/channel_clear.json\",\"install\":\"control/install.json\",\"enable\":\"control/enable.json\",\"switch\":\"control/switch.json\",\"disable\":\"control/disable.json\",\"rollback\":\"control/rollback.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"catalog\":\"packages_catalog\",\"updates\":\"packages_updates\",\"update\":\"packages_update\",\"get\":\"packages_get\",\"channel_get\":\"packages_channel_get\",\"channel_set\":\"packages_channel_set\",\"channel_clear\":\"packages_channel_clear\",\"install\":\"packages_install\",\"enable\":\"packages_enable\",\"switch\":\"packages_switch\",\"disable\":\"packages_disable\",\"rollback\":\"packages_rollback\",\"remove\":\"packages_remove\"}}",
         false,
         .none,
     );
@@ -88,7 +89,7 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Use list/catalog/updates/get/channel_get/channel_set/channel_clear/install/enable/switch/disable/rollback/remove operation files, or invoke.json with op=list|catalog|updates|get|channel_get|channel_set|channel_clear|install|enable|switch|disable|rollback|remove plus arguments.\n",
+        "Use list/catalog/updates/update/get/channel_get/channel_set/channel_clear/install/enable/switch/disable/rollback/remove operation files, or invoke.json with op=list|catalog|updates|update|get|channel_get|channel_set|channel_clear|install|enable|switch|disable|rollback|remove plus arguments.\n",
         false,
         .none,
     );
@@ -96,6 +97,7 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(control_dir, "list.json", "", true, .packages_list);
     _ = try self.addFile(control_dir, "catalog.json", "", true, .packages_catalog);
     _ = try self.addFile(control_dir, "updates.json", "", true, .packages_updates);
+    _ = try self.addFile(control_dir, "update.json", "", true, .packages_update);
     _ = try self.addFile(control_dir, "get.json", "", true, .packages_get);
     _ = try self.addFile(control_dir, "channel_get.json", "", true, .packages_channel_get);
     _ = try self.addFile(control_dir, "channel_set.json", "", true, .packages_channel_set);
@@ -122,6 +124,7 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
         .packages_list => Op.list,
         .packages_catalog => Op.catalog,
         .packages_updates => Op.updates,
+        .packages_update => Op.update,
         .packages_get => Op.get,
         .packages_channel_get => Op.channel_get,
         .packages_channel_set => Op.channel_set,
@@ -165,6 +168,7 @@ fn parseOp(raw: []const u8) ?Op {
     if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "packages_list")) return .list;
     if (std.mem.eql(u8, value, "catalog") or std.mem.eql(u8, value, "packages_catalog")) return .catalog;
     if (std.mem.eql(u8, value, "updates") or std.mem.eql(u8, value, "packages_updates")) return .updates;
+    if (std.mem.eql(u8, value, "update") or std.mem.eql(u8, value, "packages_update")) return .update;
     if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "packages_get")) return .get;
     if (std.mem.eql(u8, value, "channel_get") or std.mem.eql(u8, value, "packages_channel_get")) return .channel_get;
     if (std.mem.eql(u8, value, "channel_set") or std.mem.eql(u8, value, "packages_channel_set")) return .channel_set;
@@ -228,6 +232,28 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
             };
             defer self.allocator.free(updates_json);
             break :blk buildSingleResultJson(self, .updates, "updates", updates_json);
+        },
+        .update => blk: {
+            const control = plane orelse return error.InvalidPayload;
+            const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
+            const request = try buildPackageUpdateRequestJson(
+                self.allocator,
+                venom_id,
+                extractOptionalStringByNames(args_obj, &.{"release_version"}),
+                extractOptionalStringByNames(args_obj, &.{"channel"}),
+                try extractOptionalBoolByNames(args_obj, &.{ "activate", "switch" }, false),
+            );
+            defer self.allocator.free(request);
+            const update_json = control.updateVenomPackage(request) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.VenomPackageBuiltinProtected => return error.AccessDenied,
+                control_plane_mod.ControlPlaneError.VenomPackageNotFound,
+                control_plane_mod.ControlPlaneError.InvalidPayload,
+                control_plane_mod.ControlPlaneError.MissingField,
+                => return error.InvalidPayload,
+                else => return err,
+            };
+            defer self.allocator.free(update_json);
+            break :blk buildSingleResultJson(self, .update, "update", update_json);
         },
         .get => blk: {
             const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
@@ -513,6 +539,24 @@ fn buildDetailedPackageRequestJson(
     );
 }
 
+fn buildPackageUpdateRequestJson(
+    allocator: std.mem.Allocator,
+    venom_id: []const u8,
+    release_version: ?[]const u8,
+    channel: ?[]const u8,
+    activate: bool,
+) ![]u8 {
+    const release_json = try optionalJsonFieldFromString(allocator, release_version);
+    defer allocator.free(release_json);
+    const channel_json = try optionalJsonFieldFromString(allocator, channel);
+    defer allocator.free(channel_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"venom_id\":\"{s}\",\"release_version\":{s},\"channel\":{s},\"activate\":{s}}}",
+        .{ venom_id, release_json, channel_json, if (activate) "true" else "false" },
+    );
+}
+
 fn buildChannelPolicyRequestJson(
     allocator: std.mem.Allocator,
     venom_id: ?[]const u8,
@@ -542,6 +586,7 @@ fn operationName(op: Op) []const u8 {
         .list => "list",
         .catalog => "catalog",
         .updates => "updates",
+        .update => "update",
         .get => "get",
         .channel_get => "channel_get",
         .channel_set => "channel_set",
@@ -560,6 +605,7 @@ fn statusToolName(op: Op) []const u8 {
         .list => "packages_list",
         .catalog => "packages_catalog",
         .updates => "packages_updates",
+        .update => "packages_update",
         .get => "packages_get",
         .channel_get => "packages_channel_get",
         .channel_set => "packages_channel_set",
@@ -580,4 +626,14 @@ fn extractOptionalStringByNames(obj: std.json.ObjectMap, names: []const []const 
         }
     }
     return null;
+}
+
+fn extractOptionalBoolByNames(obj: std.json.ObjectMap, names: []const []const u8, default_value: bool) !bool {
+    for (names) |name| {
+        if (obj.get(name)) |value| {
+            if (value != .bool) return error.InvalidPayload;
+            return value.bool;
+        }
+    }
+    return default_value;
 }

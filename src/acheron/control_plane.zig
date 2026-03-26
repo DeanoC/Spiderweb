@@ -1408,6 +1408,10 @@ pub const ControlPlane = struct {
     pub fn listVenomPackageUpdates(self: *ControlPlane) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
+        return self.renderVenomPackageUpdatesJsonLocked();
+    }
+
+    fn renderVenomPackageUpdatesJsonLocked(self: *ControlPlane) ![]u8 {
         const installed_package_states = try collectInstalledPackageStatesLocked(self.allocator, self.installed_venom_packages.items, self.installed_venom_releases.items);
         defer self.allocator.free(installed_package_states);
         return venom_registry.buildUpdatesJson(
@@ -1587,6 +1591,139 @@ pub const ControlPlane = struct {
         const release_version = getOptionalString(obj, "release_version");
         const channel = getOptionalString(obj, "channel");
         const activate = try getOptionalBoolByNames(obj, &.{ "activate", "switch" }, false);
+        return self.updateVenomPackageLocked(venom_id, release_version, channel, activate);
+    }
+
+    pub fn updateVenomPackagesBatch(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var payload = try parsePayload(self.allocator, payload_json);
+        defer payload.deinit();
+        var selection = try parseBatchPackageUpdateSelection(self.allocator, payload.value.object);
+        defer selection.deinit(self.allocator);
+
+        var candidates = try collectBatchPackageUpdateCandidatesLocked(self, selection.package_ids.items);
+        defer deinitBatchPackageUpdateCandidates(self.allocator, &candidates);
+
+        var results = std.ArrayListUnmanaged(u8){};
+        defer results.deinit(self.allocator);
+        try results.append(self.allocator, '[');
+
+        var updated_count: usize = 0;
+        var switched_count: usize = 0;
+        var preview_count: usize = 0;
+        var up_to_date_count: usize = 0;
+        var not_found_count: usize = 0;
+        var error_count: usize = 0;
+        var appended_any = false;
+
+        for (candidates.items) |candidate| {
+            if (appended_any) try results.append(self.allocator, ',');
+            appended_any = true;
+            if (selection.apply) {
+                const update_json = self.updateVenomPackageLocked(
+                    candidate.package_id,
+                    candidate.target_release_version,
+                    candidate.target_channel,
+                    selection.activate,
+                ) catch |err| {
+                    error_count += 1;
+                    const package_id_json = try optionalJsonStringField(self.allocator, candidate.package_id);
+                    defer self.allocator.free(package_id_json);
+                    const target_release_json = try optionalJsonStringField(self.allocator, candidate.target_release_version);
+                    defer self.allocator.free(target_release_json);
+                    const target_channel_json = try optionalJsonStringField(self.allocator, candidate.target_channel);
+                    defer self.allocator.free(target_channel_json);
+                    try results.writer(self.allocator).print(
+                        "{{\"status\":\"error\",\"package_id\":{s},\"target_release_version\":{s},\"target_channel\":{s},\"error\":\"{s}\"}}",
+                        .{ package_id_json, target_release_json, target_channel_json, @errorName(err) },
+                    );
+                    continue;
+                };
+                defer self.allocator.free(update_json);
+
+                var parsed_update = try std.json.parseFromSlice(std.json.Value, self.allocator, update_json, .{});
+                defer parsed_update.deinit();
+                if (parsed_update.value != .object) return ControlPlaneError.InvalidPayload;
+                if (try getRequiredBool(parsed_update.value.object, "changed")) updated_count += 1;
+                if (try getRequiredBool(parsed_update.value.object, "switched")) switched_count += 1;
+                try results.writer(self.allocator).print(
+                    "{{\"status\":\"updated\",\"update\":{s}}}",
+                    .{update_json},
+                );
+            } else {
+                preview_count += 1;
+                const package_id_json = try optionalJsonStringField(self.allocator, candidate.package_id);
+                defer self.allocator.free(package_id_json);
+                const venom_id_json = try optionalJsonStringField(self.allocator, candidate.venom_id);
+                defer self.allocator.free(venom_id_json);
+                const installed_release_json = try optionalJsonStringField(self.allocator, candidate.installed_release_version);
+                defer self.allocator.free(installed_release_json);
+                const target_release_json = try optionalJsonStringField(self.allocator, candidate.target_release_version);
+                defer self.allocator.free(target_release_json);
+                const target_channel_json = try optionalJsonStringField(self.allocator, candidate.target_channel);
+                defer self.allocator.free(target_channel_json);
+                try results.writer(self.allocator).print(
+                    "{{\"status\":\"preview\",\"package_id\":{s},\"venom_id\":{s},\"installed_release_version\":{s},\"target_release_version\":{s},\"target_channel\":{s}}}",
+                    .{ package_id_json, venom_id_json, installed_release_json, target_release_json, target_channel_json },
+                );
+            }
+        }
+
+        for (selection.package_ids.items) |requested_id| {
+            if (batchPackageSelectionContainsCandidate(candidates.items, requested_id)) continue;
+            if (appended_any) try results.append(self.allocator, ',');
+            appended_any = true;
+            const package_id_json = try optionalJsonStringField(self.allocator, requested_id);
+            defer self.allocator.free(package_id_json);
+            if (self.renderSingleVenomPackageJsonLocked(requested_id)) |package_json| {
+                defer self.allocator.free(package_json);
+                up_to_date_count += 1;
+                try results.writer(self.allocator).print(
+                    "{{\"status\":\"up_to_date\",\"package\":{s}}}",
+                    .{package_json},
+                );
+            } else |err| switch (err) {
+                ControlPlaneError.VenomPackageNotFound => {
+                    not_found_count += 1;
+                    try results.writer(self.allocator).print(
+                        "{{\"status\":\"not_found\",\"package_id\":{s}}}",
+                        .{package_id_json},
+                    );
+                },
+                else => return err,
+            }
+        }
+
+        try results.append(self.allocator, ']');
+
+        return std.fmt.allocPrint(
+            self.allocator,
+            "{{\"apply\":{},\"activate\":{},\"requested_count\":{d},\"candidate_count\":{d},\"preview_count\":{d},\"updated_count\":{d},\"switched_count\":{d},\"up_to_date_count\":{d},\"not_found_count\":{d},\"error_count\":{d},\"results\":{s}}}",
+            .{
+                selection.apply,
+                selection.activate,
+                if (selection.package_ids.items.len == 0) candidates.items.len else selection.package_ids.items.len,
+                candidates.items.len,
+                preview_count,
+                updated_count,
+                switched_count,
+                up_to_date_count,
+                not_found_count,
+                error_count,
+                results.items,
+            },
+        );
+    }
+
+    fn updateVenomPackageLocked(
+        self: *ControlPlane,
+        venom_id: []const u8,
+        release_version: ?[]const u8,
+        channel: ?[]const u8,
+        activate: bool,
+    ) ![]u8 {
         try validateIdentifier(venom_id, 128);
         if (release_version) |value| try validateDisplayString(value, 64);
         if (channel) |value| try validateIdentifier(value, 32);
@@ -1613,11 +1750,7 @@ pub const ControlPlane = struct {
         var prior_states = std.ArrayListUnmanaged(UpdateActivationState){};
         defer deinitUpdateActivationStates(self.allocator, &prior_states);
         for (install_result.releases.items) |release_entry| {
-            try appendUpdateActivationStateLocked(
-                self,
-                &prior_states,
-                release_entry.package_id,
-            );
+            try appendUpdateActivationStateLocked(self, &prior_states, release_entry.package_id);
         }
 
         var installed_any = false;
@@ -6366,6 +6499,35 @@ const UpdateActivationState = struct {
     }
 };
 
+const BatchPackageUpdateSelection = struct {
+    package_ids: std.ArrayListUnmanaged([]u8) = .{},
+    apply: bool = false,
+    activate: bool = false,
+
+    fn deinit(self: *BatchPackageUpdateSelection, allocator: std.mem.Allocator) void {
+        for (self.package_ids.items) |value| allocator.free(value);
+        self.package_ids.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+const BatchPackageUpdateCandidate = struct {
+    package_id: []u8,
+    venom_id: []u8,
+    installed_release_version: ?[]u8 = null,
+    target_release_version: []u8,
+    target_channel: ?[]u8 = null,
+
+    fn deinit(self: *BatchPackageUpdateCandidate, allocator: std.mem.Allocator) void {
+        allocator.free(self.package_id);
+        allocator.free(self.venom_id);
+        if (self.installed_release_version) |value| allocator.free(value);
+        allocator.free(self.target_release_version);
+        if (self.target_channel) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
 fn parseRegistryOverridesJson(
     allocator: std.mem.Allocator,
     overrides_json: []const u8,
@@ -6428,6 +6590,112 @@ fn appendUpdateActivationStateLocked(
         .package_id = try self.allocator.dupe(u8, package_id),
         .active_release_version = active_release_version,
     });
+}
+
+fn deinitBatchPackageUpdateCandidates(
+    allocator: std.mem.Allocator,
+    candidates: *std.ArrayListUnmanaged(BatchPackageUpdateCandidate),
+) void {
+    for (candidates.items) |*candidate| candidate.deinit(allocator);
+    candidates.deinit(allocator);
+    candidates.* = .{};
+}
+
+fn parseBatchPackageUpdateSelection(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+) !BatchPackageUpdateSelection {
+    var selection = BatchPackageUpdateSelection{
+        .apply = try getOptionalBool(obj, "apply", false),
+        .activate = try getOptionalBoolByNames(obj, &.{ "activate", "switch" }, false),
+    };
+    errdefer selection.deinit(allocator);
+
+    try appendRequestedPackageIdsFromField(allocator, obj, "packages", &selection.package_ids);
+    try appendRequestedPackageIdsFromField(allocator, obj, "package_ids", &selection.package_ids);
+    try appendRequestedPackageIdsFromField(allocator, obj, "venom_ids", &selection.package_ids);
+    return selection;
+}
+
+fn appendRequestedPackageIdsFromField(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    field_name: []const u8,
+    package_ids: *std.ArrayListUnmanaged([]u8),
+) !void {
+    const value = obj.get(field_name) orelse return;
+    if (value != .array) return ControlPlaneError.InvalidPayload;
+    for (value.array.items) |item| {
+        if (item != .string or item.string.len == 0) return ControlPlaneError.InvalidPayload;
+        try validateIdentifier(item.string, 128);
+        for (package_ids.items) |existing| {
+            if (std.mem.eql(u8, existing, item.string)) break;
+        } else {
+            try package_ids.append(allocator, try allocator.dupe(u8, item.string));
+        }
+    }
+}
+
+fn collectBatchPackageUpdateCandidatesLocked(
+    self: *ControlPlane,
+    requested_package_ids: []const []u8,
+) !std.ArrayListUnmanaged(BatchPackageUpdateCandidate) {
+    const updates_json = try self.renderVenomPackageUpdatesJsonLocked();
+    defer self.allocator.free(updates_json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, updates_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .array) return ControlPlaneError.InvalidPayload;
+
+    var candidates = std.ArrayListUnmanaged(BatchPackageUpdateCandidate){};
+    errdefer deinitBatchPackageUpdateCandidates(self.allocator, &candidates);
+
+    for (parsed.value.array.items) |item| {
+        if (item != .object) return ControlPlaneError.InvalidPayload;
+        if (!try getOptionalBool(item.object, "update_available", false)) continue;
+        const package_id = getRequiredString(item.object, "package_id") catch return ControlPlaneError.InvalidPayload;
+        const venom_id = getRequiredString(item.object, "venom_id") catch return ControlPlaneError.InvalidPayload;
+        if (!matchesBatchRequestedPackageIds(requested_package_ids, package_id, venom_id)) continue;
+        try candidates.append(self.allocator, .{
+            .package_id = try self.allocator.dupe(u8, package_id),
+            .venom_id = try self.allocator.dupe(u8, venom_id),
+            .installed_release_version = if (getOptionalString(item.object, "installed_release_version")) |value|
+                try self.allocator.dupe(u8, value)
+            else
+                null,
+            .target_release_version = try self.allocator.dupe(u8, getRequiredString(item.object, "latest_release_version") catch return ControlPlaneError.InvalidPayload),
+            .target_channel = if (getOptionalString(item.object, "latest_release_channel")) |value|
+                try self.allocator.dupe(u8, value)
+            else
+                null,
+        });
+    }
+
+    return candidates;
+}
+
+fn matchesBatchRequestedPackageIds(
+    requested_package_ids: []const []u8,
+    package_id: []const u8,
+    venom_id: []const u8,
+) bool {
+    if (requested_package_ids.len == 0) return true;
+    for (requested_package_ids) |requested| {
+        if (std.mem.eql(u8, requested, package_id) or std.mem.eql(u8, requested, venom_id)) return true;
+    }
+    return false;
+}
+
+fn batchPackageSelectionContainsCandidate(
+    candidates: []const BatchPackageUpdateCandidate,
+    requested_id: []const u8,
+) bool {
+    for (candidates) |candidate| {
+        if (std.mem.eql(u8, requested_id, candidate.package_id) or std.mem.eql(u8, requested_id, candidate.venom_id)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn persistRegistryOverridesJsonLocked(
@@ -11059,6 +11327,117 @@ test "acheron_control_plane: registry update reports the resolved release channe
     defer allocator.free(updated);
     try std.testing.expect(std.mem.indexOf(u8, updated, "\"target_release_version\":\"0.5.8\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, updated, "\"target_channel\":\"stable\"") != null);
+}
+
+test "acheron_control_plane: registry batch update previews all pending package updates" {
+    const allocator = std.testing.allocator;
+    const fixture_root = try registryFixtureRoot(allocator);
+    defer allocator.free(fixture_root);
+
+    var plane = ControlPlane.initWithOptions(allocator, .{
+        .registry_enabled = true,
+        .registry_source_url = fixture_root,
+        .registry_default_channel = "stable",
+        .registry_overrides_json = "[]",
+    });
+    defer plane.deinit();
+
+    const installed_terminal =
+        \\{"release":{"package_id":"terminal","release_version":"0.5.7","channel":"stable","digest":"sha256:terminal057","signature":{"alg":"test","sig":"terminal057"},"trust":{"source":"test"},"package":{"venom_id":"terminal","kind":"terminal","version":"1","release_version":"0.5.7","categories":["terminal","exec"],"host_roles":["node"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{},"capabilities":{"invoke":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace"}}}}
+    ;
+    const installed_browser =
+        \\{"release":{"package_id":"browser","release_version":"0.5.7","channel":"stable","digest":"sha256:browser057","signature":{"alg":"test","sig":"browser057"},"trust":{"source":"test"},"package":{"venom_id":"browser-main","kind":"browser","version":"1","release_version":"0.5.7","categories":["browser"],"host_roles":["node"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{"host_capabilities":["managed_browser"]},"capabilities":{"invoke":true,"observe":true,"act":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"browser-observe-act-v1"}}}}
+    ;
+    const terminal_json = try plane.installVenomPackage(installed_terminal);
+    defer allocator.free(terminal_json);
+    const browser_json = try plane.installVenomPackage(installed_browser);
+    defer allocator.free(browser_json);
+
+    const preview = try plane.updateVenomPackagesBatch("{\"apply\":false}");
+    defer allocator.free(preview);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"apply\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"requested_count\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"candidate_count\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"preview_count\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"updated_count\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"status\":\"preview\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"package_id\":\"terminal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"package_id\":\"browser\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preview, "\"target_release_version\":\"0.5.8\"") != null);
+}
+
+test "acheron_control_plane: registry batch update can selectively apply and activate a package update" {
+    const allocator = std.testing.allocator;
+    const fixture_root = try registryFixtureRoot(allocator);
+    defer allocator.free(fixture_root);
+
+    var plane = ControlPlane.initWithOptions(allocator, .{
+        .registry_enabled = true,
+        .registry_source_url = fixture_root,
+        .registry_default_channel = "stable",
+        .registry_overrides_json = "[]",
+    });
+    defer plane.deinit();
+
+    const installed_terminal =
+        \\{"release":{"package_id":"terminal","release_version":"0.5.7","channel":"stable","digest":"sha256:terminal057","signature":{"alg":"test","sig":"terminal057"},"trust":{"source":"test"},"package":{"venom_id":"terminal","kind":"terminal","version":"1","release_version":"0.5.7","categories":["terminal","exec"],"host_roles":["node"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{},"capabilities":{"invoke":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace"}}}}
+    ;
+    const installed_browser =
+        \\{"release":{"package_id":"browser","release_version":"0.5.7","channel":"stable","digest":"sha256:browser057","signature":{"alg":"test","sig":"browser057"},"trust":{"source":"test"},"package":{"venom_id":"browser-main","kind":"browser","version":"1","release_version":"0.5.7","categories":["browser"],"host_roles":["node"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{"host_capabilities":["managed_browser"]},"capabilities":{"invoke":true,"observe":true,"act":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"browser-observe-act-v1"}}}}
+    ;
+    const terminal_json = try plane.installVenomPackage(installed_terminal);
+    defer allocator.free(terminal_json);
+    const browser_json = try plane.installVenomPackage(installed_browser);
+    defer allocator.free(browser_json);
+
+    const updated = try plane.updateVenomPackagesBatch("{\"packages\":[\"terminal\"],\"apply\":true,\"activate\":true}");
+    defer allocator.free(updated);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"apply\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"activate\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"requested_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"candidate_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"updated_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"switched_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"status\":\"updated\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"target_release_version\":\"0.5.8\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"package_id\":\"terminal\"") != null);
+
+    const terminal = try plane.getVenomPackage("{\"venom_id\":\"terminal\"}");
+    defer allocator.free(terminal);
+    try std.testing.expect(std.mem.indexOf(u8, terminal, "\"active_release_version\":\"0.5.8\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, terminal, "\"update_available\":false") != null);
+
+    const browser = try plane.getVenomPackage("{\"venom_id\":\"browser\"}");
+    defer allocator.free(browser);
+    try std.testing.expect(std.mem.indexOf(u8, browser, "\"active_release_version\":\"0.5.7\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, browser, "\"update_available\":true") != null);
+}
+
+test "acheron_control_plane: registry batch update reports up-to-date and missing packages" {
+    const allocator = std.testing.allocator;
+    const fixture_root = try registryFixtureRoot(allocator);
+    defer allocator.free(fixture_root);
+
+    var plane = ControlPlane.initWithOptions(allocator, .{
+        .registry_enabled = true,
+        .registry_source_url = fixture_root,
+        .registry_default_channel = "stable",
+        .registry_overrides_json = "[]",
+    });
+    defer plane.deinit();
+
+    const installed = try plane.installVenomPackage("{\"venom_id\":\"terminal\",\"source\":\"registry\"}");
+    defer allocator.free(installed);
+
+    const result = try plane.updateVenomPackagesBatch("{\"packages\":[\"terminal\",\"missing_pkg\"],\"apply\":false}");
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"requested_count\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"candidate_count\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"up_to_date_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"not_found_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"status\":\"up_to_date\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"status\":\"not_found\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"package_id\":\"missing_pkg\"") != null);
 }
 
 test "acheron_control_plane: package release history is visible on package projections" {

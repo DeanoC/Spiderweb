@@ -28,21 +28,21 @@ published first-party capability venoms now owned by `SpiderVenoms`:
 They are still used by the compatibility/session layer today, but they should
 not be treated as the long-term home of first-party capability behavior.
 
-## Runtime infrastructure, not venom surfaces
+## Runtime infrastructure moved out of this directory
 
-These files support venom execution or filesystem plumbing, but they are not
-themselves the extracted first-party venom packages:
+The non-venom runtime helpers that used to live here now live under
+`src/runtime/`:
 
-- `mcp_client.zig`
-- `fs/`
+- `src/runtime/mcp_client.zig`
+- `src/runtime/fs/`
 
-`fs/` is especially important to classify correctly: it is part of Spiderweb's
-base filesystem/runtime capability surface and compatibility layer, not a
-published first-party venom bundle to extract into `SpiderVenoms`.
+`src/runtime/fs/` is especially important to classify correctly: it is part of
+Spiderweb's base filesystem/runtime capability surface and compatibility layer,
+not a published first-party venom bundle to extract into `SpiderVenoms`.
 
 ## Current extraction guidance
 
 - Keep `packages`, `home`, `runtimes`, `mounts`, `workspaces`, and `events` in Spiderweb.
-- Keep `fs` as runtime/base-capability ownership, with generic node behavior continuing to move into SpiderNode where appropriate.
+- Keep `src/runtime/fs` as runtime/base-capability ownership, with generic node behavior continuing to move into SpiderNode where appropriate.
 - Continue treating `terminal` and `git` in this directory as transitional compatibility code until the remaining local namespace/session assumptions are removed.
 - Do not add new first-party capability venom implementations to this directory.

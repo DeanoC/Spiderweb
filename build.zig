@@ -47,17 +47,17 @@ pub fn build(b: *std.Build) void {
     });
     acheron_fs_client_mod.addImport("spider-protocol", spider_protocol_module);
     const spiderweb_fs_cache_mod = b.createModule(.{
-        .root_source_file = b.path("src/venoms/fs/fs_cache.zig"),
+        .root_source_file = b.path("src/runtime/fs/fs_cache.zig"),
         .target = target,
         .optimize = optimize,
     });
     const spiderweb_fs_fuse_path_cache_mod = b.createModule(.{
-        .root_source_file = b.path("src/venoms/fs/fs_fuse_path_cache.zig"),
+        .root_source_file = b.path("src/runtime/fs/fs_fuse_path_cache.zig"),
         .target = target,
         .optimize = optimize,
     });
     const spiderweb_fs_source_policy_mod = b.createModule(.{
-        .root_source_file = b.path("src/venoms/fs/fs_source_policy.zig"),
+        .root_source_file = b.path("src/runtime/fs/fs_source_policy.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -88,7 +88,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const spiderweb_fs_fuse_adapter_mod = b.createModule(.{
-        .root_source_file = b.path("src/venoms/fs/fs_fuse_adapter.zig"),
+        .root_source_file = b.path("src/runtime/fs/fs_fuse_adapter.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -114,7 +114,7 @@ pub fn build(b: *std.Build) void {
 
     // Embeddable distributed filesystem module
     const spiderweb_fs_mod = b.addModule("spiderweb_fs", .{
-        .root_source_file = b.path("src/venoms/fs/fs_lib.zig"),
+        .root_source_file = b.path("src/runtime/fs/fs_lib.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -212,7 +212,7 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&spiderweb_runtime_assets.step);
     // Distributed filesystem node executable
     const fs_node_mod = b.createModule(.{
-        .root_source_file = b.path("src/venoms/fs/shared/fs_node_main.zig"),
+        .root_source_file = b.path("src/runtime/fs/shared/fs_node_main.zig"),
         .target = target,
         .optimize = optimize,
     });

@@ -5630,15 +5630,10 @@ fn findRollbackInstalledReleaseIndex(
         return null;
     const current = releases[current_index];
 
-    var fallback_index: ?usize = null;
     var previous_index: ?usize = null;
     for (releases, 0..) |release, idx| {
         if (!std.mem.eql(u8, release.package_id, package_id)) continue;
         if (idx == current_index) continue;
-
-        if (fallback_index == null or installedReleaseBeatsForProjection(release, releases[fallback_index.?])) {
-            fallback_index = idx;
-        }
 
         if (compareReleaseVersions(release.package.release_version, current.package.release_version) != .lt) continue;
         if (previous_index == null or compareReleaseVersions(release.package.release_version, releases[previous_index.?].package.release_version) == .gt) {
@@ -5646,7 +5641,7 @@ fn findRollbackInstalledReleaseIndex(
         }
     }
 
-    return previous_index orelse fallback_index;
+    return previous_index;
 }
 
 fn clonePackage(allocator: std.mem.Allocator, package: venom_package_model.VenomPackage) !venom_package_model.VenomPackage {
@@ -9894,6 +9889,42 @@ test "acheron_control_plane: venom release rollback defaults to previous install
     const newest_release = try plane.getVenomRelease("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.2.0\"}");
     defer allocator.free(newest_release);
     try std.testing.expect(std.mem.indexOf(u8, newest_release, "\"enabled\":false") != null);
+}
+
+test "acheron_control_plane: venom release rollback without lower release does not upgrade" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.init(allocator);
+    defer plane.deinit();
+
+    const install_v1 =
+        \\{"release":{"package_id":"camera_pkg","release_version":"1.0.0","channel":"stable","digest":"sha256:v1","signature":{"alg":"test","sig":"v1"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","release_version":"1.0.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+    ;
+    const install_v2 =
+        \\{"release":{"package_id":"camera_pkg","release_version":"1.1.0","channel":"stable","digest":"sha256:v2","signature":{"alg":"test","sig":"v2"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"2","release_version":"1.1.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true,"stream":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+    ;
+
+    const installed_v1 = try plane.installVenomPackage(install_v1);
+    defer allocator.free(installed_v1);
+    const installed_v2 = try plane.installVenomPackage(install_v2);
+    defer allocator.free(installed_v2);
+
+    const explicit_oldest = try plane.rollbackVenomPackage("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.0.0\"}");
+    defer allocator.free(explicit_oldest);
+    try std.testing.expect(std.mem.indexOf(u8, explicit_oldest, "\"release_version\":\"1.0.0\"") != null);
+
+    try std.testing.expectError(
+        ControlPlaneError.VenomPackageNotFound,
+        plane.rollbackVenomPackage("{\"venom_id\":\"camera_pkg\"}"),
+    );
+
+    const current = try plane.getVenomPackage("{\"venom_id\":\"camera_pkg\"}");
+    defer allocator.free(current);
+    try std.testing.expect(std.mem.indexOf(u8, current, "\"release_version\":\"1.0.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, current, "\"enabled\":true") != null);
+
+    const newer_release = try plane.getVenomRelease("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.1.0\"}");
+    defer allocator.free(newer_release);
+    try std.testing.expect(std.mem.indexOf(u8, newer_release, "\"enabled\":false") != null);
 }
 
 test "acheron_control_plane: venom release persistence restores selected release" {

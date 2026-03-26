@@ -326,6 +326,7 @@ pub const LocalNodeSupervisor = struct {
     bundle_release_path: []u8,
     bundle_root_dir: []u8,
     allow_unsigned_dev_bundles: bool,
+    managed_bundle_trusted_keys: ?[]const managed_bundle_signatures.TrustedKey = null,
     extra_venoms_dir: ?[]u8 = null,
     restart_on_exit: bool,
     thread: ?std.Thread = null,
@@ -480,17 +481,32 @@ pub const LocalNodeSupervisor = struct {
 
         try self.validateBundleEnvelope(parsed.value.object);
         const executables = try getRequiredBundleArray(parsed.value.object, "executables");
-        try stageBundleExecutables(self.allocator, self.state_dir, self.bundle_root_dir, executables);
         const packages_value = parsed.value.object.get("packages") orelse return error.InvalidBundleRelease;
         if (packages_value != .array) return error.InvalidBundleRelease;
 
+        var rendered_manifests = std.ArrayListUnmanaged(BundleManifestOutput){};
+        defer deinitBundleManifestOutputs(self.allocator, &rendered_manifests);
+
         for (packages_value.array.items) |item| {
             if (item != .object) return error.InvalidBundleRelease;
-            try self.writeBundleManifestEntry(item.object, executables);
+            try self.collectBundleManifestEntry(item.object, executables, &rendered_manifests);
+        }
+
+        try stageBundleExecutables(self.allocator, self.state_dir, self.bundle_root_dir, executables);
+
+        for (rendered_manifests.items) |output| {
+            const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, output.name });
+            defer self.allocator.free(manifest_path);
+            try writeFileReplacing(manifest_path, output.contents);
         }
     }
 
-    fn writeBundleManifestEntry(self: *LocalNodeSupervisor, item: std.json.ObjectMap, executables: []const std.json.Value) !void {
+    fn collectBundleManifestEntry(
+        self: *LocalNodeSupervisor,
+        item: std.json.ObjectMap,
+        executables: []const std.json.Value,
+        outputs: *std.ArrayListUnmanaged(BundleManifestOutput),
+    ) !void {
         try self.validateBundleEnvelope(item);
 
         const manifest_rel_path = getRequiredBundleString(item, "manifest_path");
@@ -530,13 +546,18 @@ pub const LocalNodeSupervisor = struct {
 
         const manifest_name = std.fs.path.basename(manifest_rel_path);
         if (manifest_name.len == 0) return error.InvalidBundleRelease;
-        const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, manifest_name });
-        defer self.allocator.free(manifest_path);
-        try writeFileReplacing(manifest_path, rendered_manifest);
+        try outputs.append(self.allocator, .{
+            .name = try self.allocator.dupe(u8, manifest_name),
+            .contents = try self.allocator.dupe(u8, rendered_manifest),
+        });
     }
 
     fn validateBundleEnvelope(self: *LocalNodeSupervisor, obj: std.json.ObjectMap) !void {
         if (self.allow_unsigned_dev_bundles) return;
+        if (self.managed_bundle_trusted_keys) |trusted_keys| {
+            try managed_bundle_signatures.verifySignedValueWithKeys(self.allocator, .{ .object = obj }, trusted_keys);
+            return;
+        }
         try managed_bundle_signatures.verifySignedValue(self.allocator, .{ .object = obj });
     }
 
@@ -569,6 +590,26 @@ pub const LocalNodeSupervisor = struct {
         return argv;
     }
 };
+
+const BundleManifestOutput = struct {
+    name: []u8,
+    contents: []u8,
+
+    fn deinit(self: *BundleManifestOutput, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.contents);
+        self.* = undefined;
+    }
+};
+
+fn deinitBundleManifestOutputs(
+    allocator: std.mem.Allocator,
+    outputs: *std.ArrayListUnmanaged(BundleManifestOutput),
+) void {
+    for (outputs.items) |*output| output.deinit(allocator);
+    outputs.deinit(allocator);
+    outputs.* = .{};
+}
 
 fn localNodeSupervisorMain(supervisor: *LocalNodeSupervisor) void {
     while (true) {
@@ -1106,4 +1147,477 @@ test "managed bundle metadata skips executables for other platforms" {
     );
     if (executable_path) |value| allocator.free(value);
     try std.testing.expect(executable_path == null);
+}
+
+const TestManagedBundleKey = struct {
+    key_pair: std.crypto.sign.Ed25519.KeyPair,
+    key_id: []const u8,
+    public_key_hex: []u8,
+
+    fn init(allocator: std.mem.Allocator, key_id: []const u8) !TestManagedBundleKey {
+        var seed: [std.crypto.sign.Ed25519.KeyPair.seed_length]u8 = undefined;
+        @memset(&seed, 0);
+        for (key_id, 0..) |byte, idx| seed[idx % seed.len] ^= byte;
+        const key_pair = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
+        const public_key_bytes = key_pair.public_key.toBytes();
+        return .{
+            .key_pair = key_pair,
+            .key_id = try allocator.dupe(u8, key_id),
+            .public_key_hex = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&public_key_bytes)}),
+        };
+    }
+
+    fn deinit(self: *TestManagedBundleKey, allocator: std.mem.Allocator) void {
+        allocator.free(self.key_id);
+        allocator.free(self.public_key_hex);
+        self.* = undefined;
+    }
+
+    fn trustedKey(self: TestManagedBundleKey, status: managed_bundle_signatures.TrustedKeyStatus) managed_bundle_signatures.TrustedKey {
+        return .{
+            .key_id = self.key_id,
+            .public_key_hex = self.public_key_hex,
+            .status = status,
+            .managed_local_bundle_allowed = true,
+        };
+    }
+};
+
+fn testCanonicalPayloadJsonAlloc(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(allocator);
+    try writeTestCanonicalValue(allocator, &out, value, true);
+    return out.toOwnedSlice(allocator);
+}
+
+fn writeTestCanonicalValue(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    value: std.json.Value,
+    omit_envelope_fields: bool,
+) !void {
+    switch (value) {
+        .null => try out.appendSlice(allocator, "null"),
+        .bool => |bool_value| try out.appendSlice(allocator, if (bool_value) "true" else "false"),
+        .integer => |integer_value| try out.writer(allocator).print("{}", .{integer_value}),
+        .float => |float_value| try out.writer(allocator).print("{f}", .{std.json.fmt(float_value, .{})}),
+        .number_string => |number_value| try out.appendSlice(allocator, number_value),
+        .string => |string_value| try out.writer(allocator).print("{f}", .{std.json.fmt(string_value, .{})}),
+        .array => |array_value| {
+            try out.append(allocator, '[');
+            for (array_value.items, 0..) |item, index| {
+                if (index != 0) try out.append(allocator, ',');
+                try writeTestCanonicalValue(allocator, out, item, false);
+            }
+            try out.append(allocator, ']');
+        },
+        .object => |object_value| try writeTestCanonicalObject(allocator, out, object_value, omit_envelope_fields),
+    }
+}
+
+fn writeTestCanonicalObject(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    object_value: std.json.ObjectMap,
+    omit_envelope_fields: bool,
+) !void {
+    var keys = std.ArrayListUnmanaged([]const u8){};
+    defer keys.deinit(allocator);
+
+    var it = object_value.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (omit_envelope_fields and (std.mem.eql(u8, key, "digest") or std.mem.eql(u8, key, "signature"))) continue;
+        try keys.append(allocator, key);
+    }
+
+    std.mem.sort([]const u8, keys.items, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.order(u8, lhs, rhs) == .lt;
+        }
+    }.lessThan);
+
+    try out.append(allocator, '{');
+    for (keys.items, 0..) |key, index| {
+        if (index != 0) try out.append(allocator, ',');
+        try out.writer(allocator).print("{f}", .{std.json.fmt(key, .{})});
+        try out.append(allocator, ':');
+        try writeTestCanonicalValue(allocator, out, object_value.get(key).?, false);
+    }
+    try out.append(allocator, '}');
+}
+
+fn signManagedBundleJson(
+    allocator: std.mem.Allocator,
+    unsigned_json: []const u8,
+    key: TestManagedBundleKey,
+) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, unsigned_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidBundleRelease;
+
+    const payload_json = try testCanonicalPayloadJsonAlloc(allocator, parsed.value);
+    defer allocator.free(payload_json);
+
+    var digest_bytes: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(payload_json, &digest_bytes, .{});
+    const digest_value = try std.fmt.allocPrint(allocator, "sha256:{s}", .{std.fmt.fmtSliceHexLower(&digest_bytes)});
+
+    const signature = try key.key_pair.sign(&digest_bytes, null);
+    const signature_bytes = signature.toBytes();
+    const signature_b64 = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(signature_bytes.len));
+    _ = std.base64.standard.Encoder.encode(signature_b64, &signature_bytes);
+
+    try parsed.value.object.put("digest", .{ .string = digest_value });
+
+    var signature_obj = std.json.ObjectMap.init(allocator);
+    try signature_obj.put("scheme", .{ .string = try allocator.dupe(u8, managed_bundle_signatures.signature_scheme) });
+    try signature_obj.put("key_id", .{ .string = try allocator.dupe(u8, key.key_id) });
+    try signature_obj.put("value", .{ .string = signature_b64 });
+    try parsed.value.object.put("signature", .{ .object = signature_obj });
+
+    return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(parsed.value, .{})});
+}
+
+const TestBundleFixturePaths = struct {
+    bundle_root: []u8,
+    state_dir: []u8,
+    export_root: []u8,
+    release_path: []u8,
+    manifest_source_path: []u8,
+    staged_manifest_path: []u8,
+    staged_executable_path: []u8,
+
+    fn deinit(self: *TestBundleFixturePaths, allocator: std.mem.Allocator) void {
+        allocator.free(self.bundle_root);
+        allocator.free(self.state_dir);
+        allocator.free(self.export_root);
+        allocator.free(self.release_path);
+        allocator.free(self.manifest_source_path);
+        allocator.free(self.staged_manifest_path);
+        allocator.free(self.staged_executable_path);
+        self.* = undefined;
+    }
+};
+
+fn createManagedBundleFixturePaths(allocator: std.mem.Allocator, root: []const u8) !TestBundleFixturePaths {
+    const bundle_root = try std.fs.path.join(allocator, &.{ root, "bundle" });
+    errdefer allocator.free(bundle_root);
+    const state_dir = try std.fs.path.join(allocator, &.{ root, "state" });
+    errdefer allocator.free(state_dir);
+    const export_root = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    errdefer allocator.free(export_root);
+    const release_path = try std.fs.path.join(allocator, &.{ bundle_root, "release.json" });
+    errdefer allocator.free(release_path);
+    const manifest_source_path = try std.fs.path.join(allocator, &.{ bundle_root, "manifests", "tool.json" });
+    errdefer allocator.free(manifest_source_path);
+    const staged_manifest_path = try std.fs.path.join(allocator, &.{ state_dir, local_node_manifests_dirname, "tool.json" });
+    errdefer allocator.free(staged_manifest_path);
+    const staged_executable_path = try std.fs.path.join(allocator, &.{ state_dir, "bin", "tool.sh" });
+    errdefer allocator.free(staged_executable_path);
+
+    return .{
+        .bundle_root = bundle_root,
+        .state_dir = state_dir,
+        .export_root = export_root,
+        .release_path = release_path,
+        .manifest_source_path = manifest_source_path,
+        .staged_manifest_path = staged_manifest_path,
+        .staged_executable_path = staged_executable_path,
+    };
+}
+
+fn writeManagedBundleFixtureFiles(
+    paths: TestBundleFixturePaths,
+    release_json: []const u8,
+    manifest_json: ?[]const u8,
+) !void {
+    const driver_source = try std.fs.path.join(std.testing.allocator, &.{ paths.bundle_root, "drivers", "tool.sh" });
+    defer std.testing.allocator.free(driver_source);
+    try writeFileReplacing(driver_source, "#!/bin/sh\necho managed-tool\n");
+    try ensureDirectoryExists(paths.state_dir);
+    try ensureDirectoryExists(paths.export_root);
+    try ensureDirectoryExists(std.fs.path.dirname(paths.staged_manifest_path) orelse paths.state_dir);
+    try writeFileReplacing(paths.release_path, release_json);
+    if (manifest_json) |value| {
+        try writeFileReplacing(paths.manifest_source_path, value);
+    }
+}
+
+fn initTestLocalNodeSupervisor(
+    allocator: std.mem.Allocator,
+    plane: *control_plane_mod.ControlPlane,
+    paths: TestBundleFixturePaths,
+    trusted_keys: ?[]const managed_bundle_signatures.TrustedKey,
+) !LocalNodeSupervisor {
+    const state_path = try std.fs.path.join(allocator, &.{ paths.state_dir, local_node_state_filename });
+    errdefer allocator.free(state_path);
+    const manifests_dir = try std.fs.path.join(allocator, &.{ paths.state_dir, local_node_manifests_dirname });
+    errdefer allocator.free(manifests_dir);
+
+    return .{
+        .allocator = allocator,
+        .control_plane = plane,
+        .bind_addr = try allocator.dupe(u8, "127.0.0.1"),
+        .port = 31337,
+        .control_url = try allocator.dupe(u8, "ws://127.0.0.1:31337/"),
+        .control_auth_token = try allocator.dupe(u8, "test-auth-token"),
+        .binary_path = try allocator.dupe(u8, "/bin/true"),
+        .export_root = try allocator.dupe(u8, paths.export_root),
+        .export_name = try allocator.dupe(u8, "workspace"),
+        .profile = try allocator.dupe(u8, "external-agent-core"),
+        .state_dir = try allocator.dupe(u8, paths.state_dir),
+        .state_path = state_path,
+        .manifests_dir = manifests_dir,
+        .bundle_release_path = try allocator.dupe(u8, paths.release_path),
+        .bundle_root_dir = try allocator.dupe(u8, paths.bundle_root),
+        .allow_unsigned_dev_bundles = false,
+        .managed_bundle_trusted_keys = trusted_keys,
+        .extra_venoms_dir = null,
+        .restart_on_exit = false,
+    };
+}
+
+fn deinitTestLocalNodeSupervisor(self: *LocalNodeSupervisor) void {
+    self.allocator.free(self.bind_addr);
+    self.allocator.free(self.control_url);
+    self.allocator.free(self.control_auth_token);
+    self.allocator.free(self.binary_path);
+    self.allocator.free(self.export_root);
+    self.allocator.free(self.export_name);
+    self.allocator.free(self.profile);
+    self.allocator.free(self.state_dir);
+    self.allocator.free(self.state_path);
+    self.allocator.free(self.manifests_dir);
+    self.allocator.free(self.bundle_release_path);
+    self.allocator.free(self.bundle_root_dir);
+}
+
+fn buildSignedPackageEntryJson(allocator: std.mem.Allocator, key: TestManagedBundleKey) ![]u8 {
+    const unsigned_entry =
+        \\{
+        \\  "package_id": "tool",
+        \\  "manifest_path": "manifests/tool.json",
+        \\  "executable_id": "tool",
+        \\  "venom_id": "tool",
+        \\  "kind": "tool",
+        \\  "release_version": "1.0.0",
+        \\  "channel": "stable",
+        \\  "trust": {
+        \\    "mode": "signed",
+        \\    "publisher": "SpiderVenoms",
+        \\    "allow_dev_unsigned": false
+        \\  }
+        \\}
+    ;
+    return signManagedBundleJson(allocator, unsigned_entry, key);
+}
+
+fn buildSignedManifestJson(allocator: std.mem.Allocator, key: TestManagedBundleKey) ![]u8 {
+    const unsigned_manifest =
+        \\{
+        \\  "package_id": "tool",
+        \\  "venom_id": "tool",
+        \\  "kind": "tool",
+        \\  "release_version": "1.0.0",
+        \\  "channel": "stable",
+        \\  "trust": {
+        \\    "mode": "signed",
+        \\    "publisher": "SpiderVenoms",
+        \\    "allow_dev_unsigned": false
+        \\  },
+        \\  "runtime": {
+        \\    "executable_path": "__EXECUTABLE_PATH__"
+        \\  }
+        \\}
+    ;
+    return signManagedBundleJson(allocator, unsigned_manifest, key);
+}
+
+fn buildSignedReleaseJson(allocator: std.mem.Allocator, key: TestManagedBundleKey, signed_package_entry_json: []const u8) ![]u8 {
+    const unsigned_release = try std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "executables": [
+        \\    {{
+        \\      "id": "tool",
+        \\      "source": {{
+        \\        "kind": "bundle_relative",
+        \\        "path": "drivers/tool.sh"
+        \\      }},
+        \\      "stage_path": "bin/tool.sh",
+        \\      "platforms": ["{s}"]
+        \\    }}
+        \\  ],
+        \\  "packages": [
+        \\    {s}
+        \\  ],
+        \\  "trust": {{
+        \\    "mode": "signed",
+        \\    "publisher": "SpiderVenoms",
+        \\    "allow_dev_unsigned": false
+        \\  }}
+        \\}}
+    ,
+        .{ currentBundlePlatformLabel(), signed_package_entry_json },
+    );
+    defer allocator.free(unsigned_release);
+    return signManagedBundleJson(allocator, unsigned_release, key);
+}
+
+test "managed bundle staging rejects tampered release before writing staged outputs" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var fixture = try createManagedBundleFixturePaths(allocator, root);
+    defer fixture.deinit(allocator);
+
+    var key = try TestManagedBundleKey.init(allocator, "test-active-key");
+    defer key.deinit(allocator);
+    const trusted_keys = [_]managed_bundle_signatures.TrustedKey{key.trustedKey(.active)};
+
+    const signed_package = try buildSignedPackageEntryJson(allocator, key);
+    defer allocator.free(signed_package);
+    const signed_manifest = try buildSignedManifestJson(allocator, key);
+    defer allocator.free(signed_manifest);
+    const signed_release = try buildSignedReleaseJson(allocator, key, signed_package);
+    defer allocator.free(signed_release);
+
+    const tampered_release = try std.mem.replaceOwned(u8, allocator, signed_release, "\"id\":\"tool\"", "\"id\":\"evil\"");
+    defer allocator.free(tampered_release);
+
+    try writeManagedBundleFixtureFiles(fixture, tampered_release, signed_manifest);
+
+    var plane = control_plane_mod.ControlPlane.init(allocator);
+    defer plane.deinit();
+    var supervisor = try initTestLocalNodeSupervisor(allocator, &plane, fixture, &trusted_keys);
+    defer deinitTestLocalNodeSupervisor(&supervisor);
+
+    try std.testing.expectError(error.InvalidBundleDigest, supervisor.writeBundleManifestFiles());
+    try std.testing.expect(!pathExists(fixture.staged_executable_path));
+    try std.testing.expect(!pathExists(fixture.staged_manifest_path));
+}
+
+test "managed bundle staging rejects tampered manifest before writing staged outputs" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var fixture = try createManagedBundleFixturePaths(allocator, root);
+    defer fixture.deinit(allocator);
+
+    var key = try TestManagedBundleKey.init(allocator, "test-active-key");
+    defer key.deinit(allocator);
+    const trusted_keys = [_]managed_bundle_signatures.TrustedKey{key.trustedKey(.active)};
+
+    const signed_package = try buildSignedPackageEntryJson(allocator, key);
+    defer allocator.free(signed_package);
+    const signed_manifest = try buildSignedManifestJson(allocator, key);
+    defer allocator.free(signed_manifest);
+    const signed_release = try buildSignedReleaseJson(allocator, key, signed_package);
+    defer allocator.free(signed_release);
+
+    const tampered_manifest = try std.mem.replaceOwned(u8, allocator, signed_manifest, "\"kind\":\"tool\"", "\"kind\":\"evil\"");
+    defer allocator.free(tampered_manifest);
+
+    try writeManagedBundleFixtureFiles(fixture, signed_release, tampered_manifest);
+
+    var plane = control_plane_mod.ControlPlane.init(allocator);
+    defer plane.deinit();
+    var supervisor = try initTestLocalNodeSupervisor(allocator, &plane, fixture, &trusted_keys);
+    defer deinitTestLocalNodeSupervisor(&supervisor);
+
+    try std.testing.expectError(error.InvalidBundleDigest, supervisor.writeBundleManifestFiles());
+    try std.testing.expect(!pathExists(fixture.staged_executable_path));
+    try std.testing.expect(!pathExists(fixture.staged_manifest_path));
+}
+
+test "managed bundle staging rejects revoked signing keys before writing staged outputs" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var fixture = try createManagedBundleFixturePaths(allocator, root);
+    defer fixture.deinit(allocator);
+
+    var key = try TestManagedBundleKey.init(allocator, "test-revoked-key");
+    defer key.deinit(allocator);
+    const trusted_keys = [_]managed_bundle_signatures.TrustedKey{key.trustedKey(.revoked)};
+
+    const signed_package = try buildSignedPackageEntryJson(allocator, key);
+    defer allocator.free(signed_package);
+    const signed_manifest = try buildSignedManifestJson(allocator, key);
+    defer allocator.free(signed_manifest);
+    const signed_release = try buildSignedReleaseJson(allocator, key, signed_package);
+    defer allocator.free(signed_release);
+
+    try writeManagedBundleFixtureFiles(fixture, signed_release, signed_manifest);
+
+    var plane = control_plane_mod.ControlPlane.init(allocator);
+    defer plane.deinit();
+    var supervisor = try initTestLocalNodeSupervisor(allocator, &plane, fixture, &trusted_keys);
+    defer deinitTestLocalNodeSupervisor(&supervisor);
+
+    try std.testing.expectError(error.BundleSigningKeyRevoked, supervisor.writeBundleManifestFiles());
+    try std.testing.expect(!pathExists(fixture.staged_executable_path));
+    try std.testing.expect(!pathExists(fixture.staged_manifest_path));
+}
+
+test "managed bundle staging rejects unsigned bundles before writing staged outputs" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var fixture = try createManagedBundleFixturePaths(allocator, root);
+    defer fixture.deinit(allocator);
+
+    const unsigned_release =
+        \\{
+        \\  "executables": [
+        \\    {
+        \\      "id": "tool",
+        \\      "source": {
+        \\        "kind": "bundle_relative",
+        \\        "path": "drivers/tool.sh"
+        \\      },
+        \\      "stage_path": "bin/tool.sh",
+        \\      "platforms": ["linux/x86_64"]
+        \\    }
+        \\  ],
+        \\  "packages": [],
+        \\  "trust": {
+        \\    "mode": "unsigned",
+        \\    "publisher": "SpiderVenoms",
+        \\    "allow_dev_unsigned": false
+        \\  }
+        \\}
+    ;
+
+    try writeManagedBundleFixtureFiles(fixture, unsigned_release, null);
+
+    var plane = control_plane_mod.ControlPlane.init(allocator);
+    defer plane.deinit();
+    var supervisor = try initTestLocalNodeSupervisor(allocator, &plane, fixture, null);
+    defer deinitTestLocalNodeSupervisor(&supervisor);
+
+    try std.testing.expectError(error.UnsignedManagedBundle, supervisor.writeBundleManifestFiles());
+    try std.testing.expect(!pathExists(fixture.staged_executable_path));
+    try std.testing.expect(!pathExists(fixture.staged_manifest_path));
 }

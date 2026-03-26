@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.5.5 - 2026-03-26
+
+### Hosted Registry Operations
+- Defaulted Spiderweb to the hosted signed `SpiderVenomRegistry` on the `stable` channel for normal registry discovery.
+- Enriched package projections with installed-versus-latest registry metadata, including effective channel, latest release, and update availability.
+- Added explicit host-level and per-package registry channel policy operations so operators can move individual venoms between `stable`, `beta`, and `dev` without changing host-wide defaults.
+
+### Update Workflows
+- Added a first-class `packages_update` flow that can stage or activate the effective registry target release in one explicit operation.
+- Added `packages_update_all` for batch preview and selective multi-package apply flows, including per-package `preview`, `updated`, `up_to_date`, `not_found`, and `error` results.
+- Fixed batch update summary and alias handling so zero-request previews report `requested_count = 0` and `venom_id` aliases like `browser-main` resolve correctly when already up to date.
+
+### Release Auditability
+- Added durable package release history to the control plane snapshot and projected package metadata.
+- Surfaced recent release actions, versions, channels, and timestamps directly on package list/get responses so install, switch, rollback, update, and remove operations are inspectable after the fact.
+
 ## 0.5.4 - 2026-03-26
 
 ### Venom Release Lifecycle

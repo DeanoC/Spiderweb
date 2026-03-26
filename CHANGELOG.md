@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.5.4 - 2026-03-26
+
+### Venom Release Lifecycle
+- Added an explicit package-surface and control-plane `switch` operation for making an installed venom release active without overloading `enable` or `rollback`.
+- Installed package JSON now exposes `active_release_version`, `active_release_id`, `installed_release_count`, and `installed_release_versions` so callers can inspect release state directly.
+- Kept `rollback` as the safer revert-oriented operation while making normal release promotion more explicit.
+
+### Managed Bundle Hardening
+- Added negative-path integration coverage for tampered managed bundle releases, tampered manifests, revoked signing keys, and unsigned bundle rejection.
+- Changed managed bundle staging so Spiderweb validates all signed release and manifest metadata before it stages executables or writes rendered manifests.
+- Fixed buffered-manifest allocation cleanup so validation failures do not leak temporary buffers across supervisor retries.
+
+### Runtime Boundary Cleanup
+- Moved the Spiderweb-local `terminal` and `git` namespace adapters out of `src/venoms` and into `src/runtime`.
+- Tightened the ownership boundary so `src/venoms` is reserved for Spiderweb control surfaces rather than mixed runtime compatibility code.
+- Added a short operator/developer guide describing how signed venom releases now flow from SpiderVenoms into Spiderweb.
+
 ## 0.5.3 - 2026-03-26
 
 ### Venom Trust Policy

@@ -1272,7 +1272,7 @@ pub const ControlPlane = struct {
     pub fn listVenomPackages(self: *ControlPlane) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return venom_packages.buildCombinedPackagesJson(self.allocator, self.installed_venom_packages.items);
+        return self.renderVenomPackagesJsonLocked();
     }
 
     pub fn listVenomReleases(self: *ControlPlane) ![]u8 {
@@ -1491,6 +1491,35 @@ pub const ControlPlane = struct {
 
         const idx = target_index orelse return ControlPlaneError.VenomPackageNotFound;
 
+        for (self.installed_venom_releases.items) |*installed| {
+            if (!std.mem.eql(u8, installed.package_id, venom_id)) continue;
+            installed.package.enabled = false;
+        }
+        self.installed_venom_releases.items[idx].package.enabled = true;
+
+        try rebuildInstalledVenomPackagesFromReleasesLocked(self);
+        self.persistSnapshotBestEffortLocked();
+        return self.renderSingleInstalledVenomPackageJsonLocked(venom_id);
+    }
+
+    pub fn switchVenomRelease(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var payload = try parsePayload(self.allocator, payload_json);
+        defer payload.deinit();
+        const obj = payload.value.object;
+
+        const venom_id = getRequiredString(obj, "venom_id") catch return ControlPlaneError.MissingField;
+        const release_version = getRequiredString(obj, "release_version") catch return ControlPlaneError.MissingField;
+        try validateIdentifier(venom_id, 128);
+        try validateDisplayString(release_version, 64);
+        if (venom_packages.findBuiltinPackage(venom_id) != null) {
+            return ControlPlaneError.VenomPackageBuiltinProtected;
+        }
+
+        const idx = findInstalledReleaseIndex(self.installed_venom_releases.items, venom_id, release_version) orelse
+            return ControlPlaneError.VenomPackageNotFound;
         for (self.installed_venom_releases.items) |*installed| {
             if (!std.mem.eql(u8, installed.package_id, venom_id)) continue;
             installed.package.enabled = false;
@@ -4248,10 +4277,29 @@ pub const ControlPlane = struct {
             if (!std.mem.eql(u8, package.venom_id, venom_id)) continue;
             var out = std.ArrayListUnmanaged(u8){};
             defer out.deinit(self.allocator);
-            try venom_package_model.appendPackageJson(self.allocator, &out, package);
+            try appendInstalledVenomPackageJson(self.allocator, &out, package, self.installed_venom_releases.items);
             return out.toOwnedSlice(self.allocator);
         }
         return ControlPlaneError.VenomPackageNotFound;
+    }
+
+    fn renderVenomPackagesJsonLocked(self: *ControlPlane) ![]u8 {
+        const builtin_json = try venom_packages.buildPackagesJson(self.allocator);
+        defer self.allocator.free(builtin_json);
+        if (builtin_json.len == 0 or builtin_json[builtin_json.len - 1] != ']') return ControlPlaneError.InvalidPayload;
+
+        var out = std.ArrayListUnmanaged(u8){};
+        defer out.deinit(self.allocator);
+        try out.appendSlice(self.allocator, builtin_json[0 .. builtin_json.len - 1]);
+
+        var first_installed = builtin_json.len <= 2;
+        for (self.installed_venom_packages.items) |package| {
+            if (!first_installed) try out.append(self.allocator, ',');
+            first_installed = false;
+            try appendInstalledVenomPackageJson(self.allocator, &out, package, self.installed_venom_releases.items);
+        }
+        try out.append(self.allocator, ']');
+        return out.toOwnedSlice(self.allocator);
     }
 
     fn renderInstalledVenomReleasesJsonLocked(self: *ControlPlane) ![]u8 {
@@ -5533,6 +5581,57 @@ fn appendInstalledVenomReleaseJson(
     );
     try venom_package_model.appendPackageJson(allocator, out, release.package);
     try out.append(allocator, '}');
+}
+
+fn appendInstalledVenomPackageJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    package: venom_package_model.VenomPackage,
+    releases: []const InstalledVenomRelease,
+) !void {
+    var package_out = std.ArrayListUnmanaged(u8){};
+    defer package_out.deinit(allocator);
+    try venom_package_model.appendPackageJson(allocator, &package_out, package);
+    if (package_out.items.len == 0 or package_out.items[package_out.items.len - 1] != '}') return ControlPlaneError.InvalidPayload;
+
+    const active_index = findEnabledInstalledReleaseIndex(releases, package.venom_id) orelse
+        findPreferredInstalledReleaseIndex(releases, package.venom_id);
+    const active_release_version = if (active_index) |idx| releases[idx].package.release_version else null;
+    const active_release_version_json = try optionalJsonStringField(allocator, active_release_version);
+    defer allocator.free(active_release_version_json);
+    const active_release_id_json = if (active_index) |idx| blk: {
+        const release_id = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ releases[idx].package_id, releases[idx].package.release_version });
+        defer allocator.free(release_id);
+        break :blk try optionalJsonStringField(allocator, release_id);
+    } else try allocator.dupe(u8, "null");
+    defer allocator.free(active_release_id_json);
+
+    var versions_out = std.ArrayListUnmanaged(u8){};
+    defer versions_out.deinit(allocator);
+    try versions_out.append(allocator, '[');
+    var count: usize = 0;
+    var first = true;
+    for (releases) |release| {
+        if (!std.mem.eql(u8, release.package_id, package.venom_id)) continue;
+        count += 1;
+        if (!first) try versions_out.append(allocator, ',');
+        first = false;
+        const version_json = try optionalJsonStringField(allocator, release.package.release_version);
+        defer allocator.free(version_json);
+        try versions_out.appendSlice(allocator, version_json);
+    }
+    try versions_out.append(allocator, ']');
+
+    try out.writer(allocator).print(
+        "{s},\"active_release_version\":{s},\"active_release_id\":{s},\"installed_release_count\":{d},\"installed_release_versions\":{s}}}",
+        .{
+            package_out.items[0 .. package_out.items.len - 1],
+            active_release_version_json,
+            active_release_id_json,
+            count,
+            versions_out.items,
+        },
+    );
 }
 
 fn optionalJsonStringField(allocator: std.mem.Allocator, value: ?[]const u8) ![]u8 {
@@ -9733,11 +9832,14 @@ test "acheron_control_plane: venom package install list get remove" {
     defer allocator.free(listed);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"venom_id\":\"packages\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"venom_id\":\"camera_pkg\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"active_release_version\":\"1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"installed_release_count\":1") != null);
 
     const fetched = try plane.getVenomPackage("{\"venom_id\":\"camera_pkg\"}");
     defer allocator.free(fetched);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"kind\":\"camera\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"enabled\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"active_release_version\":\"1\"") != null);
 
     const disabled = try plane.disableVenomPackage("{\"venom_id\":\"camera_pkg\"}");
     defer allocator.free(disabled);
@@ -9829,6 +9931,13 @@ test "acheron_control_plane: venom release rollback and targeted removal" {
     defer allocator.free(projected_latest);
     try std.testing.expect(std.mem.indexOf(u8, projected_latest, "\"release_version\":\"1.1.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, projected_latest, "\"enabled\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, projected_latest, "\"installed_release_count\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, projected_latest, "\"active_release_version\":\"1.1.0\"") != null);
+
+    const switched = try plane.switchVenomRelease("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.0.0\"}");
+    defer allocator.free(switched);
+    try std.testing.expect(std.mem.indexOf(u8, switched, "\"release_version\":\"1.0.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, switched, "\"active_release_version\":\"1.0.0\"") != null);
 
     const rolled_back = try plane.rollbackVenomPackage("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.0.0\"}");
     defer allocator.free(rolled_back);

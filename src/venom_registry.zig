@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const managed_bundle_signatures = @import("managed_bundle_signatures.zig");
 const registry_signatures = @import("venom_registry_signatures.zig");
-const venom_package_model = @import("venom_package.zig");
 
 const registry_schema_version = "spidervenom-registry-v1";
 const supported_bundle_artifact_version = "1";
@@ -47,6 +46,12 @@ pub const InstallBundleResult = struct {
     }
 };
 
+pub const InstalledPackageState = struct {
+    package_id: []const u8,
+    venom_id: []const u8,
+    release_version: []const u8,
+};
+
 const OverrideRule = struct {
     package_id: []u8,
     channel_override: ?[]u8 = null,
@@ -64,6 +69,7 @@ const Selection = struct {
     package_json: []u8,
     bundle_id: []u8,
     package_id: []u8,
+    manifest_path: []u8,
     release_version: []u8,
     channel: []u8,
     bundle_doc_path: []u8,
@@ -75,6 +81,7 @@ const Selection = struct {
         allocator.free(self.package_json);
         allocator.free(self.bundle_id);
         allocator.free(self.package_id);
+        allocator.free(self.manifest_path);
         allocator.free(self.release_version);
         allocator.free(self.channel);
         allocator.free(self.bundle_doc_path);
@@ -95,7 +102,7 @@ pub fn buildCatalogJson(
         return allocator.dupe(u8, "[]");
     }
 
-    const rules = try parseOverrides(allocator, policy.overrides_json);
+    var rules = try parseOverrides(allocator, policy.overrides_json);
     defer deinitOverrides(allocator, &rules);
 
     const channel = std.mem.trim(u8, requested_channel orelse policy.default_channel, " \t\r\n");
@@ -161,7 +168,7 @@ pub fn buildCatalogJson(
 pub fn buildUpdatesJson(
     allocator: std.mem.Allocator,
     policy: Policy,
-    installed_packages: []const venom_package_model.VenomPackage,
+    installed_packages: []const InstalledPackageState,
 ) ![]u8 {
     if (!policy.enabled or std.mem.trim(u8, policy.source_url, " \t\r\n").len == 0) {
         return allocator.dupe(u8, "[]");
@@ -172,7 +179,8 @@ pub fn buildUpdatesJson(
     try out.append(allocator, '[');
     var first = true;
     for (installed_packages) |package| {
-        if (resolveRegistrySelection(allocator, policy, .{ .package_id = package.venom_id }, false) catch null) |selection| {
+        if (resolveRegistrySelection(allocator, policy, .{ .package_id = package.package_id }, false) catch null) |selection_value| {
+            var selection = selection_value;
             defer selection.deinit(allocator);
             const update_available = compareReleaseVersions(selection.release_version, package.release_version) == .gt;
             const package_json = try buildRegistryPackageJsonFromSelection(
@@ -223,7 +231,8 @@ pub fn enrichProjectedPackageJson(
     };
     const existing_release_source = getOptionalString(parsed.value.object, "release_source");
 
-    if (resolveRegistrySelection(allocator, policy, .{ .package_id = package_id }, false) catch null) |selection| {
+    if (resolveRegistrySelection(allocator, policy, .{ .package_id = package_id }, false) catch null) |selection_value| {
+        var selection = selection_value;
         defer selection.deinit(allocator);
         const update_available = if (installed_release_version) |installed|
             compareReleaseVersions(selection.release_version, installed) == .gt
@@ -285,10 +294,10 @@ pub fn resolveInstallBundle(
     try ensureDir(extract_root);
     try extractTarGz(allocator, archive_path, extract_root);
 
-    const extracted_release_path = try findPathEndingWith(
+    const extracted_release_path = try findExtractedManifestPath(
         allocator,
         extract_root,
-        "share/spidervenoms/bundles/managed-local/release.json",
+        selection.manifest_path,
     ) orelse return error.InvalidBundleRelease;
     defer allocator.free(extracted_release_path);
     const bundle_root = std.fs.path.dirname(extracted_release_path) orelse return error.InvalidBundleRelease;
@@ -404,6 +413,7 @@ fn resolveRegistrySelection(
     const packages = getRequiredArray(bundle_doc.value.object, "packages") orelse return error.InvalidRegistryDocument;
     const bundle_release_version = getRequiredString(bundle_doc.value.object, "release_version") orelse return error.InvalidRegistryDocument;
     const bundle_channel = getRequiredString(bundle_doc.value.object, "channel") orelse return error.InvalidRegistryDocument;
+    const manifest_path = getRequiredString(bundle_doc.value.object, "manifest") orelse return error.InvalidRegistryDocument;
     const published_at = getOptionalString(bundle_doc.value.object, "published_at");
     const min_spiderweb_version = getOptionalString(bundle_doc.value.object, "min_spiderweb_version") orelse "";
 
@@ -430,6 +440,7 @@ fn resolveRegistrySelection(
             .package_json = package_json,
             .bundle_id = try allocator.dupe(u8, bundle_id),
             .package_id = try allocator.dupe(u8, package_id),
+            .manifest_path = try allocator.dupe(u8, manifest_path),
             .release_version = try allocator.dupe(u8, bundle_release_version),
             .channel = try allocator.dupe(u8, bundle_channel),
             .bundle_doc_path = bundle_doc_path,
@@ -588,7 +599,7 @@ fn findBundleIdForPackage(
         for (ids) |id_entry| {
             if (id_entry != .string) return error.InvalidRegistryDocument;
             if (std.mem.eql(u8, id_entry.string, package_id)) {
-                return allocator.dupe(u8, getRequiredString(bundle_entry.object, "bundle_id") orelse return error.InvalidRegistryDocument);
+                return try allocator.dupe(u8, getRequiredString(bundle_entry.object, "bundle_id") orelse return error.InvalidRegistryDocument);
             }
         }
     }
@@ -724,7 +735,7 @@ fn verifyFileSha256(allocator: std.mem.Allocator, path: []const u8, expected_hex
     defer allocator.free(bytes);
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
-    const actual = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&digest)});
+    const actual = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.bytesToHex(digest, .lower)});
     defer allocator.free(actual);
     if (!std.mem.eql(u8, actual, expected_hex)) return error.RegistryArtifactChecksumMismatch;
 }
@@ -742,6 +753,16 @@ fn findPathEndingWith(allocator: std.mem.Allocator, root: []const u8, suffix: []
         allocator.free(full);
     }
     return null;
+}
+
+fn findExtractedManifestPath(
+    allocator: std.mem.Allocator,
+    extract_root: []const u8,
+    manifest_path: []const u8,
+) !?[]u8 {
+    const trimmed_manifest_path = std.mem.trim(u8, manifest_path, " \t\r\n");
+    if (trimmed_manifest_path.len == 0) return error.InvalidBundleRelease;
+    return findPathEndingWith(allocator, extract_root, trimmed_manifest_path);
 }
 
 fn resolveAssetReference(allocator: std.mem.Allocator, source_url: []const u8, asset_path: []const u8) ![]u8 {
@@ -944,4 +965,24 @@ test "validateRegistryBundleRelease rejects unsupported artifact versions" {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
     defer parsed.deinit();
     try std.testing.expectError(error.UnsupportedRegistrySchemaVersion, validateRegistryBundleRelease(parsed.value.object));
+}
+
+test "findExtractedManifestPath uses the registry manifest path" {
+    const allocator = std.testing.allocator;
+    const temp_root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/venom-registry-manifest-{d}", .{std.time.nanoTimestamp()});
+    defer allocator.free(temp_root);
+    defer std.fs.cwd().deleteTree(temp_root) catch {};
+
+    const manifest_path = try std.fs.path.join(allocator, &.{ temp_root, "share/spidervenoms/bundles/browser-bundle/release.json" });
+    defer allocator.free(manifest_path);
+    try ensureDir(std.fs.path.dirname(manifest_path).?);
+    try writeFileReplacing(manifest_path, "{}");
+
+    const resolved = (try findExtractedManifestPath(
+        allocator,
+        temp_root,
+        "share/spidervenoms/bundles/browser-bundle/release.json",
+    )).?;
+    defer allocator.free(resolved);
+    try std.testing.expect(std.mem.endsWith(u8, resolved, "share/spidervenoms/bundles/browser-bundle/release.json"));
 }

@@ -1325,11 +1325,54 @@ pub const ControlPlane = struct {
     pub fn registryStatusJson(self: *ControlPlane) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return std.fmt.allocPrint(
-            self.allocator,
-            "{{\"enabled\":{},\"source_url\":\"{s}\",\"default_channel\":\"{s}\"}}",
-            .{ self.registry_enabled, self.registry_source_url, self.registry_default_channel },
-        );
+        return venom_registry.buildPolicyJson(self.allocator, registryPolicyLocked(self), null);
+    }
+
+    pub fn getRegistryChannelPolicy(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var payload = try parsePayload(self.allocator, payload_json);
+        defer payload.deinit();
+        const package_id = getOptionalString(payload.value.object, "venom_id") orelse getOptionalString(payload.value.object, "package_id");
+        if (package_id) |value| try validateIdentifier(value, 128);
+        return venom_registry.buildPolicyJson(self.allocator, registryPolicyLocked(self), package_id);
+    }
+
+    pub fn setRegistryChannelPolicy(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var payload = try parsePayload(self.allocator, payload_json);
+        defer payload.deinit();
+        const obj = payload.value.object;
+        const channel = getRequiredString(obj, "channel") catch return ControlPlaneError.MissingField;
+        try validateIdentifier(channel, 32);
+        if (getOptionalString(obj, "venom_id") orelse getOptionalString(obj, "package_id")) |package_id| {
+            try validateIdentifier(package_id, 128);
+            try setRegistryChannelOverrideLocked(self, package_id, channel);
+            self.persistSnapshotBestEffortLocked();
+            return venom_registry.buildPolicyJson(self.allocator, registryPolicyLocked(self), package_id);
+        }
+
+        self.allocator.free(self.registry_default_channel);
+        self.registry_default_channel = try self.allocator.dupe(u8, channel);
+        self.persistSnapshotBestEffortLocked();
+        return venom_registry.buildPolicyJson(self.allocator, registryPolicyLocked(self), null);
+    }
+
+    pub fn clearRegistryChannelPolicy(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var payload = try parsePayload(self.allocator, payload_json);
+        defer payload.deinit();
+        const package_id = getOptionalString(payload.value.object, "venom_id") orelse getOptionalString(payload.value.object, "package_id") orelse
+            return ControlPlaneError.MissingField;
+        try validateIdentifier(package_id, 128);
+        try clearRegistryChannelOverrideLocked(self, package_id);
+        self.persistSnapshotBestEffortLocked();
+        return venom_registry.buildPolicyJson(self.allocator, registryPolicyLocked(self), package_id);
     }
 
     pub fn getVenomPackage(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -5037,9 +5080,13 @@ pub const ControlPlane = struct {
     fn buildSnapshotJsonLocked(self: *ControlPlane) ![]u8 {
         var out = std.ArrayListUnmanaged(u8){};
         errdefer out.deinit(self.allocator);
+        const escaped_registry_source_url = try jsonEscape(self.allocator, self.registry_source_url);
+        defer self.allocator.free(escaped_registry_source_url);
+        const escaped_registry_default_channel = try jsonEscape(self.allocator, self.registry_default_channel);
+        defer self.allocator.free(escaped_registry_default_channel);
 
         try out.writer(self.allocator).print(
-            "{{\"schema\":1,\"next\":{{\"invite_id\":{d},\"node_id\":{d},\"pending_join_id\":{d},\"workspace_id\":{d}}},\"metrics\":{{\"invites_created_total\":{d},\"invites_redeemed_total\":{d},\"node_joins_total\":{d},\"node_lease_refresh_total\":{d},\"nodes_ensured_total\":{d},\"node_deletes_total\":{d},\"workspace_creates_total\":{d},\"workspace_updates_total\":{d},\"workspace_deletes_total\":{d},\"workspace_token_rotates_total\":{d},\"workspace_token_revokes_total\":{d},\"mount_sets_total\":{d},\"mount_removes_total\":{d},\"workspace_activations_total\":{d},\"lease_reap_nodes_total\":{d}}},\"invites\":[",
+            "{{\"schema\":1,\"next\":{{\"invite_id\":{d},\"node_id\":{d},\"pending_join_id\":{d},\"workspace_id\":{d}}},\"metrics\":{{\"invites_created_total\":{d},\"invites_redeemed_total\":{d},\"node_joins_total\":{d},\"node_lease_refresh_total\":{d},\"nodes_ensured_total\":{d},\"node_deletes_total\":{d},\"workspace_creates_total\":{d},\"workspace_updates_total\":{d},\"workspace_deletes_total\":{d},\"workspace_token_rotates_total\":{d},\"workspace_token_revokes_total\":{d},\"mount_sets_total\":{d},\"mount_removes_total\":{d},\"workspace_activations_total\":{d},\"lease_reap_nodes_total\":{d}}},\"registry_policy\":{{\"enabled\":{},\"source_url\":\"{s}\",\"default_channel\":\"{s}\",\"overrides\":{s}}},\"invites\":[",
             .{
                 self.next_invite_id,
                 self.next_node_id,
@@ -5060,6 +5107,10 @@ pub const ControlPlane = struct {
                 self.mount_removes_total,
                 self.workspace_activations_total,
                 self.lease_reap_nodes_total,
+                self.registry_enabled,
+                escaped_registry_source_url,
+                escaped_registry_default_channel,
+                self.registry_overrides_json,
             },
         );
 
@@ -5316,6 +5367,28 @@ pub const ControlPlane = struct {
             self.mount_removes_total = try getOptionalU64(metrics_val.object, "mount_removes_total", 0);
             self.workspace_activations_total = try getOptionalU64(metrics_val.object, "workspace_activations_total", 0);
             self.lease_reap_nodes_total = try getOptionalU64(metrics_val.object, "lease_reap_nodes_total", 0);
+        }
+
+        if (root.get("registry_policy")) |registry_val| {
+            if (registry_val != .object) return error.InvalidSnapshot;
+            if (registry_val.object.get("enabled")) |value| {
+                if (value != .bool) return error.InvalidSnapshot;
+                self.registry_enabled = value.bool;
+            }
+            if (registry_val.object.get("source_url")) |value| {
+                if (value != .string) return error.InvalidSnapshot;
+                self.allocator.free(self.registry_source_url);
+                self.registry_source_url = try self.allocator.dupe(u8, value.string);
+            }
+            if (registry_val.object.get("default_channel")) |value| {
+                if (value != .string) return error.InvalidSnapshot;
+                self.allocator.free(self.registry_default_channel);
+                self.registry_default_channel = try self.allocator.dupe(u8, value.string);
+            }
+            if (registry_val.object.get("overrides")) |value| {
+                self.allocator.free(self.registry_overrides_json);
+                self.registry_overrides_json = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(value, .{})});
+            }
         }
 
         if (root.get("invites")) |invites_val| {
@@ -5808,6 +5881,123 @@ fn registryPolicyLocked(self: *ControlPlane) venom_registry.Policy {
         .default_channel = self.registry_default_channel,
         .overrides_json = self.registry_overrides_json,
     };
+}
+
+const RegistryOverrideEntry = struct {
+    package_id: []u8,
+    channel_override: ?[]u8 = null,
+    release_pin: ?[]u8 = null,
+
+    fn deinit(self: *RegistryOverrideEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.package_id);
+        if (self.channel_override) |value| allocator.free(value);
+        if (self.release_pin) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
+fn parseRegistryOverridesJson(
+    allocator: std.mem.Allocator,
+    overrides_json: []const u8,
+) !std.ArrayListUnmanaged(RegistryOverrideEntry) {
+    var overrides = std.ArrayListUnmanaged(RegistryOverrideEntry){};
+    errdefer deinitRegistryOverrideEntries(allocator, &overrides);
+
+    if (std.mem.trim(u8, overrides_json, " \t\r\n").len == 0) return overrides;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, overrides_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .array) return ControlPlaneError.InvalidPayload;
+
+    for (parsed.value.array.items) |item| {
+        if (item != .object) return ControlPlaneError.InvalidPayload;
+        try overrides.append(allocator, .{
+            .package_id = try dupeRequiredString(allocator, item.object, "package_id"),
+            .channel_override = if (getOptionalString(item.object, "channel_override")) |value| try allocator.dupe(u8, value) else null,
+            .release_pin = if (getOptionalString(item.object, "release_pin")) |value| try allocator.dupe(u8, value) else null,
+        });
+    }
+
+    return overrides;
+}
+
+fn deinitRegistryOverrideEntries(
+    allocator: std.mem.Allocator,
+    overrides: *std.ArrayListUnmanaged(RegistryOverrideEntry),
+) void {
+    for (overrides.items) |*entry| entry.deinit(allocator);
+    overrides.deinit(allocator);
+    overrides.* = .{};
+}
+
+fn persistRegistryOverridesJsonLocked(
+    self: *ControlPlane,
+    overrides: []const RegistryOverrideEntry,
+) !void {
+    var out = std.ArrayListUnmanaged(u8){};
+    defer out.deinit(self.allocator);
+    try out.append(self.allocator, '[');
+    for (overrides, 0..) |entry, idx| {
+        if (idx != 0) try out.append(self.allocator, ',');
+        const channel_override_json = try optionalJsonStringField(self.allocator, entry.channel_override);
+        defer self.allocator.free(channel_override_json);
+        const release_pin_json = try optionalJsonStringField(self.allocator, entry.release_pin);
+        defer self.allocator.free(release_pin_json);
+        try out.writer(self.allocator).print(
+            "{{\"package_id\":\"{s}\",\"channel_override\":{s},\"release_pin\":{s}}}",
+            .{ entry.package_id, channel_override_json, release_pin_json },
+        );
+    }
+    try out.append(self.allocator, ']');
+
+    self.allocator.free(self.registry_overrides_json);
+    self.registry_overrides_json = try out.toOwnedSlice(self.allocator);
+}
+
+fn setRegistryChannelOverrideLocked(self: *ControlPlane, package_id: []const u8, channel: []const u8) !void {
+    var overrides = try parseRegistryOverridesJson(self.allocator, self.registry_overrides_json);
+    defer deinitRegistryOverrideEntries(self.allocator, &overrides);
+
+    for (overrides.items) |*entry| {
+        if (!std.mem.eql(u8, entry.package_id, package_id)) continue;
+        if (entry.channel_override) |value| self.allocator.free(value);
+        entry.channel_override = try self.allocator.dupe(u8, channel);
+        try persistRegistryOverridesJsonLocked(self, overrides.items);
+        return;
+    }
+
+    try overrides.append(self.allocator, .{
+        .package_id = try self.allocator.dupe(u8, package_id),
+        .channel_override = try self.allocator.dupe(u8, channel),
+    });
+    try persistRegistryOverridesJsonLocked(self, overrides.items);
+}
+
+fn clearRegistryChannelOverrideLocked(self: *ControlPlane, package_id: []const u8) !void {
+    var overrides = try parseRegistryOverridesJson(self.allocator, self.registry_overrides_json);
+    defer deinitRegistryOverrideEntries(self.allocator, &overrides);
+
+    var idx: usize = 0;
+    while (idx < overrides.items.len) {
+        const entry = &overrides.items[idx];
+        if (!std.mem.eql(u8, entry.package_id, package_id)) {
+            idx += 1;
+            continue;
+        }
+        if (entry.channel_override) |value| {
+            self.allocator.free(value);
+            entry.channel_override = null;
+        }
+        if (entry.release_pin == null) {
+            entry.deinit(self.allocator);
+            _ = overrides.swapRemove(idx);
+        } else {
+            idx += 1;
+        }
+        break;
+    }
+
+    try persistRegistryOverridesJsonLocked(self, overrides.items);
 }
 
 fn collectInstalledPackageStatesLocked(
@@ -10237,6 +10427,50 @@ test "acheron_control_plane: registry updates follow installed package_id aliase
     try std.testing.expect(std.mem.indexOf(u8, updates, "\"update_available\":true") != null);
 }
 
+test "acheron_control_plane: registry channel policy updates host default and package overrides" {
+    const allocator = std.testing.allocator;
+    const fixture_root = try registryFixtureRoot(allocator);
+    defer allocator.free(fixture_root);
+
+    var plane = ControlPlane.initWithOptions(allocator, .{
+        .registry_enabled = true,
+        .registry_source_url = fixture_root,
+        .registry_default_channel = "stable",
+        .registry_overrides_json = "[]",
+    });
+    defer plane.deinit();
+
+    const initial_policy = try plane.registryStatusJson();
+    defer allocator.free(initial_policy);
+    try std.testing.expect(std.mem.indexOf(u8, initial_policy, "\"default_channel\":\"stable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, initial_policy, "\"override_count\":0") != null);
+
+    const host_policy = try plane.setRegistryChannelPolicy("{\"channel\":\"beta\"}");
+    defer allocator.free(host_policy);
+    try std.testing.expect(std.mem.indexOf(u8, host_policy, "\"default_channel\":\"beta\"") != null);
+
+    const package_policy = try plane.setRegistryChannelPolicy("{\"venom_id\":\"browser\",\"channel\":\"dev\"}");
+    defer allocator.free(package_policy);
+    try std.testing.expect(std.mem.indexOf(u8, package_policy, "\"package_id\":\"browser\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, package_policy, "\"channel_override\":\"dev\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, package_policy, "\"effective_channel\":\"dev\"") != null);
+
+    const browser = try plane.getVenomPackage("{\"venom_id\":\"browser\"}");
+    defer allocator.free(browser);
+    try std.testing.expect(std.mem.indexOf(u8, browser, "\"channel_override\":\"dev\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, browser, "\"effective_channel\":\"dev\"") != null);
+
+    const terminal = try plane.getVenomPackage("{\"venom_id\":\"terminal\"}");
+    defer allocator.free(terminal);
+    try std.testing.expect(std.mem.indexOf(u8, terminal, "\"channel_override\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, terminal, "\"effective_channel\":\"beta\"") != null);
+
+    const cleared = try plane.clearRegistryChannelPolicy("{\"venom_id\":\"browser\"}");
+    defer allocator.free(cleared);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "\"channel_override\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "\"effective_channel\":\"beta\"") != null);
+}
+
 test "acheron_control_plane: venom package persistence restores installed registry" {
     const allocator = std.testing.allocator;
     const dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/fs-control-plane-packages-{d}", .{std.time.nanoTimestamp()});
@@ -10266,6 +10500,66 @@ test "acheron_control_plane: venom package persistence restores installed regist
         defer allocator.free(fetched);
         try std.testing.expect(std.mem.indexOf(u8, fetched, "\"version\":\"3\"") != null);
     }
+}
+
+test "acheron_control_plane: registry channel policy persists across restart" {
+    const allocator = std.testing.allocator;
+    const fixture_root = try registryFixtureRoot(allocator);
+    defer allocator.free(fixture_root);
+    const dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/fs-control-plane-registry-policy-{d}", .{std.time.nanoTimestamp()});
+    defer allocator.free(dir);
+    defer std.fs.cwd().deleteTree(dir) catch {};
+    try std.fs.cwd().makePath(dir);
+
+    {
+        var plane = ControlPlane.initWithPersistenceOptions(allocator, dir, "control-plane.db", .{
+            .registry_enabled = true,
+            .registry_source_url = fixture_root,
+            .registry_default_channel = "stable",
+            .registry_overrides_json = "[]",
+        });
+        defer plane.deinit();
+        const host_policy = try plane.setRegistryChannelPolicy("{\"channel\":\"beta\"}");
+        defer allocator.free(host_policy);
+        const package_policy = try plane.setRegistryChannelPolicy("{\"venom_id\":\"browser\",\"channel\":\"dev\"}");
+        defer allocator.free(package_policy);
+    }
+
+    {
+        var plane = ControlPlane.initWithPersistenceOptions(allocator, dir, "control-plane.db", .{
+            .registry_enabled = true,
+            .registry_source_url = fixture_root,
+            .registry_default_channel = "stable",
+            .registry_overrides_json = "[]",
+        });
+        defer plane.deinit();
+
+        const host_policy = try plane.registryStatusJson();
+        defer allocator.free(host_policy);
+        try std.testing.expect(std.mem.indexOf(u8, host_policy, "\"default_channel\":\"beta\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, host_policy, "\"override_count\":1") != null);
+
+        const package_policy = try plane.getRegistryChannelPolicy("{\"venom_id\":\"browser\"}");
+        defer allocator.free(package_policy);
+        try std.testing.expect(std.mem.indexOf(u8, package_policy, "\"channel_override\":\"dev\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, package_policy, "\"effective_channel\":\"dev\"") != null);
+    }
+}
+
+test "acheron_control_plane: registry policy snapshot escapes source url and channel strings" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.initWithOptions(allocator, .{
+        .registry_enabled = true,
+        .registry_source_url = "C:\\Users\\dean\\registry",
+        .registry_default_channel = "stable\\\"beta",
+        .registry_overrides_json = "[]",
+    });
+    defer plane.deinit();
+
+    const snapshot = try plane.buildSnapshotJsonLocked();
+    defer allocator.free(snapshot);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "\"source_url\":\"C:\\\\Users\\\\dean\\\\registry\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "\"default_channel\":\"stable\\\\\\\"beta\"") != null);
 }
 
 test "acheron_control_plane: venom release rollback and targeted removal" {

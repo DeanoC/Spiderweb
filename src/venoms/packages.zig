@@ -8,6 +8,9 @@ pub const Op = enum {
     catalog,
     updates,
     get,
+    channel_get,
+    channel_set,
+    channel_clear,
     install,
     enable,
     switch_release,
@@ -33,13 +36,13 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
         packages_dir,
         "Packages",
         shape_json,
-        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_catalog\",\"packages_updates\",\"packages_get\",\"packages_install\",\"packages_enable\",\"packages_switch\",\"packages_disable\",\"packages_rollback\",\"packages_remove\"],\"discoverable\":true}",
-        "List, inspect, install, enable, switch, disable, rollback, and remove package definitions available to this Spiderweb host.",
+        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_catalog\",\"packages_updates\",\"packages_get\",\"packages_channel_get\",\"packages_channel_set\",\"packages_channel_clear\",\"packages_install\",\"packages_enable\",\"packages_switch\",\"packages_disable\",\"packages_rollback\",\"packages_remove\"],\"discoverable\":true}",
+        "List, inspect, install, enable, switch, disable, rollback, remove, and manage registry channel policy for package definitions available to this Spiderweb host.",
     );
     _ = try self.addFile(
         packages_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"catalog\":\"control/catalog.json\",\"updates\":\"control/updates.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"enable\":\"control/enable.json\",\"switch\":\"control/switch.json\",\"disable\":\"control/disable.json\",\"rollback\":\"control/rollback.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"catalog\":\"packages_catalog\",\"updates\":\"packages_updates\",\"get\":\"packages_get\",\"install\":\"packages_install\",\"enable\":\"packages_enable\",\"switch\":\"packages_switch\",\"disable\":\"packages_disable\",\"rollback\":\"packages_rollback\",\"remove\":\"packages_remove\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"catalog\":\"control/catalog.json\",\"updates\":\"control/updates.json\",\"get\":\"control/get.json\",\"channel_get\":\"control/channel_get.json\",\"channel_set\":\"control/channel_set.json\",\"channel_clear\":\"control/channel_clear.json\",\"install\":\"control/install.json\",\"enable\":\"control/enable.json\",\"switch\":\"control/switch.json\",\"disable\":\"control/disable.json\",\"rollback\":\"control/rollback.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"catalog\":\"packages_catalog\",\"updates\":\"packages_updates\",\"get\":\"packages_get\",\"channel_get\":\"packages_channel_get\",\"channel_set\":\"packages_channel_set\",\"channel_clear\":\"packages_channel_clear\",\"install\":\"packages_install\",\"enable\":\"packages_enable\",\"switch\":\"packages_switch\",\"disable\":\"packages_disable\",\"rollback\":\"packages_rollback\",\"remove\":\"packages_remove\"}}",
         false,
         .none,
     );
@@ -85,7 +88,7 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Use list/catalog/updates/get/install/enable/switch/disable/rollback/remove operation files, or invoke.json with op=list|catalog|updates|get|install|enable|switch|disable|rollback|remove plus arguments.\n",
+        "Use list/catalog/updates/get/channel_get/channel_set/channel_clear/install/enable/switch/disable/rollback/remove operation files, or invoke.json with op=list|catalog|updates|get|channel_get|channel_set|channel_clear|install|enable|switch|disable|rollback|remove plus arguments.\n",
         false,
         .none,
     );
@@ -94,6 +97,9 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(control_dir, "catalog.json", "", true, .packages_catalog);
     _ = try self.addFile(control_dir, "updates.json", "", true, .packages_updates);
     _ = try self.addFile(control_dir, "get.json", "", true, .packages_get);
+    _ = try self.addFile(control_dir, "channel_get.json", "", true, .packages_channel_get);
+    _ = try self.addFile(control_dir, "channel_set.json", "", true, .packages_channel_set);
+    _ = try self.addFile(control_dir, "channel_clear.json", "", true, .packages_channel_clear);
     _ = try self.addFile(control_dir, "install.json", "", true, .packages_install);
     _ = try self.addFile(control_dir, "enable.json", "", true, .packages_enable);
     _ = try self.addFile(control_dir, "switch.json", "", true, .packages_switch);
@@ -117,6 +123,9 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
         .packages_catalog => Op.catalog,
         .packages_updates => Op.updates,
         .packages_get => Op.get,
+        .packages_channel_get => Op.channel_get,
+        .packages_channel_set => Op.channel_set,
+        .packages_channel_clear => Op.channel_clear,
         .packages_install => Op.install,
         .packages_enable => Op.enable,
         .packages_switch => Op.switch_release,
@@ -157,6 +166,9 @@ fn parseOp(raw: []const u8) ?Op {
     if (std.mem.eql(u8, value, "catalog") or std.mem.eql(u8, value, "packages_catalog")) return .catalog;
     if (std.mem.eql(u8, value, "updates") or std.mem.eql(u8, value, "packages_updates")) return .updates;
     if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "packages_get")) return .get;
+    if (std.mem.eql(u8, value, "channel_get") or std.mem.eql(u8, value, "packages_channel_get")) return .channel_get;
+    if (std.mem.eql(u8, value, "channel_set") or std.mem.eql(u8, value, "packages_channel_set")) return .channel_set;
+    if (std.mem.eql(u8, value, "channel_clear") or std.mem.eql(u8, value, "packages_channel_clear")) return .channel_clear;
     if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "packages_install")) return .install;
     if (std.mem.eql(u8, value, "enable") or std.mem.eql(u8, value, "packages_enable")) return .enable;
     if (std.mem.eql(u8, value, "switch") or std.mem.eql(u8, value, "packages_switch")) return .switch_release;
@@ -263,6 +275,58 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
                 return error.InvalidPayload;
             defer self.allocator.free(package_json);
             break :blk buildSingleResultJson(self, .get, if (source != null and std.mem.eql(u8, source.?, "registry")) "package" else if (extractOptionalStringByNames(args_obj, &.{"release_version"}) != null) "release" else "package", package_json);
+        },
+        .channel_get => blk: {
+            const control = plane orelse return error.InvalidPayload;
+            const request = try buildChannelPolicyRequestJson(
+                self.allocator,
+                extractOptionalStringByNames(args_obj, &.{ "venom_id", "package_id", "id" }),
+                null,
+            );
+            defer self.allocator.free(request);
+            const policy_json = control.getRegistryChannelPolicy(request) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.MissingField,
+                control_plane_mod.ControlPlaneError.InvalidPayload,
+                => return error.InvalidPayload,
+                else => return err,
+            };
+            defer self.allocator.free(policy_json);
+            break :blk buildSingleResultJson(self, .channel_get, "policy", policy_json);
+        },
+        .channel_set => blk: {
+            const control = plane orelse return error.InvalidPayload;
+            const channel = extractOptionalStringByNames(args_obj, &.{"channel"}) orelse return error.InvalidPayload;
+            const request = try buildChannelPolicyRequestJson(
+                self.allocator,
+                extractOptionalStringByNames(args_obj, &.{ "venom_id", "package_id", "id" }),
+                channel,
+            );
+            defer self.allocator.free(request);
+            const policy_json = control.setRegistryChannelPolicy(request) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.MissingField,
+                control_plane_mod.ControlPlaneError.InvalidPayload,
+                => return error.InvalidPayload,
+                else => return err,
+            };
+            defer self.allocator.free(policy_json);
+            break :blk buildSingleResultJson(self, .channel_set, "policy", policy_json);
+        },
+        .channel_clear => blk: {
+            const control = plane orelse return error.InvalidPayload;
+            const request = try buildChannelPolicyRequestJson(
+                self.allocator,
+                extractOptionalStringByNames(args_obj, &.{ "venom_id", "package_id", "id" }) orelse return error.InvalidPayload,
+                null,
+            );
+            defer self.allocator.free(request);
+            const policy_json = control.clearRegistryChannelPolicy(request) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.MissingField,
+                control_plane_mod.ControlPlaneError.InvalidPayload,
+                => return error.InvalidPayload,
+                else => return err,
+            };
+            defer self.allocator.free(policy_json);
+            break :blk buildSingleResultJson(self, .channel_clear, "policy", policy_json);
         },
         .install => blk: {
             const control = plane orelse return error.InvalidPayload;
@@ -449,6 +513,23 @@ fn buildDetailedPackageRequestJson(
     );
 }
 
+fn buildChannelPolicyRequestJson(
+    allocator: std.mem.Allocator,
+    venom_id: ?[]const u8,
+    channel: ?[]const u8,
+) ![]u8 {
+    const channel_json = try optionalJsonFieldFromString(allocator, channel);
+    defer allocator.free(channel_json);
+    if (venom_id) |value| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"venom_id\":\"{s}\",\"channel\":{s}}}",
+            .{ value, channel_json },
+        );
+    }
+    return std.fmt.allocPrint(allocator, "{{\"channel\":{s}}}", .{channel_json});
+}
+
 fn optionalJsonFieldFromString(allocator: std.mem.Allocator, value: ?[]const u8) ![]u8 {
     if (value) |raw| {
         return std.fmt.allocPrint(allocator, "\"{s}\"", .{raw});
@@ -462,6 +543,9 @@ fn operationName(op: Op) []const u8 {
         .catalog => "catalog",
         .updates => "updates",
         .get => "get",
+        .channel_get => "channel_get",
+        .channel_set => "channel_set",
+        .channel_clear => "channel_clear",
         .install => "install",
         .enable => "enable",
         .switch_release => "switch",
@@ -477,6 +561,9 @@ fn statusToolName(op: Op) []const u8 {
         .catalog => "packages_catalog",
         .updates => "packages_updates",
         .get => "packages_get",
+        .channel_get => "packages_channel_get",
+        .channel_set => "packages_channel_set",
+        .channel_clear => "packages_channel_clear",
         .install => "packages_install",
         .enable => "packages_enable",
         .switch_release => "packages_switch",

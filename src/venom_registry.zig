@@ -165,6 +165,70 @@ pub fn buildCatalogJson(
     return out.toOwnedSlice(allocator);
 }
 
+pub fn buildPolicyJson(
+    allocator: std.mem.Allocator,
+    policy: Policy,
+    requested_package_id: ?[]const u8,
+) ![]u8 {
+    var overrides = try parseOverrides(allocator, policy.overrides_json);
+    defer deinitOverrides(allocator, &overrides);
+
+    const source_url_json = try optionalJsonStringField(allocator, policy.source_url);
+    defer allocator.free(source_url_json);
+    const default_channel_json = try optionalJsonStringField(allocator, policy.default_channel);
+    defer allocator.free(default_channel_json);
+
+    if (requested_package_id) |package_id| {
+        const escaped_package_id = try std.json.Stringify.valueAlloc(allocator, package_id, .{});
+        defer allocator.free(escaped_package_id);
+        const channel_override = findPackageChannel(overrides.items, package_id);
+        const release_pin = findPackageReleasePin(overrides.items, package_id);
+        const channel_override_json = try optionalJsonStringField(allocator, channel_override);
+        defer allocator.free(channel_override_json);
+        const release_pin_json = try optionalJsonStringField(allocator, release_pin);
+        defer allocator.free(release_pin_json);
+        const effective_channel_json = try optionalJsonStringField(allocator, channel_override orelse policy.default_channel);
+        defer allocator.free(effective_channel_json);
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"enabled\":{},\"source_url\":{s},\"default_channel\":{s},\"package_id\":{s},\"channel_override\":{s},\"release_pin\":{s},\"effective_channel\":{s}}}",
+            .{
+                policy.enabled,
+                source_url_json,
+                default_channel_json,
+                escaped_package_id,
+                channel_override_json,
+                release_pin_json,
+                effective_channel_json,
+            },
+        );
+    }
+
+    var overrides_json = std.ArrayListUnmanaged(u8){};
+    defer overrides_json.deinit(allocator);
+    try overrides_json.append(allocator, '[');
+    for (overrides.items, 0..) |entry, idx| {
+        if (idx != 0) try overrides_json.append(allocator, ',');
+        const channel_override_json = try optionalJsonStringField(allocator, entry.channel_override);
+        defer allocator.free(channel_override_json);
+        const release_pin_json = try optionalJsonStringField(allocator, entry.release_pin);
+        defer allocator.free(release_pin_json);
+        const effective_channel_json = try optionalJsonStringField(allocator, entry.channel_override orelse policy.default_channel);
+        defer allocator.free(effective_channel_json);
+        try overrides_json.writer(allocator).print(
+            "{{\"package_id\":\"{s}\",\"channel_override\":{s},\"release_pin\":{s},\"effective_channel\":{s}}}",
+            .{ entry.package_id, channel_override_json, release_pin_json, effective_channel_json },
+        );
+    }
+    try overrides_json.append(allocator, ']');
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"enabled\":{},\"source_url\":{s},\"default_channel\":{s},\"override_count\":{d},\"overrides\":{s}}}",
+        .{ policy.enabled, source_url_json, default_channel_json, overrides.items.len, overrides_json.items },
+    );
+}
+
 pub fn buildUpdatesJson(
     allocator: std.mem.Allocator,
     policy: Policy,
@@ -214,11 +278,17 @@ pub fn enrichProjectedPackageJson(
     policy: Policy,
     package_json: []const u8,
 ) ![]u8 {
+    var overrides = try parseOverrides(allocator, policy.overrides_json);
+    defer deinitOverrides(allocator, &overrides);
+
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, package_json, .{});
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidRegistryDocument;
 
     const package_id = getRequiredString(parsed.value.object, "package_id") orelse return error.InvalidRegistryDocument;
+    const channel_override = findPackageChannel(overrides.items, package_id);
+    const release_pin = findPackageReleasePin(overrides.items, package_id);
+    const effective_channel = channel_override orelse policy.default_channel;
     const installed_release_version = blk: {
         if (getOptionalString(parsed.value.object, "active_release_version")) |value| break :blk value;
         const installed_release_count = parsed.value.object.get("installed_release_count");
@@ -248,6 +318,9 @@ pub fn enrichProjectedPackageJson(
             installed_release_version,
             update_available,
             existing_release_source orelse "installed",
+            channel_override,
+            release_pin,
+            effective_channel,
         );
     }
 
@@ -261,6 +334,9 @@ pub fn enrichProjectedPackageJson(
         installed_release_version,
         false,
         existing_release_source orelse "installed",
+        channel_override,
+        release_pin,
+        effective_channel,
     );
 }
 
@@ -888,6 +964,9 @@ fn appendRegistryMetadataToPackageJson(
     installed_release_version: ?[]const u8,
     update_available: bool,
     release_source: []const u8,
+    channel_override: ?[]const u8,
+    release_pin: ?[]const u8,
+    effective_channel: ?[]const u8,
 ) ![]u8 {
     if (package_json.len == 0 or package_json[package_json.len - 1] != '}') return error.InvalidRegistryDocument;
 
@@ -903,10 +982,16 @@ fn appendRegistryMetadataToPackageJson(
     defer allocator.free(installed_release_json);
     const release_source_json = try optionalJsonStringField(allocator, release_source);
     defer allocator.free(release_source_json);
+    const channel_override_json = try optionalJsonStringField(allocator, channel_override);
+    defer allocator.free(channel_override_json);
+    const release_pin_json = try optionalJsonStringField(allocator, release_pin);
+    defer allocator.free(release_pin_json);
+    const effective_channel_json = try optionalJsonStringField(allocator, effective_channel);
+    defer allocator.free(effective_channel_json);
 
     return std.fmt.allocPrint(
         allocator,
-        "{s},\"registry_channel\":{s},\"registry_release_version\":{s},\"latest_release_version\":{s},\"latest_release_channel\":{s},\"installed_release_version\":{s},\"update_available\":{},\"release_source\":{s}}}",
+        "{s},\"registry_channel\":{s},\"registry_release_version\":{s},\"latest_release_version\":{s},\"latest_release_channel\":{s},\"installed_release_version\":{s},\"update_available\":{},\"release_source\":{s},\"channel_override\":{s},\"release_pin\":{s},\"effective_channel\":{s}}}",
         .{
             package_json[0 .. package_json.len - 1],
             registry_channel_json,
@@ -916,6 +1001,9 @@ fn appendRegistryMetadataToPackageJson(
             installed_release_json,
             update_available,
             release_source_json,
+            channel_override_json,
+            release_pin_json,
+            effective_channel_json,
         },
     );
 }
@@ -985,4 +1073,21 @@ test "findExtractedManifestPath uses the registry manifest path" {
     )).?;
     defer allocator.free(resolved);
     try std.testing.expect(std.mem.endsWith(u8, resolved, "share/spidervenoms/bundles/browser-bundle/release.json"));
+}
+
+test "buildPolicyJson escapes requested package ids" {
+    const allocator = std.testing.allocator;
+    const json = try buildPolicyJson(
+        allocator,
+        .{
+            .enabled = true,
+            .source_url = "https://registry.example.test",
+            .default_channel = "stable",
+            .overrides_json = "[]",
+        },
+        "browser\\\"beta",
+    );
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"package_id\":\"browser\\\\\\\"beta\"") != null);
 }

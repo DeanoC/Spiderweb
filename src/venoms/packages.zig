@@ -187,22 +187,31 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
         .list => buildListResultJson(self),
         .get => blk: {
             const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
-            const request = try std.fmt.allocPrint(self.allocator, "{{\"venom_id\":\"{s}\"}}", .{venom_id});
+            const request = try buildPackageSelectionRequestJson(self.allocator, venom_id, extractOptionalStringByNames(args_obj, &.{"release_version"}));
             defer self.allocator.free(request);
             const package_json = if (plane) |value|
-                value.getVenomPackage(request) catch |err| switch (err) {
-                    control_plane_mod.ControlPlaneError.VenomPackageNotFound => return error.InvalidPayload,
-                    control_plane_mod.ControlPlaneError.MissingField,
-                    control_plane_mod.ControlPlaneError.InvalidPayload,
-                    => return error.InvalidPayload,
-                    else => return err,
-                }
+                if (extractOptionalStringByNames(args_obj, &.{"release_version"}) != null)
+                    value.getVenomRelease(request) catch |err| switch (err) {
+                        control_plane_mod.ControlPlaneError.VenomPackageNotFound => return error.InvalidPayload,
+                        control_plane_mod.ControlPlaneError.MissingField,
+                        control_plane_mod.ControlPlaneError.InvalidPayload,
+                        => return error.InvalidPayload,
+                        else => return err,
+                    }
+                else
+                    value.getVenomPackage(request) catch |err| switch (err) {
+                        control_plane_mod.ControlPlaneError.VenomPackageNotFound => return error.InvalidPayload,
+                        control_plane_mod.ControlPlaneError.MissingField,
+                        control_plane_mod.ControlPlaneError.InvalidPayload,
+                        => return error.InvalidPayload,
+                        else => return err,
+                    }
             else if (venom_packages.findBuiltinPackage(venom_id)) |spec|
                 try venom_packages.renderPackageMetadataJson(self.allocator, spec)
             else
                 return error.InvalidPayload;
             defer self.allocator.free(package_json);
-            break :blk buildSinglePackageResultJson(self, .get, package_json);
+            break :blk buildSingleResultJson(self, .get, if (extractOptionalStringByNames(args_obj, &.{"release_version"}) != null) "release" else "package", package_json);
         },
         .install => blk: {
             const control = plane orelse return error.InvalidPayload;
@@ -220,7 +229,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
         .enable => blk: {
             const control = plane orelse return error.InvalidPayload;
             const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
-            const request = try std.fmt.allocPrint(self.allocator, "{{\"venom_id\":\"{s}\"}}", .{venom_id});
+            const request = try buildPackageSelectionRequestJson(self.allocator, venom_id, extractOptionalStringByNames(args_obj, &.{"release_version"}));
             defer self.allocator.free(request);
             const package_json = control.enableVenomPackage(request) catch |err| switch (err) {
                 control_plane_mod.ControlPlaneError.VenomPackageBuiltinProtected => return error.AccessDenied,
@@ -236,7 +245,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
         .disable => blk: {
             const control = plane orelse return error.InvalidPayload;
             const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
-            const request = try std.fmt.allocPrint(self.allocator, "{{\"venom_id\":\"{s}\"}}", .{venom_id});
+            const request = try buildPackageSelectionRequestJson(self.allocator, venom_id, extractOptionalStringByNames(args_obj, &.{"release_version"}));
             defer self.allocator.free(request);
             const package_json = control.disableVenomPackage(request) catch |err| switch (err) {
                 control_plane_mod.ControlPlaneError.VenomPackageBuiltinProtected => return error.AccessDenied,
@@ -252,7 +261,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
         .remove => blk: {
             const control = plane orelse return error.InvalidPayload;
             const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
-            const request = try std.fmt.allocPrint(self.allocator, "{{\"venom_id\":\"{s}\"}}", .{venom_id});
+            const request = try buildPackageSelectionRequestJson(self.allocator, venom_id, extractOptionalStringByNames(args_obj, &.{"release_version"}));
             defer self.allocator.free(request);
             const result_json = control.removeVenomPackage(request) catch |err| switch (err) {
                 control_plane_mod.ControlPlaneError.VenomPackageBuiltinProtected => return error.AccessDenied,
@@ -274,13 +283,21 @@ fn buildListResultJson(self: anytype) ![]u8 {
     else
         try venom_packages.buildPackagesJson(self.allocator);
     defer self.allocator.free(packages_json);
-    const wrapped = try std.fmt.allocPrint(self.allocator, "{{\"packages\":{s}}}", .{packages_json});
+    const wrapped = if (self.control_plane) |plane| blk: {
+        const releases_json = try plane.listVenomReleases();
+        defer self.allocator.free(releases_json);
+        break :blk try std.fmt.allocPrint(self.allocator, "{{\"packages\":{s},\"releases\":{s}}}", .{ packages_json, releases_json });
+    } else try std.fmt.allocPrint(self.allocator, "{{\"packages\":{s}}}", .{packages_json});
     defer self.allocator.free(wrapped);
     return buildSuccessResultJson(self, .list, wrapped);
 }
 
 fn buildSinglePackageResultJson(self: anytype, op: Op, package_json: []const u8) ![]u8 {
-    const wrapped = try std.fmt.allocPrint(self.allocator, "{{\"package\":{s}}}", .{package_json});
+    return buildSingleResultJson(self, op, "package", package_json);
+}
+
+fn buildSingleResultJson(self: anytype, op: Op, field_name: []const u8, json: []const u8) ![]u8 {
+    const wrapped = try std.fmt.allocPrint(self.allocator, "{{\"{s}\":{s}}}", .{ field_name, json });
     defer self.allocator.free(wrapped);
     return buildSuccessResultJson(self, op, wrapped);
 }
@@ -303,6 +320,21 @@ fn buildFailureResultJson(self: anytype, op: Op, code: []const u8, message: []co
         "{{\"ok\":false,\"operation\":\"{s}\",\"result\":null,\"error\":{{\"code\":\"{s}\",\"message\":\"{s}\"}}}}",
         .{ operationName(op), escaped_code, escaped_message },
     );
+}
+
+fn buildPackageSelectionRequestJson(
+    allocator: std.mem.Allocator,
+    venom_id: []const u8,
+    release_version: ?[]const u8,
+) ![]u8 {
+    if (release_version) |value| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"venom_id\":\"{s}\",\"release_version\":\"{s}\"}}",
+            .{ venom_id, value },
+        );
+    }
+    return std.fmt.allocPrint(allocator, "{{\"venom_id\":\"{s}\"}}", .{venom_id});
 }
 
 fn operationName(op: Op) []const u8 {

@@ -1842,7 +1842,7 @@ final class SpiderwebAppController: ObservableObject {
             "/bin/rm -f /usr/local/bin/spiderweb-fs-mount",
             "/bin/rm -f /usr/local/bin/spiderweb-fs-node",
             "/bin/rm -f /usr/local/bin/spiderweb-local-node",
-            "/bin/rm -f /usr/local/bin/spiderweb-local-service",
+            "/bin/rm -rf /usr/local/share/spidervenoms",
             "/usr/sbin/pkgutil --forget com.deanoc.spiderweb.filesystems.fs.spiderweb.pkg >/dev/null 2>&1 || true",
         ].joined(separator: "; ")
 

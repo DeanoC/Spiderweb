@@ -5,6 +5,11 @@ pub const VenomPackage = struct {
     venom_id: []u8,
     kind: []u8,
     version: []u8,
+    release_version: []u8,
+    channel: ?[]u8 = null,
+    digest: ?[]u8 = null,
+    signature_json: ?[]u8 = null,
+    trust_json: ?[]u8 = null,
     enabled: bool = true,
     categories_json: []u8,
     host_roles_json: []u8,
@@ -22,6 +27,11 @@ pub const VenomPackage = struct {
         allocator.free(self.venom_id);
         allocator.free(self.kind);
         allocator.free(self.version);
+        allocator.free(self.release_version);
+        if (self.channel) |value| allocator.free(value);
+        if (self.digest) |value| allocator.free(value);
+        if (self.signature_json) |value| allocator.free(value);
+        if (self.trust_json) |value| allocator.free(value);
         allocator.free(self.categories_json);
         allocator.free(self.host_roles_json);
         allocator.free(self.binding_scopes_json);
@@ -73,17 +83,38 @@ pub fn appendPackageJson(
     defer allocator.free(escaped_kind);
     const escaped_version = try jsonEscape(allocator, package.version);
     defer allocator.free(escaped_version);
+    const escaped_release_version = try jsonEscape(allocator, package.release_version);
+    defer allocator.free(escaped_release_version);
+    const channel_json = try optionalJsonString(allocator, package.channel);
+    defer allocator.free(channel_json);
+    const digest_json = try optionalJsonString(allocator, package.digest);
+    defer allocator.free(digest_json);
+    const signature_json = if (package.signature_json) |value|
+        try allocator.dupe(u8, value)
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(signature_json);
+    const trust_json = if (package.trust_json) |value|
+        try allocator.dupe(u8, value)
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(trust_json);
 
     if (package.help_md) |help| {
         const escaped_help = try jsonEscape(allocator, help);
         defer allocator.free(escaped_help);
         try out.writer(allocator).print(
-            "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":{},\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"help_md\":\"{s}\"}}",
+            "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"release_version\":\"{s}\",\"channel\":{s},\"digest\":{s},\"signature\":{s},\"trust\":{s},\"enabled\":{},\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"help_md\":\"{s}\"}}",
             .{
                 escaped_venom_id,
                 escaped_venom_id,
                 escaped_kind,
                 escaped_version,
+                escaped_release_version,
+                channel_json,
+                digest_json,
+                signature_json,
+                trust_json,
                 package.enabled,
                 package.categories_json,
                 package.host_roles_json,
@@ -102,12 +133,17 @@ pub fn appendPackageJson(
     }
 
     try out.writer(allocator).print(
-        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":{},\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}}}",
+        "{{\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"release_version\":\"{s}\",\"channel\":{s},\"digest\":{s},\"signature\":{s},\"trust\":{s},\"enabled\":{},\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}}}",
         .{
             escaped_venom_id,
             escaped_venom_id,
             escaped_kind,
             escaped_version,
+            escaped_release_version,
+            channel_json,
+            digest_json,
+            signature_json,
+            trust_json,
             package.enabled,
             package.categories_json,
             package.host_roles_json,
@@ -128,6 +164,11 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
         .venom_id = undefined,
         .kind = undefined,
         .version = undefined,
+        .release_version = undefined,
+        .channel = null,
+        .digest = null,
+        .signature_json = null,
+        .trust_json = null,
         .enabled = true,
         .categories_json = undefined,
         .host_roles_json = undefined,
@@ -144,6 +185,7 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     var venom_id_set = false;
     var kind_set = false;
     var version_set = false;
+    var release_version_set = false;
     var categories_set = false;
     var hosts_set = false;
     var binding_scopes_set = false;
@@ -157,6 +199,11 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
         if (venom_id_set) allocator.free(package.venom_id);
         if (kind_set) allocator.free(package.kind);
         if (version_set) allocator.free(package.version);
+        if (release_version_set) allocator.free(package.release_version);
+        if (package.channel) |value| allocator.free(value);
+        if (package.digest) |value| allocator.free(value);
+        if (package.signature_json) |value| allocator.free(value);
+        if (package.trust_json) |value| allocator.free(value);
         if (categories_set) allocator.free(package.categories_json);
         if (hosts_set) allocator.free(package.host_roles_json);
         if (binding_scopes_set) allocator.free(package.binding_scopes_json);
@@ -175,6 +222,12 @@ fn parsePackageObject(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !Ve
     kind_set = true;
     package.version = try dupStringOrDefault(allocator, obj, "version", "1");
     version_set = true;
+    package.release_version = try dupStringOrDefault(allocator, obj, "release_version", package.version);
+    release_version_set = true;
+    package.channel = try dupOptionalString(allocator, obj, "channel");
+    package.digest = try dupOptionalString(allocator, obj, "digest");
+    package.signature_json = try dupOptionalJsonValue(allocator, obj, "signature");
+    package.trust_json = try dupOptionalJsonValue(allocator, obj, "trust");
     package.enabled = parseOptionalBool(obj, "enabled") orelse true;
     package.categories_json = try dupObjectFieldJsonOrDefault(allocator, obj, "categories", "[]");
     categories_set = true;
@@ -229,6 +282,21 @@ fn dupOptionalString(
     const value = obj.get(key) orelse return null;
     if (value != .string or value.string.len == 0) return error.InvalidPackage;
     return try allocator.dupe(u8, value.string);
+}
+
+fn dupOptionalJsonValue(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+) !?[]u8 {
+    const value = obj.get(key) orelse return null;
+    return switch (value) {
+        .array, .object => blk: {
+            break :blk try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, .{})});
+        },
+        .null => null,
+        else => error.InvalidPackage,
+    };
 }
 
 fn parseOptionalBool(obj: std.json.ObjectMap, key: []const u8) ?bool {
@@ -287,4 +355,13 @@ fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+fn optionalJsonString(allocator: std.mem.Allocator, value: ?[]const u8) ![]u8 {
+    if (value) |raw| {
+        const escaped = try jsonEscape(allocator, raw);
+        defer allocator.free(escaped);
+        return std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped});
+    }
+    return allocator.dupe(u8, "null");
 }

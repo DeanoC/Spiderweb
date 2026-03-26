@@ -16,12 +16,74 @@
 # Default path: install the latest published GitHub release for this machine.
 # Force a local source build instead:
 #   curl ... | SPIDERWEB_INSTALL_SOURCE=source bash
+# Force SpiderVenoms to build from a local checkout instead of the pinned published bundle:
+#   curl ... | SPIDERWEB_INSTALL_SOURCE=source SPIDERVENOMS_SOURCE_MODE=source bash
 # Pin a specific release archive instead of the default latest release:
 #   curl ... | SPIDERWEB_INSTALL_SOURCE=release SPIDERWEB_RELEASE_ARCHIVE_URL=https://github.com/DeanoC/Spiderweb/releases/download/vX.Y.Z/spiderweb-linux-x86_64.tar.gz bash
 # Pin installer repo refs (for testing non-main branches):
 #   curl .../install.sh | SPIDERWEB_GIT_REF=feat/foo ZSS_GIT_REF=feat/bar bash
 
 set -euo pipefail
+
+SPIDERVENOMS_RELEASE_HELPER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/spidervenoms-release.sh"
+if [[ -f "$SPIDERVENOMS_RELEASE_HELPER_PATH" ]]; then
+    source "$SPIDERVENOMS_RELEASE_HELPER_PATH"
+else
+    spidervenoms_release_version="0.5.2"
+    spidervenoms_release_repo="DeanoC/SpiderVenoms"
+
+    spidervenoms_normalize_os() {
+        local raw="${1:-}"
+        case "${raw:-$(uname -s)}" in
+            Linux|linux) printf '%s' "linux" ;;
+            Darwin|darwin|macOS|macos) printf '%s' "macos" ;;
+            *) return 1 ;;
+        esac
+    }
+
+    spidervenoms_normalize_arch() {
+        local raw="${1:-}"
+        case "${raw:-$(uname -m)}" in
+            x86_64|amd64) printf '%s' "x86_64" ;;
+            arm64|aarch64) printf '%s' "arm64" ;;
+            *) return 1 ;;
+        esac
+    }
+
+    spidervenoms_release_url_for_platform() {
+        local os arch
+        os="$(spidervenoms_normalize_os "${1:-}")" || return 1
+        arch="$(spidervenoms_normalize_arch "${2:-}")" || return 1
+        case "${os}:${arch}" in
+            linux:x86_64)
+                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.2/spidervenoms-managed-local-linux-x86_64.tar.gz"
+                ;;
+            macos:arm64)
+                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.2/spidervenoms-managed-local-macos-arm64.tar.gz"
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+
+    spidervenoms_release_sha256_for_platform() {
+        local os arch
+        os="$(spidervenoms_normalize_os "${1:-}")" || return 1
+        arch="$(spidervenoms_normalize_arch "${2:-}")" || return 1
+        case "${os}:${arch}" in
+            linux:x86_64)
+                printf '%s' "cf52889516d968b06f45e29eed2796a1b535020b6e977345066e49f53c782719"
+                ;;
+            macos:arm64)
+                printf '%s' "4dd2df98788d79c7dcd4a0794d0c95eebe2c71d2eff10c76fedd51ab0c5cc47f"
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+fi
 
 # Error handler
 cleanup_on_error() {
@@ -84,6 +146,16 @@ spiderweb_build_bin_dir() {
     printf '%s/bin' "$(spiderweb_build_prefix_dir)"
 }
 
+spiderweb_install_prefix_dir() {
+    local parent
+    parent="$(cd "$(dirname "$INSTALL_DIR")" && pwd)"
+    printf '%s' "$parent"
+}
+
+spiderweb_install_share_dir() {
+    printf '%s/share' "$(spiderweb_install_prefix_dir)"
+}
+
 run_spiderweb_zig_build() {
     local -a cmd=(zig build -Doptimize=ReleaseSafe)
     if [[ -n "${SPIDERWEB_ZIG_PREFIX:-}" ]]; then
@@ -96,6 +168,111 @@ run_spiderweb_zig_build() {
         cmd+=(--global-cache-dir "$SPIDERWEB_ZIG_GLOBAL_CACHE_DIR")
     fi
     "${cmd[@]}"
+}
+
+copy_spidervenoms_share_tree() {
+    local source_root="$1"
+    local share_dir="$2"
+    local source_share_dir="$source_root/share/spidervenoms"
+    local target_share_dir="$share_dir/spidervenoms"
+
+    if [[ ! -d "$source_share_dir" ]]; then
+        echo "Error: expected SpiderVenoms bundle directory missing: $source_share_dir"
+        exit 1
+    fi
+
+    mkdir -p "$share_dir"
+    rm -rf "$target_share_dir"
+    if ! cp -R "$source_share_dir" "$target_share_dir" 2>/dev/null; then
+        log_info "Need elevated permissions to update SpiderVenoms bundle..."
+        sudo rm -rf "$target_share_dir"
+        sudo mkdir -p "$share_dir"
+        sudo cp -R "$source_share_dir" "$target_share_dir"
+    fi
+}
+
+copy_spiderweb_share_tree() {
+    local source_root="$1"
+    local share_dir="$2"
+    local source_share_dir="$source_root/share/spiderweb"
+    local target_share_dir="$share_dir/spiderweb"
+
+    if [[ ! -d "$source_share_dir" ]]; then
+        echo "Error: expected Spiderweb share directory missing: $source_share_dir"
+        exit 1
+    fi
+
+    mkdir -p "$share_dir"
+    rm -rf "$target_share_dir"
+    if ! cp -R "$source_share_dir" "$target_share_dir" 2>/dev/null; then
+        log_info "Need elevated permissions to update Spiderweb runtime assets..."
+        sudo rm -rf "$target_share_dir"
+        sudo mkdir -p "$share_dir"
+        sudo cp -R "$source_share_dir" "$target_share_dir"
+    fi
+}
+
+build_spidervenoms_bundle_from_source() {
+    local spiderweb_repo_dir="$1"
+    local share_dir="$2"
+    local venoms_repo_dir="${SPIDERVENOMS_REPO_DIR:-$spiderweb_repo_dir/../SpiderVenoms}"
+
+    if [[ ! -d "$venoms_repo_dir" ]] || [[ ! -f "$venoms_repo_dir/build.zig" ]]; then
+        echo "Error: SpiderVenoms checkout not found: $venoms_repo_dir"
+        echo "Set SPIDERVENOMS_REPO_DIR to a valid SpiderVenoms checkout."
+        exit 1
+    fi
+
+    local venoms_build_root
+    venoms_build_root="$(mktemp -d)"
+    (
+        cd "$venoms_repo_dir"
+        zig build install --release=safe --prefix "$venoms_build_root"
+    )
+    copy_spidervenoms_share_tree "$venoms_build_root" "$share_dir"
+    rm -rf "$venoms_build_root"
+}
+
+install_spidervenoms_bundle_from_release() {
+    local share_dir="$1"
+    local release_url="$2"
+    local release_sha="$3"
+    local release_tmp_dir release_archive_name release_archive_path
+
+    release_tmp_dir="$(mktemp -d)"
+    release_archive_name="$(basename "${release_url%%\?*}")"
+    release_archive_path="$release_tmp_dir/$release_archive_name"
+
+    download_release_archive "$release_url" "$release_archive_path"
+    verify_release_archive_sha256 "$release_archive_path" "$release_sha"
+    extract_release_archive "$release_archive_path" "$release_tmp_dir/extracted"
+    copy_release_spidervenoms_share "$release_tmp_dir/extracted" "$share_dir"
+    rm -rf "$release_tmp_dir"
+}
+
+install_spidervenoms_bundle() {
+    local spiderweb_repo_dir="$1"
+    local share_dir="$2"
+    local release_url=""
+    local release_sha=""
+
+    if [[ "$SPIDERVENOMS_SOURCE_MODE" != "source" ]]; then
+        release_url="$(spidervenoms_release_url_for_platform linux "$(uname -m)" 2>/dev/null || true)"
+        release_sha="$(spidervenoms_release_sha256_for_platform linux "$(uname -m)" 2>/dev/null || true)"
+        if [[ -n "$release_url" ]]; then
+            log_info "Installing SpiderVenoms managed bundle v${spidervenoms_release_version} from published release..."
+            install_spidervenoms_bundle_from_release "$share_dir" "$release_url" "$release_sha"
+            return 0
+        fi
+        if [[ "$SPIDERVENOMS_SOURCE_MODE" == "release" ]]; then
+            echo "Error: no published SpiderVenoms asset is pinned for linux/$(uname -m)"
+            exit 1
+        fi
+        log_warn "No published SpiderVenoms asset pinned for linux/$(uname -m); falling back to source build."
+    fi
+
+    log_info "Building SpiderVenoms managed bundle from source..."
+    build_spidervenoms_bundle_from_source "$spiderweb_repo_dir" "$share_dir"
 }
 
 is_env_set() {
@@ -455,6 +632,7 @@ SPIDERWEB_INSTALL_SOURCE="${SPIDERWEB_INSTALL_SOURCE:-auto}"
 SPIDERWEB_RELEASE_ARCHIVE_URL="${SPIDERWEB_RELEASE_ARCHIVE_URL:-}"
 SPIDERWEB_RELEASE_ARCHIVE_SHA256="${SPIDERWEB_RELEASE_ARCHIVE_SHA256:-}"
 SPIDERWEB_RELEASE_VERSION="${SPIDERWEB_RELEASE_VERSION:-}"
+SPIDERVENOMS_SOURCE_MODE="${SPIDERVENOMS_SOURCE_MODE:-auto}"
 AUTO_SELECTED_RELEASE="0"
 
 INSTALL_SOURCE_RESOLVED="$SPIDERWEB_INSTALL_SOURCE"
@@ -641,6 +819,34 @@ copy_release_binaries() {
     rm -rf "$staged_dir"
 }
 
+copy_release_spidervenoms_share() {
+    local extract_dir="$1"
+    local share_dir="$2"
+    local source_share_dir
+
+    source_share_dir="$(find "$extract_dir" -type d -path '*/share/spidervenoms' 2>/dev/null | head -n1 || true)"
+    if [[ -z "$source_share_dir" ]]; then
+        echo "Error: expected release artifact missing SpiderVenoms share bundle"
+        exit 1
+    fi
+
+    copy_spidervenoms_share_tree "$(dirname "$(dirname "$source_share_dir")")" "$share_dir"
+}
+
+copy_release_spiderweb_share() {
+    local extract_dir="$1"
+    local share_dir="$2"
+    local source_share_dir
+
+    source_share_dir="$(find "$extract_dir" -type d -path '*/share/spiderweb' 2>/dev/null | head -n1 || true)"
+    if [[ -z "$source_share_dir" ]]; then
+        echo "Error: expected release artifact missing Spiderweb share assets"
+        exit 1
+    fi
+
+    copy_spiderweb_share_tree "$(dirname "$(dirname "$source_share_dir")")" "$share_dir"
+}
+
 install_spiderweb_from_source() {
     mkdir -p "$(dirname "$REPO_DIR")"
     if [[ "$MANAGED_REPO" == "1" ]]; then
@@ -662,6 +868,8 @@ install_spiderweb_from_source() {
 
     local build_bin_dir
     build_bin_dir="$(spiderweb_build_bin_dir)"
+    local install_share_dir
+    install_share_dir="$(spiderweb_install_share_dir)"
 
     log_info "Installing binaries..."
     for bin in "${SPIDERWEB_BINARIES[@]}"; do
@@ -685,6 +893,11 @@ install_spiderweb_from_source() {
             sudo cp "${build_bin_dir}/${bin}" "$INSTALL_DIR/"
         done
     fi
+
+    log_info "Installing Spiderweb runtime assets..."
+    copy_spiderweb_share_tree "$(spiderweb_build_prefix_dir)" "$install_share_dir"
+
+    install_spidervenoms_bundle "$REPO_DIR" "$install_share_dir"
 
     log_success "Build complete!"
 }
@@ -732,6 +945,8 @@ install_spiderweb_from_release() {
     verify_release_archive_sha256 "$release_archive_path" "$SPIDERWEB_RELEASE_ARCHIVE_SHA256"
     extract_release_archive "$release_archive_path" "$release_tmp_dir/extracted"
     copy_release_binaries "$release_tmp_dir/extracted" "$INSTALL_DIR" "${SPIDERWEB_BINARIES[@]}"
+    copy_release_spiderweb_share "$release_tmp_dir/extracted" "$(spiderweb_install_share_dir)"
+    copy_release_spidervenoms_share "$release_tmp_dir/extracted" "$(spiderweb_install_share_dir)"
     rm -rf "$release_tmp_dir"
     log_success "Release archive installed!"
 }
@@ -892,7 +1107,6 @@ SPIDERWEB_BINARIES=(
     spiderweb-fs-mount
     spiderweb-fs-node
     spiderweb-local-node
-    spiderweb-local-service
 )
 if [[ "$INSTALL_SOURCE_RESOLVED" == "source" ]]; then
     install_spiderweb_from_source
@@ -1129,6 +1343,10 @@ echo "Binaries installed to:"
 for bin in "${SPIDERWEB_BINARIES[@]}"; do
     echo "  $INSTALL_DIR/${bin}"
 done
+echo "Managed bundle installed to:"
+echo "  $(spiderweb_install_share_dir)/spidervenoms/bundles/managed-local/release.json"
+echo "Runtime templates installed to:"
+echo "  $(spiderweb_install_share_dir)/spiderweb/templates"
 if [[ "$INSTALL_ZSS_BOOL" == "1" ]]; then
     echo "  $INSTALL_DIR/zss"
     echo "  $INSTALL_DIR/zss-tui"

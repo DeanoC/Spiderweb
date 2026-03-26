@@ -2496,11 +2496,7 @@ pub const Session = struct {
 
     fn resolvePreferredLocalCatalogProviderNodeId(self: *Session, venom_id: []const u8) !?[]u8 {
         const plane = self.control_plane orelse return null;
-        var provider = (try plane.resolvePreferredVenomProvider(
-            self.allocator,
-            venom_id,
-            &.{ "spiderweb-local", "local" },
-        )) orelse return null;
+        var provider = (try plane.resolvePreferredVenomProvider(self.allocator, venom_id, &.{})) orelse return null;
         defer provider.deinit(self.allocator);
         return try self.allocator.dupe(u8, provider.node_id);
     }
@@ -5970,30 +5966,30 @@ pub const Session = struct {
                 try self.appendProjectedMountGraphRequestedPath(
                     &nodes,
                     &path_to_index,
-                        normalized_requested_path,
-                        requested_target.actual_path,
-                        requested_target.node_id,
-                        &export_root_writable,
-                        &next_overlay_id,
-                        max_depth,
-                    );
+                    normalized_requested_path,
+                    requested_target.actual_path,
+                    requested_target.node_id,
+                    &export_root_writable,
+                    &next_overlay_id,
+                    max_depth,
+                );
             } else {
                 try self.appendMountGraphAncestorChain(
-                        &nodes,
-                        &path_to_index,
-                        requested_target.node_id,
-                        &export_root_writable,
-                    );
-                    try self.appendMountGraphSubtree(
-                        &nodes,
-                        &path_to_index,
-                        requested_target.node_id,
-                        normalized_requested_path,
-                        &export_root_writable,
-                        &next_overlay_id,
-                        max_depth,
-                        true,
-                    );
+                    &nodes,
+                    &path_to_index,
+                    requested_target.node_id,
+                    &export_root_writable,
+                );
+                try self.appendMountGraphSubtree(
+                    &nodes,
+                    &path_to_index,
+                    requested_target.node_id,
+                    normalized_requested_path,
+                    &export_root_writable,
+                    &next_overlay_id,
+                    max_depth,
+                    true,
+                );
             }
         }
         for (sources.items) |*source| {
@@ -11281,20 +11277,20 @@ test "acheron_session: workspace AGENTS contract strips repeated heading noise" 
     try tmp_dir.dir.writeFile(.{
         .sub_path = "exports/AGENTS.md",
         .data =
-            \\# Spiderweb Workspace Agent Contract
-            \\
-            \\# Spiderweb Workspace Agent Contract
-            \\
-            \\# Spiderweb Workspace Agent Contract
-            \\
-            \\<!-- SPIDERWEB:BEGIN MANAGED -->
-            \\stale managed block
-            \\<!-- SPIDERWEB:END MANAGED -->
-            \\
-            \\## Workspace Owner Notes
-            \\
-            \\Keep custom lint rules in mind.
-            \\
+        \\# Spiderweb Workspace Agent Contract
+        \\
+        \\# Spiderweb Workspace Agent Contract
+        \\
+        \\# Spiderweb Workspace Agent Contract
+        \\
+        \\<!-- SPIDERWEB:BEGIN MANAGED -->
+        \\stale managed block
+        \\<!-- SPIDERWEB:END MANAGED -->
+        \\
+        \\## Workspace Owner Notes
+        \\
+        \\Keep custom lint rules in mind.
+        \\
         ,
     });
 

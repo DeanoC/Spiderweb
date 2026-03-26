@@ -148,15 +148,22 @@ pub const PreferredVenomProvider = struct {
     node_id: []u8,
     node_name: []u8,
     venom_id: []u8,
+    host_type: []u8,
     endpoint_path: []u8,
 
     pub fn deinit(self: *PreferredVenomProvider, allocator: std.mem.Allocator) void {
         allocator.free(self.node_id);
         allocator.free(self.node_name);
         allocator.free(self.venom_id);
+        allocator.free(self.host_type);
         allocator.free(self.endpoint_path);
         self.* = undefined;
     }
+};
+
+const PreferredVenomProviderConstraints = struct {
+    host_role: ?venom_model.HostRole = null,
+    binding_scope: ?venom_model.BindingScope = null,
 };
 
 const PreferredVenomBindingScope = enum {
@@ -252,6 +259,17 @@ const NodeVenomEventRecord = struct {
     fn deinit(self: *NodeVenomEventRecord, allocator: std.mem.Allocator) void {
         allocator.free(self.node_id);
         allocator.free(self.payload_json);
+        self.* = undefined;
+    }
+};
+
+const InstalledVenomRelease = struct {
+    package_id: []u8,
+    package: venom_package_model.VenomPackage,
+
+    fn deinit(self: *InstalledVenomRelease, allocator: std.mem.Allocator) void {
+        allocator.free(self.package_id);
+        self.package.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -403,6 +421,7 @@ pub const ControlPlane = struct {
     nodes: std.StringHashMapUnmanaged(Node) = .{},
     pending_joins: std.StringHashMapUnmanaged(PendingJoin) = .{},
     workspaces: std.StringHashMapUnmanaged(Workspace) = .{},
+    installed_venom_releases: std.ArrayListUnmanaged(InstalledVenomRelease) = .{},
     installed_venom_packages: std.ArrayListUnmanaged(venom_package_model.VenomPackage) = .{},
     active_workspace_by_agent: std.StringHashMapUnmanaged([]u8) = .{},
     preferred_venom_provider_by_scope_venom: std.StringHashMapUnmanaged([]u8) = .{},
@@ -888,6 +907,10 @@ pub const ControlPlane = struct {
         self.workspaces.deinit(self.allocator);
         self.workspaces = .{};
 
+        for (self.installed_venom_releases.items) |*release| release.deinit(self.allocator);
+        self.installed_venom_releases.deinit(self.allocator);
+        self.installed_venom_releases = .{};
+
         venom_package_model.deinitPackages(self.allocator, &self.installed_venom_packages);
 
         var active_it = self.active_workspace_by_agent.iterator();
@@ -1252,6 +1275,12 @@ pub const ControlPlane = struct {
         return venom_packages.buildCombinedPackagesJson(self.allocator, self.installed_venom_packages.items);
     }
 
+    pub fn listVenomReleases(self: *ControlPlane) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.renderInstalledVenomReleasesJsonLocked();
+    }
+
     pub fn getVenomPackage(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -1265,28 +1294,50 @@ pub const ControlPlane = struct {
         return self.renderSingleVenomPackageJsonLocked(venom_id);
     }
 
+    pub fn getVenomRelease(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var payload = try parsePayload(self.allocator, payload_json);
+        defer payload.deinit();
+        const package_id = getRequiredString(payload.value.object, "venom_id") catch return ControlPlaneError.MissingField;
+        const release_version = getOptionalString(payload.value.object, "release_version");
+        try validateIdentifier(package_id, 128);
+        if (release_version) |value| try validateDisplayString(value, 64);
+        return self.renderSingleInstalledVenomReleaseJsonLocked(package_id, release_version);
+    }
+
     pub fn installVenomPackage(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
-        const obj = payload.value.object;
 
-        const package_value = obj.get("package") orelse payload.value;
-        var package = try parseVenomPackageValue(self.allocator, package_value);
-        errdefer package.deinit(self.allocator);
+        var release = try parseInstalledVenomReleaseValue(self.allocator, payload.value);
+        errdefer release.deinit(self.allocator);
 
-        if (venom_packages.findBuiltinPackage(package.venom_id) != null) {
+        if (venom_packages.findBuiltinPackage(release.package_id) != null) {
             return ControlPlaneError.VenomPackageBuiltinProtected;
         }
-        for (self.installed_venom_packages.items) |installed| {
-            if (std.mem.eql(u8, installed.venom_id, package.venom_id)) return ControlPlaneError.AlreadyExists;
+        for (self.installed_venom_releases.items) |installed| {
+            if (!std.mem.eql(u8, installed.package_id, release.package_id)) continue;
+            if (std.mem.eql(u8, installed.package.release_version, release.package.release_version)) {
+                return ControlPlaneError.AlreadyExists;
+            }
         }
 
-        try self.installed_venom_packages.append(self.allocator, package);
+        if (release.package.enabled) {
+            for (self.installed_venom_releases.items) |*installed| {
+                if (!std.mem.eql(u8, installed.package_id, release.package_id)) continue;
+                installed.package.enabled = false;
+            }
+        }
+
+        try self.installed_venom_releases.append(self.allocator, release);
+        try rebuildInstalledVenomPackagesFromReleasesLocked(self);
         self.persistSnapshotBestEffortLocked();
-        return self.renderSingleInstalledVenomPackageJsonLocked(package.venom_id);
+        return self.renderSingleInstalledVenomPackageJsonLocked(release.package_id);
     }
 
     pub fn enableVenomPackage(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -1298,14 +1349,35 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
 
         const venom_id = getRequiredString(obj, "venom_id") catch return ControlPlaneError.MissingField;
+        const release_version = getOptionalString(obj, "release_version");
         try validateIdentifier(venom_id, 128);
         if (venom_packages.findBuiltinPackage(venom_id) != null) {
             return ControlPlaneError.VenomPackageBuiltinProtected;
         }
 
-        for (self.installed_venom_packages.items) |*installed| {
-            if (!std.mem.eql(u8, installed.venom_id, venom_id)) continue;
-            installed.enabled = true;
+        var matched = false;
+        const target_index = if (release_version) |requested| blk: {
+            var found_index: ?usize = null;
+            for (self.installed_venom_releases.items, 0..) |installed, idx| {
+                if (!std.mem.eql(u8, installed.package_id, venom_id)) continue;
+                if (!std.mem.eql(u8, installed.package.release_version, requested)) continue;
+                found_index = idx;
+                break;
+            }
+            break :blk found_index;
+        } else findPreferredInstalledReleaseIndex(self.installed_venom_releases.items, venom_id);
+
+        if (target_index) |idx| {
+            matched = true;
+            for (self.installed_venom_releases.items) |*installed| {
+                if (!std.mem.eql(u8, installed.package_id, venom_id)) continue;
+                installed.package.enabled = false;
+            }
+            self.installed_venom_releases.items[idx].package.enabled = true;
+        }
+
+        if (matched) {
+            try rebuildInstalledVenomPackagesFromReleasesLocked(self);
             self.persistSnapshotBestEffortLocked();
             return self.renderSingleInstalledVenomPackageJsonLocked(venom_id);
         }
@@ -1321,14 +1393,24 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
 
         const venom_id = getRequiredString(obj, "venom_id") catch return ControlPlaneError.MissingField;
+        const release_version = getOptionalString(obj, "release_version");
         try validateIdentifier(venom_id, 128);
         if (venom_packages.findBuiltinPackage(venom_id) != null) {
             return ControlPlaneError.VenomPackageBuiltinProtected;
         }
 
-        for (self.installed_venom_packages.items) |*installed| {
-            if (!std.mem.eql(u8, installed.venom_id, venom_id)) continue;
-            installed.enabled = false;
+        var matched = false;
+        for (self.installed_venom_releases.items) |*installed| {
+            if (!std.mem.eql(u8, installed.package_id, venom_id)) continue;
+            if (release_version) |requested| {
+                if (!std.mem.eql(u8, installed.package.release_version, requested)) continue;
+            }
+            installed.package.enabled = false;
+            matched = true;
+            if (release_version != null) break;
+        }
+        if (matched) {
+            try rebuildInstalledVenomPackagesFromReleasesLocked(self);
             self.persistSnapshotBestEffortLocked();
             return self.renderSingleInstalledVenomPackageJsonLocked(venom_id);
         }
@@ -1344,22 +1426,43 @@ pub const ControlPlane = struct {
         const obj = payload.value.object;
 
         const venom_id = getRequiredString(obj, "venom_id") catch return ControlPlaneError.MissingField;
+        const release_version = getOptionalString(obj, "release_version");
         try validateIdentifier(venom_id, 128);
         if (venom_packages.findBuiltinPackage(venom_id) != null) {
             return ControlPlaneError.VenomPackageBuiltinProtected;
         }
 
-        for (self.installed_venom_packages.items, 0..) |installed, idx| {
-            if (!std.mem.eql(u8, installed.venom_id, venom_id)) continue;
-            var removed = self.installed_venom_packages.orderedRemove(idx);
+        var removed_any = false;
+        var idx: usize = 0;
+        while (idx < self.installed_venom_releases.items.len) {
+            const installed = self.installed_venom_releases.items[idx];
+            if (!std.mem.eql(u8, installed.package_id, venom_id)) {
+                idx += 1;
+                continue;
+            }
+            if (release_version) |requested| {
+                if (!std.mem.eql(u8, installed.package.release_version, requested)) {
+                    idx += 1;
+                    continue;
+                }
+            }
+            var removed = self.installed_venom_releases.orderedRemove(idx);
             removed.deinit(self.allocator);
+            removed_any = true;
+            if (release_version != null) break;
+        }
+
+        if (removed_any) {
+            try rebuildInstalledVenomPackagesFromReleasesLocked(self);
             self.persistSnapshotBestEffortLocked();
             const escaped_id = try jsonEscape(self.allocator, venom_id);
             defer self.allocator.free(escaped_id);
+            const release_version_json = try optionalJsonStringField(self.allocator, release_version);
+            defer self.allocator.free(release_version_json);
             return std.fmt.allocPrint(
                 self.allocator,
-                "{{\"removed\":true,\"venom_id\":\"{s}\"}}",
-                .{escaped_id},
+                "{{\"removed\":true,\"venom_id\":\"{s}\",\"release_version\":{s}}}",
+                .{ escaped_id, release_version_json },
             );
         }
         return ControlPlaneError.VenomPackageNotFound;
@@ -1410,13 +1513,7 @@ pub const ControlPlane = struct {
         venom_id: []const u8,
         preferred_node_names: []const []const u8,
     ) !?PreferredVenomProvider {
-        return self.resolvePreferredVenomProviderForContext(
-            allocator,
-            venom_id,
-            preferred_node_names,
-            null,
-            null,
-        );
+        return self.resolvePreferredVenomProviderForContext(allocator, venom_id, preferred_node_names, null, null);
     }
 
     pub fn resolvePreferredVenomProviderForContext(
@@ -1431,25 +1528,44 @@ pub const ControlPlane = struct {
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
 
+        return self.resolvePreferredVenomProviderForContextLocked(
+            allocator,
+            venom_id,
+            preferred_node_names,
+            workspace_id,
+            agent_id,
+            .{},
+        );
+    }
+
+    fn resolvePreferredVenomProviderForContextLocked(
+        self: *ControlPlane,
+        allocator: std.mem.Allocator,
+        venom_id: []const u8,
+        preferred_node_names: []const []const u8,
+        workspace_id: ?[]const u8,
+        agent_id: ?[]const u8,
+        constraints: PreferredVenomProviderConstraints,
+    ) !?PreferredVenomProvider {
         if (venom_id.len == 0) return null;
 
-        if (try self.cloneExplicitPreferredVenomProviderLocked(allocator, venom_id, .agent, agent_id)) |provider| {
+        if (try self.cloneExplicitPreferredVenomProviderLocked(allocator, venom_id, .agent, agent_id, constraints)) |provider| {
             return provider;
         }
-        if (try self.cloneExplicitPreferredVenomProviderLocked(allocator, venom_id, .project, workspace_id)) |provider| {
+        if (try self.cloneExplicitPreferredVenomProviderLocked(allocator, venom_id, .project, workspace_id, constraints)) |provider| {
             return provider;
         }
-        if (try self.cloneExplicitPreferredVenomProviderLocked(allocator, venom_id, .global, null)) |provider| {
+        if (try self.cloneExplicitPreferredVenomProviderLocked(allocator, venom_id, .global, null, constraints)) |provider| {
             return provider;
         }
 
         for (preferred_node_names) |preferred_name| {
             if (preferred_name.len == 0) continue;
-            if (try self.clonePreferredVenomProviderLocked(allocator, venom_id, preferred_name, true)) |provider| {
+            if (try self.clonePreferredVenomProviderLocked(allocator, venom_id, preferred_name, true, constraints)) |provider| {
                 return provider;
             }
         }
-        return try self.clonePreferredVenomProviderLocked(allocator, venom_id, "", false);
+        return try self.clonePreferredVenomProviderLocked(allocator, venom_id, "", false, constraints);
     }
 
     pub fn resolveExplicitPreferredVenomProvider(
@@ -1471,7 +1587,7 @@ pub const ControlPlane = struct {
         defer self.mutex.unlock();
         _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
         if (venom_id.len == 0) return null;
-        return try self.cloneExplicitPreferredVenomProviderLocked(allocator, venom_id, scope, scope_id);
+        return try self.cloneExplicitPreferredVenomProviderLocked(allocator, venom_id, scope, scope_id, .{});
     }
 
     pub fn bindPreferredVenomProvider(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
@@ -2804,424 +2920,424 @@ pub const ControlPlane = struct {
         return buildEmptyWorkspaceStatusPayloadLocked(self, agent_id);
     }
 
-fn requestReconcileLocked(self: *ControlPlane, now_ms: i64) void {
-    self.reconcile_requested_at_ms = now_ms;
-    if (self.reconcile_state == .idle) self.reconcile_state = .pending;
-}
+    fn requestReconcileLocked(self: *ControlPlane, now_ms: i64) void {
+        self.reconcile_requested_at_ms = now_ms;
+        if (self.reconcile_state == .idle) self.reconcile_state = .pending;
+    }
 
-fn buildWorkspaceActivationPayload(
-    allocator: std.mem.Allocator,
-    agent_id: []const u8,
-    workspace_id: []const u8,
-) ![]u8 {
-    const escaped_agent = try jsonEscape(allocator, agent_id);
-    defer allocator.free(escaped_agent);
-    const escaped_workspace = try jsonEscape(allocator, workspace_id);
-    defer allocator.free(escaped_workspace);
-    const escaped_root = try jsonEscape(allocator, "/");
-    defer allocator.free(escaped_root);
+    fn buildWorkspaceActivationPayload(
+        allocator: std.mem.Allocator,
+        agent_id: []const u8,
+        workspace_id: []const u8,
+    ) ![]u8 {
+        const escaped_agent = try jsonEscape(allocator, agent_id);
+        defer allocator.free(escaped_agent);
+        const escaped_workspace = try jsonEscape(allocator, workspace_id);
+        defer allocator.free(escaped_workspace);
+        const escaped_root = try jsonEscape(allocator, "/");
+        defer allocator.free(escaped_root);
 
-    return std.fmt.allocPrint(
-        allocator,
-        "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
-        .{ escaped_agent, escaped_workspace, escaped_root },
-    );
-}
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"agent_id\":\"{s}\",\"workspace_id\":\"{s}\",\"workspace_root\":\"{s}\"}}",
+            .{ escaped_agent, escaped_workspace, escaped_root },
+        );
+    }
 
-const ResolvedWorkspaceUpTarget = struct {
-    workspace: *Workspace,
-    created: bool,
-};
+    const ResolvedWorkspaceUpTarget = struct {
+        workspace: *Workspace,
+        created: bool,
+    };
 
-fn resolveWorkspaceUpTargetLocked(
-    self: *ControlPlane,
-    requested_workspace_id: ?[]const u8,
-    requested_workspace_name: ?[]const u8,
-    requested_workspace_vision: ?[]const u8,
-    requested_workspace_status: ?[]const u8,
-    requested_workspace_template_id: ?[]const u8,
-    requested_workspace_access_policy: ?std.json.Value,
-    now_ms: i64,
-) !ResolvedWorkspaceUpTarget {
-    var workspace_ptr: ?*Workspace = null;
+    fn resolveWorkspaceUpTargetLocked(
+        self: *ControlPlane,
+        requested_workspace_id: ?[]const u8,
+        requested_workspace_name: ?[]const u8,
+        requested_workspace_vision: ?[]const u8,
+        requested_workspace_status: ?[]const u8,
+        requested_workspace_template_id: ?[]const u8,
+        requested_workspace_access_policy: ?std.json.Value,
+        now_ms: i64,
+    ) !ResolvedWorkspaceUpTarget {
+        var workspace_ptr: ?*Workspace = null;
 
-    if (requested_workspace_id) |workspace_id| {
-        try validateIdentifier(workspace_id, 128);
-        workspace_ptr = self.workspaces.getPtr(workspace_id);
-        if (workspace_ptr == null) return ControlPlaneError.WorkspaceNotFound;
-    } else if (requested_workspace_name) |workspace_name| {
-        try validateDisplayString(workspace_name, 128);
-        var project_it = self.workspaces.valueIterator();
-        while (project_it.next()) |workspace| {
-            if (std.mem.eql(u8, workspace.name, workspace_name)) {
-                workspace_ptr = workspace;
-                break;
+        if (requested_workspace_id) |workspace_id| {
+            try validateIdentifier(workspace_id, 128);
+            workspace_ptr = self.workspaces.getPtr(workspace_id);
+            if (workspace_ptr == null) return ControlPlaneError.WorkspaceNotFound;
+        } else if (requested_workspace_name) |workspace_name| {
+            try validateDisplayString(workspace_name, 128);
+            var project_it = self.workspaces.valueIterator();
+            while (project_it.next()) |workspace| {
+                if (std.mem.eql(u8, workspace.name, workspace_name)) {
+                    workspace_ptr = workspace;
+                    break;
+                }
             }
         }
-    }
 
-    if (workspace_ptr) |workspace| {
-        return .{ .workspace = workspace, .created = false };
-    }
-
-    const workspace_name = requested_workspace_name orelse return ControlPlaneError.MissingField;
-    const workspace_vision = requested_workspace_vision orelse return ControlPlaneError.MissingField;
-    const workspace_status = requested_workspace_status orelse "active";
-    const workspace_template_id = requested_workspace_template_id orelse default_project_template_id;
-    try validateDisplayString(workspace_name, 128);
-    try validateDisplayString(workspace_vision, 1024);
-    try validateIdentifier(workspace_status, 64);
-    _ = resolveProjectTemplateSpec(workspace_template_id) orelse return ControlPlaneError.InvalidPayload;
-
-    const workspace_id = try makeSequentialId(self.allocator, "ws", &self.next_workspace_id);
-    errdefer self.allocator.free(workspace_id);
-    const mutation_token = try makeToken(self.allocator, "ws");
-    errdefer self.allocator.free(mutation_token);
-    var access_policy: WorkspaceAccessPolicy = .{};
-    errdefer access_policy.deinit(self.allocator);
-    if (requested_workspace_access_policy) |value| {
-        access_policy = try parseWorkspaceAccessPolicyValue(self.allocator, value);
-    }
-
-    const workspace = Workspace{
-        .id = workspace_id,
-        .name = try self.allocator.dupe(u8, workspace_name),
-        .vision = try self.allocator.dupe(u8, workspace_vision),
-        .status = try self.allocator.dupe(u8, workspace_status),
-        .template_id = try self.allocator.dupe(u8, workspace_template_id),
-        .token_locked = false,
-        .mutation_token = mutation_token,
-        .access_policy = access_policy,
-        .created_at_ms = now_ms,
-        .updated_at_ms = now_ms,
-    };
-    errdefer {
-        self.allocator.free(workspace.name);
-        self.allocator.free(workspace.vision);
-        self.allocator.free(workspace.status);
-        self.allocator.free(workspace.template_id);
-        self.allocator.free(workspace.mutation_token);
-    }
-
-    try self.workspaces.put(self.allocator, workspace.id, workspace);
-    self.workspace_creates_total +%= 1;
-    return .{
-        .workspace = self.workspaces.getPtr(workspace_id).?,
-        .created = true,
-    };
-}
-
-fn applyWorkspaceUpMetadataUpdatesLocked(
-    self: *ControlPlane,
-    project: *Workspace,
-    agent_id: []const u8,
-    is_admin: bool,
-    is_host_actor: bool,
-    requested_project_token: ?[]const u8,
-    requested_name: ?[]const u8,
-    requested_vision: ?[]const u8,
-    requested_status: ?[]const u8,
-    requested_template_id: ?[]const u8,
-    requested_access_policy_value: ?std.json.Value,
-    wants_mount_update: bool,
-    wants_bind_update: bool,
-) !void {
-    const wants_admin_update = requested_name != null or
-        requested_vision != null or
-        requested_status != null or
-        requested_template_id != null or
-        requested_access_policy_value != null;
-    if (!is_host_actor) {
-        if (wants_mount_update) {
-            try requireWorkspaceActionAccess(project, .mount, agent_id, requested_project_token, is_admin);
+        if (workspace_ptr) |workspace| {
+            return .{ .workspace = workspace, .created = false };
         }
-        if (wants_bind_update) {
-            try requireWorkspaceActionAccess(project, .bind, agent_id, requested_project_token, is_admin);
+
+        const workspace_name = requested_workspace_name orelse return ControlPlaneError.MissingField;
+        const workspace_vision = requested_workspace_vision orelse return ControlPlaneError.MissingField;
+        const workspace_status = requested_workspace_status orelse "active";
+        const workspace_template_id = requested_workspace_template_id orelse default_project_template_id;
+        try validateDisplayString(workspace_name, 128);
+        try validateDisplayString(workspace_vision, 1024);
+        try validateIdentifier(workspace_status, 64);
+        _ = resolveProjectTemplateSpec(workspace_template_id) orelse return ControlPlaneError.InvalidPayload;
+
+        const workspace_id = try makeSequentialId(self.allocator, "ws", &self.next_workspace_id);
+        errdefer self.allocator.free(workspace_id);
+        const mutation_token = try makeToken(self.allocator, "ws");
+        errdefer self.allocator.free(mutation_token);
+        var access_policy: WorkspaceAccessPolicy = .{};
+        errdefer access_policy.deinit(self.allocator);
+        if (requested_workspace_access_policy) |value| {
+            access_policy = try parseWorkspaceAccessPolicyValue(self.allocator, value);
         }
-        if (wants_admin_update) {
-            try requireWorkspaceActionAccess(project, .admin, agent_id, requested_project_token, is_admin);
+
+        const workspace = Workspace{
+            .id = workspace_id,
+            .name = try self.allocator.dupe(u8, workspace_name),
+            .vision = try self.allocator.dupe(u8, workspace_vision),
+            .status = try self.allocator.dupe(u8, workspace_status),
+            .template_id = try self.allocator.dupe(u8, workspace_template_id),
+            .token_locked = false,
+            .mutation_token = mutation_token,
+            .access_policy = access_policy,
+            .created_at_ms = now_ms,
+            .updated_at_ms = now_ms,
+        };
+        errdefer {
+            self.allocator.free(workspace.name);
+            self.allocator.free(workspace.vision);
+            self.allocator.free(workspace.status);
+            self.allocator.free(workspace.template_id);
+            self.allocator.free(workspace.mutation_token);
         }
-        if (!wants_mount_update and !wants_bind_update and !wants_admin_update) {
-            try requireWorkspaceActionAccess(project, .read, agent_id, requested_project_token, is_admin);
+
+        try self.workspaces.put(self.allocator, workspace.id, workspace);
+        self.workspace_creates_total +%= 1;
+        return .{
+            .workspace = self.workspaces.getPtr(workspace_id).?,
+            .created = true,
+        };
+    }
+
+    fn applyWorkspaceUpMetadataUpdatesLocked(
+        self: *ControlPlane,
+        project: *Workspace,
+        agent_id: []const u8,
+        is_admin: bool,
+        is_host_actor: bool,
+        requested_project_token: ?[]const u8,
+        requested_name: ?[]const u8,
+        requested_vision: ?[]const u8,
+        requested_status: ?[]const u8,
+        requested_template_id: ?[]const u8,
+        requested_access_policy_value: ?std.json.Value,
+        wants_mount_update: bool,
+        wants_bind_update: bool,
+    ) !void {
+        const wants_admin_update = requested_name != null or
+            requested_vision != null or
+            requested_status != null or
+            requested_template_id != null or
+            requested_access_policy_value != null;
+        if (!is_host_actor) {
+            if (wants_mount_update) {
+                try requireWorkspaceActionAccess(project, .mount, agent_id, requested_project_token, is_admin);
+            }
+            if (wants_bind_update) {
+                try requireWorkspaceActionAccess(project, .bind, agent_id, requested_project_token, is_admin);
+            }
+            if (wants_admin_update) {
+                try requireWorkspaceActionAccess(project, .admin, agent_id, requested_project_token, is_admin);
+            }
+            if (!wants_mount_update and !wants_bind_update and !wants_admin_update) {
+                try requireWorkspaceActionAccess(project, .read, agent_id, requested_project_token, is_admin);
+            }
+        } else if (requested_project_token) |workspace_token| {
+            try validateSecretToken(workspace_token, 256);
+            if (!workspaceTokenEnabled(project) or !secureTokenEql(project.mutation_token, workspace_token)) {
+                return ControlPlaneError.WorkspaceAuthFailed;
+            }
         }
-    } else if (requested_project_token) |workspace_token| {
-        try validateSecretToken(workspace_token, 256);
-        if (!workspaceTokenEnabled(project) or !secureTokenEql(project.mutation_token, workspace_token)) {
-            return ControlPlaneError.WorkspaceAuthFailed;
+
+        if (requested_name) |next_name| {
+            try validateDisplayString(next_name, 128);
+            self.allocator.free(project.name);
+            project.name = try self.allocator.dupe(u8, next_name);
+        }
+        if (requested_vision) |next_vision| {
+            try validateDisplayString(next_vision, 1024);
+            self.allocator.free(project.vision);
+            project.vision = try self.allocator.dupe(u8, next_vision);
+        }
+        if (requested_status) |next_status| {
+            try validateIdentifier(next_status, 64);
+            self.allocator.free(project.status);
+            project.status = try self.allocator.dupe(u8, next_status);
+        }
+        if (requested_template_id) |template_id| {
+            _ = resolveProjectTemplateSpec(template_id) orelse return ControlPlaneError.InvalidPayload;
+            if (!std.mem.eql(u8, project.template_id, template_id)) {
+                self.allocator.free(project.template_id);
+                project.template_id = try self.allocator.dupe(u8, template_id);
+            }
+        }
+        if (requested_access_policy_value) |value| {
+            var parsed_policy = try parseWorkspaceAccessPolicyValue(self.allocator, value);
+            errdefer parsed_policy.deinit(self.allocator);
+            project.access_policy.deinit(self.allocator);
+            project.access_policy = parsed_policy;
         }
     }
 
-    if (requested_name) |next_name| {
-        try validateDisplayString(next_name, 128);
-        self.allocator.free(project.name);
-        project.name = try self.allocator.dupe(u8, next_name);
-    }
-    if (requested_vision) |next_vision| {
-        try validateDisplayString(next_vision, 1024);
-        self.allocator.free(project.vision);
-        project.vision = try self.allocator.dupe(u8, next_vision);
-    }
-    if (requested_status) |next_status| {
-        try validateIdentifier(next_status, 64);
-        self.allocator.free(project.status);
-        project.status = try self.allocator.dupe(u8, next_status);
-    }
-    if (requested_template_id) |template_id| {
-        _ = resolveProjectTemplateSpec(template_id) orelse return ControlPlaneError.InvalidPayload;
-        if (!std.mem.eql(u8, project.template_id, template_id)) {
-            self.allocator.free(project.template_id);
-            project.template_id = try self.allocator.dupe(u8, template_id);
-        }
-    }
-    if (requested_access_policy_value) |value| {
-        var parsed_policy = try parseWorkspaceAccessPolicyValue(self.allocator, value);
-        errdefer parsed_policy.deinit(self.allocator);
-        project.access_policy.deinit(self.allocator);
-        project.access_policy = parsed_policy;
-    }
-}
+    fn applyWorkspaceUpMountReplacementsLocked(
+        self: *ControlPlane,
+        project: *Workspace,
+        desired_mounts_value: ?std.json.Value,
+        created: bool,
+    ) !bool {
+        if (desired_mounts_value) |desired_val| {
+            if (project.kind == .host_internal) return ControlPlaneError.WorkspaceProtected;
+            if (desired_val != .array) return ControlPlaneError.InvalidPayload;
+            var next_mounts = std.ArrayListUnmanaged(WorkspaceMount){};
+            errdefer {
+                for (next_mounts.items) |*mount| mount.deinit(self.allocator);
+                next_mounts.deinit(self.allocator);
+            }
 
-fn applyWorkspaceUpMountReplacementsLocked(
-    self: *ControlPlane,
-    project: *Workspace,
-    desired_mounts_value: ?std.json.Value,
-    created: bool,
-) !bool {
-    if (desired_mounts_value) |desired_val| {
+            for (desired_val.array.items) |item| {
+                if (item != .object) return ControlPlaneError.InvalidPayload;
+                const mount_obj = item.object;
+                const node_id = getRequiredString(mount_obj, "node_id") catch return ControlPlaneError.MissingField;
+                const export_name = getRequiredString(mount_obj, "export_name") catch return ControlPlaneError.MissingField;
+                const mount_path_raw = getRequiredString(mount_obj, "mount_path") catch return ControlPlaneError.MissingField;
+                try validateIdentifier(node_id, 128);
+                try validateExportName(export_name);
+                if (!self.nodes.contains(node_id)) return ControlPlaneError.NodeNotFound;
+                const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
+                errdefer self.allocator.free(mount_path);
+
+                var duplicate_exact = false;
+                for (next_mounts.items) |existing| {
+                    if (std.mem.eql(u8, existing.mount_path, mount_path)) {
+                        if (std.mem.eql(u8, existing.node_id, node_id) and std.mem.eql(u8, existing.export_name, export_name)) {
+                            duplicate_exact = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    if (mountPathsOverlap(existing.mount_path, mount_path)) return ControlPlaneError.MountConflict;
+                }
+                for (project.binds.items) |existing_bind| {
+                    if (pathsConflict(existing_bind.bind_path, mount_path)) return ControlPlaneError.MountConflict;
+                }
+                if (duplicate_exact) {
+                    self.allocator.free(mount_path);
+                    continue;
+                }
+
+                try next_mounts.append(self.allocator, .{
+                    .mount_path = mount_path,
+                    .node_id = try self.allocator.dupe(u8, node_id),
+                    .export_name = try self.allocator.dupe(u8, export_name),
+                });
+            }
+
+            for (project.mounts.items) |*mount| mount.deinit(self.allocator);
+            project.mounts.deinit(self.allocator);
+            project.mounts = next_mounts;
+            return true;
+        }
+
+        if (created) {
+            return ensureDefaultWorkspaceMountsLocked(self, project);
+        }
+        return false;
+    }
+
+    fn applyWorkspaceUpBindReplacementsLocked(
+        self: *ControlPlane,
+        project: *Workspace,
+        desired_binds_value: ?std.json.Value,
+    ) !bool {
+        const desired_val = desired_binds_value orelse return false;
         if (project.kind == .host_internal) return ControlPlaneError.WorkspaceProtected;
         if (desired_val != .array) return ControlPlaneError.InvalidPayload;
-        var next_mounts = std.ArrayListUnmanaged(WorkspaceMount){};
+        var next_binds = std.ArrayListUnmanaged(WorkspaceBind){};
         errdefer {
-            for (next_mounts.items) |*mount| mount.deinit(self.allocator);
-            next_mounts.deinit(self.allocator);
+            for (next_binds.items) |*bind| bind.deinit(self.allocator);
+            next_binds.deinit(self.allocator);
         }
 
         for (desired_val.array.items) |item| {
             if (item != .object) return ControlPlaneError.InvalidPayload;
-            const mount_obj = item.object;
-            const node_id = getRequiredString(mount_obj, "node_id") catch return ControlPlaneError.MissingField;
-            const export_name = getRequiredString(mount_obj, "export_name") catch return ControlPlaneError.MissingField;
-            const mount_path_raw = getRequiredString(mount_obj, "mount_path") catch return ControlPlaneError.MissingField;
-            try validateIdentifier(node_id, 128);
-            try validateExportName(export_name);
-            if (!self.nodes.contains(node_id)) return ControlPlaneError.NodeNotFound;
-            const mount_path = try normalizeMountPath(self.allocator, mount_path_raw);
-            errdefer self.allocator.free(mount_path);
+            const bind_obj = item.object;
+            const bind_path_raw = getRequiredString(bind_obj, "bind_path") catch return ControlPlaneError.MissingField;
+            const target_path_raw = getRequiredString(bind_obj, "target_path") catch return ControlPlaneError.MissingField;
+            const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
+            errdefer self.allocator.free(bind_path);
+            if (std.mem.eql(u8, bind_path, "/")) return ControlPlaneError.InvalidPayload;
+            const target_path = try normalizeMountPath(self.allocator, target_path_raw);
+            errdefer self.allocator.free(target_path);
+            if (!workspacePathWithinBindAuthority(project, target_path)) return ControlPlaneError.BindConflict;
+
+            for (project.mounts.items) |mount| {
+                if (pathsConflict(mount.mount_path, bind_path)) return ControlPlaneError.BindConflict;
+            }
 
             var duplicate_exact = false;
-            for (next_mounts.items) |existing| {
-                if (std.mem.eql(u8, existing.mount_path, mount_path)) {
-                    if (std.mem.eql(u8, existing.node_id, node_id) and std.mem.eql(u8, existing.export_name, export_name)) {
+            for (next_binds.items) |existing| {
+                if (std.mem.eql(u8, existing.bind_path, bind_path)) {
+                    if (std.mem.eql(u8, existing.target_path, target_path)) {
                         duplicate_exact = true;
                         break;
                     }
-                    continue;
+                    return ControlPlaneError.BindConflict;
                 }
-                if (mountPathsOverlap(existing.mount_path, mount_path)) return ControlPlaneError.MountConflict;
-            }
-            for (project.binds.items) |existing_bind| {
-                if (pathsConflict(existing_bind.bind_path, mount_path)) return ControlPlaneError.MountConflict;
+                if (pathsConflict(existing.bind_path, bind_path)) return ControlPlaneError.BindConflict;
             }
             if (duplicate_exact) {
-                self.allocator.free(mount_path);
+                self.allocator.free(bind_path);
+                self.allocator.free(target_path);
                 continue;
             }
 
-            try next_mounts.append(self.allocator, .{
-                .mount_path = mount_path,
-                .node_id = try self.allocator.dupe(u8, node_id),
-                .export_name = try self.allocator.dupe(u8, export_name),
+            try next_binds.append(self.allocator, .{
+                .bind_path = bind_path,
+                .target_path = target_path,
             });
         }
 
-        for (project.mounts.items) |*mount| mount.deinit(self.allocator);
-        project.mounts.deinit(self.allocator);
-        project.mounts = next_mounts;
+        for (project.binds.items) |*bind| bind.deinit(self.allocator);
+        project.binds.deinit(self.allocator);
+        project.binds = next_binds;
         return true;
     }
 
-    if (created) {
-        return ensureDefaultWorkspaceMountsLocked(self, project);
+    fn buildWorkspaceUpResultPayloadLocked(
+        self: *ControlPlane,
+        agent_id: []const u8,
+        workspace: *Workspace,
+        is_admin: bool,
+        now_ms: i64,
+        created: bool,
+        activate: bool,
+    ) ![]u8 {
+        const workspace_json = try self.renderWorkspaceStatusForProjectLocked(
+            agent_id,
+            workspace.id,
+            null,
+            is_admin,
+            now_ms,
+        );
+        defer self.allocator.free(workspace_json);
+        const escaped_workspace = try jsonEscape(self.allocator, workspace.id);
+        defer self.allocator.free(escaped_workspace);
+        const workspace_token_json = if (workspaceTokenEnabled(workspace)) blk: {
+            const escaped_token = try jsonEscape(self.allocator, workspace.mutation_token);
+            defer self.allocator.free(escaped_token);
+            break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped_token});
+        } else try self.allocator.dupe(u8, "null");
+        defer self.allocator.free(workspace_token_json);
+
+        return std.fmt.allocPrint(
+            self.allocator,
+            "{{\"workspace_id\":\"{s}\",\"workspace_token\":{s},\"created\":{s},\"activated\":{s},\"workspace\":{s}}}",
+            .{
+                escaped_workspace,
+                workspace_token_json,
+                if (created) "true" else "false",
+                if (activate) "true" else "false",
+                workspace_json,
+            },
+        );
     }
-    return false;
-}
 
-fn applyWorkspaceUpBindReplacementsLocked(
-    self: *ControlPlane,
-    project: *Workspace,
-    desired_binds_value: ?std.json.Value,
-) !bool {
-    const desired_val = desired_binds_value orelse return false;
-    if (project.kind == .host_internal) return ControlPlaneError.WorkspaceProtected;
-    if (desired_val != .array) return ControlPlaneError.InvalidPayload;
-    var next_binds = std.ArrayListUnmanaged(WorkspaceBind){};
-    errdefer {
-        for (next_binds.items) |*bind| bind.deinit(self.allocator);
-        next_binds.deinit(self.allocator);
-    }
-
-    for (desired_val.array.items) |item| {
-        if (item != .object) return ControlPlaneError.InvalidPayload;
-        const bind_obj = item.object;
-        const bind_path_raw = getRequiredString(bind_obj, "bind_path") catch return ControlPlaneError.MissingField;
-        const target_path_raw = getRequiredString(bind_obj, "target_path") catch return ControlPlaneError.MissingField;
-        const bind_path = try normalizeMountPath(self.allocator, bind_path_raw);
-        errdefer self.allocator.free(bind_path);
-        if (std.mem.eql(u8, bind_path, "/")) return ControlPlaneError.InvalidPayload;
-        const target_path = try normalizeMountPath(self.allocator, target_path_raw);
-        errdefer self.allocator.free(target_path);
-        if (!workspacePathWithinBindAuthority(project, target_path)) return ControlPlaneError.BindConflict;
-
-        for (project.mounts.items) |mount| {
-            if (pathsConflict(mount.mount_path, bind_path)) return ControlPlaneError.BindConflict;
-        }
-
-        var duplicate_exact = false;
-        for (next_binds.items) |existing| {
-            if (std.mem.eql(u8, existing.bind_path, bind_path)) {
-                if (std.mem.eql(u8, existing.target_path, target_path)) {
-                    duplicate_exact = true;
-                    break;
-                }
-                return ControlPlaneError.BindConflict;
+    fn resolveVisibleActiveWorkspaceIdLocked(self: *ControlPlane, agent_id: []const u8) ?[]const u8 {
+        const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return null;
+        if (active_workspace_id.len == 0) return null;
+        const active_workspace = self.workspaces.get(active_workspace_id) orelse return null;
+        if (active_workspace.kind == .host_internal) {
+            if (clearActiveWorkspaceBindingLocked(self, agent_id)) {
+                self.persistSnapshotBestEffortLocked();
             }
-            if (pathsConflict(existing.bind_path, bind_path)) return ControlPlaneError.BindConflict;
+            return null;
         }
-        if (duplicate_exact) {
-            self.allocator.free(bind_path);
-            self.allocator.free(target_path);
-            continue;
-        }
-
-        try next_binds.append(self.allocator, .{
-            .bind_path = bind_path,
-            .target_path = target_path,
-        });
+        return active_workspace_id;
     }
 
-    for (project.binds.items) |*bind| bind.deinit(self.allocator);
-    project.binds.deinit(self.allocator);
-    project.binds = next_binds;
-    return true;
-}
-
-fn buildWorkspaceUpResultPayloadLocked(
-    self: *ControlPlane,
-    agent_id: []const u8,
-    workspace: *Workspace,
-    is_admin: bool,
-    now_ms: i64,
-    created: bool,
-    activate: bool,
-) ![]u8 {
-    const workspace_json = try self.renderWorkspaceStatusForProjectLocked(
-        agent_id,
-        workspace.id,
-        null,
-        is_admin,
-        now_ms,
-    );
-    defer self.allocator.free(workspace_json);
-    const escaped_workspace = try jsonEscape(self.allocator, workspace.id);
-    defer self.allocator.free(escaped_workspace);
-    const workspace_token_json = if (workspaceTokenEnabled(workspace)) blk: {
-        const escaped_token = try jsonEscape(self.allocator, workspace.mutation_token);
-        defer self.allocator.free(escaped_token);
-        break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped_token});
-    } else try self.allocator.dupe(u8, "null");
-    defer self.allocator.free(workspace_token_json);
-
-    return std.fmt.allocPrint(
-        self.allocator,
-        "{{\"workspace_id\":\"{s}\",\"workspace_token\":{s},\"created\":{s},\"activated\":{s},\"workspace\":{s}}}",
-        .{
-            escaped_workspace,
-            workspace_token_json,
-            if (created) "true" else "false",
-            if (activate) "true" else "false",
-            workspace_json,
-        },
-    );
-}
-
-fn resolveVisibleActiveWorkspaceIdLocked(self: *ControlPlane, agent_id: []const u8) ?[]const u8 {
-    const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return null;
-    if (active_workspace_id.len == 0) return null;
-    const active_workspace = self.workspaces.get(active_workspace_id) orelse return null;
-    if (active_workspace.kind == .host_internal) {
-        if (clearActiveWorkspaceBindingLocked(self, agent_id)) {
-            self.persistSnapshotBestEffortLocked();
+    fn requireWorkspaceStatusAccessLocked(
+        self: *ControlPlane,
+        agent_id: []const u8,
+        workspace: *const Workspace,
+        workspace_id: []const u8,
+        selected_workspace_token: ?[]const u8,
+        is_admin: bool,
+    ) !void {
+        const is_host_actor = self.isHostActor(agent_id);
+        if (is_host_actor and !is_admin and !std.mem.eql(u8, workspace_id, host_workspace_id)) {
+            return ControlPlaneError.WorkspaceAssignmentForbidden;
         }
-        return null;
-    }
-    return active_workspace_id;
-}
+        if (is_admin) return;
 
-fn requireWorkspaceStatusAccessLocked(
-    self: *ControlPlane,
-    agent_id: []const u8,
-    workspace: *const Workspace,
-    workspace_id: []const u8,
-    selected_workspace_token: ?[]const u8,
-    is_admin: bool,
-) !void {
-    const is_host_actor = self.isHostActor(agent_id);
-    if (is_host_actor and !is_admin and !std.mem.eql(u8, workspace_id, host_workspace_id)) {
-        return ControlPlaneError.WorkspaceAssignmentForbidden;
-    }
-    if (is_admin) return;
-
-    switch (resolveWorkspaceActionMode(workspace, .read, agent_id)) {
-        .admin, .deny => return ControlPlaneError.WorkspacePolicyForbidden,
-        .token => {
-            if (selected_workspace_token) |workspace_token| {
-                try validateSecretToken(workspace_token, 256);
-                if (!workspaceTokenEnabled(workspace) or !secureTokenEql(workspace.mutation_token, workspace_token)) {
-                    return ControlPlaneError.WorkspaceAuthFailed;
+        switch (resolveWorkspaceActionMode(workspace, .read, agent_id)) {
+            .admin, .deny => return ControlPlaneError.WorkspacePolicyForbidden,
+            .token => {
+                if (selected_workspace_token) |workspace_token| {
+                    try validateSecretToken(workspace_token, 256);
+                    if (!workspaceTokenEnabled(workspace) or !secureTokenEql(workspace.mutation_token, workspace_token)) {
+                        return ControlPlaneError.WorkspaceAuthFailed;
+                    }
+                    return;
                 }
-                return;
-            }
-            if (is_host_actor) return;
-            const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.WorkspaceAuthFailed;
-            if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.WorkspaceAuthFailed;
-        },
-        .open => {
-            if (is_host_actor) return;
-            const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.WorkspaceAuthFailed;
-            if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.WorkspaceAuthFailed;
-        },
+                if (is_host_actor) return;
+                const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.WorkspaceAuthFailed;
+                if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.WorkspaceAuthFailed;
+            },
+            .open => {
+                if (is_host_actor) return;
+                const active_workspace_id = self.active_workspace_by_agent.get(agent_id) orelse return ControlPlaneError.WorkspaceAuthFailed;
+                if (!std.mem.eql(u8, active_workspace_id, workspace_id)) return ControlPlaneError.WorkspaceAuthFailed;
+            },
+        }
     }
-}
 
-fn buildEmptyWorkspaceStatusPayloadLocked(
-    self: *ControlPlane,
-    agent_id: []const u8,
-) ![]u8 {
-    const escaped_agent = try jsonEscape(self.allocator, agent_id);
-    defer self.allocator.free(escaped_agent);
-    const last_error_json = if (self.reconcile_last_error) |value| blk: {
-        const escaped = try jsonEscape(self.allocator, value);
-        defer self.allocator.free(escaped);
-        break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
-    } else try self.allocator.dupe(u8, "null");
-    defer self.allocator.free(last_error_json);
+    fn buildEmptyWorkspaceStatusPayloadLocked(
+        self: *ControlPlane,
+        agent_id: []const u8,
+    ) ![]u8 {
+        const escaped_agent = try jsonEscape(self.allocator, agent_id);
+        defer self.allocator.free(escaped_agent);
+        const last_error_json = if (self.reconcile_last_error) |value| blk: {
+            const escaped = try jsonEscape(self.allocator, value);
+            defer self.allocator.free(escaped);
+            break :blk try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{escaped});
+        } else try self.allocator.dupe(u8, "null");
+        defer self.allocator.free(last_error_json);
 
-    return std.fmt.allocPrint(
-        self.allocator,
-        "{{\"agent_id\":\"{s}\",\"workspace_id\":null,\"name\":null,\"workspace_name\":null,\"template_id\":null,\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"{s}\",\"last_reconcile_ms\":{d},\"last_success_ms\":{d},\"last_error\":{s},\"queue_depth\":{d}}}",
-        .{
-            escaped_agent,
-            reconcileStateName(self.reconcile_state),
-            self.reconcile_last_reconcile_ms,
-            self.reconcile_last_success_ms,
-            last_error_json,
-            self.reconcile_queue_depth,
-        },
-    );
-}
+        return std.fmt.allocPrint(
+            self.allocator,
+            "{{\"agent_id\":\"{s}\",\"workspace_id\":null,\"name\":null,\"workspace_name\":null,\"template_id\":null,\"workspace_root\":null,\"mounts\":[],\"desired_mounts\":[],\"actual_mounts\":[],\"drift\":{{\"count\":0,\"items\":[]}},\"availability\":{{\"mounts_total\":0,\"online\":0,\"degraded\":0,\"missing\":0}},\"reconcile_state\":\"{s}\",\"last_reconcile_ms\":{d},\"last_success_ms\":{d},\"last_error\":{s},\"queue_depth\":{d}}}",
+            .{
+                escaped_agent,
+                reconcileStateName(self.reconcile_state),
+                self.reconcile_last_reconcile_ms,
+                self.reconcile_last_success_ms,
+                last_error_json,
+                self.reconcile_queue_depth,
+            },
+        );
+    }
 
-fn clearReconcileFailureListLocked(self: *ControlPlane) void {
-    for (self.reconcile_last_failed_ops.items) |value| self.allocator.free(value);
+    fn clearReconcileFailureListLocked(self: *ControlPlane) void {
+        for (self.reconcile_last_failed_ops.items) |value| self.allocator.free(value);
         self.reconcile_last_failed_ops.clearRetainingCapacity();
     }
 
@@ -4104,6 +4220,41 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         return ControlPlaneError.VenomPackageNotFound;
     }
 
+    fn renderInstalledVenomReleasesJsonLocked(self: *ControlPlane) ![]u8 {
+        var out = std.ArrayListUnmanaged(u8){};
+        defer out.deinit(self.allocator);
+        try out.append(self.allocator, '[');
+        for (self.installed_venom_releases.items, 0..) |release, idx| {
+            if (idx != 0) try out.append(self.allocator, ',');
+            try appendInstalledVenomReleaseJson(self.allocator, &out, release);
+        }
+        try out.append(self.allocator, ']');
+        return out.toOwnedSlice(self.allocator);
+    }
+
+    fn renderSingleInstalledVenomReleaseJsonLocked(
+        self: *ControlPlane,
+        package_id: []const u8,
+        release_version: ?[]const u8,
+    ) ![]u8 {
+        const release_index = if (release_version) |requested| blk: {
+            var found_index: ?usize = null;
+            for (self.installed_venom_releases.items, 0..) |release, idx| {
+                if (!std.mem.eql(u8, release.package_id, package_id)) continue;
+                if (!std.mem.eql(u8, release.package.release_version, requested)) continue;
+                found_index = idx;
+                break;
+            }
+            break :blk found_index;
+        } else findPreferredInstalledReleaseIndex(self.installed_venom_releases.items, package_id);
+        const index = release_index orelse return ControlPlaneError.VenomPackageNotFound;
+
+        var out = std.ArrayListUnmanaged(u8){};
+        defer out.deinit(self.allocator);
+        try appendInstalledVenomReleaseJson(self.allocator, &out, self.installed_venom_releases.items[index]);
+        return out.toOwnedSlice(self.allocator);
+    }
+
     fn renderSingleVenomPackageJsonLocked(self: *ControlPlane, venom_id: []const u8) ![]u8 {
         if (venom_packages.findBuiltinPackage(venom_id)) |spec| {
             return venom_packages.renderPackageMetadataJson(self.allocator, spec);
@@ -4168,6 +4319,11 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
                 .venom_id = try allocator.dupe(u8, package.venom_id),
                 .kind = try allocator.dupe(u8, package.kind),
                 .version = try allocator.dupe(u8, package.version),
+                .release_version = try allocator.dupe(u8, package.release_version),
+                .channel = if (package.channel) |value| try allocator.dupe(u8, value) else null,
+                .digest = if (package.digest) |value| try allocator.dupe(u8, value) else null,
+                .signature_json = if (package.signature_json) |value| try allocator.dupe(u8, value) else null,
+                .trust_json = if (package.trust_json) |value| try allocator.dupe(u8, value) else null,
                 .enabled = package.enabled,
                 .categories_json = try allocator.dupe(u8, package.categories_json),
                 .host_roles_json = try allocator.dupe(u8, package.host_roles_json),
@@ -4381,6 +4537,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         venom_id: []const u8,
         preferred_node_name: []const u8,
         require_name_match: bool,
+        constraints: PreferredVenomProviderConstraints,
     ) !?PreferredVenomProvider {
         var selected_node: ?*const Node = null;
         var selected_venom: ?*const venom_catalog.VenomDescriptor = null;
@@ -4389,7 +4546,8 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         while (it.next()) |node| {
             if (require_name_match and !std.mem.eql(u8, node.name, preferred_node_name)) continue;
             const venom = findNodeVenom(node, venom_id) orelse continue;
-            if (selected_node == null or std.mem.order(u8, node.id, selected_node.?.id) == .lt) {
+            if (!preferredVenomMatchesConstraints(venom, constraints)) continue;
+            if (selected_node == null or preferredProviderCandidateBeatsSelected(node, selected_node.?)) {
                 selected_node = node;
                 selected_venom = venom;
             }
@@ -4406,6 +4564,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             .node_id = try allocator.dupe(u8, node.id),
             .node_name = try allocator.dupe(u8, node.name),
             .venom_id = try allocator.dupe(u8, venom.venom_id),
+            .host_type = try allocator.dupe(u8, nodeHostType(node).asString()),
             .endpoint_path = try allocator.dupe(u8, endpoint_path),
         };
     }
@@ -4429,12 +4588,14 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
         venom_id: []const u8,
         scope: PreferredVenomBindingScope,
         scope_id: ?[]const u8,
+        constraints: PreferredVenomProviderConstraints,
     ) !?PreferredVenomProvider {
         const preferred_key = try self.preferredVenomBindingKeyLocked(scope, scope_id, venom_id);
         defer self.allocator.free(preferred_key);
         const preferred_node_id = self.preferred_venom_provider_by_scope_venom.get(preferred_key) orelse return null;
         const node = self.nodes.getPtr(preferred_node_id) orelse return null;
         const venom = findNodeVenom(node, venom_id) orelse return null;
+        if (!preferredVenomMatchesConstraints(venom, constraints)) return null;
         const endpoint_path = if (venom.endpoints.items.len > 0)
             venom.endpoints.items[0]
         else
@@ -4444,6 +4605,7 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             .node_id = try allocator.dupe(u8, node.id),
             .node_name = try allocator.dupe(u8, node.name),
             .venom_id = try allocator.dupe(u8, venom.venom_id),
+            .host_type = try allocator.dupe(u8, nodeHostType(node).asString()),
             .endpoint_path = try allocator.dupe(u8, endpoint_path),
         };
     }
@@ -4880,6 +5042,12 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             try out.appendSlice(self.allocator, "]}");
         }
 
+        try out.appendSlice(self.allocator, "],\"installed_venom_releases\":[");
+        for (self.installed_venom_releases.items, 0..) |release, idx| {
+            if (idx != 0) try out.append(self.allocator, ',');
+            try appendInstalledVenomReleaseJson(self.allocator, &out, release);
+        }
+
         try out.appendSlice(self.allocator, "],\"installed_venom_packages\":[");
         for (self.installed_venom_packages.items, 0..) |package, idx| {
             if (idx != 0) try out.append(self.allocator, ',');
@@ -5144,8 +5312,28 @@ fn clearReconcileFailureListLocked(self: *ControlPlane) void {
             }
         }
 
-        if (root.get("installed_venom_packages")) |packages_val| {
-            venom_package_model.replacePackagesFromJsonValue(self.allocator, &self.installed_venom_packages, packages_val) catch return error.InvalidSnapshot;
+        if (root.get("installed_venom_releases")) |releases_val| {
+            if (releases_val != .array) return error.InvalidSnapshot;
+            for (releases_val.array.items) |item| {
+                var release = parseInstalledVenomReleaseValue(self.allocator, item) catch return error.InvalidSnapshot;
+                errdefer release.deinit(self.allocator);
+                try self.installed_venom_releases.append(self.allocator, release);
+            }
+            try rebuildInstalledVenomPackagesFromReleasesLocked(self);
+        } else if (root.get("installed_venom_packages")) |packages_val| {
+            var legacy_packages = std.ArrayListUnmanaged(venom_package_model.VenomPackage){};
+            errdefer venom_package_model.deinitPackages(self.allocator, &legacy_packages);
+            venom_package_model.replacePackagesFromJsonValue(self.allocator, &legacy_packages, packages_val) catch return error.InvalidSnapshot;
+            for (legacy_packages.items) |package| {
+                const owned_package = package;
+                try self.installed_venom_releases.append(self.allocator, .{
+                    .package_id = try self.allocator.dupe(u8, owned_package.venom_id),
+                    .package = owned_package,
+                });
+            }
+            legacy_packages.items.len = 0;
+            venom_package_model.deinitPackages(self.allocator, &legacy_packages);
+            try rebuildInstalledVenomPackagesFromReleasesLocked(self);
         }
 
         const active_workspace_bindings_val = root.get("active_workspace_by_agent");
@@ -5207,6 +5395,202 @@ fn parseVenomPackageValue(allocator: std.mem.Allocator, value: std.json.Value) !
     packages.items.len = 0;
     venom_package_model.deinitPackages(allocator, &packages);
     return package;
+}
+
+fn parseInstalledVenomReleaseValue(allocator: std.mem.Allocator, value: std.json.Value) !InstalledVenomRelease {
+    if (value != .object) return ControlPlaneError.InvalidPayload;
+
+    const release_value = if (value.object.get("release")) |wrapped| wrapped else value;
+    if (release_value != .object) return ControlPlaneError.InvalidPayload;
+
+    var package = try parseVenomPackageValue(allocator, release_value.object.get("package") orelse release_value);
+    errdefer package.deinit(allocator);
+
+    const package_id = getOptionalString(release_value.object, "package_id") orelse package.venom_id;
+    try validateIdentifier(package_id, 128);
+
+    if (!std.mem.eql(u8, package.venom_id, package_id)) {
+        allocator.free(package.venom_id);
+        package.venom_id = try allocator.dupe(u8, package_id);
+    }
+
+    if (getOptionalString(release_value.object, "release_version")) |release_version| {
+        allocator.free(package.release_version);
+        package.release_version = try allocator.dupe(u8, release_version);
+    }
+    if (getOptionalString(release_value.object, "channel")) |channel| {
+        if (package.channel) |channel_value| allocator.free(channel_value);
+        package.channel = try allocator.dupe(u8, channel);
+    }
+    if (getOptionalString(release_value.object, "digest")) |digest| {
+        if (package.digest) |digest_value| allocator.free(digest_value);
+        package.digest = try allocator.dupe(u8, digest);
+    }
+    if (release_value.object.get("signature")) |signature| {
+        if (package.signature_json) |signature_value| allocator.free(signature_value);
+        package.signature_json = try optionalObjectJsonOrNull(allocator, signature);
+    }
+    if (release_value.object.get("trust")) |trust| {
+        if (package.trust_json) |trust_value| allocator.free(trust_value);
+        package.trust_json = try optionalObjectJsonOrNull(allocator, trust);
+    }
+    if (release_value.object.get("enabled")) |enabled_value| {
+        if (enabled_value != .bool) return ControlPlaneError.InvalidPayload;
+        package.enabled = enabled_value.bool;
+    }
+
+    return .{
+        .package_id = try allocator.dupe(u8, package_id),
+        .package = package,
+    };
+}
+
+fn optionalObjectJsonOrNull(allocator: std.mem.Allocator, value: std.json.Value) !?[]u8 {
+    return switch (value) {
+        .object => blk: {
+            break :blk try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, .{})});
+        },
+        .null => null,
+        else => ControlPlaneError.InvalidPayload,
+    };
+}
+
+fn appendInstalledVenomReleaseJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    release: InstalledVenomRelease,
+) !void {
+    const escaped_package_id = try jsonEscape(allocator, release.package_id);
+    defer allocator.free(escaped_package_id);
+    const escaped_release_version = try jsonEscape(allocator, release.package.release_version);
+    defer allocator.free(escaped_release_version);
+    const release_id = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ release.package_id, release.package.release_version });
+    defer allocator.free(release_id);
+    const escaped_release_id = try jsonEscape(allocator, release_id);
+    defer allocator.free(escaped_release_id);
+    const channel_json = try optionalJsonStringField(allocator, release.package.channel);
+    defer allocator.free(channel_json);
+    const digest_json = try optionalJsonStringField(allocator, release.package.digest);
+    defer allocator.free(digest_json);
+    const signature_json = if (release.package.signature_json) |value|
+        try allocator.dupe(u8, value)
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(signature_json);
+    const trust_json = if (release.package.trust_json) |value|
+        try allocator.dupe(u8, value)
+    else
+        try allocator.dupe(u8, "null");
+    defer allocator.free(trust_json);
+
+    try out.writer(allocator).print(
+        "{{\"release_id\":\"{s}\",\"package_id\":\"{s}\",\"release_version\":\"{s}\",\"version\":\"{s}\",\"channel\":{s},\"digest\":{s},\"signature\":{s},\"trust\":{s},\"enabled\":{},\"package\":",
+        .{
+            escaped_release_id,
+            escaped_package_id,
+            escaped_release_version,
+            escaped_release_version,
+            channel_json,
+            digest_json,
+            signature_json,
+            trust_json,
+            release.package.enabled,
+        },
+    );
+    try venom_package_model.appendPackageJson(allocator, out, release.package);
+    try out.append(allocator, '}');
+}
+
+fn optionalJsonStringField(allocator: std.mem.Allocator, value: ?[]const u8) ![]u8 {
+    if (value) |raw| {
+        const escaped = try jsonEscape(allocator, raw);
+        defer allocator.free(escaped);
+        return std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped});
+    }
+    return allocator.dupe(u8, "null");
+}
+
+fn deinitInstalledVenomReleases(
+    allocator: std.mem.Allocator,
+    releases: *std.ArrayListUnmanaged(InstalledVenomRelease),
+) void {
+    for (releases.items) |*release| release.deinit(allocator);
+    releases.deinit(allocator);
+    releases.* = .{};
+}
+
+fn rebuildInstalledVenomPackagesFromReleasesLocked(self: *ControlPlane) !void {
+    venom_package_model.deinitPackages(self.allocator, &self.installed_venom_packages);
+
+    var selected_by_package_id = std.StringHashMapUnmanaged(usize){};
+    defer selected_by_package_id.deinit(self.allocator);
+
+    for (self.installed_venom_releases.items, 0..) |release, idx| {
+        if (selected_by_package_id.get(release.package_id)) |existing_idx| {
+            const existing = self.installed_venom_releases.items[existing_idx];
+            if (installedReleaseBeatsForProjection(release, existing)) {
+                try selected_by_package_id.put(self.allocator, release.package_id, idx);
+            }
+            continue;
+        }
+        try selected_by_package_id.put(self.allocator, release.package_id, idx);
+    }
+
+    var release_it = selected_by_package_id.iterator();
+    while (release_it.next()) |entry| {
+        const release = self.installed_venom_releases.items[entry.value_ptr.*];
+        try self.installed_venom_packages.append(self.allocator, try clonePackage(self.allocator, release.package));
+    }
+}
+
+fn installedReleaseBeatsForProjection(candidate: InstalledVenomRelease, existing: InstalledVenomRelease) bool {
+    if (candidate.package.enabled != existing.package.enabled) return candidate.package.enabled;
+    return compareReleaseVersions(candidate.package.release_version, existing.package.release_version) == .gt;
+}
+
+fn findPreferredInstalledReleaseIndex(
+    releases: []const InstalledVenomRelease,
+    package_id: []const u8,
+) ?usize {
+    var selected_index: ?usize = null;
+    for (releases, 0..) |release, idx| {
+        if (!std.mem.eql(u8, release.package_id, package_id)) continue;
+        if (selected_index == null or installedReleaseBeatsForProjection(release, releases[selected_index.?])) {
+            selected_index = idx;
+        }
+    }
+    return selected_index;
+}
+
+fn clonePackage(allocator: std.mem.Allocator, package: venom_package_model.VenomPackage) !venom_package_model.VenomPackage {
+    return .{
+        .venom_id = try allocator.dupe(u8, package.venom_id),
+        .kind = try allocator.dupe(u8, package.kind),
+        .version = try allocator.dupe(u8, package.version),
+        .release_version = try allocator.dupe(u8, package.release_version),
+        .channel = if (package.channel) |value| try allocator.dupe(u8, value) else null,
+        .digest = if (package.digest) |value| try allocator.dupe(u8, value) else null,
+        .signature_json = if (package.signature_json) |value| try allocator.dupe(u8, value) else null,
+        .trust_json = if (package.trust_json) |value| try allocator.dupe(u8, value) else null,
+        .enabled = package.enabled,
+        .categories_json = try allocator.dupe(u8, package.categories_json),
+        .host_roles_json = try allocator.dupe(u8, package.host_roles_json),
+        .binding_scopes_json = try allocator.dupe(u8, package.binding_scopes_json),
+        .runtime_kind = package.runtime_kind,
+        .requirements_json = try allocator.dupe(u8, package.requirements_json),
+        .capabilities_json = try allocator.dupe(u8, package.capabilities_json),
+        .ops_json = try allocator.dupe(u8, package.ops_json),
+        .runtime_json = try allocator.dupe(u8, package.runtime_json),
+        .permissions_json = try allocator.dupe(u8, package.permissions_json),
+        .schema_json = try allocator.dupe(u8, package.schema_json),
+        .help_md = if (package.help_md) |value| try allocator.dupe(u8, value) else null,
+    };
+}
+
+fn compareReleaseVersions(a: []const u8, b: []const u8) std.math.Order {
+    const parsed_a = std.SemanticVersion.parse(a) catch return std.mem.order(u8, a, b);
+    const parsed_b = std.SemanticVersion.parse(b) catch return std.mem.order(u8, a, b);
+    return parsed_a.order(parsed_b);
 }
 
 fn getRequiredString(obj: std.json.ObjectMap, name: []const u8) ![]const u8 {
@@ -5536,11 +5920,7 @@ fn appendWorkspaceTemplateBindJson(
     defer allocator.free(escaped_venom);
     const escaped_host_role = try jsonEscape(allocator, bind_spec.host_role.asString());
     defer allocator.free(escaped_host_role);
-    const target_path_json = if (resolveTemplateBindTargetPath(bind_spec)) |target_path| blk: {
-        const escaped_target = try jsonEscape(allocator, target_path);
-        defer allocator.free(escaped_target);
-        break :blk try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_target});
-    } else try allocator.dupe(u8, "null");
+    const target_path_json = try allocator.dupe(u8, "null");
     defer allocator.free(target_path_json);
 
     try out.writer(allocator).print(
@@ -5625,6 +6005,52 @@ fn venomHasInvokePath(allocator: std.mem.Allocator, venom: venom_catalog.VenomDe
                 }
             }
         }
+    }
+    return false;
+}
+
+fn preferredProviderCandidateBeatsSelected(candidate: *const Node, selected: *const Node) bool {
+    const candidate_priority = nodeHostType(candidate).selectionPriority();
+    const selected_priority = nodeHostType(selected).selectionPriority();
+    if (candidate_priority != selected_priority) return candidate_priority > selected_priority;
+    return std.mem.order(u8, candidate.id, selected.id) == .lt;
+}
+
+fn nodeHostType(node: *const Node) venom_model.HostType {
+    if (nodeLabelValue(node, venom_model.host_type_label_key)) |value| {
+        const parsed = venom_model.HostType.fromString(std.mem.trim(u8, value, " \t\r\n"));
+        if (parsed != .unknown) return parsed;
+    }
+    return venom_model.defaultHostTypeForNodeName(node.name);
+}
+
+fn nodeLabelValue(node: *const Node, key: []const u8) ?[]const u8 {
+    for (node.labels.items) |label| {
+        if (std.mem.eql(u8, label.key, key)) return label.value;
+    }
+    return null;
+}
+
+fn preferredVenomMatchesConstraints(
+    venom: *const venom_catalog.VenomDescriptor,
+    constraints: PreferredVenomProviderConstraints,
+) bool {
+    if (constraints.host_role) |host_role| {
+        if (!jsonArrayContainsStringFast(venom.host_roles_json, host_role.asString())) return false;
+    }
+    if (constraints.binding_scope) |binding_scope| {
+        if (!jsonArrayContainsStringFast(venom.binding_scopes_json, binding_scope.asString())) return false;
+    }
+    return true;
+}
+
+fn jsonArrayContainsStringFast(json: []const u8, needle: []const u8) bool {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, json, cursor, "\"")) |start_quote| {
+        const value_start = start_quote + 1;
+        const end_quote = std.mem.indexOfPos(u8, json, value_start, "\"") orelse return false;
+        if (std.mem.eql(u8, json[value_start..end_quote], needle)) return true;
+        cursor = end_quote + 1;
     }
     return false;
 }
@@ -6302,7 +6728,8 @@ fn ensureBindSpecsLocked(
 ) !bool {
     var changed = false;
     for (bind_specs) |spec| {
-        const target_path = resolveTemplateBindTargetPath(spec) orelse continue;
+        const target_path = try resolveTemplateBindTargetPathLocked(self, project, spec) orelse continue;
+        defer self.allocator.free(target_path);
         const normalized_bind = try normalizeMountPath(self.allocator, spec.bind_path);
         defer self.allocator.free(normalized_bind);
         const normalized_target = try normalizeMountPath(self.allocator, target_path);
@@ -6340,8 +6767,24 @@ fn ensureBindSpecsLocked(
     return changed;
 }
 
-fn resolveTemplateBindTargetPath(spec: WorkspaceTemplateBindSpec) ?[]const u8 {
-    return venom_packages.resolveBuiltinTargetPath(spec.venom_id, spec.host_role);
+fn resolveTemplateBindTargetPathLocked(
+    self: *ControlPlane,
+    project: *const Workspace,
+    spec: WorkspaceTemplateBindSpec,
+) !?[]u8 {
+    var provider = (try self.resolvePreferredVenomProviderForContextLocked(
+        self.allocator,
+        spec.venom_id,
+        &.{},
+        if (project.kind == .host_internal) null else project.id,
+        null,
+        .{
+            .host_role = spec.host_role,
+            .binding_scope = .workspace,
+        },
+    )) orelse return null;
+    defer provider.deinit(self.allocator);
+    return try self.allocator.dupe(u8, provider.endpoint_path);
 }
 
 fn workspaceHasCanonicalMount(project: *const Workspace) bool {
@@ -8632,18 +9075,70 @@ test "acheron_control_plane: builtin ensure prunes legacy workspace alias when c
     try std.testing.expectEqualStrings("node-canonical", project.mounts.items[0].node_id);
 }
 
+fn seedManagedWorkspaceTemplateProviders(
+    allocator: std.mem.Allocator,
+    plane: *ControlPlane,
+) ![]u8 {
+    const joined = try plane.ensureNode("spiderweb-fs-node", "", 60_000);
+    defer allocator.free(joined);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, joined, .{});
+    defer parsed.deinit();
+    const node_id = parsed.value.object.get("node_id").?.string;
+    const node_secret = parsed.value.object.get("node_secret").?.string;
+
+    const upsert_req = try std.fmt.allocPrint(
+        allocator,
+        "{{\"node_id\":\"{s}\",\"node_secret\":\"{s}\",\"platform\":{{\"os\":\"linux\",\"arch\":\"amd64\",\"runtime_kind\":\"spiderweb\"}},\"labels\":{{\"{s}\":\"spiderweb_managed\"}},\"venoms\":[" ++
+            "{{\"venom_id\":\"mounts\",\"package_id\":\"mounts\",\"kind\":\"mounts\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"spiderweb\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/mounts\"],\"mounts\":[{{\"mount_id\":\"mounts\",\"mount_path\":\"/nodes/{s}/venoms/mounts\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}," ++
+            "{{\"venom_id\":\"home\",\"package_id\":\"home\",\"kind\":\"home\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"spiderweb\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/home\"],\"mounts\":[{{\"mount_id\":\"home\",\"mount_path\":\"/nodes/{s}/venoms/home\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}," ++
+            "{{\"venom_id\":\"packages\",\"package_id\":\"packages\",\"kind\":\"registry\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"spiderweb\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/packages\"],\"mounts\":[{{\"mount_id\":\"packages\",\"mount_path\":\"/nodes/{s}/venoms/packages\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}," ++
+            "{{\"venom_id\":\"runtimes\",\"package_id\":\"runtimes\",\"kind\":\"runtimes\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"spiderweb\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/runtimes\"],\"mounts\":[{{\"mount_id\":\"runtimes\",\"mount_path\":\"/nodes/{s}/venoms/runtimes\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}," ++
+            "{{\"venom_id\":\"terminal\",\"package_id\":\"terminal\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/terminal\"],\"mounts\":[{{\"mount_id\":\"terminal\",\"mount_path\":\"/nodes/{s}/venoms/terminal\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}," ++
+            "{{\"venom_id\":\"git\",\"package_id\":\"git\",\"kind\":\"git\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/git\"],\"mounts\":[{{\"mount_id\":\"git\",\"mount_path\":\"/nodes/{s}/venoms/git\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}," ++
+            "{{\"venom_id\":\"search_code\",\"package_id\":\"search_code\",\"kind\":\"search_code\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{{}},\"endpoints\":[\"/nodes/{s}/venoms/search_code\"],\"mounts\":[{{\"mount_id\":\"search_code\",\"mount_path\":\"/nodes/{s}/venoms/search_code\",\"state\":\"online\"}}],\"capabilities\":{{\"invoke\":true}},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\"}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\"}},\"schema\":{{\"model\":\"namespace-mount\"}}}}" ++
+            "]}}",
+        .{
+            node_id,
+            node_secret,
+            venom_model.host_type_label_key,
+            node_id,
+            node_id,
+            node_id,
+            node_id,
+            node_id,
+            node_id,
+            node_id,
+            node_id,
+            node_id,
+            node_id,
+            node_id,
+            node_id,
+        },
+    );
+    defer allocator.free(upsert_req);
+    const upserted = try plane.nodeVenomUpsert(upsert_req);
+    defer allocator.free(upserted);
+    return try allocator.dupe(u8, node_id);
+}
+
 test "acheron_control_plane: createWorkspace defaults to minimum template and seeds canonical control and venom binds" {
     const allocator = std.testing.allocator;
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
+    const provider_node_id = try seedManagedWorkspaceTemplateProviders(allocator, &plane);
+    defer allocator.free(provider_node_id);
     const project_json = try plane.createWorkspace("{\"name\":\"TemplateMinimum\",\"vision\":\"TemplateMinimum\"}");
     defer allocator.free(project_json);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"template_id\":\"minimum\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/workspace/mounts\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"target_path\":\"/nodes/local/venoms/mounts\"") != null);
+    const mounts_target = try std.fmt.allocPrint(allocator, "\"target_path\":\"/nodes/{s}/venoms/mounts\"", .{provider_node_id});
+    defer allocator.free(mounts_target);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, mounts_target) != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/packages\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"target_path\":\"/nodes/local/venoms/packages\"") != null);
+    const packages_target = try std.fmt.allocPrint(allocator, "\"target_path\":\"/nodes/{s}/venoms/packages\"", .{provider_node_id});
+    defer allocator.free(packages_target);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, packages_target) != null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/chat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/chat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/services/jobs\"") == null);
@@ -8663,7 +9158,9 @@ test "acheron_control_plane: createWorkspace defaults to minimum template and se
     const resolved = try plane.resolveWorkspacePath(resolve_req);
     defer allocator.free(resolved);
     try std.testing.expect(std.mem.indexOf(u8, resolved, "\"matched\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resolved, "\"resolved_path\":\"/nodes/local/venoms/mounts/control/invoke.json\"") != null);
+    const resolved_target = try std.fmt.allocPrint(allocator, "\"resolved_path\":\"/nodes/{s}/venoms/mounts/control/invoke.json\"", .{provider_node_id});
+    defer allocator.free(resolved_target);
+    try std.testing.expect(std.mem.indexOf(u8, resolved, resolved_target) != null);
 }
 
 test "acheron_control_plane: workspace template catalog lists dev template and returns bind metadata" {
@@ -8683,7 +9180,7 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/git\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/.spiderweb/venoms/search_code\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"target_path\":\"/nodes/local/venoms/git\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fetched, "\"target_path\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"provider_scope\":") == null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/chat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/jobs\"") == null);
@@ -8697,6 +9194,8 @@ test "acheron_control_plane: builtin host project seeds mounts control bind" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
+    const provider_node_id = try seedManagedWorkspaceTemplateProviders(allocator, &plane);
+    defer allocator.free(provider_node_id);
     try plane.ensureBuiltinHostProjectLocked(std.time.milliTimestamp());
     const project = plane.workspaces.get(host_workspace_id) orelse return error.TestExpectedResponse;
     try std.testing.expectEqual(@as(usize, 0), project.template_id.len);
@@ -8704,7 +9203,9 @@ test "acheron_control_plane: builtin host project seeds mounts control bind" {
     const payload = try renderWorkspacePayload(allocator, project, false);
     defer allocator.free(payload);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"bind_path\":\"/.spiderweb/control/workspace/mounts\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"target_path\":\"/nodes/local/venoms/mounts\"") != null);
+    const mounts_target = try std.fmt.allocPrint(allocator, "\"target_path\":\"/nodes/{s}/venoms/mounts\"", .{provider_node_id});
+    defer allocator.free(mounts_target);
+    try std.testing.expect(std.mem.indexOf(u8, payload, mounts_target) != null);
 }
 
 test "acheron_control_plane: dev template seeds canonical development binds" {
@@ -8712,6 +9213,8 @@ test "acheron_control_plane: dev template seeds canonical development binds" {
     var plane = ControlPlane.init(allocator);
     defer plane.deinit();
 
+    const provider_node_id = try seedManagedWorkspaceTemplateProviders(allocator, &plane);
+    defer allocator.free(provider_node_id);
     const project_json = try plane.createWorkspace("{\"name\":\"TemplateDev\",\"vision\":\"TemplateDev\",\"template_id\":\"dev\"}");
     defer allocator.free(project_json);
     try std.testing.expect(std.mem.indexOf(u8, project_json, "\"template_id\":\"dev\"") != null);
@@ -9208,6 +9711,115 @@ test "acheron_control_plane: venom package persistence restores installed regist
         const fetched = try plane.getVenomPackage("{\"venom_id\":\"package_persist\"}");
         defer allocator.free(fetched);
         try std.testing.expect(std.mem.indexOf(u8, fetched, "\"version\":\"3\"") != null);
+    }
+}
+
+test "acheron_control_plane: venom release rollback and targeted removal" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.init(allocator);
+    defer plane.deinit();
+
+    const install_v1 =
+        \\{"release":{"package_id":"camera_pkg","release_version":"1.0.0","channel":"stable","digest":"sha256:v1","signature":{"alg":"test","sig":"v1"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","release_version":"1.0.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+    ;
+    const installed_v1 = try plane.installVenomPackage(install_v1);
+    defer allocator.free(installed_v1);
+    try std.testing.expect(std.mem.indexOf(u8, installed_v1, "\"release_version\":\"1.0.0\"") != null);
+
+    const install_v2 =
+        \\{"release":{"package_id":"camera_pkg","release_version":"1.1.0","channel":"stable","digest":"sha256:v2","signature":{"alg":"test","sig":"v2"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"2","release_version":"1.1.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true,"stream":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+    ;
+    const installed_v2 = try plane.installVenomPackage(install_v2);
+    defer allocator.free(installed_v2);
+    try std.testing.expect(std.mem.indexOf(u8, installed_v2, "\"release_version\":\"1.1.0\"") != null);
+
+    const releases = try plane.listVenomReleases();
+    defer allocator.free(releases);
+    try std.testing.expect(std.mem.indexOf(u8, releases, "\"release_id\":\"camera_pkg@1.0.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, releases, "\"release_id\":\"camera_pkg@1.1.0\"") != null);
+
+    const release_v1 = try plane.getVenomRelease("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.0.0\"}");
+    defer allocator.free(release_v1);
+    try std.testing.expect(std.mem.indexOf(u8, release_v1, "\"digest\":\"sha256:v1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, release_v1, "\"enabled\":false") != null);
+
+    const projected_latest = try plane.getVenomPackage("{\"venom_id\":\"camera_pkg\"}");
+    defer allocator.free(projected_latest);
+    try std.testing.expect(std.mem.indexOf(u8, projected_latest, "\"release_version\":\"1.1.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, projected_latest, "\"enabled\":true") != null);
+
+    const rolled_back = try plane.enableVenomPackage("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.0.0\"}");
+    defer allocator.free(rolled_back);
+    try std.testing.expect(std.mem.indexOf(u8, rolled_back, "\"release_version\":\"1.0.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rolled_back, "\"enabled\":true") != null);
+
+    const release_v2_after_rollback = try plane.getVenomRelease("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.1.0\"}");
+    defer allocator.free(release_v2_after_rollback);
+    try std.testing.expect(std.mem.indexOf(u8, release_v2_after_rollback, "\"enabled\":false") != null);
+
+    const removed = try plane.removeVenomPackage("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.0.0\"}");
+    defer allocator.free(removed);
+    try std.testing.expect(std.mem.indexOf(u8, removed, "\"removed\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, removed, "\"release_version\":\"1.0.0\"") != null);
+
+    const projected_after_remove = try plane.getVenomPackage("{\"venom_id\":\"camera_pkg\"}");
+    defer allocator.free(projected_after_remove);
+    try std.testing.expect(std.mem.indexOf(u8, projected_after_remove, "\"release_version\":\"1.1.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, projected_after_remove, "\"enabled\":false") != null);
+
+    const releases_after_remove = try plane.listVenomReleases();
+    defer allocator.free(releases_after_remove);
+    try std.testing.expect(std.mem.indexOf(u8, releases_after_remove, "\"release_id\":\"camera_pkg@1.0.0\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, releases_after_remove, "\"release_id\":\"camera_pkg@1.1.0\"") != null);
+}
+
+test "acheron_control_plane: venom release persistence restores selected release" {
+    const allocator = std.testing.allocator;
+    const dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/fs-control-plane-releases-{d}", .{std.time.nanoTimestamp()});
+    defer allocator.free(dir);
+    defer std.fs.cwd().deleteTree(dir) catch {};
+
+    try std.fs.cwd().makePath(dir);
+
+    {
+        var plane = ControlPlane.initWithPersistence(allocator, dir, "control-plane.db");
+        defer plane.deinit();
+
+        const install_v1 =
+            \\{"release":{"package_id":"camera_pkg","release_version":"1.0.0","channel":"stable","digest":"sha256:v1","signature":{"alg":"test","sig":"v1"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","release_version":"1.0.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+        ;
+        const install_v2 =
+            \\{"release":{"package_id":"camera_pkg","release_version":"1.1.0","channel":"stable","digest":"sha256:v2","signature":{"alg":"test","sig":"v2"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"2","release_version":"1.1.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true,"stream":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+        ;
+
+        const installed_v1 = try plane.installVenomPackage(install_v1);
+        defer allocator.free(installed_v1);
+        const installed_v2 = try plane.installVenomPackage(install_v2);
+        defer allocator.free(installed_v2);
+
+        const rolled_back = try plane.enableVenomPackage("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.0.0\"}");
+        defer allocator.free(rolled_back);
+        try std.testing.expect(std.mem.indexOf(u8, rolled_back, "\"release_version\":\"1.0.0\"") != null);
+    }
+
+    {
+        var plane = ControlPlane.initWithPersistence(allocator, dir, "control-plane.db");
+        defer plane.deinit();
+
+        const projected = try plane.getVenomPackage("{\"venom_id\":\"camera_pkg\"}");
+        defer allocator.free(projected);
+        try std.testing.expect(std.mem.indexOf(u8, projected, "\"release_version\":\"1.0.0\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, projected, "\"enabled\":true") != null);
+
+        const release_v2 = try plane.getVenomRelease("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.1.0\"}");
+        defer allocator.free(release_v2);
+        try std.testing.expect(std.mem.indexOf(u8, release_v2, "\"enabled\":false") != null);
+        try std.testing.expect(std.mem.indexOf(u8, release_v2, "\"digest\":\"sha256:v2\"") != null);
+
+        const releases = try plane.listVenomReleases();
+        defer allocator.free(releases);
+        try std.testing.expect(std.mem.indexOf(u8, releases, "\"release_id\":\"camera_pkg@1.0.0\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, releases, "\"release_id\":\"camera_pkg@1.1.0\"") != null);
     }
 }
 

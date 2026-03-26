@@ -162,7 +162,7 @@ pub fn resolvePreferredBoundVenomNodeIdForContext(
     var provider = (try plane.resolvePreferredVenomProviderForContext(
         session.allocator,
         venom_id,
-        &.{ "spiderapp-default", "spiderweb-local", "local" },
+        &.{},
         workspace_id,
         agent_id,
     )) orelse return null;

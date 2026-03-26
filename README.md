@@ -20,6 +20,7 @@ In short: **Spiderweb hosts the namespace; external runtimes operate through it*
 If that resonates, start with:
 - `docs/overview.md`
 - `docs/README.md`
+- `docs/release-policy.md` for versioning and release conventions
 - `CODEX_EXTERNAL_AGENT.md` for the current non-Spider-Monkey external-worker path
 
 ![Spiderweb](Spiderweb.png)
@@ -151,7 +152,7 @@ This flow has been smoke-tested with:
 - Public capability venoms under `/.spiderweb/venoms/{terminal,git,search_code}`
 - Durable per-agent home allocation inside a workspace.
 - Ephemeral runtime-node projection and liveness tracking for attached external runtimes.
-- Supervision of the internal `spiderweb-local-node` companion process that exports `/nodes/local/fs` plus the local `terminal`, `git`, and `search_code` providers.
+- Supervision of the managed `spiderweb-fs-node` companion plus first-party capability drivers sourced from `SpiderVenoms`, which export `/nodes/local/fs` and the local `terminal`, `git`, and `search_code` providers.
 
 ### What External Workers Own
 

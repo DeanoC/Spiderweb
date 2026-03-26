@@ -1,0 +1,97 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux-release:
+    name: linux-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Spiderweb
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap fuse3 git jq sqlite3
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/.*\.version = "\(.*\)",/\1/p' build.zig.zon | head -n1)"
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64|amd64) arch_label="x86_64" ;;
+            aarch64|arm64) arch_label="aarch64" ;;
+            *) arch_label="$arch" ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "arch_label=$arch_label" >> "$GITHUB_OUTPUT"
+          echo "archive_path=dist/spiderweb-linux-${arch_label}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "archive_sha_path=dist/spiderweb-linux-${arch_label}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Validate version sync
+        run: |
+          set -euo pipefail
+          bash ./scripts/check-version-sync.sh
+
+      - name: Validate tag matches build version
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          expected_tag="v${{ steps.meta.outputs.version }}"
+          actual_tag="${GITHUB_REF_NAME}"
+          if [[ "$actual_tag" != "$expected_tag" ]]; then
+            echo "Tag/version mismatch: expected ${expected_tag}, got ${actual_tag}" >&2
+            exit 1
+          fi
+
+      - name: Build Linux release archive
+        run: |
+          set -euo pipefail
+          bash ./scripts/package-spiderweb-linux-release.sh --out-dir "$PWD/dist"
+
+      - name: Smoke test release archive install
+        run: |
+          set -euo pipefail
+          archive="${{ steps.meta.outputs.archive_path }}"
+          sha_path="${{ steps.meta.outputs.archive_sha_path }}"
+          export SPIDERWEB_RELEASE_ARCHIVE_URL="file://$PWD/${archive}"
+          export SPIDERWEB_RELEASE_ARCHIVE_SHA256="$(awk '{print $1}' "$sha_path")"
+          export SPIDERWEB_RELEASE_VERSION="${{ steps.meta.outputs.version }}"
+          timeout 300 bash ./test-env/test-install.sh release
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: spiderweb-linux-release-${{ steps.meta.outputs.arch_label }}
+          path: |
+            ${{ steps.meta.outputs.archive_path }}
+            ${{ steps.meta.outputs.archive_sha_path }}
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.meta.outputs.archive_path }}
+            ${{ steps.meta.outputs.archive_sha_path }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

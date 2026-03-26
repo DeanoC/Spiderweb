@@ -20,6 +20,40 @@ pub const HostRole = enum {
     }
 };
 
+pub const HostType = enum {
+    app_local,
+    spiderweb_managed,
+    remote_node,
+    unknown,
+
+    pub fn asString(self: HostType) []const u8 {
+        return switch (self) {
+            .app_local => "app_local",
+            .spiderweb_managed => "spiderweb_managed",
+            .remote_node => "remote_node",
+            .unknown => "unknown",
+        };
+    }
+
+    pub fn fromString(value: []const u8) HostType {
+        if (std.mem.eql(u8, value, "app_local") or std.mem.eql(u8, value, "app_managed")) return .app_local;
+        if (std.mem.eql(u8, value, "spiderweb_managed")) return .spiderweb_managed;
+        if (std.mem.eql(u8, value, "remote_node")) return .remote_node;
+        return .unknown;
+    }
+
+    pub fn selectionPriority(self: HostType) u8 {
+        return switch (self) {
+            .app_local => 3,
+            .spiderweb_managed => 2,
+            .remote_node => 1,
+            .unknown => 0,
+        };
+    }
+};
+
+pub const host_type_label_key = "spider.host_type";
+
 pub const RuntimeKind = enum {
     native,
     wasm,
@@ -123,10 +157,24 @@ pub fn isCapabilityVenomId(venom_id: []const u8) bool {
 }
 
 pub fn defaultHostRoleForNodeId(node_id: []const u8) HostRole {
-    if (std.mem.eql(u8, node_id, "local") or std.mem.eql(u8, node_id, "spiderweb-local")) {
-        return .spiderweb;
+    return defaultHostRoleForHostType(defaultHostTypeForNodeName(node_id));
+}
+
+pub fn defaultHostTypeForNodeName(node_name: []const u8) HostType {
+    if (std.mem.eql(u8, node_name, "local") or std.mem.eql(u8, node_name, "spiderweb-local")) {
+        return .spiderweb_managed;
     }
-    return .node;
+    if (std.mem.eql(u8, node_name, "spiderapp-default") or std.mem.startsWith(u8, node_name, "spiderapp-")) {
+        return .app_local;
+    }
+    return .remote_node;
+}
+
+pub fn defaultHostRoleForHostType(host_type: HostType) HostRole {
+    return switch (host_type) {
+        .spiderweb_managed => .spiderweb,
+        .app_local, .remote_node, .unknown => .node,
+    };
 }
 
 pub fn defaultBindingScopeForPath(path: []const u8) BindingScope {
@@ -186,5 +234,7 @@ test "venom_model classifies substrate and production capability venoms" {
     try std.testing.expect(isCapabilityVenomId("browser"));
     try std.testing.expectEqualStrings("spiderweb", defaultHostRoleForNodeId("local").asString());
     try std.testing.expectEqualStrings("node", defaultHostRoleForNodeId("node-2").asString());
+    try std.testing.expectEqualStrings("spiderweb_managed", defaultHostTypeForNodeName("spiderweb-local").asString());
+    try std.testing.expectEqualStrings("app_local", defaultHostTypeForNodeName("spiderapp-default").asString());
     try std.testing.expectEqualStrings("workspace", defaultBindingScopeForPath("/.spiderweb/venoms/terminal").asString());
 }

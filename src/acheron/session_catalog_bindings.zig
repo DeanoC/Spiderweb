@@ -8,11 +8,7 @@ fn lookupLocalNodeVenomsRoot(session: anytype) ?u32 {
 
 fn resolvePreferredLocalCatalogProviderNodeId(session: anytype, venom_id: []const u8) !?[]u8 {
     const plane = session.control_plane orelse return null;
-    var provider = (try plane.resolvePreferredVenomProvider(
-        session.allocator,
-        venom_id,
-        &.{ "spiderweb-local", "local" },
-    )) orelse return null;
+    var provider = (try plane.resolvePreferredVenomProvider(session.allocator, venom_id, &.{})) orelse return null;
     defer provider.deinit(session.allocator);
     return try session.allocator.dupe(u8, provider.node_id);
 }

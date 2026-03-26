@@ -36,6 +36,15 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
 
         const kind = getString(item.object, "kind") orelse package_id;
         const version = getString(item.object, "version") orelse "1";
+        const release_version = getString(item.object, "release_version") orelse version;
+        const channel_json = try optionalJsonString(session.allocator, getString(item.object, "channel"));
+        defer session.allocator.free(channel_json);
+        const digest_json = try optionalJsonString(session.allocator, getString(item.object, "digest"));
+        defer session.allocator.free(digest_json);
+        const signature_json = try optionalJsonValue(session.allocator, item.object.get("signature"));
+        defer session.allocator.free(signature_json);
+        const trust_json = try optionalJsonValue(session.allocator, item.object.get("trust"));
+        defer session.allocator.free(trust_json);
         const help_md = getString(item.object, "help_md");
         const runtime_kind = normalizedRuntimeKindFromObject(item.object);
         const escaped_package_id = try unified.jsonEscape(session.allocator, package_id);
@@ -44,6 +53,8 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         defer session.allocator.free(escaped_kind);
         const escaped_version = try unified.jsonEscape(session.allocator, version);
         defer session.allocator.free(escaped_version);
+        const escaped_release_version = try unified.jsonEscape(session.allocator, release_version);
+        defer session.allocator.free(escaped_release_version);
         const host_roles_json = try normalizedHostRolesJson(session.allocator, item.object.get("host_roles"));
         defer session.allocator.free(host_roles_json);
         const binding_scopes_json = try normalizedBindingScopesJson(session.allocator, item.object.get("binding_scopes"));
@@ -58,11 +69,16 @@ pub fn buildCatalogPackagesJson(session: anytype) ![]u8 {
         if (!first) try out.append(session.allocator, ',');
         first = false;
         try out.writer(session.allocator).print(
-            "{{\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":true,\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"help_md\":{s}}}",
+            "{{\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"release_version\":\"{s}\",\"channel\":{s},\"digest\":{s},\"signature\":{s},\"trust\":{s},\"enabled\":true,\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"help_md\":{s}}}",
             .{
                 escaped_package_id,
                 escaped_kind,
                 escaped_version,
+                escaped_release_version,
+                channel_json,
+                digest_json,
+                signature_json,
+                trust_json,
                 host_roles_json,
                 binding_scopes_json,
                 runtime_kind.asString(),
@@ -135,6 +151,8 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
             var runtime_summary = try providerRuntimeSummaryForDir(session, venom_dir_id, runtime_kind, state);
             defer runtime_summary.deinit(session.allocator);
             const host_role = try providerHostRoleForDir(session, node_id, venom_dir_id);
+            var provider_metadata = try readProviderMetadata(session, node_id, venom_dir_id);
+            defer provider_metadata.deinit(session.allocator);
             const binding_eligibility_json = try providerBindingEligibilityJson(session, venom_dir_id);
             defer session.allocator.free(binding_eligibility_json);
             const provider_id = try std.fmt.allocPrint(session.allocator, "{s}:{s}", .{ node_id, venom_id });
@@ -150,6 +168,8 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
             defer session.allocator.free(node_id_escaped);
             const state_escaped = try unified.jsonEscape(session.allocator, state);
             defer session.allocator.free(state_escaped);
+            const release_version_escaped = try unified.jsonEscape(session.allocator, provider_metadata.release_version);
+            defer session.allocator.free(release_version_escaped);
             const node_name_escaped = try unified.jsonEscape(session.allocator, node_metadata.node_name);
             defer session.allocator.free(node_name_escaped);
             const platform_os_escaped = try unified.jsonEscape(session.allocator, node_metadata.platform_os);
@@ -168,18 +188,25 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
             if (!first) try out.append(session.allocator, ',');
             first = false;
             try out.writer(session.allocator).print(
-                "{{\"provider_id\":\"{s}\",\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"host_id\":\"{s}\",\"node_name\":\"{s}\",\"platform\":{{\"os\":\"{s}\",\"arch\":\"{s}\",\"runtime_kind\":\"{s}\"}},\"runtime_kind\":\"{s}\",\"install\":{s},\"provider\":{s},\"policy\":{s},\"state\":\"{s}\",\"health\":\"{s}\",\"binding_eligibility\":{s},\"endpoint_path\":{s}}}",
+                "{{\"provider_id\":\"{s}\",\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"host_type\":\"{s}\",\"host_id\":\"{s}\",\"node_name\":\"{s}\",\"platform\":{{\"os\":\"{s}\",\"arch\":\"{s}\",\"runtime_kind\":\"{s}\"}},\"runtime_kind\":\"{s}\",\"version\":\"{s}\",\"release_version\":\"{s}\",\"channel\":{s},\"digest\":{s},\"signature\":{s},\"trust\":{s},\"install\":{s},\"provider\":{s},\"policy\":{s},\"state\":\"{s}\",\"health\":\"{s}\",\"binding_eligibility\":{s},\"endpoint_path\":{s}}}",
                 .{
                     provider_id_escaped,
                     package_id_escaped,
                     venom_id_escaped,
                     host_role.asString(),
+                    provider_metadata.host_type.asString(),
                     node_id_escaped,
                     node_name_escaped,
                     platform_os_escaped,
                     platform_arch_escaped,
                     platform_runtime_escaped,
                     runtime_kind.asString(),
+                    release_version_escaped,
+                    release_version_escaped,
+                    provider_metadata.channel_json,
+                    provider_metadata.digest_json,
+                    provider_metadata.signature_json,
+                    provider_metadata.trust_json,
                     runtime_summary.install_json,
                     runtime_summary.provider_json,
                     runtime_summary.policy_json,
@@ -359,11 +386,16 @@ pub fn buildCatalogBindingsJson(session: anytype) ![]u8 {
         else
             try session.allocator.dupe(u8, "null");
         defer session.allocator.free(provider_id_json);
+        const host_type_json = if (binding.provider_node_id) |value|
+            try std.fmt.allocPrint(session.allocator, "\"{s}\"", .{(try resolveNodeHostType(session, value)).asString()})
+        else
+            try session.allocator.dupe(u8, "null");
+        defer session.allocator.free(host_type_json);
 
         if (!first) try out.append(session.allocator, ',');
         first = false;
         try out.writer(session.allocator).print(
-            "{{\"binding_id\":\"workspace:{s}\",\"scope\":\"{s}\",\"alias\":\"{s}\",\"binding_path\":\"{s}\",\"target_path\":\"{s}\",\"provider_id\":{s}}}",
+            "{{\"binding_id\":\"workspace:{s}\",\"scope\":\"{s}\",\"alias\":\"{s}\",\"binding_path\":\"{s}\",\"target_path\":\"{s}\",\"provider_id\":{s},\"host_type\":{s}}}",
             .{
                 binding.venom_id,
                 venom_model.BindingScope.workspace.asString(),
@@ -371,6 +403,7 @@ pub fn buildCatalogBindingsJson(session: anytype) ![]u8 {
                 binding.venom_path,
                 if (binding.provider_venom_path) |value| value else binding.venom_path,
                 provider_id_json,
+                host_type_json,
             },
         );
     }
@@ -402,11 +435,23 @@ pub fn buildCatalogBindingsJson(session: anytype) ![]u8 {
             break :blk try std.fmt.allocPrint(session.allocator, "\"{s}:{s}\"", .{ resolved_node_id, provider_venom_id });
         } else try session.allocator.dupe(u8, "null");
         defer session.allocator.free(provider_id_json);
+        const host_type_json = if (std.mem.startsWith(u8, bind.target_path, "/nodes/")) blk: {
+            const after_prefix = bind.target_path["/nodes/".len..];
+            const node_end = std.mem.indexOfScalar(u8, after_prefix, '/') orelse break :blk try session.allocator.dupe(u8, "null");
+            const node_id = after_prefix[0..node_end];
+            const resolved_node_id = if (try session.resolveCatalogControlPlaneNodeId(node_id)) |value|
+                value
+            else
+                try session.allocator.dupe(u8, node_id);
+            defer session.allocator.free(resolved_node_id);
+            break :blk try std.fmt.allocPrint(session.allocator, "\"{s}\"", .{(try resolveNodeHostType(session, resolved_node_id)).asString()});
+        } else try session.allocator.dupe(u8, "null");
+        defer session.allocator.free(host_type_json);
 
         if (!first) try out.append(session.allocator, ',');
         first = false;
         try out.writer(session.allocator).print(
-            "{{\"binding_id\":\"workspace:{s}\",\"scope\":\"{s}\",\"alias\":\"{s}\",\"binding_path\":\"{s}\",\"target_path\":\"{s}\",\"provider_id\":{s}}}",
+            "{{\"binding_id\":\"workspace:{s}\",\"scope\":\"{s}\",\"alias\":\"{s}\",\"binding_path\":\"{s}\",\"target_path\":\"{s}\",\"provider_id\":{s},\"host_type\":{s}}}",
             .{
                 alias,
                 venom_model.BindingScope.workspace.asString(),
@@ -414,6 +459,7 @@ pub fn buildCatalogBindingsJson(session: anytype) ![]u8 {
                 bind.bind_path,
                 bind.target_path,
                 provider_id_json,
+                host_type_json,
             },
         );
     }
@@ -617,6 +663,17 @@ fn getString(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     return value.string;
 }
 
+fn optionalJsonValue(allocator: std.mem.Allocator, value: ?std.json.Value) ![]u8 {
+    if (value) |json_value| {
+        return switch (json_value) {
+            .object, .array => std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(json_value, .{})}),
+            .null => allocator.dupe(u8, "null"),
+            else => error.InvalidPayload,
+        };
+    }
+    return allocator.dupe(u8, "null");
+}
+
 fn normalizedRuntimeKindFromObject(obj: std.json.ObjectMap) venom_model.RuntimeKind {
     if (getString(obj, "runtime_kind")) |runtime_kind| {
         return venom_model.RuntimeKind.fromRuntimeType(runtime_kind);
@@ -711,9 +768,9 @@ fn packageIdForProvider(session: anytype, venom_dir_id: u32, venom_id: []const u
 
 fn providerHostRoleForDir(session: anytype, node_id: []const u8, venom_dir_id: u32) !venom_model.HostRole {
     if (session.lookupChild(venom_dir_id, "PACKAGE.json")) |package_id| {
-        const package_node = session.nodes.get(package_id) orelse return venom_model.defaultHostRoleForNodeId(node_id);
+        const package_node = session.nodes.get(package_id) orelse return venom_model.defaultHostRoleForHostType(try resolveNodeHostType(session, node_id));
         if (package_node.kind == .file and package_node.content.len != 0) {
-            var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, package_node.content, .{}) catch return venom_model.defaultHostRoleForNodeId(node_id);
+            var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, package_node.content, .{}) catch return venom_model.defaultHostRoleForHostType(try resolveNodeHostType(session, node_id));
             defer parsed.deinit();
             if (parsed.value == .object) {
                 if (firstHostRoleFromValue(parsed.value.object.get("host_roles"))) |host_role| {
@@ -722,7 +779,87 @@ fn providerHostRoleForDir(session: anytype, node_id: []const u8, venom_dir_id: u
             }
         }
     }
-    return venom_model.defaultHostRoleForNodeId(node_id);
+    return venom_model.defaultHostRoleForHostType(try resolveNodeHostType(session, node_id));
+}
+
+const ProviderMetadata = struct {
+    release_version: []u8,
+    channel_json: []u8,
+    digest_json: []u8,
+    signature_json: []u8,
+    trust_json: []u8,
+    host_type: venom_model.HostType,
+
+    fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.release_version);
+        allocator.free(self.channel_json);
+        allocator.free(self.digest_json);
+        allocator.free(self.signature_json);
+        allocator.free(self.trust_json);
+        self.* = undefined;
+    }
+};
+
+fn readProviderMetadata(session: anytype, node_id: []const u8, venom_dir_id: u32) !ProviderMetadata {
+    var metadata = ProviderMetadata{
+        .release_version = try session.allocator.dupe(u8, "1"),
+        .channel_json = try session.allocator.dupe(u8, "null"),
+        .digest_json = try session.allocator.dupe(u8, "null"),
+        .signature_json = try session.allocator.dupe(u8, "null"),
+        .trust_json = try session.allocator.dupe(u8, "null"),
+        .host_type = try resolveNodeHostType(session, node_id),
+    };
+    errdefer metadata.deinit(session.allocator);
+
+    if (session.lookupChild(venom_dir_id, "PACKAGE.json")) |package_id| {
+        const package_node = session.nodes.get(package_id) orelse return metadata;
+        if (package_node.kind == .file and package_node.content.len != 0) {
+            var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, package_node.content, .{}) catch return metadata;
+            defer parsed.deinit();
+            if (parsed.value == .object) {
+                session.allocator.free(metadata.release_version);
+                metadata.release_version = try session.allocator.dupe(
+                    u8,
+                    getString(parsed.value.object, "release_version") orelse getString(parsed.value.object, "version") orelse "1",
+                );
+                session.allocator.free(metadata.channel_json);
+                metadata.channel_json = try optionalJsonString(session.allocator, getString(parsed.value.object, "channel"));
+                session.allocator.free(metadata.digest_json);
+                metadata.digest_json = try optionalJsonString(session.allocator, getString(parsed.value.object, "digest"));
+                session.allocator.free(metadata.signature_json);
+                metadata.signature_json = try optionalJsonValue(session.allocator, parsed.value.object.get("signature"));
+                session.allocator.free(metadata.trust_json);
+                metadata.trust_json = try optionalJsonValue(session.allocator, parsed.value.object.get("trust"));
+            }
+        }
+    }
+
+    return metadata;
+}
+
+fn resolveNodeHostType(session: anytype, node_id: []const u8) !venom_model.HostType {
+    const nodes_root = session.lookupChild(session.root_id, "nodes") orelse return venom_model.defaultHostTypeForNodeName(node_id);
+    const node_dir_id = session.lookupChild(nodes_root, node_id) orelse return venom_model.defaultHostTypeForNodeName(node_id);
+    const node_json_id = session.lookupChild(node_dir_id, "NODE.json") orelse return venom_model.defaultHostTypeForNodeName(node_id);
+    const node_json = session.nodes.get(node_json_id) orelse return venom_model.defaultHostTypeForNodeName(node_id);
+    if (node_json.kind != .file or node_json.content.len == 0) return venom_model.defaultHostTypeForNodeName(node_id);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, node_json.content, .{}) catch {
+        return venom_model.defaultHostTypeForNodeName(node_id);
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return venom_model.defaultHostTypeForNodeName(node_id);
+
+    if (parsed.value.object.get("labels")) |labels| {
+        if (labels == .object) {
+            if (getString(labels.object, venom_model.host_type_label_key)) |value| {
+                const host_type = venom_model.HostType.fromString(value);
+                if (host_type != .unknown) return host_type;
+            }
+        }
+    }
+
+    return venom_model.defaultHostTypeForNodeName(getString(parsed.value.object, "node_name") orelse node_id);
 }
 
 fn providerBindingEligibilityJson(session: anytype, venom_dir_id: u32) ![]u8 {

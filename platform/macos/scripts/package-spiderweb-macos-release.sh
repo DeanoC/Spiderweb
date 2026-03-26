@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MACOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$MACOS_DIR/../.." && pwd)"
+source "$REPO_ROOT/scripts/spidervenoms-release.sh"
+SPIDERVENOMS_REPO_DIR="${SPIDERVENOMS_REPO_DIR:-$REPO_ROOT/../SpiderVenoms}"
+SPIDERVENOMS_SOURCE_MODE="${SPIDERVENOMS_SOURCE_MODE:-auto}"
 PROJECT_PATH="$MACOS_DIR/SpiderwebFSKit.xcodeproj"
 SCHEME="SpiderwebFSKit"
 VERSION_DEFAULT="$(sed -n 's/.*\.version = \"\(.*\)\",/\1/p' "$REPO_ROOT/build.zig.zon" | head -n1)"
@@ -29,7 +32,6 @@ ZIG_BINARIES=(
   spiderweb-fs-mount
   spiderweb-fs-node
   spiderweb-local-node
-  spiderweb-local-service
 )
 HOST_ARCH="$(uname -m)"
 
@@ -67,6 +69,71 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
+}
+
+download_archive() {
+  local url="$1"
+  local output="$2"
+  curl -fL "$url" -o "$output"
+}
+
+verify_archive_sha256() {
+  local archive_path="$1"
+  local expected_sha="$2"
+  [[ -n "$expected_sha" ]] || return 0
+
+  local actual_sha
+  actual_sha="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
+  [[ "$actual_sha" == "$expected_sha" ]] || fail "SpiderVenoms archive SHA256 mismatch: expected $expected_sha got $actual_sha"
+}
+
+extract_archive() {
+  local archive_path="$1"
+  local extract_dir="$2"
+  mkdir -p "$extract_dir"
+  tar -xzf "$archive_path" -C "$extract_dir"
+}
+
+copy_spidervenoms_share_tree() {
+  local source_root="$1"
+  local build_root="$2"
+  local source_share_dir="$source_root/share/spidervenoms"
+  local target_share_dir="$build_root/share/spidervenoms"
+
+  [[ -d "$source_share_dir" ]] || fail "SpiderVenoms bundle directory missing: $source_share_dir"
+  mkdir -p "$build_root/share"
+  rm -rf "$target_share_dir"
+  cp -R "$source_share_dir" "$target_share_dir"
+}
+
+stage_spidervenoms_bundle() {
+  local build_root="$1"
+  local release_url=""
+  local release_sha=""
+  local extract_root="$build_root/.spidervenoms-release"
+
+  if [[ "$SPIDERVENOMS_SOURCE_MODE" != "source" ]]; then
+    release_url="$(spidervenoms_release_url_for_platform macos "$HOST_ARCH" 2>/dev/null || true)"
+    release_sha="$(spidervenoms_release_sha256_for_platform macos "$HOST_ARCH" 2>/dev/null || true)"
+    if [[ -n "$release_url" ]]; then
+      local archive_path="$build_root/$(basename "$release_url")"
+      download_archive "$release_url" "$archive_path"
+      verify_archive_sha256 "$archive_path" "$release_sha"
+      extract_archive "$archive_path" "$extract_root"
+      local source_share_dir
+      source_share_dir="$(find "$extract_root" -type d -path '*/share/spidervenoms' 2>/dev/null | head -n1 || true)"
+      [[ -n "$source_share_dir" ]] || fail "published SpiderVenoms artifact missing share/spidervenoms"
+      copy_spidervenoms_share_tree "$(dirname "$(dirname "$source_share_dir")")" "$build_root"
+      return 0
+    fi
+    [[ "$SPIDERVENOMS_SOURCE_MODE" != "release" ]] || fail "no published SpiderVenoms asset is pinned for macos/$HOST_ARCH"
+  fi
+
+  [[ -f "$SPIDERVENOMS_REPO_DIR/build.zig" ]] || fail "SpiderVenoms checkout not found at $SPIDERVENOMS_REPO_DIR"
+  (
+    cd "$SPIDERVENOMS_REPO_DIR"
+    zig build bundle --release=safe --prefix "$build_root"
+  )
 }
 
 xml_escape() {
@@ -176,7 +243,7 @@ EOF
 build_host_zig_binaries() {
   local build_root="$1"
   local payload_root="$2"
-  mkdir -p "$payload_root/usr/local/bin"
+  mkdir -p "$payload_root/usr/local/bin" "$payload_root/usr/local/share"
   rm -rf "$build_root"
   mkdir -p "$build_root"
 
@@ -184,6 +251,7 @@ build_host_zig_binaries() {
     cd "$REPO_ROOT"
     zig build install --release=safe --prefix "$build_root"
   )
+  stage_spidervenoms_bundle "$build_root"
 
   local binary
   for binary in "${ZIG_BINARIES[@]}"; do
@@ -192,6 +260,14 @@ build_host_zig_binaries() {
     codesign --force --sign "$SPIDERWEB_MACOS_DEVELOPER_ID_APPLICATION" --timestamp --options runtime \
       "$payload_root/usr/local/bin/$binary"
   done
+
+  rm -rf "$payload_root/usr/local/share/spidervenoms"
+  cp -R "$build_root/share/spidervenoms" "$payload_root/usr/local/share/spidervenoms"
+  while IFS= read -r bundle_binary; do
+    chmod 755 "$bundle_binary"
+    codesign --force --sign "$SPIDERWEB_MACOS_DEVELOPER_ID_APPLICATION" --timestamp --options runtime \
+      "$bundle_binary"
+  done < <(find "$payload_root/usr/local/share/spidervenoms" -type f -path '*/bin/*')
 }
 
 build_signed_filesystem_bundle() {
@@ -229,6 +305,7 @@ require_command security
 require_command zig
 require_command python3
 require_command git
+require_command curl
 
 version="$VERSION_DEFAULT"
 out_dir="$OUT_DIR_DEFAULT"
@@ -322,7 +399,7 @@ filesystem_bundle_zip="$work_root/spiderweb.fs.install-source.zip"
 ditto -c -k --keepParent "$filesystem_bundle_path" "$filesystem_bundle_zip"
 
 echo "==> Staging installer payload"
-mkdir -p "$payload_root/Applications" "$payload_root/Library/Filesystems" "$payload_root/usr/local/bin" "$scripts_root"
+mkdir -p "$payload_root/Applications" "$payload_root/Library/Filesystems" "$payload_root/usr/local/bin" "$payload_root/usr/local/share" "$scripts_root"
 ditto "$export_dir/$APP_NAME" "$payload_root/Applications/$APP_NAME"
 ditto "$filesystem_bundle_path" "$payload_root/Library/Filesystems/$FILESYSTEM_BUNDLE_NAME"
 cp "$MACOS_DIR/Packaging/preinstall" "$scripts_root/preinstall"
@@ -334,12 +411,19 @@ echo "==> Embedding Spiderweb CLI tools into Spiderweb.app"
 app_resources_dir="$payload_root/Applications/$APP_NAME/Contents/Resources"
 mkdir -p "$app_resources_dir"
 cp "$filesystem_bundle_zip" "$app_resources_dir/spiderweb.fs.install-source.zip"
+rm -rf "$app_resources_dir/spidervenoms"
+cp -R "$payload_root/usr/local/share/spidervenoms" "$app_resources_dir/spidervenoms"
 for binary in "${ZIG_BINARIES[@]}"; do
   cp "$payload_root/usr/local/bin/$binary" "$app_resources_dir/$binary"
   chmod 755 "$app_resources_dir/$binary"
   codesign --force --sign "$SPIDERWEB_MACOS_DEVELOPER_ID_APPLICATION" --timestamp --options runtime \
     "$app_resources_dir/$binary"
 done
+while IFS= read -r bundle_binary; do
+  chmod 755 "$bundle_binary"
+  codesign --force --sign "$SPIDERWEB_MACOS_DEVELOPER_ID_APPLICATION" --timestamp --options runtime \
+    "$bundle_binary"
+done < <(find "$app_resources_dir/spidervenoms" -type f -path '*/bin/*')
 write_build_metadata "$app_resources_dir/build-info.json"
 codesign --force --sign "$SPIDERWEB_MACOS_DEVELOPER_ID_APPLICATION" --timestamp --options runtime \
   --preserve-metadata=entitlements,requirements,flags,runtime \
@@ -377,6 +461,9 @@ codesign --verify --deep --strict "$payload_root/Library/Filesystems/$FILESYSTEM
 for binary in "${ZIG_BINARIES[@]}"; do
   codesign --verify --strict "$payload_root/usr/local/bin/$binary"
 done
+while IFS= read -r bundle_binary; do
+  codesign --verify --strict "$bundle_binary"
+done < <(find "$payload_root/usr/local/share/spidervenoms" -type f -path '*/bin/*')
 
 echo "==> Building signed installer package"
 rm -f "$pkg_path"

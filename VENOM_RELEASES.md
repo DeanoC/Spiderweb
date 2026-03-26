@@ -33,6 +33,30 @@ the current Spiderweb + SpiderVenoms model.
 - Trusted signing keys are policy-checked, not just cryptographically valid.
 - Revoked keys and wrong-purpose keys are rejected.
 - Unsigned bundles are rejected unless explicit local dev override is enabled.
+- Registry documents are signed independently from bundle payloads.
+
+## Registry discovery
+
+Spiderweb can now consume a signed static `SpiderVenomRegistry` tree for read-only
+discovery and explicit installs.
+
+- Registry root: `v1/index.json`
+- Channel heads: `v1/channels/<channel>.json`
+- Release docs: `v1/bundles/<bundle_id>/<release_version>.json`
+
+Host policy is configured through the runtime config:
+
+- `runtime.venom_registry.enabled`
+- `runtime.venom_registry.source_url`
+- `runtime.venom_registry.default_channel`
+- `runtime.venom_registry.overrides`
+
+The `packages` surface now exposes:
+
+- `packages_catalog`: registry-visible releases for a channel or package filter
+- `packages_updates`: newer registry releases relative to the installed set
+- `packages_get` with `source:"registry"` for direct registry inspection
+- `packages_install` with `source:"registry"` for explicit install into the local release store
 
 ## Control-plane lifecycle
 

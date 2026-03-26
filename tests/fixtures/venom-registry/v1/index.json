@@ -1,0 +1,49 @@
+{
+  "schema_version": "spidervenom-registry-v1",
+  "publisher": "SpiderVenomRegistry",
+  "generated_at": "2026-03-26T15:37:16Z",
+  "keys": [
+    {
+      "key_id": "spidervenomregistry-dev-2026-03",
+      "path": "keys/trusted-registry-keys.json"
+    }
+  ],
+  "channels": [
+    {
+      "id": "stable",
+      "path": "v1/channels/stable.json"
+    },
+    {
+      "id": "beta",
+      "path": "v1/channels/beta.json"
+    },
+    {
+      "id": "dev",
+      "path": "v1/channels/dev.json"
+    }
+  ],
+  "bundles": [
+    {
+      "bundle_id": "managed-local",
+      "package_ids": [
+        "terminal",
+        "git",
+        "search_code",
+        "computer",
+        "browser"
+      ],
+      "latest_by_channel": {
+        "stable": {
+          "release_version": "0.5.8",
+          "path": "v1/bundles/managed-local/0.5.8.json"
+        }
+      }
+    }
+  ],
+  "digest": "sha256:d472287d31a96fe7563a87b6e29efe8a33734d1ac171f40ab47eb3a2f1d41fe0",
+  "signature": {
+    "scheme": "ed25519-sha256-v1",
+    "key_id": "spidervenomregistry-dev-2026-03",
+    "value": "5vkizG1PB22p4aELQsnrPuaYXeDWxUePm3qFXSv2vcIoczYvA8fZiPqvcUWbIkpbghSxxb2zNqN6yJSjKa0kAw=="
+  }
+}

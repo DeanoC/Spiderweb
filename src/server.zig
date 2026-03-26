@@ -2044,6 +2044,10 @@ const AgentRuntimeRegistry = struct {
                     .host_actor_id = host_actor_id,
                     .spider_web_root = runtime_config.spider_web_root,
                     .node_venom_event_history_max = history_max,
+                    .registry_enabled = runtime_config.registry_enabled,
+                    .registry_source_url = runtime_config.registry_source_url,
+                    .registry_default_channel = runtime_config.registry_default_channel,
+                    .registry_overrides_json = runtime_config.registry_overrides_json,
                 },
             ),
             .auth_tokens = AuthTokenStore.init(allocator, runtime_config),
@@ -3411,24 +3415,24 @@ const AgentRuntimeRegistry = struct {
         defer self.finishRuntimeWarmupThread();
 
         const runtime = self.getOrCreate(
-        agent_id,
-        project_id,
-        project_token,
-    ) catch |err| {
-        std.log.warn("runtime warmup thread failed: agent={s} project={s} err={s}", .{
             agent_id,
-            project_id orelse "__auto__",
-            @errorName(err),
-        });
-        const info = AgentRuntimeRegistry.mapRuntimeWarmupError(err);
-        self.markRuntimeWarmupError(
-            binding_key,
-            info.code,
-            info.message,
-        );
-        return;
-    };
-    runtime.release();
+            project_id,
+            project_token,
+        ) catch |err| {
+            std.log.warn("runtime warmup thread failed: agent={s} project={s} err={s}", .{
+                agent_id,
+                project_id orelse "__auto__",
+                @errorName(err),
+            });
+            const info = AgentRuntimeRegistry.mapRuntimeWarmupError(err);
+            self.markRuntimeWarmupError(
+                binding_key,
+                info.code,
+                info.message,
+            );
+            return;
+        };
+        runtime.release();
 
         self.markRuntimeWarmupReady(binding_key);
     }
@@ -3448,24 +3452,23 @@ const AgentRuntimeRegistry = struct {
             defer job.deinit(self.allocator);
 
             self.dispatchRuntimeAgentControlForTarget(
-            job.agent_id,
-            job.workspace_id,
-            "venom.event",
-            job.payload_json,
-        ) catch |err| {
-            std.log.warn(
-                "service presence sync failed: agent={s} session={s} status={s} err={s}",
-                .{
-                    job.agent_id,
-                    job.session_key,
-                    if (job.attached) "attached" else "detached",
-                    @errorName(err),
-                },
-            );
+                job.agent_id,
+                job.workspace_id,
+                "venom.event",
+                job.payload_json,
+            ) catch |err| {
+                std.log.warn(
+                    "service presence sync failed: agent={s} session={s} status={s} err={s}",
+                    .{
+                        job.agent_id,
+                        job.session_key,
+                        if (job.attached) "attached" else "detached",
+                        @errorName(err),
+                    },
+                );
             };
         }
     }
-
 };
 
 fn sessionAttachStateName(state: SessionAttachState) []const u8 {
@@ -4697,15 +4700,15 @@ fn handleWebSocketConnection(
                                         }
                                     },
                                     .err => |err_payload| {
-                                    const response = try buildControlErrorWithCorrelation(
-                                        allocator,
-                                        parsed.id,
-                                        correlation_id,
-                                        err_payload.code,
-                                        err_payload.message,
-                                    );
-                                    defer allocator.free(response);
-                                    try writeFrameLocked(stream, &connection_write_mutex, response, .text);
+                                        const response = try buildControlErrorWithCorrelation(
+                                            allocator,
+                                            parsed.id,
+                                            correlation_id,
+                                            err_payload.code,
+                                            err_payload.message,
+                                        );
+                                        defer allocator.free(response);
+                                        try writeFrameLocked(stream, &connection_write_mutex, response, .text);
                                     },
                                 }
                                 continue;

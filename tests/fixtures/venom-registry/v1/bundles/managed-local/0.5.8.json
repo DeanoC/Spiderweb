@@ -1,0 +1,141 @@
+{
+  "bundle_id": "managed-local",
+  "release_version": "0.5.8",
+  "channel": "stable",
+  "publisher": "SpiderVenoms",
+  "published_at": "2026-03-26T15:37:16Z",
+  "artifact_version": "1",
+  "package_ids": [
+    "terminal",
+    "git",
+    "search_code",
+    "computer",
+    "browser"
+  ],
+  "packages": [
+    {
+      "package_id": "terminal",
+      "venom_id": "terminal",
+      "kind": "terminal",
+      "release_version": "0.5.8",
+      "channel": "stable",
+      "digest": "sha256:229ba2442dbde5198edcadff2e54cc651ab272a9339796108ddad8b023658ee9",
+      "signature": {
+        "scheme": "ed25519-sha256-v1",
+        "key_id": "spidervenoms-dev-2026-03",
+        "value": "rn9cCLjU8GjtCFxHDLIq/dyv7BtCtRXgiKNpEPHbfiNizv+ZKgYBPpLTBAjsTrnXaTCZc+tZz6mx7DDN0TarAg=="
+      },
+      "trust": {
+        "mode": "signed",
+        "publisher": "SpiderVenoms",
+        "allow_dev_unsigned": false
+      }
+    },
+    {
+      "package_id": "git",
+      "venom_id": "git",
+      "kind": "git",
+      "release_version": "0.5.8",
+      "channel": "stable",
+      "digest": "sha256:7e9a4290ca7e579f70f21daa8e9cf9110627b5f4195d9ebfb668ccb0c53b8b1c",
+      "signature": {
+        "scheme": "ed25519-sha256-v1",
+        "key_id": "spidervenoms-dev-2026-03",
+        "value": "2VmAf5p5B+qJFkvbOAJXFIx/DDfCLSMNEk4hmXiMKfnKgEOcZMjLrcnPrs76j+IvlUQLNe/ueJCtT7zQGkBwCA=="
+      },
+      "trust": {
+        "mode": "signed",
+        "publisher": "SpiderVenoms",
+        "allow_dev_unsigned": false
+      }
+    },
+    {
+      "package_id": "search_code",
+      "venom_id": "search_code",
+      "kind": "search_code",
+      "release_version": "0.5.8",
+      "channel": "stable",
+      "digest": "sha256:592c013343e69677c0421b71729308172e099d637f7c28e38c642f12efa80112",
+      "signature": {
+        "scheme": "ed25519-sha256-v1",
+        "key_id": "spidervenoms-dev-2026-03",
+        "value": "nL9SvYXZWfsNNA/ciFLBiK3awQuBKxAv6jcOPwtthel4lTpz760R1rgTkKKHg6/O8mJ/JcYR/Qi3uWqpzwv6BQ=="
+      },
+      "trust": {
+        "mode": "signed",
+        "publisher": "SpiderVenoms",
+        "allow_dev_unsigned": false
+      }
+    },
+    {
+      "package_id": "computer",
+      "venom_id": "computer-main",
+      "kind": "computer",
+      "release_version": "0.5.8",
+      "channel": "stable",
+      "digest": "sha256:7dd78a94881f3aab139426990b8e05e4e1ff10ac23fa83b37beaa940a6d108b5",
+      "signature": {
+        "scheme": "ed25519-sha256-v1",
+        "key_id": "spidervenoms-dev-2026-03",
+        "value": "ZkcbaBuAsdT+oFwdNPOYwfiPPdmUZsPBW9cTemqM+3GoFOfHXOJ1W48p1IXk7PmWsNgTtxwH39nbhSyTdXxPCQ=="
+      },
+      "trust": {
+        "mode": "signed",
+        "publisher": "SpiderVenoms",
+        "allow_dev_unsigned": false
+      }
+    },
+    {
+      "package_id": "browser",
+      "venom_id": "browser-main",
+      "kind": "browser",
+      "release_version": "0.5.8",
+      "channel": "stable",
+      "digest": "sha256:2396d345bb7520a9260e73bde308dd8328b8e73a6ab2060795bfcb495b41f346",
+      "signature": {
+        "scheme": "ed25519-sha256-v1",
+        "key_id": "spidervenoms-dev-2026-03",
+        "value": "0NFJ/YK0NNiWCeD2Rf0PHzarJ496bfRpTedJegMh8Dwq2nGelAUaoxZcj7Co27TnA1fwbj2Z+Tfbkw9+PDTRCg=="
+      },
+      "trust": {
+        "mode": "signed",
+        "publisher": "SpiderVenoms",
+        "allow_dev_unsigned": false
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "os": "linux",
+      "arch": "arm64",
+      "url": "artifacts/spidervenoms-managed-local-linux-arm64.tar.gz",
+      "sha256": "3ff8a08337c1ae0c017104892e6571b94189ccf1ceb17818299091a52078ab91",
+      "size_bytes": 1209263
+    },
+    {
+      "os": "linux",
+      "arch": "x86_64",
+      "url": "artifacts/spidervenoms-managed-local-linux-x86_64.tar.gz",
+      "sha256": "90b2b3fbc72831dcafed228170584c49b43c69a80407584f9574cadb2b209dc7",
+      "size_bytes": 5092926
+    },
+    {
+      "os": "macos",
+      "arch": "arm64",
+      "url": "artifacts/spidervenoms-managed-local-macos-arm64.tar.gz",
+      "sha256": "2b13a4cff003327e85054ade42aa770d38a897d219dc2acf28f9b75175272b8c",
+      "size_bytes": 1209260
+    }
+  ],
+  "bundle_release_path": "artifacts/spidervenoms-managed-local-linux-arm64.tar.gz",
+  "bundle_release_sha256": "3ff8a08337c1ae0c017104892e6571b94189ccf1ceb17818299091a52078ab91",
+  "manifest": "share/spidervenoms/bundles/managed-local/release.json",
+  "min_spiderweb_version": "0.5.4",
+  "notes_url": null,
+  "digest": "sha256:c6724d09c13cc7d26fef2674dbb6247f45d144051cebf3eb45bd7dbe500488f4",
+  "signature": {
+    "scheme": "ed25519-sha256-v1",
+    "key_id": "spidervenomregistry-dev-2026-03",
+    "value": "88YH5riVMZrcGhcxXFZav5fgf8/nkzrTdqXyHTB0wNPvNCM8m2QKjznNkACRhQ+suOTEZAbr2jgoTgZq8Pa7BA=="
+  }
+}

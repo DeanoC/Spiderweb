@@ -1,0 +1,20 @@
+{
+  "channel": "stable",
+  "generated_at": "2026-03-26T15:37:16Z",
+  "bundles": [
+    {
+      "bundle_id": "managed-local",
+      "head_release_version": "0.5.8",
+      "release_versions": [
+        "0.5.8"
+      ],
+      "path": "v1/bundles/managed-local/0.5.8.json"
+    }
+  ],
+  "digest": "sha256:7fc56204e00b43efa0c9a687729f8876ed499d6a46d031d194ee67250d3c6b5d",
+  "signature": {
+    "scheme": "ed25519-sha256-v1",
+    "key_id": "spidervenomregistry-dev-2026-03",
+    "value": "rOsh3BrlH3vImOCb2yHa8dg33srUoJdzjsTrXlkUs3r76kjthT0mKXWFaHuJ+etE4Xp31bh9HVpLWrGmqUVeDA=="
+  }
+}

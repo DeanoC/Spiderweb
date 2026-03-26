@@ -6,6 +6,7 @@ const Config = @This();
 pub const default_server_bind = "0.0.0.0";
 pub const default_server_port: u16 = 18790;
 pub const default_managed_local_bundle_release_path = "../share/spidervenoms/bundles/managed-local/release.json";
+pub const default_venom_registry_source_url = "https://deanoc.github.io/SpiderVenomRegistry";
 
 pub const ServerConfig = struct {
     bind: []const u8 = default_server_bind,
@@ -121,6 +122,10 @@ pub const RuntimeConfig = struct {
     sandbox_snapshot_root: []const u8 = "/var/lib/spiderweb/rootfs/snapshots",
     sandbox_launcher: []const u8 = "bwrap",
     sandbox_fs_mount_bin: []const u8 = "spiderweb-fs-mount",
+    registry_enabled: bool = true,
+    registry_source_url: []const u8 = default_venom_registry_source_url,
+    registry_default_channel: []const u8 = "stable",
+    registry_overrides_json: []const u8 = "[]",
     local_node: LocalNodeConfig = .{},
     remote_node: RemoteNodeConfig = .{},
 
@@ -154,6 +159,10 @@ pub const RuntimeConfig = struct {
             .sandbox_snapshot_root = try allocator.dupe(u8, self.sandbox_snapshot_root),
             .sandbox_launcher = try allocator.dupe(u8, self.sandbox_launcher),
             .sandbox_fs_mount_bin = try allocator.dupe(u8, self.sandbox_fs_mount_bin),
+            .registry_enabled = self.registry_enabled,
+            .registry_source_url = try allocator.dupe(u8, self.registry_source_url),
+            .registry_default_channel = try allocator.dupe(u8, self.registry_default_channel),
+            .registry_overrides_json = try allocator.dupe(u8, self.registry_overrides_json),
             .local_node = try self.local_node.clone(allocator),
             .remote_node = try self.remote_node.clone(allocator),
         };
@@ -179,6 +188,9 @@ pub const RuntimeConfig = struct {
         allocator.free(self.sandbox_snapshot_root);
         allocator.free(self.sandbox_launcher);
         allocator.free(self.sandbox_fs_mount_bin);
+        allocator.free(self.registry_source_url);
+        allocator.free(self.registry_default_channel);
+        allocator.free(self.registry_overrides_json);
         self.local_node.deinit(allocator);
         self.remote_node.deinit(allocator);
     }
@@ -220,8 +232,13 @@ const default_config =
     \\    "state_directory": ".spiderweb-state",
     \\    "state_db_filename": "runtime-state.db",
     \\    "assets_dir": "templates",
-    \\    "agents_dir": "agents"
-    \\    ,
+    \\    "agents_dir": "agents",
+    \\    "venom_registry": {
+    \\      "enabled": true,
+    \\      "source_url": "https://deanoc.github.io/SpiderVenomRegistry",
+    \\      "default_channel": "stable",
+    \\      "overrides": []
+    \\    },
     \\    "local_node": {
     \\      "enabled": true,
     \\      "binary": "spiderweb-fs-node",
@@ -377,6 +394,10 @@ pub fn init(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
             .sandbox_snapshot_root = try allocator.dupe(u8, sandbox_defaults.snapshot_root),
             .sandbox_launcher = try allocator.dupe(u8, "bwrap"),
             .sandbox_fs_mount_bin = try allocator.dupe(u8, "spiderweb-fs-mount"),
+            .registry_enabled = true,
+            .registry_source_url = try allocator.dupe(u8, default_venom_registry_source_url),
+            .registry_default_channel = try allocator.dupe(u8, "stable"),
+            .registry_overrides_json = try allocator.dupe(u8, "[]"),
             .local_node = .{
                 .enabled = true,
                 .binary = try allocator.dupe(u8, "spiderweb-fs-node"),
@@ -666,6 +687,35 @@ pub fn load(self: *Config) !void {
                     self.runtime.sandbox_fs_mount_bin = try self.allocator.dupe(u8, value.string);
                 }
             }
+            if (runtime_val.object.get("venom_registry")) |registry_val| {
+                if (registry_val == .object) {
+                    if (registry_val.object.get("enabled")) |value| {
+                        if (value == .bool) {
+                            self.runtime.registry_enabled = value.bool;
+                        }
+                    }
+                    if (registry_val.object.get("source_url")) |value| {
+                        if (value == .string) {
+                            self.allocator.free(self.runtime.registry_source_url);
+                            self.runtime.registry_source_url = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (registry_val.object.get("default_channel")) |value| {
+                        if (value == .string and value.string.len > 0) {
+                            self.allocator.free(self.runtime.registry_default_channel);
+                            self.runtime.registry_default_channel = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (registry_val.object.get("overrides")) |value| {
+                        self.allocator.free(self.runtime.registry_overrides_json);
+                        self.runtime.registry_overrides_json = try std.fmt.allocPrint(
+                            self.allocator,
+                            "{f}",
+                            .{std.json.fmt(value, .{})},
+                        );
+                    }
+                }
+            }
             if (runtime_val.object.get("local_node")) |local_node_val| {
                 if (local_node_val == .object) {
                     if (local_node_val.object.get("enabled")) |value| {
@@ -795,6 +845,7 @@ pub fn load(self: *Config) !void {
 fn validateRuntimeConfig(self: *Config) !void {
     try validateLocalNodeConfig(self.runtime);
     try validateRemoteNodeConfig(self.runtime.remote_node);
+    try validateVenomRegistryConfig(self.runtime);
     if (!runtimeRequiresSandboxValidation(self.runtime)) return;
 
     const mounts_root = try requireAbsoluteRuntimePath("runtime.sandbox_mounts_root", self.runtime.sandbox_mounts_root);
@@ -883,6 +934,32 @@ fn validateLocalNodeConfig(runtime: RuntimeConfig) !void {
         } else {
             _ = try requireAbsoluteRuntimePath("runtime.spider_web_root", spider_web_root);
         }
+    }
+}
+
+fn validateVenomRegistryConfig(runtime: RuntimeConfig) !void {
+    if (!runtime.registry_enabled) return;
+
+    _ = try requireRuntimeField("runtime.venom_registry.source_url", runtime.registry_source_url);
+    _ = try requireRuntimeField("runtime.venom_registry.default_channel", runtime.registry_default_channel);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, runtime.registry_overrides_json, .{}) catch {
+        if (!builtin.is_test) {
+            std.log.err("invalid config: runtime.venom_registry.overrides must be valid json", .{});
+        }
+        return error.InvalidConfig;
+    };
+    defer parsed.deinit();
+    if (parsed.value != .array) {
+        if (!builtin.is_test) {
+            std.log.err("invalid config: runtime.venom_registry.overrides must be a JSON array", .{});
+        }
+        return error.InvalidConfig;
+    }
+    for (parsed.value.array.items) |item| {
+        if (item != .object) return error.InvalidConfig;
+        const package_id = item.object.get("package_id") orelse return error.InvalidConfig;
+        if (package_id != .string or std.mem.trim(u8, package_id.string, " \t\r\n").len == 0) return error.InvalidConfig;
     }
 }
 
@@ -1049,6 +1126,16 @@ pub fn save(self: Config) !void {
     try file.writeAll(sandbox_launcher_line);
     const sandbox_fs_mount_line = try std.fmt.bufPrint(&buf, "    \"sandbox_fs_mount_bin\": \"{s}\",\n", .{self.runtime.sandbox_fs_mount_bin});
     try file.writeAll(sandbox_fs_mount_line);
+    try file.writeAll("    \"venom_registry\": {\n");
+    const registry_enabled_line = try std.fmt.bufPrint(&buf, "      \"enabled\": {},\n", .{self.runtime.registry_enabled});
+    try file.writeAll(registry_enabled_line);
+    const registry_source_line = try std.fmt.bufPrint(&buf, "      \"source_url\": \"{s}\",\n", .{self.runtime.registry_source_url});
+    try file.writeAll(registry_source_line);
+    const registry_channel_line = try std.fmt.bufPrint(&buf, "      \"default_channel\": \"{s}\",\n", .{self.runtime.registry_default_channel});
+    try file.writeAll(registry_channel_line);
+    const registry_overrides_line = try std.fmt.bufPrint(&buf, "      \"overrides\": {s}\n", .{self.runtime.registry_overrides_json});
+    try file.writeAll(registry_overrides_line);
+    try file.writeAll("    },\n");
     try file.writeAll("    \"local_node\": {\n");
     const local_enabled_line = try std.fmt.bufPrint(&buf, "      \"enabled\": {},\n", .{self.runtime.local_node.enabled});
     try file.writeAll(local_enabled_line);
@@ -1171,6 +1258,9 @@ test "Config defaults" {
     try std.testing.expectEqualStrings("", config.runtime.default_agent_id);
     try std.testing.expectEqualStrings("", config.runtime.spider_web_root);
     try std.testing.expectEqualStrings(".spiderweb-state", config.runtime.state_directory);
+    try std.testing.expect(config.runtime.registry_enabled);
+    try std.testing.expectEqualStrings(default_venom_registry_source_url, config.runtime.registry_source_url);
+    try std.testing.expectEqualStrings("stable", config.runtime.registry_default_channel);
     try std.testing.expect(config.runtime.local_node.enabled);
     try std.testing.expectEqualStrings("spiderweb-fs-node", config.runtime.local_node.binary);
     try std.testing.expectEqualStrings("external-agent-core", config.runtime.local_node.profile);

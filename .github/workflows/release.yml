@@ -50,6 +50,11 @@ jobs:
           set -euo pipefail
           bash ./scripts/check-version-sync.sh
 
+      - name: Validate pinned SpiderVenoms release checksums
+        run: |
+          set -euo pipefail
+          bash ./scripts/check-spidervenoms-release-pin.sh
+
       - name: Validate tag matches build version
         if: github.ref_type == 'tag'
         run: |

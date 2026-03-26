@@ -101,11 +101,26 @@ This produces:
 - `dist/spiderweb-linux-<arch>.tar.gz.sha256`
 
 By default this packager pins the published `SpiderVenoms` release declared in `scripts/spidervenoms-release.sh`.
+Before packaging, Spiderweb now verifies that the published SpiderVenoms `.sha256`
+asset still matches the pinned digest, then verifies the downloaded archive bytes
+locally before staging them.
+
+Pinned published SpiderVenoms assets are currently supported for:
+
+- `linux/x86_64`
+- `linux/arm64`
+- `macos/arm64`
 
 For local development against a checkout instead, set:
 
 ```bash
 SPIDERVENOMS_SOURCE_MODE=source
+```
+
+You can validate the cross-repo pin directly with:
+
+```bash
+./scripts/check-spidervenoms-release-pin.sh
 ```
 
 Versioning policy:

@@ -8,6 +8,7 @@ pub const Op = enum {
     get,
     install,
     enable,
+    switch_release,
     disable,
     rollback,
     remove,
@@ -30,13 +31,13 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
         packages_dir,
         "Packages",
         shape_json,
-        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_get\",\"packages_install\",\"packages_enable\",\"packages_disable\",\"packages_rollback\",\"packages_remove\"],\"discoverable\":true}",
-        "List, inspect, install, enable, disable, rollback, and remove package definitions available to this Spiderweb host.",
+        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_get\",\"packages_install\",\"packages_enable\",\"packages_switch\",\"packages_disable\",\"packages_rollback\",\"packages_remove\"],\"discoverable\":true}",
+        "List, inspect, install, enable, switch, disable, rollback, and remove package definitions available to this Spiderweb host.",
     );
     _ = try self.addFile(
         packages_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"enable\":\"control/enable.json\",\"disable\":\"control/disable.json\",\"rollback\":\"control/rollback.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"get\":\"packages_get\",\"install\":\"packages_install\",\"enable\":\"packages_enable\",\"disable\":\"packages_disable\",\"rollback\":\"packages_rollback\",\"remove\":\"packages_remove\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"enable\":\"control/enable.json\",\"switch\":\"control/switch.json\",\"disable\":\"control/disable.json\",\"rollback\":\"control/rollback.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"get\":\"packages_get\",\"install\":\"packages_install\",\"enable\":\"packages_enable\",\"switch\":\"packages_switch\",\"disable\":\"packages_disable\",\"rollback\":\"packages_rollback\",\"remove\":\"packages_remove\"}}",
         false,
         .none,
     );
@@ -82,7 +83,7 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Use list/get/install/enable/disable/rollback/remove operation files, or invoke.json with op=list|get|install|enable|disable|rollback|remove plus arguments.\n",
+        "Use list/get/install/enable/switch/disable/rollback/remove operation files, or invoke.json with op=list|get|install|enable|switch|disable|rollback|remove plus arguments.\n",
         false,
         .none,
     );
@@ -91,6 +92,7 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(control_dir, "get.json", "", true, .packages_get);
     _ = try self.addFile(control_dir, "install.json", "", true, .packages_install);
     _ = try self.addFile(control_dir, "enable.json", "", true, .packages_enable);
+    _ = try self.addFile(control_dir, "switch.json", "", true, .packages_switch);
     _ = try self.addFile(control_dir, "disable.json", "", true, .packages_disable);
     _ = try self.addFile(control_dir, "rollback.json", "", true, .packages_rollback);
     _ = try self.addFile(control_dir, "remove.json", "", true, .packages_remove);
@@ -111,6 +113,7 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
         .packages_get => Op.get,
         .packages_install => Op.install,
         .packages_enable => Op.enable,
+        .packages_switch => Op.switch_release,
         .packages_disable => Op.disable,
         .packages_rollback => Op.rollback,
         .packages_remove => Op.remove,
@@ -148,6 +151,7 @@ fn parseOp(raw: []const u8) ?Op {
     if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "packages_get")) return .get;
     if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "packages_install")) return .install;
     if (std.mem.eql(u8, value, "enable") or std.mem.eql(u8, value, "packages_enable")) return .enable;
+    if (std.mem.eql(u8, value, "switch") or std.mem.eql(u8, value, "packages_switch")) return .switch_release;
     if (std.mem.eql(u8, value, "disable") or std.mem.eql(u8, value, "packages_disable")) return .disable;
     if (std.mem.eql(u8, value, "rollback") or std.mem.eql(u8, value, "packages_rollback")) return .rollback;
     if (std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "packages_remove")) return .remove;
@@ -245,6 +249,23 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
             };
             defer self.allocator.free(package_json);
             break :blk buildSinglePackageResultJson(self, .enable, package_json);
+        },
+        .switch_release => blk: {
+            const control = plane orelse return error.InvalidPayload;
+            const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
+            const release_version = extractOptionalStringByNames(args_obj, &.{"release_version"}) orelse return error.InvalidPayload;
+            const request = try buildPackageSelectionRequestJson(self.allocator, venom_id, release_version);
+            defer self.allocator.free(request);
+            const package_json = control.switchVenomRelease(request) catch |err| switch (err) {
+                control_plane_mod.ControlPlaneError.VenomPackageBuiltinProtected => return error.AccessDenied,
+                control_plane_mod.ControlPlaneError.VenomPackageNotFound,
+                control_plane_mod.ControlPlaneError.InvalidPayload,
+                control_plane_mod.ControlPlaneError.MissingField,
+                => return error.InvalidPayload,
+                else => return err,
+            };
+            defer self.allocator.free(package_json);
+            break :blk buildSinglePackageResultJson(self, .switch_release, package_json);
         },
         .disable => blk: {
             const control = plane orelse return error.InvalidPayload;
@@ -363,6 +384,7 @@ fn operationName(op: Op) []const u8 {
         .get => "get",
         .install => "install",
         .enable => "enable",
+        .switch_release => "switch",
         .disable => "disable",
         .rollback => "rollback",
         .remove => "remove",
@@ -375,6 +397,7 @@ fn statusToolName(op: Op) []const u8 {
         .get => "packages_get",
         .install => "packages_install",
         .enable => "packages_enable",
+        .switch_release => "packages_switch",
         .disable => "packages_disable",
         .rollback => "packages_rollback",
         .remove => "packages_remove",

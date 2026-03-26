@@ -1,5 +1,5 @@
 const std = @import("std");
-const mcp_client = @import("venoms/mcp_client.zig");
+const mcp_client = @import("runtime/mcp_client.zig");
 
 const max_payload_bytes: usize = 4 * 1024 * 1024;
 

@@ -1,17 +1,18 @@
-# Filesystem Venom Layer
+# Filesystem Runtime Layer
 
-This folder contains Spiderweb-owned filesystem Venom code.
+This folder contains Spiderweb-owned filesystem runtime code.
 
 It is split into two kinds of files:
 
-- real Spiderweb FS Venom code such as routing helpers, cache/policy, mount glue, and the embeddable facade
+- Spiderweb filesystem runtime code such as routing helpers, cache/policy,
+  mount glue, and the embeddable facade
 - thin compatibility shims that re-export the shared runtime from `spiderweb_node`
 
 Authoritative generic node/runtime behavior lives in:
 
 - `../SpiderNode/src/spiderweb_node/`
 
-The shim files now live under `src/venoms/fs/shared/`.
+The shim files now live under `src/runtime/fs/shared/`.
 
 Examples are:
 

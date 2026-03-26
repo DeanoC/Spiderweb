@@ -1471,6 +1471,102 @@ pub const ControlPlane = struct {
         return self.renderSingleInstalledVenomPackageJsonLocked(release.package_id);
     }
 
+    pub fn updateVenomPackage(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var payload = try parsePayload(self.allocator, payload_json);
+        defer payload.deinit();
+        const obj = payload.value.object;
+
+        const venom_id = getRequiredString(obj, "venom_id") catch return ControlPlaneError.MissingField;
+        const release_version = getOptionalString(obj, "release_version");
+        const channel = getOptionalString(obj, "channel");
+        const activate = try getOptionalBoolByNames(obj, &.{ "activate", "switch" }, false);
+        try validateIdentifier(venom_id, 128);
+        if (release_version) |value| try validateDisplayString(value, 64);
+        if (channel) |value| try validateIdentifier(value, 32);
+        if (builtinPackageMutationProtected(venom_id)) {
+            return ControlPlaneError.VenomPackageBuiltinProtected;
+        }
+
+        var install_result = venom_registry.resolveInstallBundle(
+            self.allocator,
+            registryPolicyLocked(self),
+            .{
+                .package_id = venom_id,
+                .release_version = release_version,
+                .channel = channel,
+            },
+            current_spiderweb_version,
+        ) catch |err| switch (err) {
+            error.RegistryPackageNotFound => return ControlPlaneError.VenomPackageNotFound,
+            error.RegistryReleaseIncompatible => return ControlPlaneError.VenomPackageHostUnsupported,
+            else => return ControlPlaneError.InvalidPayload,
+        };
+        defer install_result.deinit(self.allocator);
+
+        var prior_states = std.ArrayListUnmanaged(UpdateActivationState){};
+        defer deinitUpdateActivationStates(self.allocator, &prior_states);
+        for (install_result.releases.items) |release_entry| {
+            try appendUpdateActivationStateLocked(
+                self,
+                &prior_states,
+                release_entry.package_id,
+            );
+        }
+
+        var installed_any = false;
+        for (install_result.releases.items) |release_entry| {
+            if (try installReleaseJsonLocked(self, release_entry.release_json)) installed_any = true;
+        }
+
+        var switched = false;
+        var activation_changed = false;
+        for (prior_states.items) |state| {
+            const desired_release_version = if (activate and std.mem.eql(u8, state.package_id, install_result.selected_package_id))
+                install_result.selected_release_version
+            else
+                state.active_release_version;
+            const changed = try setInstalledEnabledReleaseLocked(self, state.package_id, desired_release_version);
+            activation_changed = activation_changed or changed;
+            if (activate and std.mem.eql(u8, state.package_id, install_result.selected_package_id) and changed) {
+                switched = true;
+            }
+        }
+
+        if (installed_any or activation_changed) {
+            try rebuildInstalledVenomPackagesFromReleasesLocked(self);
+            self.persistSnapshotBestEffortLocked();
+        }
+
+        const installed_lookup_id = findInstalledPackageLookupIdLocked(self, install_result.selected_package_id) orelse
+            install_result.selected_package_id;
+        const package_json = try self.renderSingleInstalledVenomPackageJsonLocked(installed_lookup_id);
+        defer self.allocator.free(package_json);
+        const target_release_json = try optionalJsonStringField(self.allocator, install_result.selected_release_version);
+        defer self.allocator.free(target_release_json);
+        const target_channel_json = try optionalJsonStringField(self.allocator, channel orelse releaseChannelForPackageLocked(
+            self.installed_venom_releases.items,
+            install_result.selected_package_id,
+            install_result.selected_release_version,
+        ));
+        defer self.allocator.free(target_channel_json);
+
+        return std.fmt.allocPrint(
+            self.allocator,
+            "{{\"package\":{s},\"target_release_version\":{s},\"target_channel\":{s},\"installed\":{},\"switched\":{},\"changed\":{}}}",
+            .{
+                package_json,
+                target_release_json,
+                target_channel_json,
+                installed_any,
+                switched,
+                installed_any or activation_changed,
+            },
+        );
+    }
+
     pub fn enableVenomPackage(self: *ControlPlane, payload_json: ?[]const u8) ![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -5896,6 +5992,17 @@ const RegistryOverrideEntry = struct {
     }
 };
 
+const UpdateActivationState = struct {
+    package_id: []u8,
+    active_release_version: ?[]u8 = null,
+
+    fn deinit(self: *UpdateActivationState, allocator: std.mem.Allocator) void {
+        allocator.free(self.package_id);
+        if (self.active_release_version) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
 fn parseRegistryOverridesJson(
     allocator: std.mem.Allocator,
     overrides_json: []const u8,
@@ -5928,6 +6035,36 @@ fn deinitRegistryOverrideEntries(
     for (overrides.items) |*entry| entry.deinit(allocator);
     overrides.deinit(allocator);
     overrides.* = .{};
+}
+
+fn deinitUpdateActivationStates(
+    allocator: std.mem.Allocator,
+    states: *std.ArrayListUnmanaged(UpdateActivationState),
+) void {
+    for (states.items) |*state| state.deinit(allocator);
+    states.deinit(allocator);
+    states.* = .{};
+}
+
+fn appendUpdateActivationStateLocked(
+    self: *ControlPlane,
+    states: *std.ArrayListUnmanaged(UpdateActivationState),
+    package_id: []const u8,
+) !void {
+    for (states.items) |state| {
+        if (std.mem.eql(u8, state.package_id, package_id)) return;
+    }
+
+    const active_release_version = if (findEnabledInstalledReleaseIndex(self.installed_venom_releases.items, package_id)) |idx|
+        try self.allocator.dupe(u8, self.installed_venom_releases.items[idx].package.release_version)
+    else
+        null;
+    errdefer if (active_release_version) |value| self.allocator.free(value);
+
+    try states.append(self.allocator, .{
+        .package_id = try self.allocator.dupe(u8, package_id),
+        .active_release_version = active_release_version,
+    });
 }
 
 fn persistRegistryOverridesJsonLocked(
@@ -6093,6 +6230,15 @@ fn findInstalledReleaseIndex(
     return null;
 }
 
+fn releaseChannelForPackageLocked(
+    releases: []const InstalledVenomRelease,
+    package_id: []const u8,
+    release_version: []const u8,
+) ?[]const u8 {
+    const idx = findInstalledReleaseIndex(releases, package_id, release_version) orelse return null;
+    return releases[idx].package.channel;
+}
+
 fn findEnabledInstalledReleaseIndex(
     releases: []const InstalledVenomRelease,
     package_id: []const u8,
@@ -6103,6 +6249,31 @@ fn findEnabledInstalledReleaseIndex(
         return idx;
     }
     return null;
+}
+
+fn setInstalledEnabledReleaseLocked(
+    self: *ControlPlane,
+    package_id: []const u8,
+    desired_release_version: ?[]const u8,
+) !bool {
+    var changed = false;
+    var found_desired = desired_release_version == null;
+
+    for (self.installed_venom_releases.items) |*release| {
+        if (!std.mem.eql(u8, release.package_id, package_id)) continue;
+        const should_enable = if (desired_release_version) |value|
+            std.mem.eql(u8, release.package.release_version, value)
+        else
+            false;
+        if (should_enable) found_desired = true;
+        if (release.package.enabled != should_enable) {
+            release.package.enabled = should_enable;
+            changed = true;
+        }
+    }
+
+    if (!found_desired) return ControlPlaneError.VenomPackageNotFound;
+    return changed;
 }
 
 fn findRollbackInstalledReleaseIndex(
@@ -6181,6 +6352,16 @@ fn getOptionalBool(obj: std.json.ObjectMap, name: []const u8, default_value: boo
     const value = obj.get(name) orelse return default_value;
     if (value != .bool) return ControlPlaneError.InvalidPayload;
     return value.bool;
+}
+
+fn getOptionalBoolByNames(obj: std.json.ObjectMap, names: []const []const u8, default_value: bool) !bool {
+    for (names) |name| {
+        if (obj.get(name)) |value| {
+            if (value != .bool) return ControlPlaneError.InvalidPayload;
+            return value.bool;
+        }
+    }
+    return default_value;
 }
 
 const PlatformPayload = struct {
@@ -10425,6 +10606,71 @@ test "acheron_control_plane: registry updates follow installed package_id aliase
     try std.testing.expect(std.mem.indexOf(u8, updates, "\"package_id\":\"browser\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, updates, "\"latest_release_version\":\"0.5.8\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, updates, "\"update_available\":true") != null);
+}
+
+test "acheron_control_plane: registry update stages target release without switching by default" {
+    const allocator = std.testing.allocator;
+    const fixture_root = try registryFixtureRoot(allocator);
+    defer allocator.free(fixture_root);
+
+    var plane = ControlPlane.initWithOptions(allocator, .{
+        .registry_enabled = true,
+        .registry_source_url = fixture_root,
+        .registry_default_channel = "stable",
+        .registry_overrides_json = "[]",
+    });
+    defer plane.deinit();
+
+    const installed =
+        \\{"release":{"package_id":"terminal","release_version":"0.5.7","channel":"stable","digest":"sha256:terminal057","signature":{"alg":"test","sig":"terminal057"},"trust":{"source":"test"},"package":{"venom_id":"terminal","kind":"terminal","version":"1","release_version":"0.5.7","categories":["terminal","exec"],"host_roles":["node"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{},"capabilities":{"invoke":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace"}}}}
+    ;
+    const installed_json = try plane.installVenomPackage(installed);
+    defer allocator.free(installed_json);
+
+    const updated = try plane.updateVenomPackage("{\"venom_id\":\"terminal\"}");
+    defer allocator.free(updated);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"target_release_version\":\"0.5.8\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"installed\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"switched\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"active_release_version\":\"0.5.7\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"installed_release_versions\":[\"0.5.7\",\"0.5.8\"]") != null);
+
+    const current = try plane.getVenomPackage("{\"venom_id\":\"terminal\"}");
+    defer allocator.free(current);
+    try std.testing.expect(std.mem.indexOf(u8, current, "\"active_release_version\":\"0.5.7\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, current, "\"update_available\":true") != null);
+}
+
+test "acheron_control_plane: registry update can install and switch in one action" {
+    const allocator = std.testing.allocator;
+    const fixture_root = try registryFixtureRoot(allocator);
+    defer allocator.free(fixture_root);
+
+    var plane = ControlPlane.initWithOptions(allocator, .{
+        .registry_enabled = true,
+        .registry_source_url = fixture_root,
+        .registry_default_channel = "stable",
+        .registry_overrides_json = "[]",
+    });
+    defer plane.deinit();
+
+    const installed =
+        \\{"release":{"package_id":"terminal","release_version":"0.5.7","channel":"stable","digest":"sha256:terminal057","signature":{"alg":"test","sig":"terminal057"},"trust":{"source":"test"},"package":{"venom_id":"terminal","kind":"terminal","version":"1","release_version":"0.5.7","categories":["terminal","exec"],"host_roles":["node"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{},"capabilities":{"invoke":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace"}}}}
+    ;
+    const installed_json = try plane.installVenomPackage(installed);
+    defer allocator.free(installed_json);
+
+    const updated = try plane.updateVenomPackage("{\"venom_id\":\"terminal\",\"activate\":true}");
+    defer allocator.free(updated);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"target_release_version\":\"0.5.8\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"installed\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"switched\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"active_release_version\":\"0.5.8\"") != null);
+
+    const current = try plane.getVenomPackage("{\"venom_id\":\"terminal\"}");
+    defer allocator.free(current);
+    try std.testing.expect(std.mem.indexOf(u8, current, "\"active_release_version\":\"0.5.8\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, current, "\"update_available\":false") != null);
 }
 
 test "acheron_control_plane: registry channel policy updates host default and package overrides" {

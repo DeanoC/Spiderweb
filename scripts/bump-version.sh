@@ -135,11 +135,11 @@ for path, replacements in files.items():
     path.write_text(updated)
 PY
 
+"$SCRIPT_DIR/check-version-sync.sh" --skip-changelog
+
 first_changelog_version="$(sed -n 's/^## \([0-9][0-9.]*\) -.*/\1/p' "$REPO_ROOT/CHANGELOG.md" | head -n1)"
-if [[ "$first_changelog_version" == "$next_version" ]]; then
-  "$SCRIPT_DIR/check-version-sync.sh"
-else
-  echo "Skipping full version sync check until CHANGELOG.md is updated to ${next_version}."
+if [[ "$first_changelog_version" != "$next_version" ]]; then
+  echo "Skipping changelog version check until CHANGELOG.md is updated to ${next_version}."
 fi
 
 cat <<EOF

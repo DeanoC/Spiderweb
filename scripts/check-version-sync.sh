@@ -13,7 +13,17 @@ version="$(sed -n 's/.*\.version = "\(.*\)",/\1/p' "$REPO_ROOT/build.zig.zon" | 
 expect_contains() {
   local file="$1"
   local pattern="$2"
-  if ! rg -q --fixed-strings "$pattern" "$file"; then
+  local found=0
+  if command -v rg >/dev/null 2>&1; then
+    if rg -q --fixed-strings "$pattern" "$file"; then
+      found=1
+    fi
+  else
+    if grep -F -q -- "$pattern" "$file"; then
+      found=1
+    fi
+  fi
+  if [[ "$found" != "1" ]]; then
     echo "error: version mismatch in $file" >&2
     echo "expected to find: $pattern" >&2
     exit 1

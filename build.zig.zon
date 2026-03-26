@@ -1,6 +1,6 @@
 .{
     .name = .ziggy_spiderweb,
-    .version = "0.5.1",
+    .version = "0.5.2",
     .fingerprint = 0xe46867958f0d9203,
     .minimum_zig_version = "0.13.0",
     .dependencies = .{

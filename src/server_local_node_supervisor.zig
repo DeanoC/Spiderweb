@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
+const managed_bundle_signatures = @import("managed_bundle_signatures.zig");
 const venom_model = @import("venom_model.zig");
 
 const local_node_supervisor_dirname = "local-node";
@@ -509,6 +510,11 @@ pub const LocalNodeSupervisor = struct {
         defer self.allocator.free(manifest_source_path);
         const manifest_template = try readFileAlloc(self.allocator, manifest_source_path, 1024 * 1024);
         defer self.allocator.free(manifest_template);
+        var parsed_manifest = try std.json.parseFromSlice(std.json.Value, self.allocator, manifest_template, .{});
+        defer parsed_manifest.deinit();
+        if (parsed_manifest.value != .object) return error.InvalidBundleRelease;
+        try self.validateBundleEnvelope(parsed_manifest.value.object);
+        try validateBundleManifestMatchesRelease(item, parsed_manifest.value.object);
 
         const template_bindings = getOptionalBundleObject(item, "template_bindings");
         const rendered_manifest = try renderBundleManifestTemplate(
@@ -531,14 +537,7 @@ pub const LocalNodeSupervisor = struct {
 
     fn validateBundleEnvelope(self: *LocalNodeSupervisor, obj: std.json.ObjectMap) !void {
         if (self.allow_unsigned_dev_bundles) return;
-
-        const signature = obj.get("signature") orelse return error.UnsignedManagedBundle;
-        if (signature != .object or signature.object.count() == 0) return error.UnsignedManagedBundle;
-
-        const trust = obj.get("trust") orelse return error.UnsignedManagedBundle;
-        if (trust != .object) return error.UnsignedManagedBundle;
-        const mode = getOptionalBundleString(trust.object, "mode") orelse return error.UnsignedManagedBundle;
-        if (std.mem.eql(u8, std.mem.trim(u8, mode, " \t\r\n"), "unsigned")) return error.UnsignedManagedBundle;
+        try managed_bundle_signatures.verifySignedValue(self.allocator, .{ .object = obj });
     }
 
     fn buildArgv(self: *LocalNodeSupervisor, allocator: std.mem.Allocator) !std.ArrayListUnmanaged([]const u8) {
@@ -899,6 +898,25 @@ fn otherBundlePlatformLabel() []const u8 {
     if (!std.mem.eql(u8, current, "linux")) return "linux";
     if (!std.mem.eql(u8, current, "macos")) return "macos";
     return "windows";
+}
+
+fn validateBundleManifestMatchesRelease(release_entry: std.json.ObjectMap, manifest: std.json.ObjectMap) !void {
+    try requireMatchingBundleString("package_id", release_entry, manifest);
+    try requireMatchingBundleString("release_version", release_entry, manifest);
+    try requireMatchingBundleString("venom_id", release_entry, manifest);
+    try requireMatchingBundleString("kind", release_entry, manifest);
+    try requireMatchingBundleString("channel", release_entry, manifest);
+}
+
+fn requireMatchingBundleString(
+    field_name: []const u8,
+    release_entry: std.json.ObjectMap,
+    manifest: std.json.ObjectMap,
+) !void {
+    const expected = getRequiredBundleString(release_entry, field_name);
+    const actual = getRequiredBundleString(manifest, field_name);
+    if (expected.len == 0 or actual.len == 0) return error.InvalidBundleRelease;
+    if (!std.mem.eql(u8, expected, actual)) return error.InvalidBundleRelease;
 }
 
 test "managed bundle metadata stages executables and renders template bindings" {

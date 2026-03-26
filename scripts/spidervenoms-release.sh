@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-spidervenoms_release_version="0.5.3"
+spidervenoms_release_version="0.5.6"
 spidervenoms_release_repo="DeanoC/SpiderVenoms"
 
 spidervenoms_normalize_os() {
@@ -27,13 +27,13 @@ spidervenoms_release_url_for_platform() {
   arch="$(spidervenoms_normalize_arch "${2:-}")" || return 1
   case "${os}:${arch}" in
     linux:arm64)
-      printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.3/spidervenoms-managed-local-linux-arm64.tar.gz"
+      printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.6/spidervenoms-managed-local-linux-arm64.tar.gz"
       ;;
     linux:x86_64)
-      printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.3/spidervenoms-managed-local-linux-x86_64.tar.gz"
+      printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.6/spidervenoms-managed-local-linux-x86_64.tar.gz"
       ;;
     macos:arm64)
-      printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.3/spidervenoms-managed-local-macos-arm64.tar.gz"
+      printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.6/spidervenoms-managed-local-macos-arm64.tar.gz"
       ;;
     *)
       return 1
@@ -53,13 +53,13 @@ spidervenoms_release_sha256_for_platform() {
   arch="$(spidervenoms_normalize_arch "${2:-}")" || return 1
   case "${os}:${arch}" in
     linux:arm64)
-      printf '%s' "42f66f4423d8e7152ec93352311887364bb0b6c84c94fe632543ef58fabac628"
+      printf '%s' "b9c3cfde33f631ff5fbf2a776bb0eef5856bc759f0abf65c91cf14928decc527"
       ;;
     linux:x86_64)
-      printf '%s' "cb11fa2060484f5fd7f55fae74047bb3c2a58f7cb947f429d2a099075f56893e"
+      printf '%s' "1f747c0404be4adf994f050340295c103604c99e3f168e404ecfb9b30854252e"
       ;;
     macos:arm64)
-      printf '%s' "19130cb6731aaa0dcbd5b8bbfc7e4853e729aa4acef5ce2c1f72369d1c435fcc"
+      printf '%s' "98f63b13d5f8432d0241db78273b1fe06debe4a9e023af6696fa829488139c99"
       ;;
     *)
       return 1

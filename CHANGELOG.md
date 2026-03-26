@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.5.2 - 2026-03-26
+
+### Venom Trust
+- Added real managed-bundle signature verification in Spiderweb’s local-node supervisor, including digest validation, trusted signing-key lookup, and signed-manifest checks before rendering or staging local venom metadata.
+- Re-pinned published Spiderweb packaging and install flows to `SpiderVenoms v0.5.6`, the first fully signed cross-platform managed-bundle release line.
+
 ## 0.5.1 - 2026-03-26
 
 ### Release and Versioning

@@ -691,7 +691,7 @@ fn namespaceProviderOpen(ctx: *anyopaque, path: []const u8, flags: u32) !mount_p
         backing.deinit(allocator);
         backing = .{
             .buffered = .{
-                .dirty = true,
+                .dirty = hasTruncateOnOpen(flags),
                 .created = false,
             },
         };
@@ -1340,4 +1340,10 @@ test "namespace_mount_provider: recognizes truncate and exclusive flag variants"
     try std.testing.expect(hasExclusiveCreate(0x80));
     try std.testing.expect(hasExclusiveCreate(0x800));
     try std.testing.expect(!hasExclusiveCreate(0));
+}
+
+test "namespace_mount_provider: buffered control path only starts dirty for truncate-on-open" {
+    try std.testing.expect(isBufferedControlPath("/.spiderweb/targets/linux/browser/control/invoke.json"));
+    try std.testing.expect(!hasTruncateOnOpen(0x1));
+    try std.testing.expect(hasTruncateOnOpen(0x1 | 0x200));
 }

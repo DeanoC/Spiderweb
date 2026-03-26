@@ -500,8 +500,13 @@ fn resolveNodeMetadata(session: anytype, node_id: []const u8) !ResolvedNodeMetad
 
 fn parseTargetBinding(binding_path: []const u8) ?ParsedTargetBinding {
     const prefix = "/.spiderweb/targets/";
-    if (!std.mem.startsWith(u8, binding_path, prefix)) return null;
-    const tail = binding_path[prefix.len..];
+    const normalized_path = if (std.mem.startsWith(u8, binding_path, prefix))
+        binding_path
+    else if (std.mem.indexOf(u8, binding_path, prefix)) |idx|
+        binding_path[idx..]
+    else
+        return null;
+    const tail = normalized_path[prefix.len..];
     const slash = std.mem.indexOfScalar(u8, tail, '/') orelse return null;
     const target_id = tail[0..slash];
     const capability = tail[slash + 1 ..];
@@ -512,6 +517,12 @@ fn parseTargetBinding(binding_path: []const u8) ?ParsedTargetBinding {
 
 pub fn parseTargetBindingForSession(binding_path: []const u8) ?ParsedTargetBinding {
     return parseTargetBinding(binding_path);
+}
+
+test "session_service_discovery: parse target binding accepts projected workspace paths" {
+    const parsed = parseTargetBindingForSession("/nodes/local/fs/.spiderweb/targets/macos/browser") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("macos", parsed.target_id);
+    try std.testing.expectEqualStrings("browser", parsed.capability);
 }
 
 fn parseNodeProviderBinding(allocator: std.mem.Allocator, target_path: []const u8) !?ParsedNodeProvider {

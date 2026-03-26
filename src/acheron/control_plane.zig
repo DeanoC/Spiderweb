@@ -1545,7 +1545,7 @@ pub const ControlPlane = struct {
                     for (install_result.releases.items) |release_entry| {
                         if (try installReleaseJsonLocked(self, release_entry.release_json)) {
                             installed_any = true;
-                            try appendPackageReleaseHistoryFromReleaseJsonLocked(self, .install, release_entry.release_json);
+                            appendPackageReleaseHistoryFromReleaseJsonLocked(self, .install, release_entry.release_json);
                         }
                     }
 
@@ -1628,7 +1628,7 @@ pub const ControlPlane = struct {
                 if (std.mem.eql(u8, release_entry.package_id, install_result.selected_package_id)) {
                     selected_release_installed = true;
                 }
-                try appendPackageReleaseHistoryFromReleaseJsonLocked(self, .update, release_entry.release_json);
+                appendPackageReleaseHistoryFromReleaseJsonLocked(self, .update, release_entry.release_json);
             }
         }
 
@@ -6298,10 +6298,10 @@ fn appendPackageReleaseHistoryFromReleaseJsonLocked(
     self: *ControlPlane,
     action: PackageReleaseAction,
     release_json: []const u8,
-) !void {
-    var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, release_json, .{});
+) void {
+    var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, release_json, .{}) catch return;
     defer parsed.deinit();
-    var release = try parseInstalledVenomReleaseValue(self.allocator, parsed.value);
+    var release = parseInstalledVenomReleaseValue(self.allocator, parsed.value) catch return;
     defer release.deinit(self.allocator);
     self.appendPackageReleaseHistoryLocked(
         action,

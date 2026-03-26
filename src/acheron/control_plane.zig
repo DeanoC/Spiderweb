@@ -1335,6 +1335,7 @@ pub const ControlPlane = struct {
         var payload = try parsePayload(self.allocator, payload_json);
         defer payload.deinit();
         const package_id = getOptionalString(payload.value.object, "venom_id") orelse getOptionalString(payload.value.object, "package_id");
+        if (package_id) |value| try validateIdentifier(value, 128);
         return venom_registry.buildPolicyJson(self.allocator, registryPolicyLocked(self), package_id);
     }
 
@@ -5079,6 +5080,10 @@ pub const ControlPlane = struct {
     fn buildSnapshotJsonLocked(self: *ControlPlane) ![]u8 {
         var out = std.ArrayListUnmanaged(u8){};
         errdefer out.deinit(self.allocator);
+        const escaped_registry_source_url = try jsonEscape(self.allocator, self.registry_source_url);
+        defer self.allocator.free(escaped_registry_source_url);
+        const escaped_registry_default_channel = try jsonEscape(self.allocator, self.registry_default_channel);
+        defer self.allocator.free(escaped_registry_default_channel);
 
         try out.writer(self.allocator).print(
             "{{\"schema\":1,\"next\":{{\"invite_id\":{d},\"node_id\":{d},\"pending_join_id\":{d},\"workspace_id\":{d}}},\"metrics\":{{\"invites_created_total\":{d},\"invites_redeemed_total\":{d},\"node_joins_total\":{d},\"node_lease_refresh_total\":{d},\"nodes_ensured_total\":{d},\"node_deletes_total\":{d},\"workspace_creates_total\":{d},\"workspace_updates_total\":{d},\"workspace_deletes_total\":{d},\"workspace_token_rotates_total\":{d},\"workspace_token_revokes_total\":{d},\"mount_sets_total\":{d},\"mount_removes_total\":{d},\"workspace_activations_total\":{d},\"lease_reap_nodes_total\":{d}}},\"registry_policy\":{{\"enabled\":{},\"source_url\":\"{s}\",\"default_channel\":\"{s}\",\"overrides\":{s}}},\"invites\":[",
@@ -5103,8 +5108,8 @@ pub const ControlPlane = struct {
                 self.workspace_activations_total,
                 self.lease_reap_nodes_total,
                 self.registry_enabled,
-                self.registry_source_url,
-                self.registry_default_channel,
+                escaped_registry_source_url,
+                escaped_registry_default_channel,
                 self.registry_overrides_json,
             },
         );
@@ -10539,6 +10544,22 @@ test "acheron_control_plane: registry channel policy persists across restart" {
         try std.testing.expect(std.mem.indexOf(u8, package_policy, "\"channel_override\":\"dev\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, package_policy, "\"effective_channel\":\"dev\"") != null);
     }
+}
+
+test "acheron_control_plane: registry policy snapshot escapes source url and channel strings" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.initWithOptions(allocator, .{
+        .registry_enabled = true,
+        .registry_source_url = "C:\\Users\\dean\\registry",
+        .registry_default_channel = "stable\\\"beta",
+        .registry_overrides_json = "[]",
+    });
+    defer plane.deinit();
+
+    const snapshot = try plane.buildSnapshotJsonLocked();
+    defer allocator.free(snapshot);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "\"source_url\":\"C:\\\\Users\\\\dean\\\\registry\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, snapshot, "\"default_channel\":\"stable\\\\\\\"beta\"") != null);
 }
 
 test "acheron_control_plane: venom release rollback and targeted removal" {

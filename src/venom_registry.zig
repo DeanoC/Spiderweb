@@ -179,6 +179,8 @@ pub fn buildPolicyJson(
     defer allocator.free(default_channel_json);
 
     if (requested_package_id) |package_id| {
+        const escaped_package_id = try std.json.Stringify.valueAlloc(allocator, package_id, .{});
+        defer allocator.free(escaped_package_id);
         const channel_override = findPackageChannel(overrides.items, package_id);
         const release_pin = findPackageReleasePin(overrides.items, package_id);
         const channel_override_json = try optionalJsonStringField(allocator, channel_override);
@@ -189,12 +191,12 @@ pub fn buildPolicyJson(
         defer allocator.free(effective_channel_json);
         return std.fmt.allocPrint(
             allocator,
-            "{{\"enabled\":{},\"source_url\":{s},\"default_channel\":{s},\"package_id\":\"{s}\",\"channel_override\":{s},\"release_pin\":{s},\"effective_channel\":{s}}}",
+            "{{\"enabled\":{},\"source_url\":{s},\"default_channel\":{s},\"package_id\":{s},\"channel_override\":{s},\"release_pin\":{s},\"effective_channel\":{s}}}",
             .{
                 policy.enabled,
                 source_url_json,
                 default_channel_json,
-                package_id,
+                escaped_package_id,
                 channel_override_json,
                 release_pin_json,
                 effective_channel_json,
@@ -1071,4 +1073,21 @@ test "findExtractedManifestPath uses the registry manifest path" {
     )).?;
     defer allocator.free(resolved);
     try std.testing.expect(std.mem.endsWith(u8, resolved, "share/spidervenoms/bundles/browser-bundle/release.json"));
+}
+
+test "buildPolicyJson escapes requested package ids" {
+    const allocator = std.testing.allocator;
+    const json = try buildPolicyJson(
+        allocator,
+        .{
+            .enabled = true,
+            .source_url = "https://registry.example.test",
+            .default_channel = "stable",
+            .overrides_json = "[]",
+        },
+        "browser\\\"beta",
+    );
+    defer allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"package_id\":\"browser\\\\\\\"beta\"") != null);
 }

@@ -55,6 +55,13 @@ verify_archive_sha256() {
   [[ "$actual_sha" == "$expected_sha" ]] || fail "SpiderVenoms archive SHA256 mismatch: expected $expected_sha got $actual_sha"
 }
 
+verify_remote_checksum_pin() {
+  local os="$1"
+  local arch="$2"
+  [[ -n "$(spidervenoms_release_sha256_for_platform "$os" "$arch" 2>/dev/null || true)" ]] || return 0
+  spidervenoms_verify_pinned_checksum_file "$os" "$arch" || fail "SpiderVenoms pinned checksum validation failed for ${os}/${arch}"
+}
+
 extract_archive() {
   local archive_path="$1"
   local extract_dir="$2"
@@ -95,6 +102,7 @@ stage_spidervenoms_bundle() {
     release_sha="$(spidervenoms_release_sha256_for_platform linux "$ARCH_LABEL" 2>/dev/null || true)"
     if [[ -n "$release_url" ]]; then
       echo "==> Downloading SpiderVenoms managed bundle v${spidervenoms_release_version}"
+      verify_remote_checksum_pin linux "$ARCH_LABEL"
       download_archive "$release_url" "$archive_path"
       verify_archive_sha256 "$archive_path" "$release_sha"
       extract_archive "$archive_path" "$extract_root"

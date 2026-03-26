@@ -29,7 +29,7 @@ SPIDERVENOMS_RELEASE_HELPER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/
 if [[ -f "$SPIDERVENOMS_RELEASE_HELPER_PATH" ]]; then
     source "$SPIDERVENOMS_RELEASE_HELPER_PATH"
 else
-    spidervenoms_release_version="0.5.2"
+    spidervenoms_release_version="0.5.3"
     spidervenoms_release_repo="DeanoC/SpiderVenoms"
 
     spidervenoms_normalize_os() {
@@ -55,11 +55,14 @@ else
         os="$(spidervenoms_normalize_os "${1:-}")" || return 1
         arch="$(spidervenoms_normalize_arch "${2:-}")" || return 1
         case "${os}:${arch}" in
+            linux:arm64)
+                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.3/spidervenoms-managed-local-linux-arm64.tar.gz"
+                ;;
             linux:x86_64)
-                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.2/spidervenoms-managed-local-linux-x86_64.tar.gz"
+                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.3/spidervenoms-managed-local-linux-x86_64.tar.gz"
                 ;;
             macos:arm64)
-                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.2/spidervenoms-managed-local-macos-arm64.tar.gz"
+                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.3/spidervenoms-managed-local-macos-arm64.tar.gz"
                 ;;
             *)
                 return 1
@@ -67,21 +70,56 @@ else
         esac
     }
 
+    spidervenoms_release_checksum_url_for_platform() {
+        local release_url
+        release_url="$(spidervenoms_release_url_for_platform "${1:-}" "${2:-}")" || return 1
+        printf '%s' "${release_url}.sha256"
+    }
+
     spidervenoms_release_sha256_for_platform() {
         local os arch
         os="$(spidervenoms_normalize_os "${1:-}")" || return 1
         arch="$(spidervenoms_normalize_arch "${2:-}")" || return 1
         case "${os}:${arch}" in
+            linux:arm64)
+                printf '%s' "42f66f4423d8e7152ec93352311887364bb0b6c84c94fe632543ef58fabac628"
+                ;;
             linux:x86_64)
-                printf '%s' "cf52889516d968b06f45e29eed2796a1b535020b6e977345066e49f53c782719"
+                printf '%s' "cb11fa2060484f5fd7f55fae74047bb3c2a58f7cb947f429d2a099075f56893e"
                 ;;
             macos:arm64)
-                printf '%s' "4dd2df98788d79c7dcd4a0794d0c95eebe2c71d2eff10c76fedd51ab0c5cc47f"
+                printf '%s' "19130cb6731aaa0dcbd5b8bbfc7e4853e729aa4acef5ce2c1f72369d1c435fcc"
                 ;;
             *)
                 return 1
                 ;;
         esac
+    }
+
+    spidervenoms_verify_pinned_checksum_file() {
+        local os arch expected_sha checksum_url tmp_file remote_sha
+        os="$(spidervenoms_normalize_os "${1:-}")" || return 1
+        arch="$(spidervenoms_normalize_arch "${2:-}")" || return 1
+        expected_sha="$(spidervenoms_release_sha256_for_platform "$os" "$arch")" || return 1
+        checksum_url="$(spidervenoms_release_checksum_url_for_platform "$os" "$arch")" || return 1
+
+        tmp_file="$(mktemp)"
+        curl -fsSL "$checksum_url" -o "$tmp_file"
+        remote_sha="$(awk 'NR == 1 { print $1 }' "$tmp_file")"
+        rm -f "$tmp_file"
+
+        if [[ -z "$remote_sha" ]]; then
+            echo "Error: SpiderVenoms checksum file was empty: $checksum_url"
+            exit 1
+        fi
+
+        if [[ "$remote_sha" != "$expected_sha" ]]; then
+            echo "Error: SpiderVenoms checksum pin mismatch for ${os}/${arch}"
+            echo "  expected: $expected_sha"
+            echo "  remote:   $remote_sha"
+            echo "  source:   $checksum_url"
+            exit 1
+        fi
     }
 fi
 
@@ -235,9 +273,15 @@ build_spidervenoms_bundle_from_source() {
 
 install_spidervenoms_bundle_from_release() {
     local share_dir="$1"
-    local release_url="$2"
-    local release_sha="$3"
+    local release_os="$2"
+    local release_arch="$3"
+    local release_url="$4"
+    local release_sha="$5"
     local release_tmp_dir release_archive_name release_archive_path
+
+    if [[ -n "$release_sha" ]]; then
+        spidervenoms_verify_pinned_checksum_file "$release_os" "$release_arch"
+    fi
 
     release_tmp_dir="$(mktemp -d)"
     release_archive_name="$(basename "${release_url%%\?*}")"
@@ -261,7 +305,7 @@ install_spidervenoms_bundle() {
         release_sha="$(spidervenoms_release_sha256_for_platform linux "$(uname -m)" 2>/dev/null || true)"
         if [[ -n "$release_url" ]]; then
             log_info "Installing SpiderVenoms managed bundle v${spidervenoms_release_version} from published release..."
-            install_spidervenoms_bundle_from_release "$share_dir" "$release_url" "$release_sha"
+            install_spidervenoms_bundle_from_release "$share_dir" linux "$(uname -m)" "$release_url" "$release_sha"
             return 0
         fi
         if [[ "$SPIDERVENOMS_SOURCE_MODE" == "release" ]]; then

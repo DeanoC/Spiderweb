@@ -14,13 +14,13 @@ const workspace_policy = @import("../workspaces/policy.zig");
 const control_plane_mod = @import("control_plane.zig");
 const acheron_router = @import("router.zig");
 const events_venom = @import("../venoms/events.zig");
-const terminal_venom = @import("../venoms/terminal.zig");
+const terminal_namespace = @import("../runtime/terminal_namespace.zig");
 const mounts_venom = @import("../venoms/mounts.zig");
 const home_venom = @import("../venoms/home.zig");
 const runtimes_venom = @import("../venoms/runtimes.zig");
 const packages_venom = @import("../venoms/packages.zig");
 const workspaces_venom = @import("../venoms/workspaces.zig");
-const git_venom = @import("../venoms/git.zig");
+const git_namespace = @import("../runtime/git_namespace.zig");
 const venom_packages = @import("../venom_packages.zig");
 const venom_package = @import("../venom_package.zig");
 const venom_model = @import("../venom_model.zig");
@@ -190,7 +190,7 @@ const ScopedVenomBinding = struct {
     }
 };
 
-const TerminalSession = terminal_venom.SessionState;
+const TerminalSession = terminal_namespace.SessionState;
 
 const Node = struct {
     id: u32,
@@ -3186,19 +3186,19 @@ pub const Session = struct {
     }
 
     fn seedAgentTerminalNamespace(self: *Session, terminal_dir: u32) !void {
-        return terminal_venom.seedNamespace(self, terminal_dir);
+        return terminal_namespace.seedNamespace(self, terminal_dir);
     }
 
     fn seedAgentTerminalNamespaceAt(self: *Session, terminal_dir: u32, base_path: []const u8) !void {
-        return terminal_venom.seedNamespaceAt(self, terminal_dir, base_path);
+        return terminal_namespace.seedNamespaceAt(self, terminal_dir, base_path);
     }
 
     fn seedAgentGitNamespace(self: *Session, git_dir: u32) !void {
-        return git_venom.seedNamespace(self, git_dir);
+        return git_namespace.seedNamespace(self, git_dir);
     }
 
     fn seedAgentGitNamespaceAt(self: *Session, git_dir: u32, base_path: []const u8) !void {
-        return git_venom.seedNamespaceAt(self, git_dir, base_path);
+        return git_namespace.seedNamespaceAt(self, git_dir, base_path);
     }
 
     fn seedAgentMountsNamespace(self: *Session, mounts_dir: u32) !void {
@@ -3222,35 +3222,35 @@ pub const Session = struct {
     }
 
     fn handleTerminalInvokeWrite(self: *Session, invoke_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
-        return .{ .written = try terminal_venom.handleInvokeWrite(self, invoke_node_id, raw_input) };
+        return .{ .written = try terminal_namespace.handleInvokeWrite(self, invoke_node_id, raw_input) };
     }
 
     fn handleTerminalCreateWrite(self: *Session, create_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
-        return .{ .written = try terminal_venom.handleCreateWrite(self, create_node_id, raw_input) };
+        return .{ .written = try terminal_namespace.handleCreateWrite(self, create_node_id, raw_input) };
     }
 
     fn handleTerminalResumeWrite(self: *Session, resume_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
-        return .{ .written = try terminal_venom.handleResumeWrite(self, resume_node_id, raw_input) };
+        return .{ .written = try terminal_namespace.handleResumeWrite(self, resume_node_id, raw_input) };
     }
 
     fn handleTerminalCloseWrite(self: *Session, close_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
-        return .{ .written = try terminal_venom.handleCloseWrite(self, close_node_id, raw_input) };
+        return .{ .written = try terminal_namespace.handleCloseWrite(self, close_node_id, raw_input) };
     }
 
     fn handleTerminalWriteWrite(self: *Session, write_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
-        return .{ .written = try terminal_venom.handleWriteWrite(self, write_node_id, raw_input) };
+        return .{ .written = try terminal_namespace.handleWriteWrite(self, write_node_id, raw_input) };
     }
 
     fn handleTerminalReadWrite(self: *Session, read_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
-        return .{ .written = try terminal_venom.handleReadWrite(self, read_node_id, raw_input) };
+        return .{ .written = try terminal_namespace.handleReadWrite(self, read_node_id, raw_input) };
     }
 
     fn handleTerminalResizeWrite(self: *Session, resize_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
-        return .{ .written = try terminal_venom.handleResizeWrite(self, resize_node_id, raw_input) };
+        return .{ .written = try terminal_namespace.handleResizeWrite(self, resize_node_id, raw_input) };
     }
 
     fn handleTerminalExecWrite(self: *Session, exec_node_id: u32, raw_input: []const u8) anyerror!WriteOutcome {
-        return .{ .written = try terminal_venom.handleExecWrite(self, exec_node_id, raw_input) };
+        return .{ .written = try terminal_namespace.handleExecWrite(self, exec_node_id, raw_input) };
     }
 
     pub fn buildTerminalExecArgsJson(
@@ -3258,11 +3258,11 @@ pub const Session = struct {
         obj: std.json.ObjectMap,
         session_cwd: ?[]const u8,
     ) ![]u8 {
-        return terminal_venom.buildExecArgsJson(self, obj, session_cwd);
+        return terminal_namespace.buildExecArgsJson(self, obj, session_cwd);
     }
 
     pub fn appendShellSingleQuoted(self: *Session, out: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
-        return terminal_venom.appendShellSingleQuoted(self, out, value);
+        return terminal_namespace.appendShellSingleQuoted(self, out, value);
     }
 
     pub fn sessionJsonObjectOptionalString(self: *Session, obj: std.json.ObjectMap, key: []const u8) !?[]const u8 {
@@ -4799,13 +4799,13 @@ pub const Session = struct {
 
     pub const WorkspaceOp = workspaces_venom.Op;
 
-    pub const GitOp = git_venom.Op;
+    pub const GitOp = git_namespace.Op;
 
     fn handleWorkspacesNamespaceWrite(self: *Session, special: SpecialKind, node_id: u32, raw_input: []const u8) !WriteOutcome {
         return .{ .written = try workspaces_venom.handleNamespaceWrite(self, special, node_id, raw_input) };
     }
 
-    pub const ParsedShellExecResult = git_venom.ParsedShellExecResult;
+    pub const ParsedShellExecResult = git_namespace.ParsedShellExecResult;
 
     pub const ShellExecOutcome = union(enum) {
         success: ParsedShellExecResult,
@@ -4863,15 +4863,15 @@ pub const Session = struct {
     }
 
     fn parseGitOp(raw: []const u8) ?GitOp {
-        return git_venom.parseOp(raw);
+        return git_namespace.parseOp(raw);
     }
 
     fn gitOperationName(op: GitOp) []const u8 {
-        return git_venom.operationName(op);
+        return git_namespace.operationName(op);
     }
 
     fn gitStatusToolName(op: GitOp) []const u8 {
-        return git_venom.statusToolName(op);
+        return git_namespace.statusToolName(op);
     }
 
     fn executeGitOp(self: *Session, op: GitOp, args_obj: std.json.ObjectMap, written: usize) !WriteOutcome {
@@ -4907,11 +4907,11 @@ pub const Session = struct {
     }
 
     fn executeGitOpPayload(self: *Session, op: GitOp, args_obj: std.json.ObjectMap) ![]u8 {
-        return git_venom.executeOpPayload(self, op, args_obj);
+        return git_namespace.executeOpPayload(self, op, args_obj);
     }
 
     pub fn buildCliCommand(self: *Session, program: []const u8, argv: []const []const u8) ![]u8 {
-        return git_venom.buildCliCommand(self, program, argv);
+        return git_namespace.buildCliCommand(self, program, argv);
     }
 
     pub fn runShellExecCommand(self: *Session, command: []const u8, cwd: ?[]const u8, timeout_ms: u64) !ShellExecOutcome {
@@ -4927,23 +4927,23 @@ pub const Session = struct {
     }
 
     fn buildShellExecArgsJson(self: *Session, command: []const u8, cwd: ?[]const u8, timeout_ms: u64) ![]u8 {
-        return git_venom.buildShellExecArgsJson(self, command, cwd, timeout_ms);
+        return git_namespace.buildShellExecArgsJson(self, command, cwd, timeout_ms);
     }
 
     pub fn parseShellExecPayload(self: *Session, payload_json: []const u8) !ParsedShellExecResult {
-        return git_venom.parseShellExecPayload(self, payload_json);
+        return git_namespace.parseShellExecPayload(self, payload_json);
     }
 
     fn normalizeJsonText(self: *Session, raw: []const u8) ![]u8 {
-        return git_venom.normalizeJsonText(self, raw);
+        return git_namespace.normalizeJsonText(self, raw);
     }
 
     pub fn buildGitSuccessResultJson(self: *Session, op: GitOp, result_json: []const u8) ![]u8 {
-        return git_venom.buildGitSuccessResultJson(self, op, result_json);
+        return git_namespace.buildGitSuccessResultJson(self, op, result_json);
     }
 
     pub fn buildGitFailureResultJson(self: *Session, op: GitOp, code: []const u8, message: []const u8) ![]u8 {
-        return git_venom.buildGitFailureResultJson(self, op, code, message);
+        return git_namespace.buildGitFailureResultJson(self, op, code, message);
     }
 
     fn normalizeWorkspaceAbsolutePath(self: *Session, raw: []const u8) ![]u8 {

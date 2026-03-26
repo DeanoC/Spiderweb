@@ -29,7 +29,7 @@ const default_platform_runtime_kind = "unknown";
 const node_venom_event_history_max_default: usize = 1024;
 const package_release_history_max_default: usize = 256;
 const package_release_history_recent_limit_default: usize = 10;
-const current_spiderweb_version = "0.5.4";
+const current_spiderweb_version = "0.5.5";
 
 const WorkspaceKind = enum {
     normal,

@@ -220,13 +220,14 @@ copy_spidervenoms_share_tree() {
     fi
 
     mkdir -p "$share_dir"
-    rm -rf "$target_share_dir"
-    if ! cp -R "$source_share_dir" "$target_share_dir" 2>/dev/null; then
-        log_info "Need elevated permissions to update SpiderVenoms bundle..."
-        sudo rm -rf "$target_share_dir"
-        sudo mkdir -p "$share_dir"
-        sudo cp -R "$source_share_dir" "$target_share_dir"
+    if rm -rf "$target_share_dir" 2>/dev/null && cp -R "$source_share_dir" "$target_share_dir" 2>/dev/null; then
+        return 0
     fi
+
+    log_info "Need elevated permissions to update SpiderVenoms bundle..."
+    sudo rm -rf "$target_share_dir"
+    sudo mkdir -p "$share_dir"
+    sudo cp -R "$source_share_dir" "$target_share_dir"
 }
 
 copy_spiderweb_share_tree() {
@@ -241,13 +242,14 @@ copy_spiderweb_share_tree() {
     fi
 
     mkdir -p "$share_dir"
-    rm -rf "$target_share_dir"
-    if ! cp -R "$source_share_dir" "$target_share_dir" 2>/dev/null; then
-        log_info "Need elevated permissions to update Spiderweb runtime assets..."
-        sudo rm -rf "$target_share_dir"
-        sudo mkdir -p "$share_dir"
-        sudo cp -R "$source_share_dir" "$target_share_dir"
+    if rm -rf "$target_share_dir" 2>/dev/null && cp -R "$source_share_dir" "$target_share_dir" 2>/dev/null; then
+        return 0
     fi
+
+    log_info "Need elevated permissions to update Spiderweb runtime assets..."
+    sudo rm -rf "$target_share_dir"
+    sudo mkdir -p "$share_dir"
+    sudo cp -R "$source_share_dir" "$target_share_dir"
 }
 
 build_spidervenoms_bundle_from_source() {

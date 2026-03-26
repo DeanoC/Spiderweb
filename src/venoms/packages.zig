@@ -5,6 +5,8 @@ const control_plane_mod = @import("../acheron/control_plane.zig");
 
 pub const Op = enum {
     list,
+    catalog,
+    updates,
     get,
     install,
     enable,
@@ -31,13 +33,13 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
         packages_dir,
         "Packages",
         shape_json,
-        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_get\",\"packages_install\",\"packages_enable\",\"packages_switch\",\"packages_disable\",\"packages_rollback\",\"packages_remove\"],\"discoverable\":true}",
+        "{\"invoke\":true,\"operations\":[\"packages_list\",\"packages_catalog\",\"packages_updates\",\"packages_get\",\"packages_install\",\"packages_enable\",\"packages_switch\",\"packages_disable\",\"packages_rollback\",\"packages_remove\"],\"discoverable\":true}",
         "List, inspect, install, enable, switch, disable, rollback, and remove package definitions available to this Spiderweb host.",
     );
     _ = try self.addFile(
         packages_dir,
         "OPS.json",
-        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"enable\":\"control/enable.json\",\"switch\":\"control/switch.json\",\"disable\":\"control/disable.json\",\"rollback\":\"control/rollback.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"get\":\"packages_get\",\"install\":\"packages_install\",\"enable\":\"packages_enable\",\"switch\":\"packages_switch\",\"disable\":\"packages_disable\",\"rollback\":\"packages_rollback\",\"remove\":\"packages_remove\"}}",
+        "{\"model\":\"local_bridge\",\"invoke\":\"control/invoke.json\",\"transport\":\"namespace-local\",\"paths\":{\"list\":\"control/list.json\",\"catalog\":\"control/catalog.json\",\"updates\":\"control/updates.json\",\"get\":\"control/get.json\",\"install\":\"control/install.json\",\"enable\":\"control/enable.json\",\"switch\":\"control/switch.json\",\"disable\":\"control/disable.json\",\"rollback\":\"control/rollback.json\",\"remove\":\"control/remove.json\"},\"operations\":{\"list\":\"packages_list\",\"catalog\":\"packages_catalog\",\"updates\":\"packages_updates\",\"get\":\"packages_get\",\"install\":\"packages_install\",\"enable\":\"packages_enable\",\"switch\":\"packages_switch\",\"disable\":\"packages_disable\",\"rollback\":\"packages_rollback\",\"remove\":\"packages_remove\"}}",
         false,
         .none,
     );
@@ -58,7 +60,7 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(
         packages_dir,
         "STATUS.json",
-        "{\"surface_id\":\"packages\",\"state\":\"namespace\",\"has_invoke\":true}",
+        "{\"surface_id\":\"packages\",\"state\":\"namespace\",\"has_invoke\":true,\"registry_discovery\":true}",
         false,
         .none,
     );
@@ -83,12 +85,14 @@ pub fn seedNamespaceAt(self: anytype, packages_dir: u32, base_path: []const u8) 
     _ = try self.addFile(
         control_dir,
         "README.md",
-        "Use list/get/install/enable/switch/disable/rollback/remove operation files, or invoke.json with op=list|get|install|enable|switch|disable|rollback|remove plus arguments.\n",
+        "Use list/catalog/updates/get/install/enable/switch/disable/rollback/remove operation files, or invoke.json with op=list|catalog|updates|get|install|enable|switch|disable|rollback|remove plus arguments.\n",
         false,
         .none,
     );
     _ = try self.addFile(control_dir, "invoke.json", "", true, .packages_invoke);
     _ = try self.addFile(control_dir, "list.json", "", true, .packages_list);
+    _ = try self.addFile(control_dir, "catalog.json", "", true, .packages_catalog);
+    _ = try self.addFile(control_dir, "updates.json", "", true, .packages_updates);
     _ = try self.addFile(control_dir, "get.json", "", true, .packages_get);
     _ = try self.addFile(control_dir, "install.json", "", true, .packages_install);
     _ = try self.addFile(control_dir, "enable.json", "", true, .packages_enable);
@@ -110,6 +114,8 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
 
     const op = switch (special) {
         .packages_list => Op.list,
+        .packages_catalog => Op.catalog,
+        .packages_updates => Op.updates,
         .packages_get => Op.get,
         .packages_install => Op.install,
         .packages_enable => Op.enable,
@@ -148,6 +154,8 @@ pub fn handleNamespaceWrite(self: anytype, special: anytype, node_id: u32, raw_i
 fn parseOp(raw: []const u8) ?Op {
     const value = std.mem.trim(u8, raw, " \t\r\n");
     if (std.mem.eql(u8, value, "list") or std.mem.eql(u8, value, "packages_list")) return .list;
+    if (std.mem.eql(u8, value, "catalog") or std.mem.eql(u8, value, "packages_catalog")) return .catalog;
+    if (std.mem.eql(u8, value, "updates") or std.mem.eql(u8, value, "packages_updates")) return .updates;
     if (std.mem.eql(u8, value, "get") or std.mem.eql(u8, value, "packages_get")) return .get;
     if (std.mem.eql(u8, value, "install") or std.mem.eql(u8, value, "packages_install")) return .install;
     if (std.mem.eql(u8, value, "enable") or std.mem.eql(u8, value, "packages_enable")) return .enable;
@@ -193,12 +201,47 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
     const plane = self.control_plane;
     return switch (op) {
         .list => buildListResultJson(self),
+        .catalog => blk: {
+            const control = plane orelse return error.InvalidPayload;
+            const catalog_json = control.listRegistryCatalog(payload) catch |err| switch (err) {
+                else => return err,
+            };
+            defer self.allocator.free(catalog_json);
+            break :blk buildSingleResultJson(self, .catalog, "catalog", catalog_json);
+        },
+        .updates => blk: {
+            const control = plane orelse return error.InvalidPayload;
+            const updates_json = control.listVenomPackageUpdates() catch |err| switch (err) {
+                else => return err,
+            };
+            defer self.allocator.free(updates_json);
+            break :blk buildSingleResultJson(self, .updates, "updates", updates_json);
+        },
         .get => blk: {
             const venom_id = extractOptionalStringByNames(args_obj, &.{ "venom_id", "id" }) orelse return error.InvalidPayload;
-            const request = try buildPackageSelectionRequestJson(self.allocator, venom_id, extractOptionalStringByNames(args_obj, &.{"release_version"}));
+            const source = extractOptionalStringByNames(args_obj, &.{"source"});
+            const channel = extractOptionalStringByNames(args_obj, &.{"channel"});
+            const request = if (source != null or channel != null)
+                try buildDetailedPackageRequestJson(
+                    self.allocator,
+                    venom_id,
+                    extractOptionalStringByNames(args_obj, &.{"release_version"}),
+                    source,
+                    channel,
+                )
+            else
+                try buildPackageSelectionRequestJson(self.allocator, venom_id, extractOptionalStringByNames(args_obj, &.{"release_version"}));
             defer self.allocator.free(request);
             const package_json = if (plane) |value|
-                if (extractOptionalStringByNames(args_obj, &.{"release_version"}) != null)
+                if (source != null and std.mem.eql(u8, source.?, "registry"))
+                    value.getVenomPackage(request) catch |err| switch (err) {
+                        control_plane_mod.ControlPlaneError.VenomPackageNotFound => return error.InvalidPayload,
+                        control_plane_mod.ControlPlaneError.MissingField,
+                        control_plane_mod.ControlPlaneError.InvalidPayload,
+                        => return error.InvalidPayload,
+                        else => return err,
+                    }
+                else if (extractOptionalStringByNames(args_obj, &.{"release_version"}) != null)
                     value.getVenomRelease(request) catch |err| switch (err) {
                         control_plane_mod.ControlPlaneError.VenomPackageNotFound => return error.InvalidPayload,
                         control_plane_mod.ControlPlaneError.MissingField,
@@ -219,7 +262,7 @@ fn executeOpPayload(self: anytype, op: Op, args_obj: std.json.ObjectMap, payload
             else
                 return error.InvalidPayload;
             defer self.allocator.free(package_json);
-            break :blk buildSingleResultJson(self, .get, if (extractOptionalStringByNames(args_obj, &.{"release_version"}) != null) "release" else "package", package_json);
+            break :blk buildSingleResultJson(self, .get, if (source != null and std.mem.eql(u8, source.?, "registry")) "package" else if (extractOptionalStringByNames(args_obj, &.{"release_version"}) != null) "release" else "package", package_json);
         },
         .install => blk: {
             const control = plane orelse return error.InvalidPayload;
@@ -327,7 +370,15 @@ fn buildListResultJson(self: anytype) ![]u8 {
     const wrapped = if (self.control_plane) |plane| blk: {
         const releases_json = try plane.listVenomReleases();
         defer self.allocator.free(releases_json);
-        break :blk try std.fmt.allocPrint(self.allocator, "{{\"packages\":{s},\"releases\":{s}}}", .{ packages_json, releases_json });
+        const updates_json = try plane.listVenomPackageUpdates();
+        defer self.allocator.free(updates_json);
+        const registry_json = try plane.registryStatusJson();
+        defer self.allocator.free(registry_json);
+        break :blk try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"packages\":{s},\"releases\":{s},\"updates\":{s},\"registry\":{s}}}",
+            .{ packages_json, releases_json, updates_json, registry_json },
+        );
     } else try std.fmt.allocPrint(self.allocator, "{{\"packages\":{s}}}", .{packages_json});
     defer self.allocator.free(wrapped);
     return buildSuccessResultJson(self, .list, wrapped);
@@ -378,9 +429,38 @@ fn buildPackageSelectionRequestJson(
     return std.fmt.allocPrint(allocator, "{{\"venom_id\":\"{s}\"}}", .{venom_id});
 }
 
+fn buildDetailedPackageRequestJson(
+    allocator: std.mem.Allocator,
+    venom_id: []const u8,
+    release_version: ?[]const u8,
+    source: ?[]const u8,
+    channel: ?[]const u8,
+) ![]u8 {
+    const release_json = try optionalJsonFieldFromString(allocator, release_version);
+    defer allocator.free(release_json);
+    const source_json = try optionalJsonFieldFromString(allocator, source);
+    defer allocator.free(source_json);
+    const channel_json = try optionalJsonFieldFromString(allocator, channel);
+    defer allocator.free(channel_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"venom_id\":\"{s}\",\"release_version\":{s},\"source\":{s},\"channel\":{s}}}",
+        .{ venom_id, release_json, source_json, channel_json },
+    );
+}
+
+fn optionalJsonFieldFromString(allocator: std.mem.Allocator, value: ?[]const u8) ![]u8 {
+    if (value) |raw| {
+        return std.fmt.allocPrint(allocator, "\"{s}\"", .{raw});
+    }
+    return allocator.dupe(u8, "null");
+}
+
 fn operationName(op: Op) []const u8 {
     return switch (op) {
         .list => "list",
+        .catalog => "catalog",
+        .updates => "updates",
         .get => "get",
         .install => "install",
         .enable => "enable",
@@ -394,6 +474,8 @@ fn operationName(op: Op) []const u8 {
 fn statusToolName(op: Op) []const u8 {
     return switch (op) {
         .list => "packages_list",
+        .catalog => "packages_catalog",
+        .updates => "packages_updates",
         .get => "packages_get",
         .install => "packages_install",
         .enable => "packages_enable",

@@ -1,0 +1,11 @@
+{
+  "channel": "beta",
+  "generated_at": "2026-03-26T15:37:16Z",
+  "bundles": [],
+  "digest": "sha256:07a87623960f2817715b412896f3c4e4d7ab6bb37a54ca90c758f19cd5498bbd",
+  "signature": {
+    "scheme": "ed25519-sha256-v1",
+    "key_id": "spidervenomregistry-dev-2026-03",
+    "value": "DptfT1/7R35B7BfLdqSpQ4VnDs27Zu06Ps0DOr7MsdPJr5DD7GM3qQlps4ZLuh1U1XDk+r0V6lBCvLW3n48mAg=="
+  }
+}

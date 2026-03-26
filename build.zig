@@ -204,6 +204,12 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(spiderweb);
     const spiderweb_build_step = b.step("spiderweb", "Build spiderweb server executable");
     spiderweb_build_step.dependOn(&spiderweb.step);
+    const spiderweb_runtime_assets = b.addInstallDirectory(.{
+        .source_dir = b.path("templates"),
+        .install_dir = .prefix,
+        .install_subdir = "share/spiderweb/templates",
+    });
+    b.getInstallStep().dependOn(&spiderweb_runtime_assets.step);
     // Distributed filesystem node executable
     const fs_node_mod = b.createModule(.{
         .root_source_file = b.path("src/venoms/fs/shared/fs_node_main.zig"),
@@ -231,52 +237,6 @@ pub fn build(b: *std.Build) void {
     });
     spiderweb_local_node.linkLibC();
     b.installArtifact(spiderweb_local_node);
-
-    const local_node_service_mod = b.createModule(.{
-        .root_source_file = b.path("src/local_node_service_main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    local_node_service_mod.addImport("spider-protocol", spider_protocol_module);
-    local_node_service_mod.addImport("ziggy-tool-runtime", ziggy_tool_runtime_module);
-    const spiderweb_local_service = b.addExecutable(.{
-        .name = "spiderweb-local-service",
-        .root_module = local_node_service_mod,
-    });
-    spiderweb_local_service.linkLibC();
-    b.installArtifact(spiderweb_local_service);
-
-    const computer_driver_mod = b.createModule(.{
-        .root_source_file = spider_node_dep.path("examples/drivers/computer_driver.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    computer_driver_mod.addImport("spiderweb_node", spiderweb_node_module);
-    const spiderweb_computer_driver = b.addExecutable(.{
-        .name = "spiderweb-computer-driver",
-        .root_module = computer_driver_mod,
-    });
-    spiderweb_computer_driver.linkLibC();
-    if (target.result.os.tag == .macos) {
-        spiderweb_computer_driver.linkFramework("ApplicationServices");
-    }
-    b.installArtifact(spiderweb_computer_driver);
-
-    const browser_driver_mod = b.createModule(.{
-        .root_source_file = spider_node_dep.path("examples/drivers/browser_driver.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    browser_driver_mod.addImport("spiderweb_node", spiderweb_node_module);
-    const spiderweb_browser_driver = b.addExecutable(.{
-        .name = "spiderweb-browser-driver",
-        .root_module = browser_driver_mod,
-    });
-    spiderweb_browser_driver.linkLibC();
-    if (target.result.os.tag == .macos) {
-        spiderweb_browser_driver.linkFramework("ApplicationServices");
-    }
-    b.installArtifact(spiderweb_browser_driver);
 
     // MCP bridge executable (one-shot, translates Spider invoke to MCP JSON-RPC)
     const mcp_bridge_mod = b.createModule(.{

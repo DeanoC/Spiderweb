@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.5.1 - 2026-03-26
+
+### Release and Versioning
+- Standardized the public Spiderweb release line on `0.5.1` after the internal `0.5.0` cut was treated as a busted pre-release.
+- Added maintainer tooling and CI checks so Zig metadata, runtime strings, and the macOS app version stay in sync.
+- Added a tag-driven Linux release workflow that builds the archive, smoke-tests an installed-artifact boot, and publishes the release assets.
+
+### Venom Packaging and Installed Runtime
+- Completed the managed-local venom extraction so SpiderVenoms owns the bundle payload and Spiderweb consumes installed bundle artifacts.
+- Added Linux release packaging for `share/spiderweb/templates` and `share/spidervenoms/bundles/managed-local`.
+- Pinned Spiderweb packaging and install flows to the published `SpiderVenoms v0.5.2` release assets, with explicit source fallback for unsupported development architectures.
+- Documented the `src/venoms` boundary so `fs` remains a base/runtime capability, control-plane surfaces stay in Spiderweb, and transitional compatibility code is called out clearly.
+- Verified the release-style install and boot flow end to end in Ubuntu before publishing artifacts.
+
 ## 0.3.2 - 2026-03-19
 
 ### Windows Mounts and Remote Namespace

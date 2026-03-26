@@ -21,6 +21,7 @@ jobs:
         grep -q '\.path = "deps/spider-protocol"' build.zig.zon
         grep -q '\.path = "deps/ziggy-tool-runtime"' build.zig.zon
         grep -q '".gitmodules"' build.zig.zon
+        bash ./scripts/check-version-sync.sh
       extra_commands: |
         timeout 240 env SKIP_BUILD=1 bash test-env/test-spiderweb-control-protocol.sh
         if [[ "${RUN_SANDBOX_CI_TESTS:-0}" == "1" ]]; then
@@ -60,6 +61,39 @@ jobs:
     with:
       build_command: zig build fs-mount
       test_command: zig build test-fs-mount
+
+  linux-release-archive-smoke:
+    name: linux-release-archive-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap fuse3 git jq sqlite3
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Build Linux release archive
+        run: |
+          bash ./scripts/package-spiderweb-linux-release.sh --out-dir "$PWD/dist"
+
+      - name: Smoke test local release archive install
+        run: |
+          archive_path="$PWD/dist/spiderweb-linux-$(uname -m | sed 's/amd64/x86_64/; s/arm64/aarch64/').tar.gz"
+          sha_path="${archive_path}.sha256"
+          test -f "$archive_path"
+          test -f "$sha_path"
+          export SPIDERWEB_RELEASE_ARCHIVE_URL="file://$archive_path"
+          export SPIDERWEB_RELEASE_ARCHIVE_SHA256="$(awk '{print $1}' "$sha_path")"
+          export SPIDERWEB_RELEASE_VERSION="local-dist"
+          timeout 300 bash ./test-env/test-install.sh release
 
   windows-fs-tests:
     name: windows-fs-tests

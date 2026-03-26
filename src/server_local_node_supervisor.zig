@@ -2,17 +2,16 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Config = @import("config.zig");
 const control_plane_mod = @import("acheron/control_plane.zig");
-const unified = @import("spider-protocol").unified;
-const macos_capability_venoms = @import("spiderweb_node").macos_capability_venoms;
+const venom_model = @import("venom_model.zig");
 
 const local_node_supervisor_dirname = "local-node";
 const local_node_state_filename = "state.json";
 const local_node_manifests_dirname = "services.d";
-const local_node_bin_dirname = "bin";
 pub const local_node_default_name = "spiderweb-local";
-const local_node_service_binary_name = "spiderweb-local-service";
-const local_node_computer_binary_name = macos_capability_venoms.computer_driver_binary_name;
-const local_node_browser_binary_name = macos_capability_venoms.browser_driver_binary_name;
+const local_node_host_type_label = "spider.host_type=" ++ venom_model.HostType.spiderweb_managed.asString();
+const packaged_bundle_release_rel_path = "share/spidervenoms/bundles/managed-local/release.json";
+const app_resources_bundle_release_rel_path = "spidervenoms/bundles/managed-local/release.json";
+const repo_bundle_release_rel_path = "SpiderVenoms/zig-out/share/spidervenoms/bundles/managed-local/release.json";
 
 pub fn ensureDirectoryExists(dir_path: []const u8) !void {
     if (dir_path.len == 0) return error.InvalidPath;
@@ -89,6 +88,74 @@ pub fn resolveSiblingExecutablePath(allocator: std.mem.Allocator, executable_nam
     return allocator.dupe(u8, executable_name);
 }
 
+fn isFilesystemRoot(path: []const u8) bool {
+    const parent = std.fs.path.dirname(path) orelse return true;
+    return std.mem.eql(u8, parent, path);
+}
+
+fn findExistingPathFromBase(
+    allocator: std.mem.Allocator,
+    base: []const u8,
+    relative_candidates: []const []const u8,
+) !?[]u8 {
+    var current = try allocator.dupe(u8, base);
+    defer allocator.free(current);
+
+    while (true) {
+        for (relative_candidates) |candidate| {
+            const joined = try std.fs.path.join(allocator, &.{ current, candidate });
+            if (pathExists(joined)) return joined;
+            allocator.free(joined);
+        }
+
+        if (isFilesystemRoot(current)) break;
+        const parent = std.fs.path.dirname(current) orelse break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+
+    return null;
+}
+
+fn resolveBundleReleasePath(allocator: std.mem.Allocator, configured_path: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, configured_path, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidArguments;
+    if (std.fs.path.isAbsolute(trimmed)) return allocator.dupe(u8, trimmed);
+    if (pathExists(trimmed)) return allocator.dupe(u8, trimmed);
+
+    const self_path = std.fs.selfExePathAlloc(allocator) catch null;
+    defer if (self_path) |value| allocator.free(value);
+    if (self_path) |exe_path| {
+        if (std.fs.path.dirname(exe_path)) |exe_dir| {
+            const exe_relative = try std.fs.path.join(allocator, &.{ exe_dir, trimmed });
+            if (pathExists(exe_relative)) return exe_relative;
+            allocator.free(exe_relative);
+
+            if (try findExistingPathFromBase(allocator, exe_dir, &.{
+                packaged_bundle_release_rel_path,
+                app_resources_bundle_release_rel_path,
+                repo_bundle_release_rel_path,
+            })) |resolved| {
+                return resolved;
+            }
+        }
+    }
+
+    const cwd = std.process.getCwdAlloc(allocator) catch null;
+    defer if (cwd) |value| allocator.free(value);
+    if (cwd) |cwd_path| {
+        if (try findExistingPathFromBase(allocator, cwd_path, &.{
+            repo_bundle_release_rel_path,
+            packaged_bundle_release_rel_path,
+        })) |resolved| {
+            return resolved;
+        }
+    }
+
+    return allocator.dupe(u8, trimmed);
+}
+
 fn deleteTreeIfPresent(dir_path: []const u8) !void {
     if (!pathExists(dir_path)) return;
 
@@ -141,6 +208,12 @@ fn openFileForRead(path: []const u8) !std.fs.File {
         return std.fs.openFileAbsolute(path, .{ .mode = .read_only });
     }
     return std.fs.cwd().openFile(path, .{ .mode = .read_only });
+}
+
+fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    var file = try openFileForRead(path);
+    defer file.close();
+    return file.readToEndAlloc(allocator, max_bytes);
 }
 
 fn containsPathSeparator(path: []const u8) bool {
@@ -243,18 +316,15 @@ pub const LocalNodeSupervisor = struct {
     control_url: []u8,
     control_auth_token: []u8,
     binary_path: []u8,
-    service_binary_path: []u8,
-    computer_driver_binary_path: ?[]u8 = null,
-    browser_driver_binary_path: ?[]u8 = null,
-    driver_bin_dir: []u8,
-    staged_computer_driver_path: ?[]u8 = null,
-    staged_browser_driver_path: ?[]u8 = null,
     export_root: []u8,
     export_name: []u8,
     profile: []u8,
     state_dir: []u8,
     state_path: []u8,
     manifests_dir: []u8,
+    bundle_release_path: []u8,
+    bundle_root_dir: []u8,
+    allow_unsigned_dev_bundles: bool,
     extra_venoms_dir: ?[]u8 = null,
     restart_on_exit: bool,
     thread: ?std.Thread = null,
@@ -283,8 +353,13 @@ pub const LocalNodeSupervisor = struct {
         errdefer allocator.free(state_path);
         const manifests_dir = try std.fs.path.join(allocator, &.{ state_dir, local_node_manifests_dirname });
         errdefer allocator.free(manifests_dir);
-        const driver_bin_dir = try std.fs.path.join(allocator, &.{ state_dir, local_node_bin_dirname });
-        errdefer allocator.free(driver_bin_dir);
+        const bundle_release_path = try resolveBundleReleasePath(allocator, local_cfg.bundle_release_path);
+        errdefer allocator.free(bundle_release_path);
+        const bundle_root_dir = blk: {
+            const dirname = std.fs.path.dirname(bundle_release_path) orelse return error.InvalidArguments;
+            break :blk try allocator.dupe(u8, dirname);
+        };
+        errdefer allocator.free(bundle_root_dir);
 
         supervisor.* = .{
             .allocator = allocator,
@@ -297,30 +372,15 @@ pub const LocalNodeSupervisor = struct {
                 try allocator.dupe(u8, local_cfg.binary)
             else
                 try resolveSiblingExecutablePath(allocator, local_cfg.binary),
-            .service_binary_path = try resolveSiblingExecutablePath(allocator, local_node_service_binary_name),
-            .computer_driver_binary_path = if (builtin.os.tag == .macos)
-                try resolveSiblingExecutablePath(allocator, local_node_computer_binary_name)
-            else
-                null,
-            .browser_driver_binary_path = if (builtin.os.tag == .macos)
-                try resolveSiblingExecutablePath(allocator, local_node_browser_binary_name)
-            else
-                null,
-            .driver_bin_dir = driver_bin_dir,
-            .staged_computer_driver_path = if (builtin.os.tag == .macos)
-                try std.fs.path.join(allocator, &.{ driver_bin_dir, local_node_computer_binary_name })
-            else
-                null,
-            .staged_browser_driver_path = if (builtin.os.tag == .macos)
-                try std.fs.path.join(allocator, &.{ driver_bin_dir, local_node_browser_binary_name })
-            else
-                null,
             .export_root = try allocator.dupe(u8, export_root_trimmed),
             .export_name = try allocator.dupe(u8, std.mem.trim(u8, local_cfg.export_name, " \t\r\n")),
             .profile = try allocator.dupe(u8, std.mem.trim(u8, local_cfg.profile, " \t\r\n")),
             .state_dir = state_dir,
             .state_path = state_path,
             .manifests_dir = manifests_dir,
+            .bundle_release_path = bundle_release_path,
+            .bundle_root_dir = bundle_root_dir,
+            .allow_unsigned_dev_bundles = local_cfg.allow_unsigned_dev_bundles,
             .extra_venoms_dir = blk: {
                 const trimmed = std.mem.trim(u8, local_cfg.extra_venoms_dir, " \t\r\n");
                 if (trimmed.len == 0) break :blk null;
@@ -344,18 +404,14 @@ pub const LocalNodeSupervisor = struct {
         self.allocator.free(self.control_url);
         self.allocator.free(self.control_auth_token);
         self.allocator.free(self.binary_path);
-        self.allocator.free(self.service_binary_path);
-        if (self.computer_driver_binary_path) |value| self.allocator.free(value);
-        if (self.browser_driver_binary_path) |value| self.allocator.free(value);
-        self.allocator.free(self.driver_bin_dir);
-        if (self.staged_computer_driver_path) |value| self.allocator.free(value);
-        if (self.staged_browser_driver_path) |value| self.allocator.free(value);
         self.allocator.free(self.export_root);
         self.allocator.free(self.export_name);
         self.allocator.free(self.profile);
         self.allocator.free(self.state_dir);
         self.allocator.free(self.state_path);
         self.allocator.free(self.manifests_dir);
+        self.allocator.free(self.bundle_release_path);
+        self.allocator.free(self.bundle_root_dir);
         if (self.extra_venoms_dir) |value| self.allocator.free(value);
         self.allocator.destroy(self);
     }
@@ -395,9 +451,7 @@ pub const LocalNodeSupervisor = struct {
 
     fn prepareLaunch(self: *LocalNodeSupervisor) !void {
         try ensureDirectoryExists(self.state_dir);
-        try ensureDirectoryExists(self.driver_bin_dir);
         try ensureDirectoryExists(self.export_root);
-        try self.stageCapabilityDrivers();
         try deleteTreeIfPresent(self.manifests_dir);
         try ensureDirectoryExists(self.manifests_dir);
         const initial_join_payload = try self.control_plane.ensureNode(local_node_default_name, "", 15 * 60 * 1000);
@@ -412,132 +466,79 @@ pub const LocalNodeSupervisor = struct {
         defer self.allocator.free(join_payload);
         try writeFileReplacing(self.state_path, join_payload);
         try self.control_plane.ensureSpiderWebMount(node_id, self.export_name);
-        try self.writeManifestFiles();
+        try self.writeBundleManifestFiles();
     }
 
-    fn writeManifestFiles(self: *LocalNodeSupervisor) !void {
-        try self.writeManifestFile("terminal", "terminal");
-        try self.writeManifestFile("git", "git");
-        try self.writeManifestFile("search_code", "search_code");
-        if (builtin.os.tag == .macos) {
-            if (self.staged_computer_driver_path) |value| {
-                try self.writeCapabilityManifestFile("computer", value);
-            }
-            if (self.staged_browser_driver_path) |value| {
-                try self.writeCapabilityManifestFile("browser", value);
-            }
+    fn writeBundleManifestFiles(self: *LocalNodeSupervisor) !void {
+        const release_json = try readFileAlloc(self.allocator, self.bundle_release_path, 1024 * 1024);
+        defer self.allocator.free(release_json);
+
+        var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, release_json, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidBundleRelease;
+
+        try self.validateBundleEnvelope(parsed.value.object);
+        const executables = try getRequiredBundleArray(parsed.value.object, "executables");
+        try stageBundleExecutables(self.allocator, self.state_dir, self.bundle_root_dir, executables);
+        const packages_value = parsed.value.object.get("packages") orelse return error.InvalidBundleRelease;
+        if (packages_value != .array) return error.InvalidBundleRelease;
+
+        for (packages_value.array.items) |item| {
+            if (item != .object) return error.InvalidBundleRelease;
+            try self.writeBundleManifestEntry(item.object, executables);
         }
     }
 
-    fn stageCapabilityDrivers(self: *LocalNodeSupervisor) !void {
-        if (builtin.os.tag != .macos) return;
+    fn writeBundleManifestEntry(self: *LocalNodeSupervisor, item: std.json.ObjectMap, executables: []const std.json.Value) !void {
+        try self.validateBundleEnvelope(item);
 
-        if (self.computer_driver_binary_path) |source_path| {
-            const staged_path = self.staged_computer_driver_path orelse return error.InvalidArguments;
-            try stageExecutable(self.allocator, source_path, staged_path);
-        }
-        if (self.browser_driver_binary_path) |source_path| {
-            const staged_path = self.staged_browser_driver_path orelse return error.InvalidArguments;
-            try stageExecutable(self.allocator, source_path, staged_path);
-        }
-    }
-
-    fn writeManifestFile(self: *LocalNodeSupervisor, venom_id: []const u8, mode: []const u8) !void {
-        const manifest_json = try self.buildManifestJson(venom_id, mode);
-        defer self.allocator.free(manifest_json);
-        const manifest_name = try std.fmt.allocPrint(self.allocator, "{s}.json", .{mode});
-        defer self.allocator.free(manifest_name);
-        const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, manifest_name });
-        defer self.allocator.free(manifest_path);
-        try writeFileReplacing(manifest_path, manifest_json);
-    }
-
-    fn writeCapabilityManifestFile(self: *LocalNodeSupervisor, family_id: []const u8, executable_path: []const u8) !void {
-        const manifest_json = if (std.mem.eql(u8, family_id, "computer")) blk: {
-            break :blk try macos_capability_venoms.renderComputerManifestJson(self.allocator, executable_path);
-        } else if (std.mem.eql(u8, family_id, "browser")) blk: {
-            const browser_state_path = try std.fs.path.join(self.allocator, &.{ self.state_dir, "browser", "state.json" });
-            defer self.allocator.free(browser_state_path);
-            const browser_profile_dir = try std.fs.path.join(self.allocator, &.{ self.state_dir, "browser", "profile" });
-            defer self.allocator.free(browser_profile_dir);
-            break :blk try macos_capability_venoms.renderBrowserManifestJsonWithRuntimePaths(
-                self.allocator,
-                executable_path,
-                .{
-                    .state_path = browser_state_path,
-                    .profile_dir = browser_profile_dir,
-                },
-            );
-        } else
-            return error.InvalidArguments;
-        defer self.allocator.free(manifest_json);
-        const manifest_name = try std.fmt.allocPrint(self.allocator, "{s}.json", .{family_id});
-        defer self.allocator.free(manifest_name);
-        const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, manifest_name });
-        defer self.allocator.free(manifest_path);
-        try writeFileReplacing(manifest_path, manifest_json);
-    }
-
-    fn buildManifestJson(self: *LocalNodeSupervisor, venom_id: []const u8, mode: []const u8) ![]u8 {
-        const escaped_exec = try unified.jsonEscape(self.allocator, self.service_binary_path);
-        defer self.allocator.free(escaped_exec);
-        const escaped_export_root = try unified.jsonEscape(self.allocator, self.export_root);
-        defer self.allocator.free(escaped_export_root);
-        const escaped_mode = try unified.jsonEscape(self.allocator, mode);
-        defer self.allocator.free(escaped_mode);
-
-        const kind: []const u8 = mode;
-        const categories_json = if (std.mem.eql(u8, mode, "terminal"))
-            "[\"terminal\",\"exec\"]"
-        else if (std.mem.eql(u8, mode, "git"))
-            "[\"developer\",\"scm\"]"
-        else
-            "[\"search\",\"code\"]";
-        const requirements_json = if (std.mem.eql(u8, mode, "git"))
-            "{\"host_capabilities\":[\"local_fs_export\"]}"
-        else
-            "{}";
-        const capabilities_json = if (std.mem.eql(u8, mode, "terminal"))
-            "{\"invoke\":true,\"discoverable\":true,\"operations\":[\"exec\"]}"
-        else if (std.mem.eql(u8, mode, "git"))
-            "{\"invoke\":true,\"discoverable\":true,\"operations\":[\"sync_checkout\",\"status\",\"diff_range\"]}"
-        else
-            "{\"invoke\":true,\"discoverable\":true,\"operations\":[\"search\"]}";
-        const help_md = if (std.mem.eql(u8, mode, "terminal"))
-            "Workspace terminal service backed by the supervised spiderweb-local-node process."
-        else if (std.mem.eql(u8, mode, "git"))
-            "Workspace git service backed by the supervised spiderweb-local-node process."
-        else
-            "Workspace code search service backed by the supervised spiderweb-local-node process.";
-        const escaped_help = try unified.jsonEscape(self.allocator, help_md);
-        defer self.allocator.free(escaped_help);
-        const invoke_template_json = if (std.mem.eql(u8, mode, "terminal"))
-            "{\"op\":\"exec\",\"arguments\":{\"command\":\"pwd\",\"cwd\":\"/nodes/local/fs\"}}"
-        else if (std.mem.eql(u8, mode, "git"))
-            "{\"op\":\"status\",\"arguments\":{\"checkout_path\":\"/nodes/local/fs\"}}"
-        else
-            "{\"op\":\"search\",\"arguments\":{\"query\":\"TODO\",\"path\":\"/nodes/local/fs\"}}";
-
-        return std.fmt.allocPrint(
+        const manifest_rel_path = getRequiredBundleString(item, "manifest_path");
+        if (manifest_rel_path.len == 0) return error.InvalidBundleRelease;
+        const executable_id = getRequiredBundleString(item, "executable_id");
+        if (executable_id.len == 0) return error.InvalidBundleRelease;
+        const executable_path = try resolveBundleExecutableInstallPath(
             self.allocator,
-            "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"1\",\"state\":\"online\",\"categories\":{s},\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"requirements\":{s},\"runtime_kind\":\"native\",\"endpoints\":[\"/nodes/{{node_id}}/venoms/{s}\"],\"mounts\":[{{\"mount_id\":\"{s}\",\"mount_path\":\"/nodes/{{node_id}}/venoms/{s}\",\"state\":\"online\"}}],\"capabilities\":{s},\"ops\":{{\"model\":\"namespace\",\"invoke\":\"control/invoke.json\",\"paths\":{{\"invoke\":\"control/invoke.json\"}}}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"namespace-driver-v1\",\"executable_path\":\"{s}\",\"args\":[\"{s}\",\"{s}\"],\"timeout_ms\":300000}},\"permissions\":{{\"default\":\"allow-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"project\"}},\"schema\":{{\"model\":\"namespace-mount\"}},\"invoke_template\":{s},\"help_md\":\"{s}\"}}",
-            .{
-                venom_id,
-                venom_id,
-                kind,
-                categories_json,
-                requirements_json,
-                venom_id,
-                venom_id,
-                venom_id,
-                capabilities_json,
-                escaped_exec,
-                escaped_mode,
-                escaped_export_root,
-                invoke_template_json,
-                escaped_help,
-            },
+            self.state_dir,
+            self.bundle_root_dir,
+            executables,
+            executable_id,
+        ) orelse return;
+        defer self.allocator.free(executable_path);
+
+        const manifest_source_path = try std.fs.path.join(self.allocator, &.{ self.bundle_root_dir, manifest_rel_path });
+        defer self.allocator.free(manifest_source_path);
+        const manifest_template = try readFileAlloc(self.allocator, manifest_source_path, 1024 * 1024);
+        defer self.allocator.free(manifest_template);
+
+        const template_bindings = getOptionalBundleObject(item, "template_bindings");
+        const rendered_manifest = try renderBundleManifestTemplate(
+            self.allocator,
+            self.state_dir,
+            self.bundle_root_dir,
+            self.export_root,
+            manifest_template,
+            executable_path,
+            template_bindings,
         );
+        defer self.allocator.free(rendered_manifest);
+
+        const manifest_name = std.fs.path.basename(manifest_rel_path);
+        if (manifest_name.len == 0) return error.InvalidBundleRelease;
+        const manifest_path = try std.fs.path.join(self.allocator, &.{ self.manifests_dir, manifest_name });
+        defer self.allocator.free(manifest_path);
+        try writeFileReplacing(manifest_path, rendered_manifest);
+    }
+
+    fn validateBundleEnvelope(self: *LocalNodeSupervisor, obj: std.json.ObjectMap) !void {
+        if (self.allow_unsigned_dev_bundles) return;
+
+        const signature = obj.get("signature") orelse return error.UnsignedManagedBundle;
+        if (signature != .object or signature.object.count() == 0) return error.UnsignedManagedBundle;
+
+        const trust = obj.get("trust") orelse return error.UnsignedManagedBundle;
+        if (trust != .object) return error.UnsignedManagedBundle;
+        const mode = getOptionalBundleString(trust.object, "mode") orelse return error.UnsignedManagedBundle;
+        if (std.mem.eql(u8, std.mem.trim(u8, mode, " \t\r\n"), "unsigned")) return error.UnsignedManagedBundle;
     }
 
     fn buildArgv(self: *LocalNodeSupervisor, allocator: std.mem.Allocator) !std.ArrayListUnmanaged([]const u8) {
@@ -558,6 +559,8 @@ pub const LocalNodeSupervisor = struct {
         errdefer allocator.free(export_arg);
         try argv.append(allocator, "--export");
         try argv.append(allocator, export_arg);
+        try argv.append(allocator, "--label");
+        try argv.append(allocator, local_node_host_type_label);
         try argv.append(allocator, "--venoms-dir");
         try argv.append(allocator, self.manifests_dir);
         if (self.extra_venoms_dir) |extra_dir| {
@@ -603,6 +606,8 @@ fn localNodeSupervisorMain(supervisor: *LocalNodeSupervisor) void {
                     std.mem.eql(u8, arg, "--node-name") or
                     std.mem.eql(u8, arg, local_node_default_name) or
                     std.mem.eql(u8, arg, "--export") or
+                    std.mem.eql(u8, arg, "--label") or
+                    std.mem.eql(u8, arg, local_node_host_type_label) or
                     std.mem.eql(u8, arg, "--venoms-dir"))
                 {
                     continue;
@@ -638,4 +643,449 @@ fn localNodeSupervisorMain(supervisor: *LocalNodeSupervisor) void {
         if (!supervisor.restart_on_exit) return;
         std.Thread.sleep(500 * std.time.ns_per_ms);
     }
+}
+
+fn getRequiredBundleString(obj: std.json.ObjectMap, field_name: []const u8) []const u8 {
+    const value = obj.get(field_name) orelse return "";
+    if (value != .string or value.string.len == 0) return "";
+    return value.string;
+}
+
+fn getRequiredBundleArray(obj: std.json.ObjectMap, field_name: []const u8) ![]const std.json.Value {
+    const value = obj.get(field_name) orelse return error.InvalidBundleRelease;
+    if (value != .array) return error.InvalidBundleRelease;
+    return value.array.items;
+}
+
+fn getRequiredBundleObject(obj: std.json.ObjectMap, field_name: []const u8) !std.json.ObjectMap {
+    const value = obj.get(field_name) orelse return error.InvalidBundleRelease;
+    if (value != .object) return error.InvalidBundleRelease;
+    return value.object;
+}
+
+fn getOptionalBundleString(obj: std.json.ObjectMap, field_name: []const u8) ?[]const u8 {
+    const value = obj.get(field_name) orelse return null;
+    if (value != .string or value.string.len == 0) return null;
+    return value.string;
+}
+
+fn getOptionalBundleObject(obj: std.json.ObjectMap, field_name: []const u8) ?std.json.ObjectMap {
+    const value = obj.get(field_name) orelse return null;
+    if (value != .object) return null;
+    return value.object;
+}
+
+fn currentBundlePlatformLabel() []const u8 {
+    return switch (builtin.os.tag) {
+        .macos => "macos",
+        .linux => "linux",
+        .windows => "windows",
+        else => @tagName(builtin.os.tag),
+    };
+}
+
+fn bundleObjectSupportsCurrentPlatform(obj: std.json.ObjectMap) !bool {
+    const platforms_value = obj.get("platforms") orelse return true;
+    if (platforms_value != .array) return error.InvalidBundleRelease;
+
+    const current_platform = currentBundlePlatformLabel();
+    for (platforms_value.array.items) |item| {
+        if (item != .string) return error.InvalidBundleRelease;
+        const platform = std.mem.trim(u8, item.string, " \t\r\n");
+        if (platform.len == 0) return error.InvalidBundleRelease;
+        if (std.mem.eql(u8, platform, current_platform)) return true;
+    }
+    return false;
+}
+
+fn resolveBundleExecutableSourcePath(
+    allocator: std.mem.Allocator,
+    bundle_root_dir: []const u8,
+    executable: std.json.ObjectMap,
+) ![]u8 {
+    const source = try getRequiredBundleObject(executable, "source");
+    const kind = getRequiredBundleString(source, "kind");
+    const path = getRequiredBundleString(source, "path");
+    if (kind.len == 0 or path.len == 0) return error.InvalidBundleRelease;
+
+    if (std.mem.eql(u8, kind, "sibling_executable")) {
+        return resolveSiblingExecutablePath(allocator, path);
+    }
+    if (std.mem.eql(u8, kind, "path_lookup")) {
+        return resolveExecutableSourcePath(allocator, path);
+    }
+    if (std.mem.eql(u8, kind, "bundle_relative")) {
+        return std.fs.path.join(allocator, &.{ bundle_root_dir, path });
+    }
+    return error.InvalidBundleRelease;
+}
+
+fn resolveBundleExecutableStagePath(
+    allocator: std.mem.Allocator,
+    state_dir: []const u8,
+    executable: std.json.ObjectMap,
+) !?[]u8 {
+    const stage_rel_path = getOptionalBundleString(executable, "stage_path") orelse return null;
+    const trimmed = std.mem.trim(u8, stage_rel_path, " \t\r\n");
+    if (trimmed.len == 0 or std.fs.path.isAbsolute(trimmed)) return error.InvalidBundleRelease;
+    return blk: {
+        break :blk try std.fs.path.join(allocator, &.{ state_dir, trimmed });
+    };
+}
+
+fn findBundleExecutableObject(
+    executables: []const std.json.Value,
+    executable_id: []const u8,
+) !?std.json.ObjectMap {
+    for (executables) |entry| {
+        if (entry != .object) return error.InvalidBundleRelease;
+        const id = getRequiredBundleString(entry.object, "id");
+        if (id.len == 0) return error.InvalidBundleRelease;
+        if (std.mem.eql(u8, id, executable_id)) return entry.object;
+    }
+    return null;
+}
+
+fn stageBundleExecutables(
+    allocator: std.mem.Allocator,
+    state_dir: []const u8,
+    bundle_root_dir: []const u8,
+    executables: []const std.json.Value,
+) !void {
+    for (executables) |entry| {
+        if (entry != .object) return error.InvalidBundleRelease;
+        if (!try bundleObjectSupportsCurrentPlatform(entry.object)) continue;
+
+        const staged_path = try resolveBundleExecutableStagePath(allocator, state_dir, entry.object) orelse continue;
+        defer allocator.free(staged_path);
+
+        const source_path = try resolveBundleExecutableSourcePath(allocator, bundle_root_dir, entry.object);
+        defer allocator.free(source_path);
+        try stageExecutable(allocator, source_path, staged_path);
+    }
+}
+
+fn resolveBundleExecutableInstallPath(
+    allocator: std.mem.Allocator,
+    state_dir: []const u8,
+    bundle_root_dir: []const u8,
+    executables: []const std.json.Value,
+    executable_id: []const u8,
+) !?[]u8 {
+    const executable = try findBundleExecutableObject(executables, executable_id) orelse return null;
+    if (!try bundleObjectSupportsCurrentPlatform(executable)) return null;
+
+    if (try resolveBundleExecutableStagePath(allocator, state_dir, executable)) |staged_path| {
+        return staged_path;
+    }
+    return blk: {
+        break :blk try resolveBundleExecutableSourcePath(allocator, bundle_root_dir, executable);
+    };
+}
+
+fn resolveManifestTemplateBindingValue(
+    allocator: std.mem.Allocator,
+    state_dir: []const u8,
+    bundle_root_dir: []const u8,
+    export_root: []const u8,
+    binding_value: std.json.Value,
+) ![]u8 {
+    switch (binding_value) {
+        .string => |value| return allocator.dupe(u8, value),
+        .object => |binding| {
+            const kind = getRequiredBundleString(binding, "kind");
+            if (kind.len == 0) return error.InvalidBundleRelease;
+
+            if (std.mem.eql(u8, kind, "export_root")) {
+                return allocator.dupe(u8, export_root);
+            }
+            if (std.mem.eql(u8, kind, "literal")) {
+                const value = getRequiredBundleString(binding, "value");
+                if (value.len == 0) return error.InvalidBundleRelease;
+                return allocator.dupe(u8, value);
+            }
+            if (std.mem.eql(u8, kind, "bundle_relative")) {
+                const rel_path = getRequiredBundleString(binding, "path");
+                if (rel_path.len == 0) return error.InvalidBundleRelease;
+                return std.fs.path.join(allocator, &.{ bundle_root_dir, rel_path });
+            }
+            if (std.mem.eql(u8, kind, "state_file")) {
+                const rel_path = getRequiredBundleString(binding, "path");
+                if (rel_path.len == 0 or std.fs.path.isAbsolute(rel_path)) return error.InvalidBundleRelease;
+                const full_path = try std.fs.path.join(allocator, &.{ state_dir, rel_path });
+                errdefer allocator.free(full_path);
+                try ensureDirectoryExists(std.fs.path.dirname(full_path) orelse state_dir);
+                return full_path;
+            }
+            if (std.mem.eql(u8, kind, "state_dir")) {
+                const rel_path = getRequiredBundleString(binding, "path");
+                if (rel_path.len == 0 or std.fs.path.isAbsolute(rel_path)) return error.InvalidBundleRelease;
+                const full_path = try std.fs.path.join(allocator, &.{ state_dir, rel_path });
+                errdefer allocator.free(full_path);
+                try ensureDirectoryExists(full_path);
+                return full_path;
+            }
+            return error.InvalidBundleRelease;
+        },
+        else => return error.InvalidBundleRelease,
+    }
+}
+
+fn renderBundleManifestTemplate(
+    allocator: std.mem.Allocator,
+    state_dir: []const u8,
+    bundle_root_dir: []const u8,
+    export_root: []const u8,
+    template_json: []const u8,
+    executable_path: []const u8,
+    template_bindings: ?std.json.ObjectMap,
+) ![]u8 {
+    var rendered = try allocator.dupe(u8, template_json);
+    errdefer allocator.free(rendered);
+
+    try replaceManifestPlaceholder(allocator, &rendered, "__EXECUTABLE_PATH__", executable_path);
+    if (template_bindings) |bindings| {
+        var it = bindings.iterator();
+        while (it.next()) |entry| {
+            const replacement = try resolveManifestTemplateBindingValue(
+                allocator,
+                state_dir,
+                bundle_root_dir,
+                export_root,
+                entry.value_ptr.*,
+            );
+            defer allocator.free(replacement);
+            try replaceManifestPlaceholder(allocator, &rendered, entry.key_ptr.*, replacement);
+        }
+    }
+
+    return rendered;
+}
+
+fn replaceManifestPlaceholder(
+    allocator: std.mem.Allocator,
+    source: *[]u8,
+    placeholder: []const u8,
+    replacement: []const u8,
+) !void {
+    const next = try replaceAllAlloc(allocator, source.*, placeholder, replacement);
+    allocator.free(source.*);
+    source.* = next;
+}
+
+fn replaceAllAlloc(
+    allocator: std.mem.Allocator,
+    haystack: []const u8,
+    needle: []const u8,
+    replacement: []const u8,
+) ![]u8 {
+    if (needle.len == 0) return allocator.dupe(u8, haystack);
+
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(allocator);
+
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, cursor, needle)) |index| {
+        try out.appendSlice(allocator, haystack[cursor..index]);
+        try out.appendSlice(allocator, replacement);
+        cursor = index + needle.len;
+    }
+    try out.appendSlice(allocator, haystack[cursor..]);
+    return out.toOwnedSlice(allocator);
+}
+
+fn otherBundlePlatformLabel() []const u8 {
+    const current = currentBundlePlatformLabel();
+    if (!std.mem.eql(u8, current, "linux")) return "linux";
+    if (!std.mem.eql(u8, current, "macos")) return "macos";
+    return "windows";
+}
+
+test "managed bundle metadata stages executables and renders template bindings" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    const bundle_root = try std.fs.path.join(allocator, &.{ root, "bundle" });
+    defer allocator.free(bundle_root);
+    const state_dir = try std.fs.path.join(allocator, &.{ root, "state" });
+    defer allocator.free(state_dir);
+    const export_root = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(export_root);
+
+    const driver_source = try std.fs.path.join(allocator, &.{ bundle_root, "drivers", "tool.sh" });
+    defer allocator.free(driver_source);
+    try writeFileReplacing(driver_source, "#!/bin/sh\necho managed-tool\n");
+
+    const template_json =
+        \\{
+        \\  "runtime": {
+        \\    "executable_path": "__EXECUTABLE_PATH__",
+        \\    "env": {
+        \\      "EXPORT_ROOT": "__EXPORT_ROOT__",
+        \\      "STATE_FILE": "__STATE_FILE__",
+        \\      "STATE_DIR": "__STATE_DIR__",
+        \\      "ASSET_PATH": "__ASSET_PATH__",
+        \\      "STATIC_VALUE": "__STATIC_VALUE__"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    const release_json = try std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "executables": [
+        \\    {{
+        \\      "id": "tool",
+        \\      "source": {{
+        \\        "kind": "bundle_relative",
+        \\        "path": "drivers/tool.sh"
+        \\      }},
+        \\      "stage_path": "bin/tool.sh",
+        \\      "platforms": ["{s}"]
+        \\    }}
+        \\  ],
+        \\  "packages": [
+        \\    {{
+        \\      "package_id": "tool",
+        \\      "manifest_path": "manifests/tool.json",
+        \\      "executable_id": "tool",
+        \\      "template_bindings": {{
+        \\        "__EXPORT_ROOT__": {{
+        \\          "kind": "export_root"
+        \\        }},
+        \\        "__STATE_FILE__": {{
+        \\          "kind": "state_file",
+        \\          "path": "browser/state.json"
+        \\        }},
+        \\        "__STATE_DIR__": {{
+        \\          "kind": "state_dir",
+        \\          "path": "browser/profile"
+        \\        }},
+        \\        "__ASSET_PATH__": {{
+        \\          "kind": "bundle_relative",
+        \\          "path": "assets/info.txt"
+        \\        }},
+        \\        "__STATIC_VALUE__": {{
+        \\          "kind": "literal",
+        \\          "value": "hello"
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  ]
+        \\}}
+    ,
+        .{currentBundlePlatformLabel()},
+    );
+    defer allocator.free(release_json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, release_json, .{});
+    defer parsed.deinit();
+
+    const executables = try getRequiredBundleArray(parsed.value.object, "executables");
+    try stageBundleExecutables(allocator, state_dir, bundle_root, executables);
+
+    const executable_path = try resolveBundleExecutableInstallPath(
+        allocator,
+        state_dir,
+        bundle_root,
+        executables,
+        "tool",
+    ) orelse return error.TestUnexpectedResult;
+    defer allocator.free(executable_path);
+
+    const staged_contents = try readFileAlloc(allocator, executable_path, 1024);
+    defer allocator.free(staged_contents);
+    try std.testing.expectEqualStrings("#!/bin/sh\necho managed-tool\n", staged_contents);
+
+    const expected_state_file = try std.fs.path.join(allocator, &.{ state_dir, "browser", "state.json" });
+    defer allocator.free(expected_state_file);
+    const expected_state_dir = try std.fs.path.join(allocator, &.{ state_dir, "browser", "profile" });
+    defer allocator.free(expected_state_dir);
+    const expected_asset_path = try std.fs.path.join(allocator, &.{ bundle_root, "assets", "info.txt" });
+    defer allocator.free(expected_asset_path);
+
+    const package = parsed.value.object.get("packages").?.array.items[0].object;
+    const rendered_manifest = try renderBundleManifestTemplate(
+        allocator,
+        state_dir,
+        bundle_root,
+        export_root,
+        template_json,
+        executable_path,
+        getOptionalBundleObject(package, "template_bindings"),
+    );
+    defer allocator.free(rendered_manifest);
+
+    try std.testing.expect(std.mem.indexOf(u8, rendered_manifest, executable_path) != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered_manifest, export_root) != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered_manifest, expected_state_file) != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered_manifest, expected_state_dir) != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered_manifest, expected_asset_path) != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered_manifest, "\"hello\"") != null);
+    try std.testing.expect(pathExists(expected_state_dir));
+}
+
+test "managed bundle metadata skips executables for other platforms" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    const bundle_root = try std.fs.path.join(allocator, &.{ root, "bundle" });
+    defer allocator.free(bundle_root);
+    const state_dir = try std.fs.path.join(allocator, &.{ root, "state" });
+    defer allocator.free(state_dir);
+
+    const driver_source = try std.fs.path.join(allocator, &.{ bundle_root, "drivers", "tool.sh" });
+    defer allocator.free(driver_source);
+    try writeFileReplacing(driver_source, "#!/bin/sh\necho skipped-tool\n");
+
+    const release_json = try std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "executables": [
+        \\    {{
+        \\      "id": "tool",
+        \\      "source": {{
+        \\        "kind": "bundle_relative",
+        \\        "path": "drivers/tool.sh"
+        \\      }},
+        \\      "stage_path": "bin/tool.sh",
+        \\      "platforms": ["{s}"]
+        \\    }}
+        \\  ]
+        \\}}
+    ,
+        .{otherBundlePlatformLabel()},
+    );
+    defer allocator.free(release_json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, release_json, .{});
+    defer parsed.deinit();
+
+    const executables = try getRequiredBundleArray(parsed.value.object, "executables");
+    try stageBundleExecutables(allocator, state_dir, bundle_root, executables);
+
+    const staged_path = try std.fs.path.join(allocator, &.{ state_dir, "bin", "tool.sh" });
+    defer allocator.free(staged_path);
+    try std.testing.expect(!pathExists(staged_path));
+
+    const executable_path = try resolveBundleExecutableInstallPath(
+        allocator,
+        state_dir,
+        bundle_root,
+        executables,
+        "tool",
+    );
+    if (executable_path) |value| allocator.free(value);
+    try std.testing.expect(executable_path == null);
 }

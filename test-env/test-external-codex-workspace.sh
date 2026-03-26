@@ -82,7 +82,6 @@ required_spiderweb_bins=(
     spiderweb-fs-mount
     spiderweb-fs-node
     spiderweb-local-node
-    spiderweb-local-service
 )
 
 run_with_timeout() {
@@ -1758,6 +1757,11 @@ clear_installed_spiderweb_bins() {
     done
 }
 
+managed_bundle_release_in() {
+    local prefix_dir="$1"
+    printf '%s/share/spidervenoms/bundles/managed-local/release.json' "$prefix_dir"
+}
+
 install_spiderweb_harness_binaries() {
     if is_macos_native_variant; then
         log_info "Building Spiderweb binaries from the current checkout for native macOS E2E..."
@@ -1771,10 +1775,27 @@ install_spiderweb_harness_binaries() {
             tail -n 200 "$INSTALL_LOG" || true
             return 1
         }
+        (
+            cd "${SPIDERVENOMS_REPO_DIR:-$ROOT_DIR/../SpiderVenoms}"
+            zig build bundle \
+                --prefix "$REPO_BUILD_PREFIX" \
+                --cache-dir "$REPO_ZIG_LOCAL_CACHE_DIR" \
+                --global-cache-dir "$REPO_ZIG_GLOBAL_CACHE_DIR"
+        ) >>"$INSTALL_LOG" 2>&1 || {
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        }
 
         local missing_bin=""
         if missing_bin="$(first_missing_spiderweb_bin_in "$REPO_BUILD_INSTALL_DIR")"; then
             log_fail "repo build did not produce expected binary in $REPO_BUILD_INSTALL_DIR: $missing_bin"
+            tail -n 200 "$INSTALL_LOG" || true
+            return 1
+        fi
+        local managed_bundle_release
+        managed_bundle_release="$(managed_bundle_release_in "$REPO_BUILD_PREFIX")"
+        if [[ ! -f "$managed_bundle_release" ]]; then
+            log_fail "repo build did not produce managed bundle: $managed_bundle_release"
             tail -n 200 "$INSTALL_LOG" || true
             return 1
         fi

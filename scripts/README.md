@@ -87,6 +87,33 @@ Multi-node harness:
 ./scripts/acheron-multi-node-runtime.sh
 ```
 
+## Release Packaging
+
+Linux release archive:
+
+```bash
+./scripts/package-spiderweb-linux-release.sh --out-dir ./dist
+```
+
+This produces:
+
+- `dist/spiderweb-linux-<arch>.tar.gz`
+- `dist/spiderweb-linux-<arch>.tar.gz.sha256`
+
+By default this packager pins the published `SpiderVenoms` release declared in `scripts/spidervenoms-release.sh`.
+
+For local development against a checkout instead, set:
+
+```bash
+SPIDERVENOMS_SOURCE_MODE=source
+```
+
+Versioning policy:
+
+- patch releases are the default path
+- bigger version jumps must be explicit
+- see [docs/release-policy.md](/Users/deanocalver/Documents/Projects/Spider/Spiderweb/docs/release-policy.md)
+
 ## Removed Legacy Flows
 
 The old Mother/provider bootstrap and embedded-runtime canary scripts were removed as part of the Spider Monkey split. Spiderweb no longer owns provider credentials, provider-backed chat, or Mother/system onboarding.

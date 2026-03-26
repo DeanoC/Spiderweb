@@ -84,15 +84,14 @@ TEST_ROOT="$(mktemp -d /tmp/spiderweb-install-test.XXXXXX)"
 TEST_HOME="$TEST_ROOT/home"
 INSTALL_DIR="$TEST_HOME/.local/bin"
 REPO_DIR="$TEST_HOME/.local/share/ziggy-spiderweb"
-RUNTIME_CWD="$REPO_DIR"
-if [[ "$INSTALL_MODE" == "source" ]]; then
-    RUNTIME_CWD="$REPO_ROOT"
-fi
+RUNTIME_CWD="$TEST_ROOT/runtime"
+WORKSPACE_ROOT="$TEST_ROOT/workspace"
+STATE_DIR="$RUNTIME_CWD/.spiderweb-state"
 SERVER_PORT="${SPIDERWEB_TEST_PORT:-28790}"
 INSTALL_LOG="$TEST_ROOT/install.log"
 SERVER_LOG="$TEST_ROOT/server.log"
 
-mkdir -p "$TEST_HOME"
+mkdir -p "$TEST_HOME" "$RUNTIME_CWD" "$WORKSPACE_ROOT/agents"
 
 log_info "Running install.sh in isolated HOME: $TEST_HOME"
 (
@@ -128,7 +127,7 @@ log_info "Running install.sh in isolated HOME: $TEST_HOME"
 
 cat "$INSTALL_LOG"
 
-for bin in spiderweb spiderweb-config spiderweb-control spiderweb-fs-mount spiderweb-fs-node spiderweb-local-node spiderweb-local-service; do
+for bin in spiderweb spiderweb-config spiderweb-control spiderweb-fs-mount spiderweb-fs-node spiderweb-local-node; do
     if [[ -x "$INSTALL_DIR/$bin" ]]; then
         log_success "Installed binary present: $bin"
     else
@@ -136,6 +135,22 @@ for bin in spiderweb spiderweb-config spiderweb-control spiderweb-fs-mount spide
         exit 1
     fi
 done
+
+installed_bundle_release="$(cd "$(dirname "$INSTALL_DIR")" && pwd)/share/spidervenoms/bundles/managed-local/release.json"
+if [[ -f "$installed_bundle_release" ]]; then
+    log_success "Installed managed bundle present: $installed_bundle_release"
+else
+    log_error "Missing installed managed bundle: $installed_bundle_release"
+    exit 1
+fi
+
+installed_templates_dir="$(cd "$(dirname "$INSTALL_DIR")" && pwd)/share/spiderweb/templates"
+if [[ -d "$installed_templates_dir" ]]; then
+    log_success "Installed runtime templates present: $installed_templates_dir"
+else
+    log_error "Missing installed runtime templates: $installed_templates_dir"
+    exit 1
+fi
 
 resolved_source="$(sed -n 's/^Install source: //p' "$INSTALL_LOG" | tail -n1)"
 if [[ -z "$resolved_source" ]]; then
@@ -160,10 +175,36 @@ head -n 5 /tmp/spiderweb-config-usage.txt
 head -n 5 /tmp/spiderweb-control-usage.txt
 head -n 5 /tmp/spiderweb-fs-mount-usage.txt
 
+log_info "Configuring installed runtime to use only installed assets..."
+CONFIG_PATH="$(
+    cd "$RUNTIME_CWD" &&
+    HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" "$INSTALL_DIR/spiderweb-config" config path
+)"
+if [[ ! -f "$CONFIG_PATH" ]]; then
+    log_error "Could not resolve Spiderweb config path"
+    exit 1
+fi
+tmp_config_path="$TEST_ROOT/config.json"
+jq \
+    --arg bind "127.0.0.1" \
+    --argjson port "$SERVER_PORT" \
+    --arg spider_root "$WORKSPACE_ROOT" \
+    --arg state_dir "$STATE_DIR" \
+    --arg assets_dir "$installed_templates_dir" \
+    --arg bundle_release "$installed_bundle_release" \
+    '
+    .server.bind = $bind |
+    .server.port = $port |
+    .runtime.spider_web_root = $spider_root |
+    .runtime.state_directory = $state_dir |
+    .runtime.assets_dir = $assets_dir |
+    .runtime.local_node.bundle_release_path = $bundle_release
+    ' "$CONFIG_PATH" >"$tmp_config_path"
+mv "$tmp_config_path" "$CONFIG_PATH"
+
 log_info "Starting installed spiderweb on port $SERVER_PORT"
 (
     cd "$RUNTIME_CWD"
-    HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" "$INSTALL_DIR/spiderweb-config" config set-server --bind 127.0.0.1 --port "$SERVER_PORT" >/dev/null
     HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" "$INSTALL_DIR/spiderweb" >"$SERVER_LOG" 2>&1 &
     echo $! >"$TEST_ROOT/server.pid"
     wait

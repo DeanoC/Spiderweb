@@ -5,6 +5,7 @@ const Config = @This();
 
 pub const default_server_bind = "0.0.0.0";
 pub const default_server_port: u16 = 18790;
+pub const default_managed_local_bundle_release_path = "../share/spidervenoms/bundles/managed-local/release.json";
 
 pub const ServerConfig = struct {
     bind: []const u8 = default_server_bind,
@@ -56,11 +57,13 @@ pub const RuntimeConfig = struct {
 
     pub const LocalNodeConfig = struct {
         enabled: bool = true,
-        binary: []const u8 = "spiderweb-local-node",
+        binary: []const u8 = "spiderweb-fs-node",
         profile: []const u8 = "external-agent-core",
         export_path: []const u8 = "",
         export_name: []const u8 = "fs",
         restart_on_exit: bool = true,
+        bundle_release_path: []const u8 = default_managed_local_bundle_release_path,
+        allow_unsigned_dev_bundles: bool = false,
         extra_venoms_dir: []const u8 = "",
         enable_debug: bool = false,
 
@@ -72,6 +75,8 @@ pub const RuntimeConfig = struct {
                 .export_path = try allocator.dupe(u8, self.export_path),
                 .export_name = try allocator.dupe(u8, self.export_name),
                 .restart_on_exit = self.restart_on_exit,
+                .bundle_release_path = try allocator.dupe(u8, self.bundle_release_path),
+                .allow_unsigned_dev_bundles = self.allow_unsigned_dev_bundles,
                 .extra_venoms_dir = try allocator.dupe(u8, self.extra_venoms_dir),
                 .enable_debug = self.enable_debug,
             };
@@ -82,6 +87,7 @@ pub const RuntimeConfig = struct {
             allocator.free(self.profile);
             allocator.free(self.export_path);
             allocator.free(self.export_name);
+            allocator.free(self.bundle_release_path);
             allocator.free(self.extra_venoms_dir);
             self.* = undefined;
         }
@@ -218,11 +224,13 @@ const default_config =
     \\    ,
     \\    "local_node": {
     \\      "enabled": true,
-    \\      "binary": "spiderweb-local-node",
+    \\      "binary": "spiderweb-fs-node",
     \\      "profile": "external-agent-core",
     \\      "export_path": "",
     \\      "export_name": "fs",
     \\      "restart_on_exit": true,
+    \\      "bundle_release_path": "../share/spidervenoms/bundles/managed-local/release.json",
+    \\      "allow_unsigned_dev_bundles": false,
     \\      "extra_venoms_dir": "",
     \\      "enable_debug": false
     \\    },
@@ -371,11 +379,13 @@ pub fn init(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
             .sandbox_fs_mount_bin = try allocator.dupe(u8, "spiderweb-fs-mount"),
             .local_node = .{
                 .enabled = true,
-                .binary = try allocator.dupe(u8, "spiderweb-local-node"),
+                .binary = try allocator.dupe(u8, "spiderweb-fs-node"),
                 .profile = try allocator.dupe(u8, "external-agent-core"),
                 .export_path = try allocator.dupe(u8, ""),
                 .export_name = try allocator.dupe(u8, "fs"),
                 .restart_on_exit = true,
+                .bundle_release_path = try allocator.dupe(u8, default_managed_local_bundle_release_path),
+                .allow_unsigned_dev_bundles = false,
                 .extra_venoms_dir = try allocator.dupe(u8, ""),
                 .enable_debug = false,
             },
@@ -692,6 +702,17 @@ pub fn load(self: *Config) !void {
                             self.runtime.local_node.restart_on_exit = value.bool;
                         }
                     }
+                    if (local_node_val.object.get("bundle_release_path")) |value| {
+                        if (value == .string and value.string.len > 0) {
+                            self.allocator.free(self.runtime.local_node.bundle_release_path);
+                            self.runtime.local_node.bundle_release_path = try self.allocator.dupe(u8, value.string);
+                        }
+                    }
+                    if (local_node_val.object.get("allow_unsigned_dev_bundles")) |value| {
+                        if (value == .bool) {
+                            self.runtime.local_node.allow_unsigned_dev_bundles = value.bool;
+                        }
+                    }
                     if (local_node_val.object.get("extra_venoms_dir")) |value| {
                         if (value == .string) {
                             self.allocator.free(self.runtime.local_node.extra_venoms_dir);
@@ -848,21 +869,21 @@ fn validateLocalNodeConfig(runtime: RuntimeConfig) !void {
     _ = try requireRuntimeField("runtime.local_node.binary", local_node.binary);
     _ = try requireRuntimeField("runtime.local_node.profile", local_node.profile);
     _ = try requireRuntimeField("runtime.local_node.export_name", local_node.export_name);
+    _ = try requireRuntimeField("runtime.local_node.bundle_release_path", local_node.bundle_release_path);
 
     const configured_export_path = std.mem.trim(u8, local_node.export_path, " \t\r\n");
     if (configured_export_path.len > 0) {
         _ = try requireAbsoluteRuntimePath("runtime.local_node.export_path", configured_export_path);
-        return;
-    }
-
-    const spider_web_root = std.mem.trim(u8, runtime.spider_web_root, " \t\r\n");
-    if (spider_web_root.len == 0) {
-        if (!builtin.is_test) {
-            std.log.warn("runtime.local_node.export_path is empty; Spiderweb will fall back to runtime.spider_web_root at runtime", .{});
+    } else {
+        const spider_web_root = std.mem.trim(u8, runtime.spider_web_root, " \t\r\n");
+        if (spider_web_root.len == 0) {
+            if (!builtin.is_test) {
+                std.log.warn("runtime.local_node.export_path is empty; Spiderweb will fall back to runtime.spider_web_root at runtime", .{});
+            }
+        } else {
+            _ = try requireAbsoluteRuntimePath("runtime.spider_web_root", spider_web_root);
         }
-        return;
     }
-    _ = try requireAbsoluteRuntimePath("runtime.spider_web_root", spider_web_root);
 }
 
 fn requireRuntimeField(field_name: []const u8, value: []const u8) ![]const u8 {
@@ -1041,6 +1062,10 @@ pub fn save(self: Config) !void {
     try file.writeAll(local_export_name_line);
     const local_restart_line = try std.fmt.bufPrint(&buf, "      \"restart_on_exit\": {},\n", .{self.runtime.local_node.restart_on_exit});
     try file.writeAll(local_restart_line);
+    const local_bundle_release_line = try std.fmt.bufPrint(&buf, "      \"bundle_release_path\": \"{s}\",\n", .{self.runtime.local_node.bundle_release_path});
+    try file.writeAll(local_bundle_release_line);
+    const local_unsigned_line = try std.fmt.bufPrint(&buf, "      \"allow_unsigned_dev_bundles\": {},\n", .{self.runtime.local_node.allow_unsigned_dev_bundles});
+    try file.writeAll(local_unsigned_line);
     const local_extra_venoms_line = try std.fmt.bufPrint(&buf, "      \"extra_venoms_dir\": \"{s}\",\n", .{self.runtime.local_node.extra_venoms_dir});
     try file.writeAll(local_extra_venoms_line);
     const local_debug_line = try std.fmt.bufPrint(&buf, "      \"enable_debug\": {}\n", .{self.runtime.local_node.enable_debug});
@@ -1147,11 +1172,13 @@ test "Config defaults" {
     try std.testing.expectEqualStrings("", config.runtime.spider_web_root);
     try std.testing.expectEqualStrings(".spiderweb-state", config.runtime.state_directory);
     try std.testing.expect(config.runtime.local_node.enabled);
-    try std.testing.expectEqualStrings("spiderweb-local-node", config.runtime.local_node.binary);
+    try std.testing.expectEqualStrings("spiderweb-fs-node", config.runtime.local_node.binary);
     try std.testing.expectEqualStrings("external-agent-core", config.runtime.local_node.profile);
     try std.testing.expectEqualStrings("", config.runtime.local_node.export_path);
     try std.testing.expectEqualStrings("fs", config.runtime.local_node.export_name);
     try std.testing.expect(config.runtime.local_node.restart_on_exit);
+    try std.testing.expectEqualStrings(default_managed_local_bundle_release_path, config.runtime.local_node.bundle_release_path);
+    try std.testing.expect(!config.runtime.local_node.allow_unsigned_dev_bundles);
     try std.testing.expectEqualStrings("", config.runtime.local_node.extra_venoms_dir);
     try std.testing.expect(!config.runtime.local_node.enable_debug);
 }

@@ -4049,7 +4049,7 @@ pub const Session = struct {
                 std.mem.indexOf(u8, absolute_path, "/venoms/computer-main/") != null or
                 std.mem.indexOf(u8, absolute_path, "/venoms/browser-main/") != null)
             {
-                std.log.warn("bound proxy read hit path={s} bytes={d}", .{ absolute_path, value.len });
+                std.log.debug("bound proxy read hit path={s} bytes={d}", .{ absolute_path, value.len });
             }
             return value;
         }
@@ -4057,7 +4057,7 @@ pub const Session = struct {
             std.mem.indexOf(u8, absolute_path, "/venoms/computer-main/") != null or
             std.mem.indexOf(u8, absolute_path, "/venoms/browser-main/") != null)
         {
-            std.log.warn("bound proxy read miss path={s}", .{absolute_path});
+            std.log.debug("bound proxy read miss path={s}", .{absolute_path});
         }
         return null;
     }
@@ -4130,7 +4130,7 @@ pub const Session = struct {
             std.mem.indexOf(u8, absolute_path, "/venoms/computer-main/") != null or
             std.mem.indexOf(u8, absolute_path, "/venoms/browser-main/") != null)
         {
-            std.log.warn(
+            std.log.debug(
                 "bound mount write proxy path={s} resolved={s} venom={s} node={s} remote={s}",
                 .{
                     absolute_path,

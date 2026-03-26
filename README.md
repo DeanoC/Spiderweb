@@ -21,6 +21,7 @@ If that resonates, start with:
 - `docs/overview.md`
 - `docs/README.md`
 - `docs/release-policy.md` for versioning and release conventions
+- `VENOM_RELEASES.md` for the current signed venom bundle and release lifecycle model
 - `CODEX_EXTERNAL_AGENT.md` for the current non-Spider-Monkey external-worker path
 
 ![Spiderweb](Spiderweb.png)

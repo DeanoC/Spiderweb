@@ -1677,22 +1677,20 @@ pub const ControlPlane = struct {
             appended_any = true;
             const package_id_json = try optionalJsonStringField(self.allocator, requested_id);
             defer self.allocator.free(package_id_json);
-            if (self.renderSingleVenomPackageJsonLocked(requested_id)) |package_json| {
-                defer self.allocator.free(package_json);
+            const package_json = try self.renderRequestedBatchPackageJsonLocked(requested_id);
+            if (package_json) |resolved_package_json| {
+                defer self.allocator.free(resolved_package_json);
                 up_to_date_count += 1;
                 try results.writer(self.allocator).print(
                     "{{\"status\":\"up_to_date\",\"package\":{s}}}",
-                    .{package_json},
+                    .{resolved_package_json},
                 );
-            } else |err| switch (err) {
-                ControlPlaneError.VenomPackageNotFound => {
-                    not_found_count += 1;
-                    try results.writer(self.allocator).print(
-                        "{{\"status\":\"not_found\",\"package_id\":{s}}}",
-                        .{package_id_json},
-                    );
-                },
-                else => return err,
+            } else {
+                not_found_count += 1;
+                try results.writer(self.allocator).print(
+                    "{{\"status\":\"not_found\",\"package_id\":{s}}}",
+                    .{package_id_json},
+                );
             }
         }
 
@@ -1704,7 +1702,7 @@ pub const ControlPlane = struct {
             .{
                 selection.apply,
                 selection.activate,
-                if (selection.package_ids.items.len == 0) candidates.items.len else selection.package_ids.items.len,
+                selection.package_ids.items.len,
                 candidates.items.len,
                 preview_count,
                 updated_count,
@@ -4911,6 +4909,34 @@ pub const ControlPlane = struct {
         return ControlPlaneError.VenomPackageNotFound;
     }
 
+    fn renderRequestedBatchPackageJsonLocked(self: *ControlPlane, requested_id: []const u8) !?[]u8 {
+        return self.renderSingleVenomPackageJsonLocked(requested_id) catch |err| switch (err) {
+            ControlPlaneError.VenomPackageNotFound => blk: {
+                if (try self.findPackageIdForRequestedBatchAliasLocked(requested_id)) |package_id| {
+                    break :blk try self.renderSingleVenomPackageJsonLocked(package_id);
+                }
+                break :blk null;
+            },
+            else => err,
+        };
+    }
+
+    fn findPackageIdForRequestedBatchAliasLocked(self: *ControlPlane, requested_id: []const u8) !?[]const u8 {
+        const policy = registryPolicyLocked(self);
+        for (self.installed_venom_packages.items) |package| {
+            if (try registryPackageMatchesRequestedVenomId(self.allocator, policy, package.venom_id, requested_id)) {
+                return package.venom_id;
+            }
+        }
+        for (venom_packages.allBuiltinPackages()) |spec| {
+            if (hasInstalledVenomPackageLocked(self, spec.venom_id)) continue;
+            if (try registryPackageMatchesRequestedVenomId(self.allocator, policy, spec.venom_id, requested_id)) {
+                return spec.venom_id;
+            }
+        }
+        return null;
+    }
+
     fn appendPackageReleaseHistoryMetadataLocked(
         self: *ControlPlane,
         package_json: []const u8,
@@ -6696,6 +6722,27 @@ fn batchPackageSelectionContainsCandidate(
         }
     }
     return false;
+}
+
+fn registryPackageMatchesRequestedVenomId(
+    allocator: std.mem.Allocator,
+    policy: venom_registry.Policy,
+    package_id: []const u8,
+    requested_id: []const u8,
+) !bool {
+    const package_json = venom_registry.getRegistryPackageJson(allocator, policy, .{
+        .package_id = package_id,
+    }) catch |err| switch (err) {
+        error.RegistryPackageNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(package_json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, package_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return ControlPlaneError.InvalidPayload;
+    const venom_id = getRequiredString(parsed.value.object, "venom_id") catch return ControlPlaneError.InvalidPayload;
+    return std.mem.eql(u8, venom_id, requested_id);
 }
 
 fn persistRegistryOverridesJsonLocked(
@@ -11426,10 +11473,10 @@ test "acheron_control_plane: registry batch update reports up-to-date and missin
     });
     defer plane.deinit();
 
-    const installed = try plane.installVenomPackage("{\"venom_id\":\"terminal\",\"source\":\"registry\"}");
+    const installed = try plane.installVenomPackage("{\"venom_id\":\"browser\",\"source\":\"registry\"}");
     defer allocator.free(installed);
 
-    const result = try plane.updateVenomPackagesBatch("{\"packages\":[\"terminal\",\"missing_pkg\"],\"apply\":false}");
+    const result = try plane.updateVenomPackagesBatch("{\"packages\":[\"browser-main\",\"missing_pkg\"],\"apply\":false}");
     defer allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"requested_count\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"candidate_count\":0") != null);
@@ -11437,6 +11484,7 @@ test "acheron_control_plane: registry batch update reports up-to-date and missin
     try std.testing.expect(std.mem.indexOf(u8, result, "\"not_found_count\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"status\":\"up_to_date\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"status\":\"not_found\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"venom_id\":\"browser\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"package_id\":\"missing_pkg\"") != null);
 }
 

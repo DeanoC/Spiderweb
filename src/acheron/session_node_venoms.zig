@@ -160,7 +160,10 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
             var catalog = catalog_value;
             defer catalog.deinit(session.allocator);
             for (catalog.items.items) |venom| {
-                if (!session.canAccessVenomWithPermissions(venom.permissions_json)) continue;
+                const allow_discovery = session.canAccessVenomWithPermissions(venom.permissions_json) or
+                    venom_model.isExplicitBindOnlyCapabilityVenomId(venom.package_id) or
+                    venom_model.isExplicitBindOnlyCapabilityVenomId(venom.venom_id);
+                if (!allow_discovery) continue;
                 try addNodeVenomEntry(
                     session,
                     venoms_root,

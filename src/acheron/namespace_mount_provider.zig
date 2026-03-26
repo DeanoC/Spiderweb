@@ -519,6 +519,13 @@ const NamespaceProviderContext = struct {
             buffered.bytes.items,
             buffered.bytes.items.len,
         );
+        // Mounted control payloads are often written in quick succession
+        // (`printf > control/invoke.json` several times in one shell step).
+        // For those writes we only need lazy freshness, not a synchronous
+        // subtree refresh during close. Refreshing the service root here makes
+        // every close pay for a mount-graph snapshot and can turn close-time
+        // writeback into spurious EIOs on Linux FUSE. Mark the graph stale and
+        // let the next metadata read refresh on demand.
         self.mount_graph.markStale();
         buffered.dirty = false;
         buffered.created = false;
@@ -667,16 +674,28 @@ fn namespaceProviderOpen(ctx: *anyopaque, path: []const u8, flags: u32) !mount_p
     else
         .remote;
 
-    if (flagsRequireWrite(flags) and hasTruncateOnOpen(flags) and !nodeIsDirectory(node.*)) {
-        _ = try namespace_ctx.client.controlMountFileWriteWithOptions(
-            normalized_path,
-            0,
-            "",
-            0,
-        );
-        namespace_ctx.mount_graph.markStale();
+    if (flagsRequireWrite(flags) and !nodeIsDirectory(node.*) and
+        (hasTruncateOnOpen(flags) or isBufferedControlPath(normalized_path)))
+    {
+        // Command-style control payload files should always buffer writes until
+        // close, even if the frontend doesn't present a clean truncate flag.
+        // They represent a single JSON request envelope, not a normal file the
+        // client should stream into the backend piecemeal.
+        //
+        // For ordinary truncate-on-open writes we also defer the truncation to
+        // the flush path instead of eagerly issuing a zero-length remote write
+        // during open(). Shell redirections (`> control/invoke.json`) arrive
+        // as truncate-on-open followed by a write, and the immediate remote
+        // truncate can recurse back into the same mounted control path and
+        // stall before the payload write ever runs.
         backing.deinit(allocator);
-        backing = .{ .@"inline" = try allocator.dupe(u8, "") };
+        backing = .{
+            .buffered = .{
+                .dirty = hasTruncateOnOpen(flags),
+                .created = false,
+            },
+        };
+        namespace_ctx.mount_graph.markStale();
     }
 
     return namespace_ctx.storeHandle(allocator, .{
@@ -1118,6 +1137,12 @@ fn hasExclusiveCreate(flags: u32) bool {
     return (flags & 0x80) != 0 or (flags & 0x800) != 0;
 }
 
+fn isBufferedControlPath(path: []const u8) bool {
+    const normalized = normalizeAbsolutePath(path);
+    return std.mem.indexOf(u8, normalized, "/control/") != null and
+        std.mem.endsWith(u8, normalized, ".json");
+}
+
 fn currentProcessAttrOwner() struct { uid: u32, gid: u32 } {
     return switch (builtin.os.tag) {
         .linux => .{ .uid = @intCast(std.os.linux.getuid()), .gid = @intCast(std.os.linux.getgid()) },
@@ -1315,4 +1340,10 @@ test "namespace_mount_provider: recognizes truncate and exclusive flag variants"
     try std.testing.expect(hasExclusiveCreate(0x80));
     try std.testing.expect(hasExclusiveCreate(0x800));
     try std.testing.expect(!hasExclusiveCreate(0));
+}
+
+test "namespace_mount_provider: buffered control path only starts dirty for truncate-on-open" {
+    try std.testing.expect(isBufferedControlPath("/.spiderweb/targets/linux/browser/control/invoke.json"));
+    try std.testing.expect(!hasTruncateOnOpen(0x1));
+    try std.testing.expect(hasTruncateOnOpen(0x1 | 0x200));
 }

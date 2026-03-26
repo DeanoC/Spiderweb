@@ -113,6 +113,8 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
     while (node_it.next()) |node_entry| {
         const node_id = node_entry.key_ptr.*;
         const node_dir_id = node_entry.value_ptr.*;
+        var node_metadata = try resolveNodeMetadata(session, node_id);
+        defer node_metadata.deinit(session.allocator);
         const venoms_root_id = session.lookupChild(node_dir_id, "venoms") orelse continue;
         const venoms_root = session.nodes.get(venoms_root_id) orelse continue;
         if (venoms_root.kind != .dir) continue;
@@ -148,6 +150,14 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
             defer session.allocator.free(node_id_escaped);
             const state_escaped = try unified.jsonEscape(session.allocator, state);
             defer session.allocator.free(state_escaped);
+            const node_name_escaped = try unified.jsonEscape(session.allocator, node_metadata.node_name);
+            defer session.allocator.free(node_name_escaped);
+            const platform_os_escaped = try unified.jsonEscape(session.allocator, node_metadata.platform_os);
+            defer session.allocator.free(platform_os_escaped);
+            const platform_arch_escaped = try unified.jsonEscape(session.allocator, node_metadata.platform_arch);
+            defer session.allocator.free(platform_arch_escaped);
+            const platform_runtime_escaped = try unified.jsonEscape(session.allocator, node_metadata.platform_runtime_kind);
+            defer session.allocator.free(platform_runtime_escaped);
             const endpoint_json = if (endpoint_path) |value| blk: {
                 const escaped = try unified.jsonEscape(session.allocator, value);
                 defer session.allocator.free(escaped);
@@ -158,13 +168,17 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
             if (!first) try out.append(session.allocator, ',');
             first = false;
             try out.writer(session.allocator).print(
-                "{{\"provider_id\":\"{s}\",\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"host_id\":\"{s}\",\"runtime_kind\":\"{s}\",\"install\":{s},\"provider\":{s},\"policy\":{s},\"state\":\"{s}\",\"health\":\"{s}\",\"binding_eligibility\":{s},\"endpoint_path\":{s}}}",
+                "{{\"provider_id\":\"{s}\",\"package_id\":\"{s}\",\"venom_id\":\"{s}\",\"host_role\":\"{s}\",\"host_id\":\"{s}\",\"node_name\":\"{s}\",\"platform\":{{\"os\":\"{s}\",\"arch\":\"{s}\",\"runtime_kind\":\"{s}\"}},\"runtime_kind\":\"{s}\",\"install\":{s},\"provider\":{s},\"policy\":{s},\"state\":\"{s}\",\"health\":\"{s}\",\"binding_eligibility\":{s},\"endpoint_path\":{s}}}",
                 .{
                     provider_id_escaped,
                     package_id_escaped,
                     venom_id_escaped,
                     host_role.asString(),
                     node_id_escaped,
+                    node_name_escaped,
+                    platform_os_escaped,
+                    platform_arch_escaped,
+                    platform_runtime_escaped,
                     runtime_kind.asString(),
                     runtime_summary.install_json,
                     runtime_summary.provider_json,
@@ -176,6 +190,154 @@ pub fn buildCatalogProvidersJson(session: anytype) ![]u8 {
                 },
             );
         }
+    }
+
+    try out.append(session.allocator, ']');
+    return out.toOwnedSlice(session.allocator);
+}
+
+pub fn buildCatalogTargetsJson(session: anytype) ![]u8 {
+    const TargetCapability = struct {
+        binding_path: ?[]u8 = null,
+        target_path: ?[]u8 = null,
+        provider_id: ?[]u8 = null,
+        available: bool = false,
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.binding_path) |value| allocator.free(value);
+            if (self.target_path) |value| allocator.free(value);
+            if (self.provider_id) |value| allocator.free(value);
+            self.* = .{};
+        }
+    };
+
+    const TargetEntry = struct {
+        target_id: []u8,
+        node_id: ?[]u8 = null,
+        node_name: ?[]u8 = null,
+        platform_os: ?[]u8 = null,
+        platform_arch: ?[]u8 = null,
+        platform_runtime_kind: ?[]u8 = null,
+        computer: TargetCapability = .{},
+        browser: TargetCapability = .{},
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.target_id);
+            if (self.node_id) |value| allocator.free(value);
+            if (self.node_name) |value| allocator.free(value);
+            if (self.platform_os) |value| allocator.free(value);
+            if (self.platform_arch) |value| allocator.free(value);
+            if (self.platform_runtime_kind) |value| allocator.free(value);
+            self.computer.deinit(allocator);
+            self.browser.deinit(allocator);
+            self.* = undefined;
+        }
+    };
+
+    var targets = std.ArrayListUnmanaged(TargetEntry){};
+    defer {
+        for (targets.items) |*entry| entry.deinit(session.allocator);
+        targets.deinit(session.allocator);
+    }
+
+    for (session.workspace_binds.items) |bind| {
+        if (bind.kind != .workspace) continue;
+        const parsed = parseTargetBinding(bind.bind_path) orelse continue;
+
+        var entry_index: ?usize = null;
+        for (targets.items, 0..) |entry, idx| {
+            if (std.mem.eql(u8, entry.target_id, parsed.target_id)) {
+                entry_index = idx;
+                break;
+            }
+        }
+        if (entry_index == null) {
+            try targets.append(session.allocator, .{
+                .target_id = try session.allocator.dupe(u8, parsed.target_id),
+            });
+            entry_index = targets.items.len - 1;
+        }
+
+        var entry = &targets.items[entry_index.?];
+        const capability = if (std.mem.eql(u8, parsed.capability, "computer")) &entry.computer else &entry.browser;
+        if (capability.binding_path) |value| session.allocator.free(value);
+        capability.binding_path = try session.allocator.dupe(u8, bind.bind_path);
+        if (capability.target_path) |value| session.allocator.free(value);
+        capability.target_path = try session.allocator.dupe(u8, bind.target_path);
+        capability.available = session.resolveAbsolutePathNoBinds(bind.target_path) != null;
+
+        if (try parseNodeProviderBinding(session.allocator, bind.target_path)) |provider_value| {
+            var provider = provider_value;
+            defer provider.deinit(session.allocator);
+            const resolved_node_id = if (try session.resolveCatalogControlPlaneNodeIdForVenom(provider.node_id, provider.venom_id)) |value|
+                value
+            else
+                try session.allocator.dupe(u8, provider.node_id);
+            defer session.allocator.free(resolved_node_id);
+
+            if (capability.provider_id) |value| session.allocator.free(value);
+            capability.provider_id = try std.fmt.allocPrint(session.allocator, "{s}:{s}", .{ resolved_node_id, provider.venom_id });
+
+            if (entry.node_id == null) entry.node_id = try session.allocator.dupe(u8, resolved_node_id);
+            if (entry.node_name == null or entry.platform_os == null or entry.platform_arch == null or entry.platform_runtime_kind == null) {
+                var node_metadata = try resolveNodeMetadata(session, resolved_node_id);
+                defer node_metadata.deinit(session.allocator);
+
+                if (entry.node_name) |value| session.allocator.free(value);
+                entry.node_name = try session.allocator.dupe(u8, node_metadata.node_name);
+                if (entry.platform_os) |value| session.allocator.free(value);
+                entry.platform_os = try session.allocator.dupe(u8, node_metadata.platform_os);
+                if (entry.platform_arch) |value| session.allocator.free(value);
+                entry.platform_arch = try session.allocator.dupe(u8, node_metadata.platform_arch);
+                if (entry.platform_runtime_kind) |value| session.allocator.free(value);
+                entry.platform_runtime_kind = try session.allocator.dupe(u8, node_metadata.platform_runtime_kind);
+            }
+        }
+    }
+
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(session.allocator);
+    try out.append(session.allocator, '[');
+
+    for (targets.items, 0..) |entry, idx| {
+        if (idx != 0) try out.append(session.allocator, ',');
+        const escaped_target_id = try unified.jsonEscape(session.allocator, entry.target_id);
+        defer session.allocator.free(escaped_target_id);
+        const node_id_json = try optionalJsonString(session.allocator, entry.node_id);
+        defer session.allocator.free(node_id_json);
+        const node_name_json = try optionalJsonString(session.allocator, entry.node_name);
+        defer session.allocator.free(node_name_json);
+        const platform_os_json = try optionalJsonString(session.allocator, entry.platform_os);
+        defer session.allocator.free(platform_os_json);
+        const platform_arch_json = try optionalJsonString(session.allocator, entry.platform_arch);
+        defer session.allocator.free(platform_arch_json);
+        const platform_runtime_json = try optionalJsonString(session.allocator, entry.platform_runtime_kind);
+        defer session.allocator.free(platform_runtime_json);
+        const computer_paths_json = try capabilityPathsJson(session.allocator, entry.computer);
+        defer session.allocator.free(computer_paths_json);
+        const browser_paths_json = try capabilityPathsJson(session.allocator, entry.browser);
+        defer session.allocator.free(browser_paths_json);
+        const computer_provider_json = try optionalJsonString(session.allocator, entry.computer.provider_id);
+        defer session.allocator.free(computer_provider_json);
+        const browser_provider_json = try optionalJsonString(session.allocator, entry.browser.provider_id);
+        defer session.allocator.free(browser_provider_json);
+        try out.writer(session.allocator).print(
+            "{{\"target_id\":\"{s}\",\"node_id\":{s},\"node_name\":{s},\"platform\":{{\"os\":{s},\"arch\":{s},\"runtime_kind\":{s}}},\"paths\":{{\"computer\":{s},\"browser\":{s}}},\"provider_ids\":{{\"computer\":{s},\"browser\":{s}}},\"availability\":{{\"computer\":\"{s}\",\"browser\":\"{s}\"}}}}",
+            .{
+                escaped_target_id,
+                node_id_json,
+                node_name_json,
+                platform_os_json,
+                platform_arch_json,
+                platform_runtime_json,
+                computer_paths_json,
+                browser_paths_json,
+                computer_provider_json,
+                browser_provider_json,
+                if (entry.computer.available) "online" else "offline",
+                if (entry.browser.available) "online" else "offline",
+            },
+        );
     }
 
     try out.append(session.allocator, ']');
@@ -232,7 +394,12 @@ pub fn buildCatalogBindingsJson(session: anytype) ![]u8 {
                 const venom_end = std.mem.indexOfScalar(u8, tail, '/') orelse tail.len;
                 break :blk2 tail[0..venom_end];
             } else alias;
-            break :blk try std.fmt.allocPrint(session.allocator, "\"{s}:{s}\"", .{ node_id, provider_venom_id });
+            const resolved_node_id = if (try session.resolveCatalogControlPlaneNodeIdForVenom(node_id, provider_venom_id)) |value|
+                value
+            else
+                try session.allocator.dupe(u8, node_id);
+            defer session.allocator.free(resolved_node_id);
+            break :blk try std.fmt.allocPrint(session.allocator, "\"{s}:{s}\"", .{ resolved_node_id, provider_venom_id });
         } else try session.allocator.dupe(u8, "null");
         defer session.allocator.free(provider_id_json);
 
@@ -260,6 +427,133 @@ fn hasScopedBindingForPath(session: anytype, binding_path: []const u8) bool {
         if (std.mem.eql(u8, binding.venom_path, binding_path)) return true;
     }
     return false;
+}
+
+const ResolvedNodeMetadata = struct {
+    node_name: []u8,
+    platform_os: []u8,
+    platform_arch: []u8,
+    platform_runtime_kind: []u8,
+
+    fn deinit(self: *ResolvedNodeMetadata, allocator: std.mem.Allocator) void {
+        allocator.free(self.node_name);
+        allocator.free(self.platform_os);
+        allocator.free(self.platform_arch);
+        allocator.free(self.platform_runtime_kind);
+        self.* = undefined;
+    }
+};
+
+pub const ParsedTargetBinding = struct {
+    target_id: []const u8,
+    capability: []const u8,
+};
+
+const ParsedNodeProvider = struct {
+    node_id: []u8,
+    venom_id: []u8,
+
+    fn deinit(self: *ParsedNodeProvider, allocator: std.mem.Allocator) void {
+        allocator.free(self.node_id);
+        allocator.free(self.venom_id);
+        self.* = undefined;
+    }
+};
+
+fn resolveNodeMetadata(session: anytype, node_id: []const u8) !ResolvedNodeMetadata {
+    if (session.control_plane) |plane| {
+        const payload = try std.fmt.allocPrint(session.allocator, "{{\"node_id\":\"{s}\"}}", .{node_id});
+        defer session.allocator.free(payload);
+        const raw = plane.getNode(payload) catch null;
+        if (raw) |node_json| {
+            defer session.allocator.free(node_json);
+            var parsed = std.json.parseFromSlice(std.json.Value, session.allocator, node_json, .{}) catch null;
+            if (parsed) |*parsed_value| {
+                defer parsed_value.deinit();
+                if (parsed_value.value == .object) {
+                    if (parsed_value.value.object.get("node")) |node_value| {
+                        if (node_value == .object) {
+                            const platform_value = node_value.object.get("platform");
+                            const platform_obj = if (platform_value) |value|
+                                if (value == .object) value.object else null
+                            else
+                                null;
+                            return .{
+                                .node_name = try session.allocator.dupe(u8, getString(node_value.object, "node_name") orelse node_id),
+                                .platform_os = try session.allocator.dupe(u8, if (platform_obj) |obj| getString(obj, "os") orelse "unknown" else "unknown"),
+                                .platform_arch = try session.allocator.dupe(u8, if (platform_obj) |obj| getString(obj, "arch") orelse "unknown" else "unknown"),
+                                .platform_runtime_kind = try session.allocator.dupe(u8, if (platform_obj) |obj| getString(obj, "runtime_kind") orelse "unknown" else "unknown"),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return .{
+        .node_name = try session.allocator.dupe(u8, node_id),
+        .platform_os = try session.allocator.dupe(u8, "unknown"),
+        .platform_arch = try session.allocator.dupe(u8, "unknown"),
+        .platform_runtime_kind = try session.allocator.dupe(u8, "unknown"),
+    };
+}
+
+fn parseTargetBinding(binding_path: []const u8) ?ParsedTargetBinding {
+    const prefix = "/.spiderweb/targets/";
+    const normalized_path = if (std.mem.startsWith(u8, binding_path, prefix))
+        binding_path
+    else if (std.mem.indexOf(u8, binding_path, prefix)) |idx|
+        binding_path[idx..]
+    else
+        return null;
+    const tail = normalized_path[prefix.len..];
+    const slash = std.mem.indexOfScalar(u8, tail, '/') orelse return null;
+    const target_id = tail[0..slash];
+    const capability = tail[slash + 1 ..];
+    if (target_id.len == 0) return null;
+    if (!std.mem.eql(u8, capability, "computer") and !std.mem.eql(u8, capability, "browser")) return null;
+    return .{ .target_id = target_id, .capability = capability };
+}
+
+pub fn parseTargetBindingForSession(binding_path: []const u8) ?ParsedTargetBinding {
+    return parseTargetBinding(binding_path);
+}
+
+test "session_service_discovery: parse target binding accepts projected workspace paths" {
+    const parsed = parseTargetBindingForSession("/nodes/local/fs/.spiderweb/targets/macos/browser") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("macos", parsed.target_id);
+    try std.testing.expectEqualStrings("browser", parsed.capability);
+}
+
+fn parseNodeProviderBinding(allocator: std.mem.Allocator, target_path: []const u8) !?ParsedNodeProvider {
+    const prefix = "/nodes/";
+    if (!std.mem.startsWith(u8, target_path, prefix)) return null;
+    const after_nodes = target_path[prefix.len..];
+    const node_end = std.mem.indexOfScalar(u8, after_nodes, '/') orelse return null;
+    const node_id = after_nodes[0..node_end];
+    const after_node = after_nodes[node_end..];
+    if (!std.mem.startsWith(u8, after_node, "/venoms/")) return null;
+    const after_venoms = after_node["/venoms/".len..];
+    const venom_end = std.mem.indexOfScalar(u8, after_venoms, '/') orelse after_venoms.len;
+    const venom_id = after_venoms[0..venom_end];
+    if (node_id.len == 0 or venom_id.len == 0) return null;
+    return .{
+        .node_id = try allocator.dupe(u8, node_id),
+        .venom_id = try allocator.dupe(u8, venom_id),
+    };
+}
+
+fn optionalJsonString(allocator: std.mem.Allocator, value: ?[]const u8) ![]u8 {
+    if (value) |present| {
+        const escaped = try unified.jsonEscape(allocator, present);
+        defer allocator.free(escaped);
+        return std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped});
+    }
+    return allocator.dupe(u8, "null");
+}
+
+fn capabilityPathsJson(allocator: std.mem.Allocator, capability: anytype) ![]u8 {
+    return optionalJsonString(allocator, capability.binding_path);
 }
 
 pub fn buildWorkspaceBindsArrayJson(session: anytype) ![]u8 {

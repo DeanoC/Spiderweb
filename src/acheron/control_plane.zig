@@ -1681,6 +1681,16 @@ pub const ControlPlane = struct {
         node.last_seen_ms = std.time.milliTimestamp();
     }
 
+    pub fn copyNodeSecret(self: *ControlPlane, allocator: std.mem.Allocator, node_id: []const u8) !?[]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        _ = self.reapExpiredLeasesLocked(std.time.milliTimestamp());
+
+        try validateIdentifier(node_id, 128);
+        const node = self.nodes.get(node_id) orelse return null;
+        return try allocator.dupe(u8, node.secret);
+    }
+
     pub fn ensureNode(
         self: *ControlPlane,
         node_name: []const u8,

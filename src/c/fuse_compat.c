@@ -51,3 +51,11 @@ void spiderweb_fi_set_cache_readdir(struct fuse_file_info *fi, int enabled) {
     fi->cache_readdir = enabled ? 1u : 0u;
 #endif
 }
+
+void spiderweb_fi_set_direct_io(struct fuse_file_info *fi, int enabled) {
+    fi->direct_io = enabled ? 1u : 0u;
+}
+
+void spiderweb_fi_set_keep_cache(struct fuse_file_info *fi, int enabled) {
+    fi->keep_cache = enabled ? 1u : 0u;
+}

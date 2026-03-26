@@ -111,7 +111,7 @@ fn parseTrustedPublicKey(public_key_hex: []const u8) !std.crypto.sign.Ed25519.Pu
 fn canonicalPayloadJsonAlloc(allocator: std.mem.Allocator, value: std.json.Value) anyerror![]u8 {
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(allocator);
-    try writeCanonicalValue(allocator, &out, value);
+    try writeCanonicalValue(allocator, &out, value, true);
     return out.toOwnedSlice(allocator);
 }
 
@@ -119,6 +119,7 @@ fn writeCanonicalValue(
     allocator: std.mem.Allocator,
     out: *std.ArrayListUnmanaged(u8),
     value: std.json.Value,
+    omit_envelope_fields: bool,
 ) anyerror!void {
     switch (value) {
         .null => try out.appendSlice(allocator, "null"),
@@ -131,11 +132,11 @@ fn writeCanonicalValue(
             try out.append(allocator, '[');
             for (array_value.items, 0..) |item, index| {
                 if (index != 0) try out.append(allocator, ',');
-                try writeCanonicalValue(allocator, out, item);
+                try writeCanonicalValue(allocator, out, item, false);
             }
             try out.append(allocator, ']');
         },
-        .object => |object_value| try writeCanonicalObject(allocator, out, object_value),
+        .object => |object_value| try writeCanonicalObject(allocator, out, object_value, omit_envelope_fields),
     }
 }
 
@@ -143,6 +144,7 @@ fn writeCanonicalObject(
     allocator: std.mem.Allocator,
     out: *std.ArrayListUnmanaged(u8),
     object_value: std.json.ObjectMap,
+    omit_envelope_fields: bool,
 ) anyerror!void {
     var keys = std.ArrayListUnmanaged([]const u8){};
     defer keys.deinit(allocator);
@@ -150,7 +152,7 @@ fn writeCanonicalObject(
     var it = object_value.iterator();
     while (it.next()) |entry| {
         const key = entry.key_ptr.*;
-        if (std.mem.eql(u8, key, "digest") or std.mem.eql(u8, key, "signature")) continue;
+        if (omit_envelope_fields and (std.mem.eql(u8, key, "digest") or std.mem.eql(u8, key, "signature"))) continue;
         try keys.append(allocator, key);
     }
 
@@ -165,7 +167,7 @@ fn writeCanonicalObject(
         if (index != 0) try out.append(allocator, ',');
         try out.writer(allocator).print("{f}", .{std.json.fmt(key, .{})});
         try out.append(allocator, ':');
-        try writeCanonicalValue(allocator, out, object_value.get(key).?);
+        try writeCanonicalValue(allocator, out, object_value.get(key).?, false);
     }
     try out.append(allocator, '}');
 }
@@ -333,4 +335,34 @@ test "verifySignedValueWithKeys rejects keys without managed-local bundle purpos
         },
     };
     try std.testing.expectError(error.BundleSigningKeyPolicyViolation, verifySignedValueWithKeys(allocator, parsed.value, &trusted_keys));
+}
+
+test "canonical payload preserves nested digest and signature fields" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "name": "tool",
+        \\  "digest": "sha256:outer",
+        \\  "signature": {
+        \\    "scheme": "ed25519-sha256-v1"
+        \\  },
+        \\  "nested": {
+        \\    "digest": "keep-me",
+        \\    "signature": {
+        \\      "value": "keep-me-too"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+
+    const canonical = try canonicalPayloadJsonAlloc(allocator, parsed.value);
+    defer allocator.free(canonical);
+
+    try std.testing.expectEqualStrings(
+        "{\"name\":\"tool\",\"nested\":{\"digest\":\"keep-me\",\"signature\":{\"value\":\"keep-me-too\"}}}",
+        canonical,
+    );
 }

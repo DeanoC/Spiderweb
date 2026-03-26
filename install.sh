@@ -29,7 +29,7 @@ SPIDERVENOMS_RELEASE_HELPER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/
 if [[ -f "$SPIDERVENOMS_RELEASE_HELPER_PATH" ]]; then
     source "$SPIDERVENOMS_RELEASE_HELPER_PATH"
 else
-    spidervenoms_release_version="0.5.6"
+    spidervenoms_release_version="0.5.7"
     spidervenoms_release_repo="DeanoC/SpiderVenoms"
 
     spidervenoms_normalize_os() {
@@ -56,13 +56,13 @@ else
         arch="$(spidervenoms_normalize_arch "${2:-}")" || return 1
         case "${os}:${arch}" in
             linux:arm64)
-                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.6/spidervenoms-managed-local-linux-arm64.tar.gz"
+                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.7/spidervenoms-managed-local-linux-arm64.tar.gz"
                 ;;
             linux:x86_64)
-                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.6/spidervenoms-managed-local-linux-x86_64.tar.gz"
+                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.7/spidervenoms-managed-local-linux-x86_64.tar.gz"
                 ;;
             macos:arm64)
-                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.6/spidervenoms-managed-local-macos-arm64.tar.gz"
+                printf '%s' "https://github.com/DeanoC/SpiderVenoms/releases/download/v0.5.7/spidervenoms-managed-local-macos-arm64.tar.gz"
                 ;;
             *)
                 return 1
@@ -82,13 +82,13 @@ else
         arch="$(spidervenoms_normalize_arch "${2:-}")" || return 1
         case "${os}:${arch}" in
             linux:arm64)
-                printf '%s' "b9c3cfde33f631ff5fbf2a776bb0eef5856bc759f0abf65c91cf14928decc527"
+                printf '%s' "24c7c233a71539f91ec1d04d5fad6eec38bcf6a57796973fc83be58b28f40886"
                 ;;
             linux:x86_64)
-                printf '%s' "1f747c0404be4adf994f050340295c103604c99e3f168e404ecfb9b30854252e"
+                printf '%s' "1f4e06a7da565b6eb96e0fe107550ef182b525f13648e8cc5ed4f0cbfea0f9f2"
                 ;;
             macos:arm64)
-                printf '%s' "98f63b13d5f8432d0241db78273b1fe06debe4a9e023af6696fa829488139c99"
+                printf '%s' "56e664ccd23911fee23fecfcd020a6c005fec02047ddd7f1d606cff65095bfd4"
                 ;;
             *)
                 return 1

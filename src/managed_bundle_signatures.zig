@@ -1,16 +1,33 @@
 const std = @import("std");
 
 pub const signature_scheme = "ed25519-sha256-v1";
+pub const managed_local_bundle_purpose = "managed_local_bundle";
+
+pub const TrustedKeyStatus = enum {
+    active,
+    verify_only,
+    revoked,
+};
 
 pub const TrustedKey = struct {
     key_id: []const u8,
     public_key_hex: []const u8,
+    status: TrustedKeyStatus,
+    managed_local_bundle_allowed: bool,
 };
 
 pub const default_trusted_keys = [_]TrustedKey{
     .{
         .key_id = "spidervenoms-dev-2026-03",
         .public_key_hex = "b15238a1a3948fb8c1a77d22313a05448e07ba93469ae7d46e75762c73992f24",
+        .status = .active,
+        .managed_local_bundle_allowed = true,
+    },
+    .{
+        .key_id = "spidervenoms-revoked-2026-03",
+        .public_key_hex = "373a430931addf8dba153124c73070b3f2dd7f12f6229f055ee0622190a86cbf",
+        .status = .revoked,
+        .managed_local_bundle_allowed = true,
     },
 };
 
@@ -57,6 +74,11 @@ pub fn verifySignedValueWithKeys(
     const signature_value = getRequiredString(signature.object, "value") orelse return error.InvalidBundleSignature;
 
     const trusted_key = findTrustedKey(trusted_keys, key_id) orelse return error.UntrustedBundleSigningKey;
+    if (!trusted_key.managed_local_bundle_allowed) return error.BundleSigningKeyPolicyViolation;
+    switch (trusted_key.status) {
+        .active, .verify_only => {},
+        .revoked => return error.BundleSigningKeyRevoked,
+    }
     const public_key = try parseTrustedPublicKey(trusted_key.public_key_hex);
 
     const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(signature_value);
@@ -181,6 +203,41 @@ test "verifySignedValueWithKeys accepts a valid signed object" {
     try verifySignedValue(allocator, parsed.value);
 }
 
+test "verifySignedValueWithKeys accepts verify-only keys for historical bundle verification" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "channel": "stable",
+        \\  "name": "tool",
+        \\  "release_version": "1.2.3",
+        \\  "trust": {
+        \\    "mode": "signed",
+        \\    "publisher": "SpiderVenoms",
+        \\    "allow_dev_unsigned": false
+        \\  },
+        \\  "digest": "sha256:81088112e3ef119287a546f96b3a1f64389a5cd18ccd5ecc73e015f724aa3ad8",
+        \\  "signature": {
+        \\    "scheme": "ed25519-sha256-v1",
+        \\    "key_id": "verify-only-test-key",
+        \\    "value": "DBxO8ZW1nfzzmLliSLOh4kIRd5huVQYPEBOeDSFgNSkSTcyK8Lafuo8XfFLbAS3hRSkzkQHzhAdY8TWrah2pBQ=="
+        \\  }
+        \\}
+    ;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+
+    const trusted_keys = [_]TrustedKey{
+        .{
+            .key_id = "verify-only-test-key",
+            .public_key_hex = "b15238a1a3948fb8c1a77d22313a05448e07ba93469ae7d46e75762c73992f24",
+            .status = .verify_only,
+            .managed_local_bundle_allowed = true,
+        },
+    };
+    try verifySignedValueWithKeys(allocator, parsed.value, &trusted_keys);
+}
+
 test "verifySignedValueWithKeys rejects a tampered signed object" {
     const allocator = std.testing.allocator;
     const json =
@@ -206,4 +263,74 @@ test "verifySignedValueWithKeys rejects a tampered signed object" {
     defer parsed.deinit();
 
     try std.testing.expectError(error.InvalidBundleDigest, verifySignedValue(allocator, parsed.value));
+}
+
+test "verifySignedValueWithKeys rejects revoked signing keys" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "channel": "stable",
+        \\  "name": "tool",
+        \\  "release_version": "1.2.3",
+        \\  "trust": {
+        \\    "mode": "signed",
+        \\    "publisher": "SpiderVenoms",
+        \\    "allow_dev_unsigned": false
+        \\  },
+        \\  "digest": "sha256:81088112e3ef119287a546f96b3a1f64389a5cd18ccd5ecc73e015f724aa3ad8",
+        \\  "signature": {
+        \\    "scheme": "ed25519-sha256-v1",
+        \\    "key_id": "revoked-test-key",
+        \\    "value": "DBxO8ZW1nfzzmLliSLOh4kIRd5huVQYPEBOeDSFgNSkSTcyK8Lafuo8XfFLbAS3hRSkzkQHzhAdY8TWrah2pBQ=="
+        \\  }
+        \\}
+    ;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+
+    const trusted_keys = [_]TrustedKey{
+        .{
+            .key_id = "revoked-test-key",
+            .public_key_hex = "b15238a1a3948fb8c1a77d22313a05448e07ba93469ae7d46e75762c73992f24",
+            .status = .revoked,
+            .managed_local_bundle_allowed = true,
+        },
+    };
+    try std.testing.expectError(error.BundleSigningKeyRevoked, verifySignedValueWithKeys(allocator, parsed.value, &trusted_keys));
+}
+
+test "verifySignedValueWithKeys rejects keys without managed-local bundle purpose" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "channel": "stable",
+        \\  "name": "tool",
+        \\  "release_version": "1.2.3",
+        \\  "trust": {
+        \\    "mode": "signed",
+        \\    "publisher": "SpiderVenoms",
+        \\    "allow_dev_unsigned": false
+        \\  },
+        \\  "digest": "sha256:81088112e3ef119287a546f96b3a1f64389a5cd18ccd5ecc73e015f724aa3ad8",
+        \\  "signature": {
+        \\    "scheme": "ed25519-sha256-v1",
+        \\    "key_id": "wrong-purpose-test-key",
+        \\    "value": "DBxO8ZW1nfzzmLliSLOh4kIRd5huVQYPEBOeDSFgNSkSTcyK8Lafuo8XfFLbAS3hRSkzkQHzhAdY8TWrah2pBQ=="
+        \\  }
+        \\}
+    ;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+
+    const trusted_keys = [_]TrustedKey{
+        .{
+            .key_id = "wrong-purpose-test-key",
+            .public_key_hex = "b15238a1a3948fb8c1a77d22313a05448e07ba93469ae7d46e75762c73992f24",
+            .status = .active,
+            .managed_local_bundle_allowed = false,
+        },
+    };
+    try std.testing.expectError(error.BundleSigningKeyPolicyViolation, verifySignedValueWithKeys(allocator, parsed.value, &trusted_keys));
 }

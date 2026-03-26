@@ -22,6 +22,7 @@ jobs:
         grep -q '\.path = "deps/ziggy-tool-runtime"' build.zig.zon
         grep -q '".gitmodules"' build.zig.zon
         bash ./scripts/check-version-sync.sh
+        zig test src/managed_bundle_signatures.zig
       extra_commands: |
         timeout 240 env SKIP_BUILD=1 bash test-env/test-spiderweb-control-protocol.sh
         if [[ "${RUN_SANDBOX_CI_TESTS:-0}" == "1" ]]; then

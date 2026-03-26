@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.5.3 - 2026-03-26
+
+### Venom Trust Policy
+- Added explicit bundle-signing key policy states in Spiderweb so revoked keys and keys without managed-local bundle trust are rejected even if the signature bytes are otherwise valid.
+- Added dedicated negative-path signature tests covering tampered payloads, revoked keys, and wrong-purpose keys.
+- Re-pinned Spiderweb’s managed bundle dependency to the published signed `SpiderVenoms v0.5.7` assets across Linux `arm64`, Linux `x86_64`, and macOS `arm64`.
+
 ## 0.5.2 - 2026-03-26
 
 ### Venom Trust

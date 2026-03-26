@@ -1546,7 +1546,7 @@ pub const ControlPlane = struct {
         defer self.allocator.free(package_json);
         const target_release_json = try optionalJsonStringField(self.allocator, install_result.selected_release_version);
         defer self.allocator.free(target_release_json);
-        const target_channel_json = try optionalJsonStringField(self.allocator, channel orelse releaseChannelForPackageLocked(
+        const target_channel_json = try optionalJsonStringField(self.allocator, releaseChannelForPackageLocked(
             self.installed_venom_releases.items,
             install_result.selected_package_id,
             install_result.selected_release_version,
@@ -10671,6 +10671,31 @@ test "acheron_control_plane: registry update can install and switch in one actio
     defer allocator.free(current);
     try std.testing.expect(std.mem.indexOf(u8, current, "\"active_release_version\":\"0.5.8\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, current, "\"update_available\":false") != null);
+}
+
+test "acheron_control_plane: registry update reports the resolved release channel" {
+    const allocator = std.testing.allocator;
+    const fixture_root = try registryFixtureRoot(allocator);
+    defer allocator.free(fixture_root);
+
+    var plane = ControlPlane.initWithOptions(allocator, .{
+        .registry_enabled = true,
+        .registry_source_url = fixture_root,
+        .registry_default_channel = "stable",
+        .registry_overrides_json = "[]",
+    });
+    defer plane.deinit();
+
+    const installed =
+        \\{"release":{"package_id":"terminal","release_version":"0.5.7","channel":"stable","digest":"sha256:terminal057","signature":{"alg":"test","sig":"terminal057"},"trust":{"source":"test"},"package":{"venom_id":"terminal","kind":"terminal","version":"1","release_version":"0.5.7","categories":["terminal","exec"],"host_roles":["node"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{},"capabilities":{"invoke":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace"}}}}
+    ;
+    const installed_json = try plane.installVenomPackage(installed);
+    defer allocator.free(installed_json);
+
+    const updated = try plane.updateVenomPackage("{\"venom_id\":\"terminal\",\"release_version\":\"0.5.8\",\"channel\":\"beta\"}");
+    defer allocator.free(updated);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"target_release_version\":\"0.5.8\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "\"target_channel\":\"stable\"") != null);
 }
 
 test "acheron_control_plane: registry channel policy updates host default and package overrides" {

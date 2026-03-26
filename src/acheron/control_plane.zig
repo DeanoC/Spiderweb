@@ -27,6 +27,8 @@ const default_platform_os = "unknown";
 const default_platform_arch = "unknown";
 const default_platform_runtime_kind = "unknown";
 const node_venom_event_history_max_default: usize = 1024;
+const package_release_history_max_default: usize = 256;
+const package_release_history_recent_limit_default: usize = 10;
 const current_spiderweb_version = "0.5.4";
 
 const WorkspaceKind = enum {
@@ -265,6 +267,54 @@ const NodeVenomEventRecord = struct {
     }
 };
 
+const PackageReleaseAction = enum {
+    install,
+    update,
+    enable,
+    disable,
+    switch_release,
+    rollback,
+    remove,
+
+    fn asString(self: PackageReleaseAction) []const u8 {
+        return switch (self) {
+            .install => "install",
+            .update => "update",
+            .enable => "enable",
+            .disable => "disable",
+            .switch_release => "switch",
+            .rollback => "rollback",
+            .remove => "remove",
+        };
+    }
+
+    fn fromString(value: []const u8) ?PackageReleaseAction {
+        if (std.mem.eql(u8, value, "install")) return .install;
+        if (std.mem.eql(u8, value, "update")) return .update;
+        if (std.mem.eql(u8, value, "enable")) return .enable;
+        if (std.mem.eql(u8, value, "disable")) return .disable;
+        if (std.mem.eql(u8, value, "switch")) return .switch_release;
+        if (std.mem.eql(u8, value, "rollback")) return .rollback;
+        if (std.mem.eql(u8, value, "remove")) return .remove;
+        return null;
+    }
+};
+
+const PackageReleaseHistoryRecord = struct {
+    timestamp_ms: i64,
+    package_id: []u8,
+    release_version: ?[]u8 = null,
+    channel: ?[]u8 = null,
+    action: PackageReleaseAction,
+
+    fn deinit(self: *PackageReleaseHistoryRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.package_id);
+        if (self.release_version) |value| allocator.free(value);
+        if (self.channel) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
 const InstalledVenomRelease = struct {
     package_id: []u8,
     package: venom_package_model.VenomPackage,
@@ -432,6 +482,7 @@ pub const ControlPlane = struct {
     active_workspace_by_agent: std.StringHashMapUnmanaged([]u8) = .{},
     preferred_venom_provider_by_scope_venom: std.StringHashMapUnmanaged([]u8) = .{},
     node_venom_event_history: std.ArrayListUnmanaged(NodeVenomEventRecord) = .{},
+    package_release_history: std.ArrayListUnmanaged(PackageReleaseHistoryRecord) = .{},
 
     next_invite_id: u64 = 1,
     next_node_id: u64 = 1,
@@ -818,6 +869,46 @@ pub const ControlPlane = struct {
         };
     }
 
+    fn appendPackageReleaseHistoryLocked(
+        self: *ControlPlane,
+        action: PackageReleaseAction,
+        package_id: []const u8,
+        release_version: ?[]const u8,
+        channel: ?[]const u8,
+    ) void {
+        while (self.package_release_history.items.len >= package_release_history_max_default and
+            self.package_release_history.items.len > 0)
+        {
+            var dropped = self.package_release_history.orderedRemove(0);
+            dropped.deinit(self.allocator);
+        }
+
+        const package_copy = self.allocator.dupe(u8, package_id) catch return;
+        errdefer self.allocator.free(package_copy);
+        const release_copy = if (release_version) |value|
+            self.allocator.dupe(u8, value) catch return
+        else
+            null;
+        errdefer if (release_copy) |value| self.allocator.free(value);
+        const channel_copy = if (channel) |value|
+            self.allocator.dupe(u8, value) catch return
+        else
+            null;
+        errdefer if (channel_copy) |value| self.allocator.free(value);
+
+        self.package_release_history.append(self.allocator, .{
+            .timestamp_ms = std.time.milliTimestamp(),
+            .package_id = package_copy,
+            .release_version = release_copy,
+            .channel = channel_copy,
+            .action = action,
+        }) catch {
+            self.allocator.free(package_copy);
+            if (release_copy) |value| self.allocator.free(value);
+            if (channel_copy) |value| self.allocator.free(value);
+        };
+    }
+
     pub fn snapshotNodeVenomEvents(
         self: *ControlPlane,
         allocator: std.mem.Allocator,
@@ -946,6 +1037,10 @@ pub const ControlPlane = struct {
         for (self.node_venom_event_history.items) |*record| record.deinit(self.allocator);
         self.node_venom_event_history.deinit(self.allocator);
         self.node_venom_event_history = .{};
+
+        for (self.package_release_history.items) |*record| record.deinit(self.allocator);
+        self.package_release_history.deinit(self.allocator);
+        self.package_release_history = .{};
 
         self.invites_created_total = 0;
         self.invites_redeemed_total = 0;
@@ -1448,7 +1543,10 @@ pub const ControlPlane = struct {
 
                     var installed_any = false;
                     for (install_result.releases.items) |release_entry| {
-                        if (try installReleaseJsonLocked(self, release_entry.release_json)) installed_any = true;
+                        if (try installReleaseJsonLocked(self, release_entry.release_json)) {
+                            installed_any = true;
+                            try appendPackageReleaseHistoryFromReleaseJsonLocked(self, .install, release_entry.release_json);
+                        }
                     }
 
                     if (!installed_any) return ControlPlaneError.AlreadyExists;
@@ -1466,6 +1564,12 @@ pub const ControlPlane = struct {
         if (!try installParsedVenomReleaseLocked(self, release)) {
             return ControlPlaneError.AlreadyExists;
         }
+        self.appendPackageReleaseHistoryLocked(
+            .install,
+            release.package_id,
+            release.package.release_version,
+            release.package.channel,
+        );
         try rebuildInstalledVenomPackagesFromReleasesLocked(self);
         self.persistSnapshotBestEffortLocked();
         return self.renderSingleInstalledVenomPackageJsonLocked(release.package_id);
@@ -1517,8 +1621,15 @@ pub const ControlPlane = struct {
         }
 
         var installed_any = false;
+        var selected_release_installed = false;
         for (install_result.releases.items) |release_entry| {
-            if (try installReleaseJsonLocked(self, release_entry.release_json)) installed_any = true;
+            if (try installReleaseJsonLocked(self, release_entry.release_json)) {
+                installed_any = true;
+                if (std.mem.eql(u8, release_entry.package_id, install_result.selected_package_id)) {
+                    selected_release_installed = true;
+                }
+                try appendPackageReleaseHistoryFromReleaseJsonLocked(self, .update, release_entry.release_json);
+            }
         }
 
         var switched = false;
@@ -1537,6 +1648,20 @@ pub const ControlPlane = struct {
 
         if (installed_any or activation_changed) {
             try rebuildInstalledVenomPackagesFromReleasesLocked(self);
+            self.persistSnapshotBestEffortLocked();
+        }
+
+        if (!selected_release_installed and switched) {
+            self.appendPackageReleaseHistoryLocked(
+                .update,
+                install_result.selected_package_id,
+                install_result.selected_release_version,
+                releaseChannelForPackageLocked(
+                    self.installed_venom_releases.items,
+                    install_result.selected_package_id,
+                    install_result.selected_release_version,
+                ),
+            );
             self.persistSnapshotBestEffortLocked();
         }
 
@@ -1583,6 +1708,7 @@ pub const ControlPlane = struct {
         }
 
         var matched = false;
+        const previous_enabled_index = findEnabledInstalledReleaseIndex(self.installed_venom_releases.items, venom_id);
         const target_index = if (release_version) |requested| blk: {
             var found_index: ?usize = null;
             for (self.installed_venom_releases.items, 0..) |installed, idx| {
@@ -1604,6 +1730,16 @@ pub const ControlPlane = struct {
         }
 
         if (matched) {
+            if (target_index) |idx| {
+                if (previous_enabled_index == null or previous_enabled_index.? != idx) {
+                    self.appendPackageReleaseHistoryLocked(
+                        .enable,
+                        venom_id,
+                        self.installed_venom_releases.items[idx].package.release_version,
+                        self.installed_venom_releases.items[idx].package.channel,
+                    );
+                }
+            }
             try rebuildInstalledVenomPackagesFromReleasesLocked(self);
             self.persistSnapshotBestEffortLocked();
             return self.renderSingleInstalledVenomPackageJsonLocked(venom_id);
@@ -1627,16 +1763,25 @@ pub const ControlPlane = struct {
         }
 
         var matched = false;
+        var disabled_release_version: ?[]const u8 = null;
+        var disabled_channel: ?[]const u8 = null;
         for (self.installed_venom_releases.items) |*installed| {
             if (!std.mem.eql(u8, installed.package_id, venom_id)) continue;
             if (release_version) |requested| {
                 if (!std.mem.eql(u8, installed.package.release_version, requested)) continue;
+            }
+            if (installed.package.enabled and disabled_release_version == null) {
+                disabled_release_version = installed.package.release_version;
+                disabled_channel = installed.package.channel;
             }
             installed.package.enabled = false;
             matched = true;
             if (release_version != null) break;
         }
         if (matched) {
+            if (disabled_release_version != null) {
+                self.appendPackageReleaseHistoryLocked(.disable, venom_id, disabled_release_version, disabled_channel);
+            }
             try rebuildInstalledVenomPackagesFromReleasesLocked(self);
             self.persistSnapshotBestEffortLocked();
             return self.renderSingleInstalledVenomPackageJsonLocked(venom_id);
@@ -1674,6 +1819,12 @@ pub const ControlPlane = struct {
                 }
             }
             var removed = self.installed_venom_releases.orderedRemove(idx);
+            self.appendPackageReleaseHistoryLocked(
+                .remove,
+                removed.package_id,
+                removed.package.release_version,
+                removed.package.channel,
+            );
             removed.deinit(self.allocator);
             removed_any = true;
             if (release_version != null) break;
@@ -1717,6 +1868,7 @@ pub const ControlPlane = struct {
             findRollbackInstalledReleaseIndex(self.installed_venom_releases.items, venom_id);
 
         const idx = target_index orelse return ControlPlaneError.VenomPackageNotFound;
+        const previous_enabled_index = findEnabledInstalledReleaseIndex(self.installed_venom_releases.items, venom_id);
 
         for (self.installed_venom_releases.items) |*installed| {
             if (!std.mem.eql(u8, installed.package_id, venom_id)) continue;
@@ -1724,6 +1876,14 @@ pub const ControlPlane = struct {
         }
         self.installed_venom_releases.items[idx].package.enabled = true;
 
+        if (previous_enabled_index == null or previous_enabled_index.? != idx) {
+            self.appendPackageReleaseHistoryLocked(
+                .rollback,
+                venom_id,
+                self.installed_venom_releases.items[idx].package.release_version,
+                self.installed_venom_releases.items[idx].package.channel,
+            );
+        }
         try rebuildInstalledVenomPackagesFromReleasesLocked(self);
         self.persistSnapshotBestEffortLocked();
         return self.renderSingleInstalledVenomPackageJsonLocked(venom_id);
@@ -1747,12 +1907,21 @@ pub const ControlPlane = struct {
 
         const idx = findInstalledReleaseIndex(self.installed_venom_releases.items, venom_id, release_version) orelse
             return ControlPlaneError.VenomPackageNotFound;
+        const previous_enabled_index = findEnabledInstalledReleaseIndex(self.installed_venom_releases.items, venom_id);
         for (self.installed_venom_releases.items) |*installed| {
             if (!std.mem.eql(u8, installed.package_id, venom_id)) continue;
             installed.package.enabled = false;
         }
         self.installed_venom_releases.items[idx].package.enabled = true;
 
+        if (previous_enabled_index == null or previous_enabled_index.? != idx) {
+            self.appendPackageReleaseHistoryLocked(
+                .switch_release,
+                venom_id,
+                self.installed_venom_releases.items[idx].package.release_version,
+                self.installed_venom_releases.items[idx].package.channel,
+            );
+        }
         try rebuildInstalledVenomPackagesFromReleasesLocked(self);
         self.persistSnapshotBestEffortLocked();
         return self.renderSingleInstalledVenomPackageJsonLocked(venom_id);
@@ -4507,7 +4676,9 @@ pub const ControlPlane = struct {
             try appendInstalledVenomPackageJson(self.allocator, &out, package, self.installed_venom_releases.items);
             const package_json = try out.toOwnedSlice(self.allocator);
             defer self.allocator.free(package_json);
-            return try venom_registry.enrichProjectedPackageJson(self.allocator, registryPolicyLocked(self), package_json);
+            const with_history = try self.appendPackageReleaseHistoryMetadataLocked(package_json, package.venom_id, true);
+            defer self.allocator.free(with_history);
+            return try venom_registry.enrichProjectedPackageJson(self.allocator, registryPolicyLocked(self), with_history);
         }
         return ControlPlaneError.VenomPackageNotFound;
     }
@@ -4531,7 +4702,9 @@ pub const ControlPlane = struct {
             }
             const builtin_package_json = try venom_packages.renderPackageMetadataJson(self.allocator, spec);
             defer self.allocator.free(builtin_package_json);
-            const enriched_builtin_json = try venom_registry.enrichProjectedPackageJson(self.allocator, registryPolicyLocked(self), builtin_package_json);
+            const builtin_with_history = try self.appendPackageReleaseHistoryMetadataLocked(builtin_package_json, spec.venom_id, false);
+            defer self.allocator.free(builtin_with_history);
+            const enriched_builtin_json = try venom_registry.enrichProjectedPackageJson(self.allocator, registryPolicyLocked(self), builtin_with_history);
             defer self.allocator.free(enriched_builtin_json);
             if (!first) try out.append(self.allocator, ',');
             first = false;
@@ -4546,7 +4719,9 @@ pub const ControlPlane = struct {
             try appendInstalledVenomPackageJson(self.allocator, &package_out, package, self.installed_venom_releases.items);
             const package_json = try package_out.toOwnedSlice(self.allocator);
             defer self.allocator.free(package_json);
-            const enriched_package_json = try venom_registry.enrichProjectedPackageJson(self.allocator, registryPolicyLocked(self), package_json);
+            const package_with_history = try self.appendPackageReleaseHistoryMetadataLocked(package_json, package.venom_id, false);
+            defer self.allocator.free(package_with_history);
+            const enriched_package_json = try venom_registry.enrichProjectedPackageJson(self.allocator, registryPolicyLocked(self), package_with_history);
             defer self.allocator.free(enriched_package_json);
             try out.appendSlice(self.allocator, enriched_package_json);
         }
@@ -4596,9 +4771,73 @@ pub const ControlPlane = struct {
         if (venom_packages.findBuiltinPackage(venom_id)) |spec| {
             const package_json = try venom_packages.renderPackageMetadataJson(self.allocator, spec);
             defer self.allocator.free(package_json);
-            return try venom_registry.enrichProjectedPackageJson(self.allocator, registryPolicyLocked(self), package_json);
+            const with_history = try self.appendPackageReleaseHistoryMetadataLocked(package_json, spec.venom_id, true);
+            defer self.allocator.free(with_history);
+            return try venom_registry.enrichProjectedPackageJson(self.allocator, registryPolicyLocked(self), with_history);
         }
         return ControlPlaneError.VenomPackageNotFound;
+    }
+
+    fn appendPackageReleaseHistoryMetadataLocked(
+        self: *ControlPlane,
+        package_json: []const u8,
+        package_id: []const u8,
+        include_recent: bool,
+    ) ![]u8 {
+        if (package_json.len == 0 or package_json[package_json.len - 1] != '}') return ControlPlaneError.InvalidPayload;
+
+        const summary = packageReleaseHistorySummary(self.package_release_history.items, package_id);
+        const last_action_json = if (summary.last_record) |record|
+            try optionalJsonStringField(self.allocator, record.action.asString())
+        else
+            try self.allocator.dupe(u8, "null");
+        defer self.allocator.free(last_action_json);
+        const last_release_version_json = if (summary.last_record) |record|
+            try optionalJsonStringField(self.allocator, record.release_version)
+        else
+            try self.allocator.dupe(u8, "null");
+        defer self.allocator.free(last_release_version_json);
+        const last_channel_json = if (summary.last_record) |record|
+            try optionalJsonStringField(self.allocator, record.channel)
+        else
+            try self.allocator.dupe(u8, "null");
+        defer self.allocator.free(last_channel_json);
+
+        if (include_recent) {
+            const history_json = try buildPackageReleaseHistoryJson(
+                self.allocator,
+                self.package_release_history.items,
+                package_id,
+                package_release_history_recent_limit_default,
+            );
+            defer self.allocator.free(history_json);
+            return std.fmt.allocPrint(
+                self.allocator,
+                "{s},\"release_history_count\":{d},\"last_release_action\":{s},\"last_release_version\":{s},\"last_release_channel\":{s},\"last_release_at_ms\":{d},\"release_history\":{s}}}",
+                .{
+                    package_json[0 .. package_json.len - 1],
+                    summary.count,
+                    last_action_json,
+                    last_release_version_json,
+                    last_channel_json,
+                    summary.last_timestamp_ms,
+                    history_json,
+                },
+            );
+        }
+
+        return std.fmt.allocPrint(
+            self.allocator,
+            "{s},\"release_history_count\":{d},\"last_release_action\":{s},\"last_release_version\":{s},\"last_release_channel\":{s},\"last_release_at_ms\":{d}}}",
+            .{
+                package_json[0 .. package_json.len - 1],
+                summary.count,
+                last_action_json,
+                last_release_version_json,
+                last_channel_json,
+                summary.last_timestamp_ms,
+            },
+        );
     }
 
     const VenomPackageView = struct {
@@ -5401,6 +5640,27 @@ pub const ControlPlane = struct {
             try venom_package_model.appendPackageJson(self.allocator, &out, package);
         }
 
+        try out.appendSlice(self.allocator, "],\"package_release_history\":[");
+        for (self.package_release_history.items, 0..) |record, idx| {
+            if (idx != 0) try out.append(self.allocator, ',');
+            const package_id_json = try optionalJsonStringField(self.allocator, record.package_id);
+            defer self.allocator.free(package_id_json);
+            const release_version_json = try optionalJsonStringField(self.allocator, record.release_version);
+            defer self.allocator.free(release_version_json);
+            const channel_json = try optionalJsonStringField(self.allocator, record.channel);
+            defer self.allocator.free(channel_json);
+            try out.writer(self.allocator).print(
+                "{{\"timestamp_ms\":{d},\"package_id\":{s},\"release_version\":{s},\"channel\":{s},\"action\":\"{s}\"}}",
+                .{
+                    record.timestamp_ms,
+                    package_id_json,
+                    release_version_json,
+                    channel_json,
+                    record.action.asString(),
+                },
+            );
+        }
+
         try out.appendSlice(self.allocator, "],\"active_workspace_by_agent\":[");
         first = true;
         var active_it = self.active_workspace_by_agent.iterator();
@@ -5705,6 +5965,30 @@ pub const ControlPlane = struct {
             try rebuildInstalledVenomPackagesFromReleasesLocked(self);
         }
 
+        if (root.get("package_release_history")) |history_val| {
+            if (history_val != .array) return error.InvalidSnapshot;
+            for (history_val.array.items) |item| {
+                if (item != .object) return error.InvalidSnapshot;
+                const action_raw = getRequiredString(item.object, "action") catch return error.InvalidSnapshot;
+                const action = PackageReleaseAction.fromString(action_raw) orelse return error.InvalidSnapshot;
+                var record = PackageReleaseHistoryRecord{
+                    .timestamp_ms = try getRequiredI64(item.object, "timestamp_ms"),
+                    .package_id = try dupeRequiredString(self.allocator, item.object, "package_id"),
+                    .release_version = if (getOptionalString(item.object, "release_version")) |value|
+                        try self.allocator.dupe(u8, value)
+                    else
+                        null,
+                    .channel = if (getOptionalString(item.object, "channel")) |value|
+                        try self.allocator.dupe(u8, value)
+                    else
+                        null,
+                    .action = action,
+                };
+                errdefer record.deinit(self.allocator);
+                try self.package_release_history.append(self.allocator, record);
+            }
+        }
+
         const active_workspace_bindings_val = root.get("active_workspace_by_agent");
         if (active_workspace_bindings_val) |active_val| {
             if (active_val != .array) return error.InvalidSnapshot;
@@ -5921,6 +6205,68 @@ fn appendInstalledVenomPackageJson(
     );
 }
 
+const PackageReleaseHistorySummary = struct {
+    count: usize = 0,
+    last_record: ?*const PackageReleaseHistoryRecord = null,
+    last_timestamp_ms: i64 = 0,
+};
+
+fn packageReleaseHistorySummary(
+    records: []const PackageReleaseHistoryRecord,
+    package_id: []const u8,
+) PackageReleaseHistorySummary {
+    var summary = PackageReleaseHistorySummary{};
+    for (records) |*record| {
+        if (!std.mem.eql(u8, record.package_id, package_id)) continue;
+        summary.count += 1;
+        if (summary.last_record == null or record.timestamp_ms >= summary.last_timestamp_ms) {
+            summary.last_record = record;
+            summary.last_timestamp_ms = record.timestamp_ms;
+        }
+    }
+    return summary;
+}
+
+fn buildPackageReleaseHistoryJson(
+    allocator: std.mem.Allocator,
+    records: []const PackageReleaseHistoryRecord,
+    package_id: []const u8,
+    limit: usize,
+) ![]u8 {
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '[');
+
+    var appended: usize = 0;
+    var idx = records.len;
+    while (idx > 0 and appended < limit) {
+        idx -= 1;
+        const record = records[idx];
+        if (!std.mem.eql(u8, record.package_id, package_id)) continue;
+        if (appended != 0) try out.append(allocator, ',');
+        const package_id_json = try optionalJsonStringField(allocator, record.package_id);
+        defer allocator.free(package_id_json);
+        const release_version_json = try optionalJsonStringField(allocator, record.release_version);
+        defer allocator.free(release_version_json);
+        const channel_json = try optionalJsonStringField(allocator, record.channel);
+        defer allocator.free(channel_json);
+        try out.writer(allocator).print(
+            "{{\"timestamp_ms\":{d},\"package_id\":{s},\"release_version\":{s},\"channel\":{s},\"action\":\"{s}\"}}",
+            .{
+                record.timestamp_ms,
+                package_id_json,
+                release_version_json,
+                channel_json,
+                record.action.asString(),
+            },
+        );
+        appended += 1;
+    }
+
+    try out.append(allocator, ']');
+    return out.toOwnedSlice(allocator);
+}
+
 fn optionalJsonStringField(allocator: std.mem.Allocator, value: ?[]const u8) ![]u8 {
     if (value) |raw| {
         const escaped = try jsonEscape(allocator, raw);
@@ -5946,6 +6292,23 @@ fn installReleaseJsonLocked(self: *ControlPlane, release_json: []const u8) !bool
     if (try installParsedVenomReleaseLocked(self, release)) return true;
     release.deinit(self.allocator);
     return false;
+}
+
+fn appendPackageReleaseHistoryFromReleaseJsonLocked(
+    self: *ControlPlane,
+    action: PackageReleaseAction,
+    release_json: []const u8,
+) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, release_json, .{});
+    defer parsed.deinit();
+    var release = try parseInstalledVenomReleaseValue(self.allocator, parsed.value);
+    defer release.deinit(self.allocator);
+    self.appendPackageReleaseHistoryLocked(
+        action,
+        release.package_id,
+        release.package.release_version,
+        release.package.channel,
+    );
 }
 
 fn installParsedVenomReleaseLocked(self: *ControlPlane, release: InstalledVenomRelease) !bool {
@@ -10698,6 +11061,48 @@ test "acheron_control_plane: registry update reports the resolved release channe
     try std.testing.expect(std.mem.indexOf(u8, updated, "\"target_channel\":\"stable\"") != null);
 }
 
+test "acheron_control_plane: package release history is visible on package projections" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.init(allocator);
+    defer plane.deinit();
+
+    const install_v1 =
+        \\{"release":{"package_id":"camera_pkg","release_version":"1.0.0","channel":"stable","digest":"sha256:v1","signature":{"alg":"test","sig":"v1"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","release_version":"1.0.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+    ;
+    const install_v2 =
+        \\{"release":{"package_id":"camera_pkg","release_version":"1.1.0","channel":"stable","digest":"sha256:v2","signature":{"alg":"test","sig":"v2"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"2","release_version":"1.1.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true,"stream":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+    ;
+
+    const installed_v1 = try plane.installVenomPackage(install_v1);
+    defer allocator.free(installed_v1);
+    const installed_v2 = try plane.installVenomPackage(install_v2);
+    defer allocator.free(installed_v2);
+
+    const rolled_back = try plane.rollbackVenomPackage("{\"venom_id\":\"camera_pkg\"}");
+    defer allocator.free(rolled_back);
+    const switched = try plane.switchVenomRelease("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.1.0\"}");
+    defer allocator.free(switched);
+    const removed = try plane.removeVenomPackage("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.0.0\"}");
+    defer allocator.free(removed);
+
+    const package_json = try plane.getVenomPackage("{\"venom_id\":\"camera_pkg\"}");
+    defer allocator.free(package_json);
+    try std.testing.expect(std.mem.indexOf(u8, package_json, "\"release_history_count\":5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, package_json, "\"last_release_action\":\"remove\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, package_json, "\"release_history\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, package_json, "\"action\":\"remove\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, package_json, "\"action\":\"switch\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, package_json, "\"action\":\"rollback\"") != null);
+    try std.testing.expect(countStringOccurrences(package_json, "\"action\":\"install\"") >= 2);
+
+    const listed = try plane.listVenomPackages();
+    defer allocator.free(listed);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"venom_id\":\"camera_pkg\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"last_release_action\":\"remove\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"release_history_count\":5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"release_history\":[") == null);
+}
+
 test "acheron_control_plane: registry channel policy updates host default and package overrides" {
     const allocator = std.testing.allocator;
     const fixture_root = try registryFixtureRoot(allocator);
@@ -10770,6 +11175,45 @@ test "acheron_control_plane: venom package persistence restores installed regist
         const fetched = try plane.getVenomPackage("{\"venom_id\":\"package_persist\"}");
         defer allocator.free(fetched);
         try std.testing.expect(std.mem.indexOf(u8, fetched, "\"version\":\"3\"") != null);
+    }
+}
+
+test "acheron_control_plane: package release history persists across restart" {
+    const allocator = std.testing.allocator;
+    const dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/fs-control-plane-package-history-{d}", .{std.time.nanoTimestamp()});
+    defer allocator.free(dir);
+    defer std.fs.cwd().deleteTree(dir) catch {};
+    try std.fs.cwd().makePath(dir);
+
+    {
+        var plane = ControlPlane.initWithPersistence(allocator, dir, "control-plane.db");
+        defer plane.deinit();
+
+        const install_v1 =
+            \\{"release":{"package_id":"camera_pkg","release_version":"1.0.0","channel":"stable","digest":"sha256:v1","signature":{"alg":"test","sig":"v1"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"1","release_version":"1.0.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+        ;
+        const install_v2 =
+            \\{"release":{"package_id":"camera_pkg","release_version":"1.1.0","channel":"stable","digest":"sha256:v2","signature":{"alg":"test","sig":"v2"},"trust":{"source":"test"},"package":{"venom_id":"camera_pkg","kind":"camera","version":"2","release_version":"1.1.0","categories":["camera"],"host_roles":["node"],"binding_scopes":["node"],"runtime_kind":"native","requirements":{},"capabilities":{"still":true,"stream":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace-mount"}}}}
+        ;
+
+        const installed_v1 = try plane.installVenomPackage(install_v1);
+        defer allocator.free(installed_v1);
+        const installed_v2 = try plane.installVenomPackage(install_v2);
+        defer allocator.free(installed_v2);
+        const switched = try plane.switchVenomRelease("{\"venom_id\":\"camera_pkg\",\"release_version\":\"1.0.0\"}");
+        defer allocator.free(switched);
+    }
+
+    {
+        var plane = ControlPlane.initWithPersistence(allocator, dir, "control-plane.db");
+        defer plane.deinit();
+
+        const package_json = try plane.getVenomPackage("{\"venom_id\":\"camera_pkg\"}");
+        defer allocator.free(package_json);
+        try std.testing.expect(std.mem.indexOf(u8, package_json, "\"release_history_count\":3") != null);
+        try std.testing.expect(std.mem.indexOf(u8, package_json, "\"last_release_action\":\"switch\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, package_json, "\"release_history\":[") != null);
+        try std.testing.expect(countStringOccurrences(package_json, "\"action\":\"install\"") >= 2);
     }
 }
 

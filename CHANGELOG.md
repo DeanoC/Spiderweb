@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.5.6 - 2026-03-27
+
+### Hosted Registry E2E
+- Added end-to-end installer smoke coverage for hosted registry discovery, single-package update, batch update, workspace creation, and filesystem smoke against the live signed registry flow.
+- Routed the `packages_*` control-plane operations through Spiderweb's direct websocket control path so `spiderweb-control` can exercise the same hosted-registry lifecycle operations as the UI and other clients.
+- Made the hosted-registry smoke version-agnostic by deriving seeded older releases from the registry's currently advertised versions instead of assuming a fixed hosted release line.
+
+### Registry Metadata Integrity
+- Corrected the published SpiderVenoms `release-facts` asset and live SpiderVenomRegistry metadata so Linux `arm64` artifact checksums match the actual published release assets.
+- Added protocol/control-path coverage needed to validate the hosted-registry update flow from published bundle metadata through installed release activation.
+
 ## 0.5.5 - 2026-03-26
 
 ### Hosted Registry Operations

@@ -56,6 +56,22 @@ json_query_first() {
     jq -r "$filter" "$file" | awk 'NF { print; exit }'
 }
 
+semver_prev_patch() {
+    local version="$1"
+    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        log_error "Expected semver version, got: $version"
+        exit 1
+    fi
+    local major="${BASH_REMATCH[1]}"
+    local minor="${BASH_REMATCH[2]}"
+    local patch="${BASH_REMATCH[3]}"
+    if (( patch == 0 )); then
+        log_error "Cannot derive previous patch version from $version"
+        exit 1
+    fi
+    printf '%s.%s.%s\n' "$major" "$minor" "$((patch - 1))"
+}
+
 run_control_op() {
     local output_file="$1"
     local operation="$2"
@@ -321,16 +337,19 @@ if [[ -z "$latest_terminal_version" || -z "$latest_browser_version" ]]; then
     cat "$TEST_ROOT/packages_catalog.json"
     exit 1
 fi
-if [[ "$latest_terminal_version" == "0.5.7" || "$latest_browser_version" == "0.5.7" ]]; then
-    log_error "Hosted registry did not advertise a newer release than the seeded 0.5.7 fixtures"
-    cat "$TEST_ROOT/packages_catalog.json"
-    exit 1
-fi
 log_success "Hosted registry reports terminal@$latest_terminal_version and browser@$latest_browser_version"
 
-OLD_TERMINAL_RELEASE='{"release":{"package_id":"terminal","release_version":"0.5.7","channel":"stable","digest":"sha256:terminal057","signature":{"alg":"test","sig":"terminal057"},"trust":{"source":"test"},"package":{"venom_id":"terminal","kind":"terminal","version":"1","release_version":"0.5.7","categories":["terminal","exec"],"host_roles":["node"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{},"capabilities":{"invoke":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"namespace"}}}}'
+old_terminal_version="$(semver_prev_patch "$latest_terminal_version")"
+old_browser_version="$(semver_prev_patch "$latest_browser_version")"
+
+OLD_TERMINAL_RELEASE="$(jq -nc \
+    --arg release_version "$old_terminal_version" \
+    --arg digest "sha256:terminal-${old_terminal_version}" \
+    --arg sig "terminal-${old_terminal_version}" \
+    '{release:{package_id:"terminal",release_version:$release_version,channel:"stable",digest:$digest,signature:{alg:"test",sig:$sig},trust:{source:"test"},package:{venom_id:"terminal",kind:"terminal",version:"1",release_version:$release_version,categories:["terminal","exec"],host_roles:["node"],binding_scopes:["workspace"],runtime_kind:"native",requirements:{},capabilities:{invoke:true},ops:{model:"namespace"},runtime:{type:"native_proc"},permissions:{default:"deny-by-default"},schema:{model:"namespace"}}}}'
+)"
 run_control_op "$TEST_ROOT/packages_install_terminal_old.json" packages_install "$OLD_TERMINAL_RELEASE"
-assert_file_contains "$TEST_ROOT/packages_install_terminal_old.json" '"release_version":"0.5.7"'
+assert_file_contains "$TEST_ROOT/packages_install_terminal_old.json" "\"release_version\":\"$old_terminal_version\""
 
 run_control_op "$TEST_ROOT/packages_updates_terminal.json" packages_updates
 assert_file_contains "$TEST_ROOT/packages_updates_terminal.json" '"package_id":"terminal"'
@@ -346,10 +365,15 @@ run_control_op "$TEST_ROOT/packages_get_terminal.json" packages_get '{"venom_id"
 assert_file_contains "$TEST_ROOT/packages_get_terminal.json" "\"active_release_version\":\"$latest_terminal_version\""
 assert_file_contains "$TEST_ROOT/packages_get_terminal.json" '"update_available":false'
 
-OLD_BROWSER_RELEASE='{"release":{"package_id":"browser","release_version":"0.5.7","channel":"stable","digest":"sha256:browser057","signature":{"alg":"test","sig":"browser057"},"trust":{"source":"test"},"package":{"venom_id":"browser-main","kind":"browser","version":"1","release_version":"0.5.7","categories":["browser"],"host_roles":["node"],"binding_scopes":["workspace"],"runtime_kind":"native","requirements":{"host_capabilities":["managed_browser"]},"capabilities":{"invoke":true,"observe":true,"act":true},"ops":{"model":"namespace"},"runtime":{"type":"native_proc"},"permissions":{"default":"deny-by-default"},"schema":{"model":"browser-observe-act-v1"}}}}'
+OLD_BROWSER_RELEASE="$(jq -nc \
+    --arg release_version "$old_browser_version" \
+    --arg digest "sha256:browser-${old_browser_version}" \
+    --arg sig "browser-${old_browser_version}" \
+    '{release:{package_id:"browser",release_version:$release_version,channel:"stable",digest:$digest,signature:{alg:"test",sig:$sig},trust:{source:"test"},package:{venom_id:"browser-main",kind:"browser",version:"1",release_version:$release_version,categories:["browser"],host_roles:["node"],binding_scopes:["workspace"],runtime_kind:"native",requirements:{host_capabilities:["managed_browser"]},capabilities:{invoke:true,observe:true,act:true},ops:{model:"namespace"},runtime:{type:"native_proc"},permissions:{default:"deny-by-default"},schema:{model:"browser-observe-act-v1"}}}}'
+)"
 run_control_op "$TEST_ROOT/packages_install_browser_old.json" packages_install "$OLD_BROWSER_RELEASE"
 assert_file_contains "$TEST_ROOT/packages_install_browser_old.json" '"package_id":"browser"'
-assert_file_contains "$TEST_ROOT/packages_install_browser_old.json" '"release_version":"0.5.7"'
+assert_file_contains "$TEST_ROOT/packages_install_browser_old.json" "\"release_version\":\"$old_browser_version\""
 
 run_control_op "$TEST_ROOT/packages_update_all_preview.json" packages_update_all '{"apply":false,"packages":["browser"]}'
 assert_file_contains "$TEST_ROOT/packages_update_all_preview.json" '"candidate_count":1'

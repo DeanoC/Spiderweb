@@ -39,6 +39,62 @@ require_cmd() {
     fi
 }
 
+assert_file_contains() {
+    local file="$1"
+    local needle="$2"
+    if grep -Fq -- "$needle" "$file"; then
+        return 0
+    fi
+    log_error "Expected to find '$needle' in $file"
+    cat "$file"
+    exit 1
+}
+
+json_query_first() {
+    local file="$1"
+    local filter="$2"
+    jq -r "$filter" "$file" | awk 'NF { print; exit }'
+}
+
+semver_prev_patch() {
+    local version="$1"
+    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        log_error "Expected semver version, got: $version"
+        exit 1
+    fi
+    local major="${BASH_REMATCH[1]}"
+    local minor="${BASH_REMATCH[2]}"
+    local patch="${BASH_REMATCH[3]}"
+    if (( patch == 0 )); then
+        log_error "Cannot derive previous patch version from $version"
+        exit 1
+    fi
+    printf '%s.%s.%s\n' "$major" "$minor" "$((patch - 1))"
+}
+
+run_control_op() {
+    local output_file="$1"
+    local operation="$2"
+    local payload="${3:-}"
+    (
+        cd "$RUNTIME_CWD"
+        if [[ -n "$payload" ]]; then
+            HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" \
+                "$INSTALL_DIR/spiderweb-control" \
+                --url "ws://127.0.0.1:${SERVER_PORT}/" \
+                --auth-token "$access_token" \
+                "$operation" \
+                "$payload" >"$output_file"
+        else
+            HOME="$TEST_HOME" PATH="$INSTALL_DIR:$PATH" \
+                "$INSTALL_DIR/spiderweb-control" \
+                --url "ws://127.0.0.1:${SERVER_PORT}/" \
+                --auth-token "$access_token" \
+                "$operation" >"$output_file"
+        fi
+    )
+}
+
 cleanup() {
     if [[ -n "${SERVER_PID:-}" ]]; then
         kill "$SERVER_PID" 2>/dev/null || true
@@ -185,6 +241,10 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
     exit 1
 fi
 tmp_config_path="$TEST_ROOT/config.json"
+test_registry_source_url="${SPIDERWEB_TEST_REGISTRY_SOURCE_URL:-}"
+if [[ -n "$test_registry_source_url" ]]; then
+    log_info "Overriding registry source for smoke: $test_registry_source_url"
+fi
 jq \
     --arg bind "127.0.0.1" \
     --argjson port "$SERVER_PORT" \
@@ -192,13 +252,21 @@ jq \
     --arg state_dir "$STATE_DIR" \
     --arg assets_dir "$installed_templates_dir" \
     --arg bundle_release "$installed_bundle_release" \
+    --arg registry_source "$test_registry_source_url" \
     '
     .server.bind = $bind |
     .server.port = $port |
     .runtime.spider_web_root = $spider_root |
     .runtime.state_directory = $state_dir |
     .runtime.assets_dir = $assets_dir |
-    .runtime.local_node.bundle_release_path = $bundle_release
+    .runtime.local_node.bundle_release_path = $bundle_release |
+    (if $registry_source != "" then
+        .runtime.venom_registry.enabled = true |
+        .runtime.venom_registry.source_url = $registry_source |
+        .runtime.venom_registry.default_channel = "stable"
+     else
+        .
+     end)
     ' "$CONFIG_PATH" >"$tmp_config_path"
 mv "$tmp_config_path" "$CONFIG_PATH"
 
@@ -257,6 +325,69 @@ fi
 head -n 5 /tmp/spiderweb-install-auth.txt
 log_success "Access token available from installed spiderweb-config"
 log_success "Installed spiderweb is serving control requests"
+
+log_info "Exercising hosted registry discovery and update flow..."
+run_control_op "$TEST_ROOT/packages_catalog.json" packages_catalog '{"channel":"stable"}'
+
+latest_terminal_version="$(json_query_first "$TEST_ROOT/packages_catalog.json" '.. | objects | select(.package_id? == "terminal" and .registry_release_version?) | .registry_release_version')"
+latest_browser_version="$(json_query_first "$TEST_ROOT/packages_catalog.json" '.. | objects | select(.package_id? == "browser" and .registry_release_version?) | .registry_release_version')"
+
+if [[ -z "$latest_terminal_version" || -z "$latest_browser_version" ]]; then
+    log_error "Failed to extract hosted registry versions from packages_catalog"
+    cat "$TEST_ROOT/packages_catalog.json"
+    exit 1
+fi
+log_success "Hosted registry reports terminal@$latest_terminal_version and browser@$latest_browser_version"
+
+old_terminal_version="$(semver_prev_patch "$latest_terminal_version")"
+old_browser_version="$(semver_prev_patch "$latest_browser_version")"
+
+OLD_TERMINAL_RELEASE="$(jq -nc \
+    --arg release_version "$old_terminal_version" \
+    --arg digest "sha256:terminal-${old_terminal_version}" \
+    --arg sig "terminal-${old_terminal_version}" \
+    '{release:{package_id:"terminal",release_version:$release_version,channel:"stable",digest:$digest,signature:{alg:"test",sig:$sig},trust:{source:"test"},package:{venom_id:"terminal",kind:"terminal",version:"1",release_version:$release_version,categories:["terminal","exec"],host_roles:["node"],binding_scopes:["workspace"],runtime_kind:"native",requirements:{},capabilities:{invoke:true},ops:{model:"namespace"},runtime:{type:"native_proc"},permissions:{default:"deny-by-default"},schema:{model:"namespace"}}}}'
+)"
+run_control_op "$TEST_ROOT/packages_install_terminal_old.json" packages_install "$OLD_TERMINAL_RELEASE"
+assert_file_contains "$TEST_ROOT/packages_install_terminal_old.json" "\"release_version\":\"$old_terminal_version\""
+
+run_control_op "$TEST_ROOT/packages_updates_terminal.json" packages_updates
+assert_file_contains "$TEST_ROOT/packages_updates_terminal.json" '"package_id":"terminal"'
+assert_file_contains "$TEST_ROOT/packages_updates_terminal.json" "\"latest_release_version\":\"$latest_terminal_version\""
+assert_file_contains "$TEST_ROOT/packages_updates_terminal.json" '"update_available":true'
+
+run_control_op "$TEST_ROOT/packages_update_terminal.json" packages_update '{"venom_id":"terminal","activate":true}'
+assert_file_contains "$TEST_ROOT/packages_update_terminal.json" "\"target_release_version\":\"$latest_terminal_version\""
+assert_file_contains "$TEST_ROOT/packages_update_terminal.json" '"installed":true'
+assert_file_contains "$TEST_ROOT/packages_update_terminal.json" '"changed":true'
+
+run_control_op "$TEST_ROOT/packages_get_terminal.json" packages_get '{"venom_id":"terminal"}'
+assert_file_contains "$TEST_ROOT/packages_get_terminal.json" "\"active_release_version\":\"$latest_terminal_version\""
+assert_file_contains "$TEST_ROOT/packages_get_terminal.json" '"update_available":false'
+
+OLD_BROWSER_RELEASE="$(jq -nc \
+    --arg release_version "$old_browser_version" \
+    --arg digest "sha256:browser-${old_browser_version}" \
+    --arg sig "browser-${old_browser_version}" \
+    '{release:{package_id:"browser",release_version:$release_version,channel:"stable",digest:$digest,signature:{alg:"test",sig:$sig},trust:{source:"test"},package:{venom_id:"browser-main",kind:"browser",version:"1",release_version:$release_version,categories:["browser"],host_roles:["node"],binding_scopes:["workspace"],runtime_kind:"native",requirements:{host_capabilities:["managed_browser"]},capabilities:{invoke:true,observe:true,act:true},ops:{model:"namespace"},runtime:{type:"native_proc"},permissions:{default:"deny-by-default"},schema:{model:"browser-observe-act-v1"}}}}'
+)"
+run_control_op "$TEST_ROOT/packages_install_browser_old.json" packages_install "$OLD_BROWSER_RELEASE"
+assert_file_contains "$TEST_ROOT/packages_install_browser_old.json" '"package_id":"browser"'
+assert_file_contains "$TEST_ROOT/packages_install_browser_old.json" "\"release_version\":\"$old_browser_version\""
+
+run_control_op "$TEST_ROOT/packages_update_all_preview.json" packages_update_all '{"apply":false,"packages":["browser"]}'
+assert_file_contains "$TEST_ROOT/packages_update_all_preview.json" '"candidate_count":1'
+assert_file_contains "$TEST_ROOT/packages_update_all_preview.json" '"preview_count":1'
+assert_file_contains "$TEST_ROOT/packages_update_all_preview.json" "\"target_release_version\":\"$latest_browser_version\""
+
+run_control_op "$TEST_ROOT/packages_update_all_apply.json" packages_update_all '{"apply":true,"activate":true,"packages":["browser"]}'
+assert_file_contains "$TEST_ROOT/packages_update_all_apply.json" '"updated_count":1'
+assert_file_contains "$TEST_ROOT/packages_update_all_apply.json" "\"target_release_version\":\"$latest_browser_version\""
+
+run_control_op "$TEST_ROOT/packages_get_browser.json" packages_get '{"venom_id":"browser"}'
+assert_file_contains "$TEST_ROOT/packages_get_browser.json" "\"active_release_version\":\"$latest_browser_version\""
+assert_file_contains "$TEST_ROOT/packages_get_browser.json" '"update_available":false'
+log_success "Hosted registry install/update/switch flows passed"
 
 log_info "Creating a smoke-test workspace..."
 (

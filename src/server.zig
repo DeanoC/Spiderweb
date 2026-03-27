@@ -4670,6 +4670,21 @@ fn handleWebSocketConnection(
                             .reconcile_status,
                             .workspace_up,
                             .audit_tail,
+                            .packages_list,
+                            .packages_catalog,
+                            .packages_updates,
+                            .packages_update,
+                            .packages_update_all,
+                            .packages_get,
+                            .packages_channel_get,
+                            .packages_channel_set,
+                            .packages_channel_clear,
+                            .packages_install,
+                            .packages_enable,
+                            .packages_switch,
+                            .packages_disable,
+                            .packages_rollback,
+                            .packages_remove,
                             => {
                                 const active_binding = session_bindings.get(active_session_key) orelse return error.InvalidState;
                                 const control_agent_id = active_binding.agent_id;

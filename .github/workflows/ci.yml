@@ -53,6 +53,9 @@ jobs:
       - name: Zig version
         run: zig version
 
+      - name: Run macOS quickstart regression
+        run: bash ./platform/macos/scripts/quickstart-regression.sh
+
       - name: Build host artifacts
         run: zig build
 

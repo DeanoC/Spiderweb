@@ -392,11 +392,24 @@ const core_workspace_bind_specs = [_]WorkspaceTemplateBindSpec{
     .{ .bind_path = "/.spiderweb/venoms/search_code", .venom_id = "search_code", .host_role = .node },
 };
 
+const quickstart_workspace_bind_specs = [_]WorkspaceTemplateBindSpec{
+    core_workspace_bind_specs[0],
+    core_workspace_bind_specs[1],
+    core_workspace_bind_specs[2],
+    core_workspace_bind_specs[3],
+    core_workspace_bind_specs[4],
+};
+
 const builtin_workspace_templates = [_]WorkspaceTemplateSpec{
     .{
         .id = default_project_template_id,
         .description = "Minimal external-agent workspace with canonical control and venom bindings under /.spiderweb.",
         .bind_specs = core_workspace_bind_specs[0..],
+    },
+    .{
+        .id = "just_try_it",
+        .description = "Small first-run workspace with packages, runtimes, and terminal access for the initial local drive experience.",
+        .bind_specs = quickstart_workspace_bind_specs[0..],
     },
     .{
         .id = "dev",
@@ -10611,6 +10624,7 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     const listed = try plane.listWorkspaceTemplates();
     defer allocator.free(listed);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"minimum\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"just_try_it\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, listed, "\"template_id\":\"dev\"") != null);
 
     const fetched = try plane.getWorkspaceTemplate("{\"template_id\":\"dev\"}");
@@ -10627,6 +10641,27 @@ test "acheron_control_plane: workspace template catalog lists dev template and r
     try std.testing.expect(std.mem.indexOf(u8, fetched, "\"bind_path\":\"/services/web_search\"") == null);
 
     try std.testing.expectError(ControlPlaneError.TemplateNotFound, plane.getWorkspaceTemplate("{\"template_id\":\"unknown\"}"));
+}
+
+test "acheron_control_plane: just_try_it template seeds minimal local quickstart binds" {
+    const allocator = std.testing.allocator;
+    var plane = ControlPlane.init(allocator);
+    defer plane.deinit();
+
+    const provider_node_id = try seedManagedWorkspaceTemplateProviders(allocator, &plane);
+    defer allocator.free(provider_node_id);
+    const project_json = try plane.createWorkspace("{\"name\":\"Quickstart\",\"vision\":\"Quickstart\",\"template_id\":\"just_try_it\"}");
+    defer allocator.free(project_json);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"template_id\":\"just_try_it\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/workspace/mounts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/workspace/home\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/packages\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/control/runtimes\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/terminal\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/git\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/search_code\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/computer\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, project_json, "\"bind_path\":\"/.spiderweb/venoms/browser\"") == null);
 }
 
 test "acheron_control_plane: builtin host project seeds mounts control bind" {

@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var revealLocalTokens = false
     @State private var newWorkspaceName = ""
     @State private var newWorkspaceVision = ""
+    @State private var activeRecipe: SpiderwebRecipe?
 
     var body: some View {
         NavigationSplitView {
@@ -35,6 +36,18 @@ struct ContentView: View {
         } message: {
             Text("This removes Spiderweb.app, the background service, native file system support, saved mounts, local Spiderweb data, and Spiderweb secrets from this Mac. Spiderweb will quit when uninstall begins.")
         }
+        .sheet(item: $activeRecipe) { recipe in
+            SpiderwebRecipeSheet(
+                recipe: recipe,
+                primaryAction: {
+                    runRecipePrimaryAction(recipe)
+                },
+                secondaryAction: recipe.secondaryButtonTitle == nil ? nil : {
+                    runRecipeSecondaryAction(recipe)
+                }
+            )
+            .environmentObject(controller)
+        }
     }
 
     private var header: some View {
@@ -42,7 +55,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Spiderweb")
                     .font(.system(size: 30, weight: .semibold))
-                Text("Native mounts, saved workspaces, and remote-node setup for macOS.")
+                Text("Start a workspace, connect devices, and manage Spiderweb drives on macOS.")
                     .foregroundStyle(.secondary)
             }
 
@@ -87,8 +100,206 @@ struct ContentView: View {
 
     private var overviewView: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Overview")
-                .font(.title2.weight(.semibold))
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Get Started")
+                    .font(.title2.weight(.semibold))
+                Text("Lead with one local workspace. Once the drive is working, come back for devices, packages, and remote flows.")
+                    .foregroundStyle(.secondary)
+            }
+
+            quickstartHeroPanel
+            overviewRecipesPanel
+            secondaryPathsPanel
+            quickstartNextStepsPanel
+            setupChecklistPanel
+            quickMountsPanel
+        }
+    }
+
+    private var overviewRecipesPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Useful Next Paths")
+                .font(.headline)
+
+            Text("Spider is most approachable when each step has a job: start local, connect another machine, mount something remote, or contribute this Mac elsewhere.")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 12) {
+                OnboardingRecipeCard(
+                    eyebrow: "Remote Access",
+                    title: "Mount an Existing Spiderweb",
+                    summary: "Use this when a Spiderweb is already running somewhere else and you just want its workspace as a drive on this Mac.",
+                    steps: [
+                        "Copy the remote Spiderweb URL and access token.",
+                        "Pick the workspace id and local mount path.",
+                        "Save the drive, then mount it from the Mounts screen."
+                    ],
+                    progress: SpiderwebRecipe.mountExistingSpiderweb.progress(using: controller),
+                    buttonTitle: "Open Remote Drive Setup",
+                    action: {
+                        activeRecipe = .mountExistingSpiderweb
+                    }
+                )
+                OnboardingRecipeCard(
+                    eyebrow: "Connect Devices",
+                    title: "Let Another Mac Connect to This Spiderweb",
+                    summary: "Run Spiderweb on this Mac, then share a network URL and access token so another Mac or tool can connect back here.",
+                    steps: [
+                        "Install / Start Service on this Mac.",
+                        "Reveal the local access tokens and copy a network URL.",
+                        "Use that URL and token from another Mac, SpiderApp, or a saved remote drive."
+                    ],
+                    progress: SpiderwebRecipe.shareThisSpiderweb.progress(using: controller),
+                    buttonTitle: "Open Local Access",
+                    action: {
+                        activeRecipe = .shareThisSpiderweb
+                    }
+                )
+                OnboardingRecipeCard(
+                    eyebrow: "Contribute This Mac",
+                    title: "Provide This Mac to a Remote Spiderweb",
+                    summary: "Use an invite token to pair this Mac as a remote device so another Spiderweb can use its files or services.",
+                    steps: [
+                        "Paste the remote control URL and invite token.",
+                        "Choose what path this Mac should export.",
+                        "Pair the Mac, then confirm it shows up in the remote workspace topology."
+                    ],
+                    progress: SpiderwebRecipe.provideThisMac.progress(using: controller),
+                    buttonTitle: "Open Pairing Setup",
+                    action: {
+                        activeRecipe = .provideThisMac
+                    }
+                )
+            }
+        }
+        .padding(18)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var quickstartHeroPanel: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Start Here")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("Start Local Workspace")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                    Text("Spiderweb will install what it needs, create a workspace, mount a drive under your home folder, and open the result in Finder.")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(controller.quickstartStepTitle)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color(NSColor.textBackgroundColor), in: Capsule())
+                    .foregroundStyle(controller.quickstartState?.isComplete == true ? .green : .secondary)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                HeroFactCard(
+                    title: "Default Path",
+                    value: "Just Try It",
+                    detail: "The fastest way to see Spiderweb as a drive on this Mac."
+                )
+                HeroFactCard(
+                    title: "Drive Location",
+                    value: controller.quickstartDrivePath ?? "~/Spiderweb/<workspace-name>",
+                    detail: "A deterministic path you can open in Finder, editors, and tools."
+                )
+                HeroFactCard(
+                    title: "What You Get",
+                    value: "Workspace + Drive",
+                    detail: "A ready local workspace first, then SpiderApp for devices and packages."
+                )
+            }
+
+            if let drivePath = controller.quickstartDrivePath {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Drive Path")
+                        .font(.subheadline.weight(.semibold))
+                    Text(drivePath)
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                .padding(12)
+                .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+
+            Text(controller.quickstartDetail)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                if controller.quickstartState?.isComplete == true {
+                    if controller.quickstartCanOpenSpiderApp {
+                        Button(controller.quickstartPrimaryButtonTitle) {
+                            controller.openSpiderApp()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    if controller.quickstartState?.result?.driveIssueSummary?.isEmpty == false {
+                        Button("Retry Drive Mount") {
+                            controller.startLocalWorkspaceQuickstart()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                } else {
+                    Button(controller.quickstartPrimaryButtonTitle) {
+                        controller.startLocalWorkspaceQuickstart()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(controller.isBusy)
+                }
+
+                if controller.quickstartNeedsSystemApproval {
+                    Button("Open System Settings") {
+                        controller.openSystemSettings()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if controller.quickstartCanRevealDrive {
+                    Button("Reveal Drive") {
+                        controller.revealQuickstartDrive()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            Text("Prefer a different first step? Use the paths below to mount an existing Spiderweb or connect this Mac to another workspace.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.accentColor.opacity(0.18),
+                    Color(NSColor.controlBackgroundColor)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.accentColor.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    private var setupChecklistPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Need Help or Manual Setup?")
+                .font(.headline)
+
+            Text("These details matter when you need approvals, want to troubleshoot the local runtime, or prefer a more manual path.")
+                .foregroundStyle(.secondary)
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                 StatusCard(
@@ -102,9 +313,9 @@ struct ContentView: View {
                     detail: controller.nativeStatusDetailText
                 )
                 StatusCard(
-                    title: "Saved Mounts",
+                    title: "Saved Drives",
                     value: "\(controller.savedMounts.count)",
-                    detail: controller.mountedSavedMounts.isEmpty ? "No active native mounts right now." : "\(controller.mountedSavedMounts.count) mounted right now."
+                    detail: controller.mountedSavedMounts.isEmpty ? "No active native drives right now." : "\(controller.mountedSavedMounts.count) mounted right now."
                 )
                 StatusCard(
                     title: "Remote Node",
@@ -112,17 +323,6 @@ struct ContentView: View {
                     detail: controller.pairedRemoteNode?.remoteControlURL ?? "This Mac is not currently paired to a remote Spiderweb."
                 )
             }
-
-            setupChecklistPanel
-            setupChoices
-            quickMountsPanel
-        }
-    }
-
-    private var setupChecklistPanel: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Setup Checklist")
-                .font(.headline)
 
             ChecklistRow(
                 title: "Local background service",
@@ -155,10 +355,10 @@ struct ContentView: View {
             )
 
             ChecklistRow(
-                title: "Mount local or remote workspaces",
+                title: "Mount local or remote drives",
                 detail: controller.nativeStatus?.ready == true
-                    ? "Native mounts are ready. You can save mounts in the Mounts section or create a local mount from This Mac."
-                    : "Mounts become available once the file system is installed and enabled.",
+                    ? "Native drives are ready. You can save drives in the Mounts section or create a local drive from This Mac."
+                    : "Drives become available once the file system is installed and enabled.",
                 isComplete: controller.nativeStatus?.ready == true,
                 actionTitle: "Refresh",
                 action: { controller.refresh() }
@@ -168,12 +368,15 @@ struct ContentView: View {
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private var setupChoices: some View {
+    private var secondaryPathsPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Choose a Path")
+            Text("Other Ways to Start")
                 .font(.headline)
 
-            ForEach(SpiderwebOnboardingPath.allCases) { path in
+            Text("Use these when your first goal is remote access or contributing this Mac to another Spiderweb instead of starting locally.")
+                .foregroundStyle(.secondary)
+
+            ForEach([SpiderwebOnboardingPath.remoteMount, SpiderwebOnboardingPath.remoteNode]) { path in
                 Button {
                     controller.highlightedOnboardingPath = path
                     switch path {
@@ -209,13 +412,73 @@ struct ContentView: View {
         }
     }
 
+    private var quickstartNextStepsPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Keep Going")
+                .font(.headline)
+
+            if controller.quickstartState?.isComplete != true {
+                Text("Finish the local workspace first. After that, use SpiderApp for devices, packages, recipes, and the richer workspace shell.")
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    if controller.quickstartCanOpenSpiderApp {
+                        actionCard(
+                            title: "Open SpiderApp",
+                            detail: controller.quickstartNextStepDetail,
+                            buttonTitle: "Open SpiderApp",
+                            action: {
+                                controller.openSpiderApp()
+                            }
+                        )
+                    } else {
+                        actionCard(
+                            title: "Use the Mounted Drive",
+                            detail: controller.quickstartNextStepDetail,
+                            buttonTitle: "Reveal Drive",
+                            action: {
+                                controller.revealQuickstartDrive()
+                            }
+                        )
+                    }
+                    actionCard(
+                        title: "Connect Machines",
+                        detail: "Bring in another machine, or contribute this Mac to a remote Spiderweb, once you have seen the first drive working.",
+                        buttonTitle: "Open Guide",
+                        action: {
+                            activeRecipe = .provideThisMac
+                        }
+                    )
+                    actionCard(
+                        title: "Add Packages and Services",
+                        detail: "Packages are Spider's installable capabilities. Older internal docs may call them venoms, but the user-facing flow should stay package-first.",
+                        buttonTitle: "Open Guide",
+                        action: {
+                            activeRecipe = .packagesAndServices
+                        }
+                    )
+                    actionCard(
+                        title: "Create More Drives",
+                        detail: "Use Mounts for additional local or remote drives once the first workspace path makes sense.",
+                        buttonTitle: "Open Drives",
+                        action: {
+                            controller.selectedSection = .mounts
+                        }
+                    )
+                }
+            }
+        }
+        .padding(18)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
     private var quickMountsPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Quick Mounts")
+            Text("Saved Drives")
                 .font(.headline)
 
             if controller.savedMounts.isEmpty {
-                Text("No saved mounts yet. Add one in the Mounts section.")
+                Text("No saved drives yet. Add one in the Mounts section.")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(controller.savedMounts) { mount in
@@ -252,24 +515,40 @@ struct ContentView: View {
     private var mountsView: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
-                Text("Mounts")
+                Text("Drives")
                     .font(.title2.weight(.semibold))
                 Spacer()
-                Button("New Local Mount") {
+                Button("New Local Drive") {
                     controller.beginNewMount(kind: .local)
                 }
-                Button("New Remote Mount") {
+                Button("New Remote Drive") {
                     controller.beginNewMount(kind: .remote)
                 }
             }
 
+            OnboardingRecipeCard(
+                eyebrow: "Recipe",
+                title: "Mount a Remote Workspace",
+                summary: "When another Spiderweb is already running, create a saved remote drive here so Finder, editors, and tools can use it like a local path.",
+                steps: [
+                    "Paste the remote Spiderweb URL and access token.",
+                    "Set the workspace id and a mount path under ~/Spiderweb.",
+                    "Save the drive, then mount or reveal it from this screen."
+                ],
+                progress: SpiderwebRecipe.mountExistingSpiderweb.progress(using: controller),
+                buttonTitle: "New Remote Drive",
+                action: {
+                    activeRecipe = .mountExistingSpiderweb
+                }
+            )
+
             HStack(alignment: .top, spacing: 20) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Saved Mounts")
+                    Text("Saved Drives")
                         .font(.headline)
 
                     if controller.savedMounts.isEmpty {
-                        Text("Save local or remote mounts here so they’re easy to mount again from the menu bar.")
+                        Text("Save local or remote drives here so they’re easy to mount again from the menu bar.")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(controller.savedMounts) { mount in
@@ -328,10 +607,10 @@ struct ContentView: View {
 
     private var mountEditorPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(controller.mountEditor.editingID == nil ? "New Mount" : "Edit Mount")
+            Text(controller.mountEditor.editingID == nil ? "New Drive" : "Edit Drive")
                 .font(.headline)
 
-            Picker("Mount kind", selection: $controller.mountEditor.kind) {
+            Picker("Drive kind", selection: $controller.mountEditor.kind) {
                 Text("Local").tag(SpiderwebSavedMountKind.local)
                 Text("Remote").tag(SpiderwebSavedMountKind.remote)
             }
@@ -352,13 +631,13 @@ struct ContentView: View {
             if controller.mountEditor.kind == .remote {
                 SecureField("Auth Token", text: $controller.mountEditor.authToken)
             } else {
-                Text("Local mounts use the local Spiderweb runtime token automatically.")
+                Text("Local drives use the local Spiderweb runtime token automatically.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             HStack {
-                Button("Save Mount") {
+                Button("Save Drive") {
                     controller.saveMountDraft()
                 }
                 Button("Reset") {
@@ -376,8 +655,114 @@ struct ContentView: View {
             Text("This Mac")
                 .font(.title2.weight(.semibold))
 
+            thisMacRecipesPanel
             localSpiderwebPanel
             remoteNodePanel
+        }
+    }
+
+    private var thisMacRecipesPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Useful Configurations")
+                .font(.headline)
+
+            Text("This is where Spiderweb shifts from one local drive into a distributed workspace: sharing access, pairing this Mac remotely, or creating additional local workspaces.")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 12) {
+                OnboardingRecipeCard(
+                    eyebrow: "Share This Host",
+                    title: "Connect Another Mac to This Spiderweb",
+                    summary: "Expose this Mac as the Spiderweb host another machine connects to.",
+                    steps: [
+                        "Start the local service here.",
+                        "Copy a network URL and access token from Local Access Tokens.",
+                        "Use those on the other machine to connect and choose a workspace."
+                    ],
+                    progress: SpiderwebRecipe.shareThisSpiderweb.progress(using: controller),
+                    buttonTitle: "Reveal Access Tokens",
+                    action: {
+                        activeRecipe = .shareThisSpiderweb
+                    }
+                )
+                OnboardingRecipeCard(
+                    eyebrow: "Create Workspace",
+                    title: "Set Up a Useful Local Workspace",
+                    summary: "A workspace is the shared root that drives, packages, and tools attach to. Start with one clear purpose, then expand it.",
+                    steps: [
+                        "Give the workspace a recognizable name.",
+                        "Describe the goal in one sentence so later devices and tools make sense.",
+                        "Create a saved drive from that workspace once it appears below."
+                    ],
+                    progress: SpiderwebRecipe.setupUsefulWorkspace.progress(using: controller),
+                    buttonTitle: "Open Workspace Guide",
+                    action: {
+                        activeRecipe = .setupUsefulWorkspace
+                    }
+                )
+                OnboardingRecipeCard(
+                    eyebrow: "Remote Pairing",
+                    title: "Provide This Mac to Another Spiderweb",
+                    summary: "Pair this Mac as a remote device so another Spiderweb can mount its exported path or use its services.",
+                    steps: [
+                        "Paste the remote control URL and invite token.",
+                        "Choose the export path and whether it should be read-only.",
+                        "Pair this Mac and verify it appears in the remote Spiderweb."
+                    ],
+                    progress: SpiderwebRecipe.provideThisMac.progress(using: controller),
+                    buttonTitle: "Open Pairing Guide",
+                    action: {
+                        activeRecipe = .provideThisMac
+                    }
+                )
+            }
+        }
+        .padding(18)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func runRecipePrimaryAction(_ recipe: SpiderwebRecipe) {
+        activeRecipe = nil
+        switch recipe {
+        case .mountExistingSpiderweb:
+            controller.highlightedOnboardingPath = .remoteMount
+            controller.beginNewMount(kind: .remote)
+            controller.selectedSection = .mounts
+        case .shareThisSpiderweb:
+            revealLocalTokens = true
+            controller.selectedSection = .thisMac
+        case .provideThisMac:
+            controller.highlightedOnboardingPath = .remoteNode
+            controller.selectedSection = .thisMac
+        case .setupUsefulWorkspace:
+            controller.selectedSection = .thisMac
+        case .packagesAndServices:
+            if controller.quickstartCanOpenSpiderApp {
+                controller.openSpiderApp()
+            } else if controller.quickstartCanRevealDrive {
+                controller.revealQuickstartDrive()
+            } else {
+                controller.selectedSection = .overview
+            }
+        }
+    }
+
+    private func runRecipeSecondaryAction(_ recipe: SpiderwebRecipe) {
+        activeRecipe = nil
+        switch recipe {
+        case .mountExistingSpiderweb:
+            revealLocalTokens = true
+            controller.selectedSection = .thisMac
+        case .shareThisSpiderweb:
+            controller.beginNewMount(kind: .remote)
+            controller.selectedSection = .mounts
+        case .provideThisMac:
+            controller.openSystemSettings()
+        case .setupUsefulWorkspace:
+            controller.selectedSection = .overview
+            controller.startLocalWorkspaceQuickstart()
+        case .packagesAndServices:
+            controller.selectedSection = .overview
         }
     }
 
@@ -386,7 +771,7 @@ struct ContentView: View {
             Text("Local Spiderweb")
                 .font(.headline)
 
-            Text("Run Spiderweb in the background on this Mac, manage local workspaces, and create saved local mounts.")
+            Text("Run Spiderweb in the background on this Mac, manage local workspaces, and create saved local drives.")
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 10) {
@@ -408,7 +793,7 @@ struct ContentView: View {
                 }
             }
 
-            Text("Install / Start Service sets up Spiderweb for this user. Install File System may ask for admin approval, and macOS still requires one manual enable step in System Settings before native mounts become ready.")
+            Text("Install / Start Service sets up Spiderweb for this user. Install File System may ask for admin approval, and macOS still requires one manual enable step in System Settings before native drives become ready.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -431,7 +816,7 @@ struct ContentView: View {
             }
 
             if controller.mountableLocalWorkspaces.isEmpty {
-                Text("No local workspaces loaded yet. Create one below, then save a local mount from it.")
+                Text("No local workspaces loaded yet. Create one below, then save a local drive from it.")
                     .foregroundStyle(.secondary)
             } else {
                 Text("Local Workspaces")
@@ -447,7 +832,7 @@ struct ContentView: View {
                         }
                         Spacer()
                         HStack(spacing: 8) {
-                            Button("Create Saved Mount") {
+                            Button("Create Saved Drive") {
                                 controller.createSavedLocalMount(for: workspace)
                             }
                             Button("Delete Workspace", role: .destructive) {
@@ -488,10 +873,10 @@ struct ContentView: View {
 
     private var localWorkspaceCreationPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Create Workspace")
+            Text("Create a Useful Workspace")
                 .font(.headline)
 
-            Text("Local mounts need a real Spiderweb workspace. Create one here, then save a local mount from the workspace list below.")
+            Text("Local drives need a real workspace first. Keep the first one simple and task-shaped, then add more drives, devices, and packages after the workspace exists.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -714,6 +1099,256 @@ private func maskedToken(_ value: String?) -> String {
     return "\(value.prefix(4))...\(value.suffix(4))"
 }
 
+private enum RecipeProgress {
+    case guide
+    case ready
+    case done
+
+    var label: String {
+        switch self {
+        case .guide: return "Guide"
+        case .ready: return "Ready"
+        case .done: return "Done"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .guide: return .secondary
+        case .ready: return .orange
+        case .done: return .green
+        }
+    }
+}
+
+private enum SpiderwebRecipe: String, Identifiable {
+    case mountExistingSpiderweb
+    case shareThisSpiderweb
+    case provideThisMac
+    case setupUsefulWorkspace
+    case packagesAndServices
+
+    var id: String { rawValue }
+
+    var eyebrow: String {
+        switch self {
+        case .mountExistingSpiderweb: return "REMOTE ACCESS"
+        case .shareThisSpiderweb: return "SHARE THIS HOST"
+        case .provideThisMac: return "REMOTE PAIRING"
+        case .setupUsefulWorkspace: return "WORKSPACE GUIDE"
+        case .packagesAndServices: return "PACKAGES AND SERVICES"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .mountExistingSpiderweb: return "Mount an Existing Spiderweb"
+        case .shareThisSpiderweb: return "Let Another Mac Connect to This Spiderweb"
+        case .provideThisMac: return "Provide This Mac to a Remote Spiderweb"
+        case .setupUsefulWorkspace: return "Set Up a Useful Workspace"
+        case .packagesAndServices: return "Add Packages and Services"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .mountExistingSpiderweb:
+            return "Use this when a Spiderweb is already running somewhere else and you just want its workspace as a drive on this Mac."
+        case .shareThisSpiderweb:
+            return "Run Spiderweb on this Mac, then share a network URL and access token so another Mac, tool, or saved drive can connect back here."
+        case .provideThisMac:
+            return "Use an invite token to pair this Mac as a remote device so another Spiderweb can use its files or services."
+        case .setupUsefulWorkspace:
+            return "A workspace is the shared root that drives, packages, and tools attach to. Start with one clear job, then expand it."
+        case .packagesAndServices:
+            return "Packages are Spider's installable capabilities. Older internal docs may call them venoms, but the user-facing flow should stay package-first."
+        }
+    }
+
+    var steps: [String] {
+        switch self {
+        case .mountExistingSpiderweb:
+            return [
+                "Copy the remote Spiderweb URL and access token.",
+                "Pick the workspace id and a mount path under ~/Spiderweb.",
+                "Save the drive, then mount or reveal it from the Drives screen."
+            ]
+        case .shareThisSpiderweb:
+            return [
+                "Install / Start Service on this Mac so Spiderweb is running locally.",
+                "Reveal the local access tokens and copy a network URL plus the access token.",
+                "Use that URL and token from another Mac, SpiderApp, or a saved remote drive."
+            ]
+        case .provideThisMac:
+            return [
+                "Paste the remote control URL and invite token from the other Spiderweb.",
+                "Choose what path this Mac should export and whether it should be read-only.",
+                "Pair the Mac, then confirm it shows up in the remote workspace topology."
+            ]
+        case .setupUsefulWorkspace:
+            return [
+                "Give the workspace a recognizable name and one-sentence goal.",
+                "Create the workspace first, then create a saved drive from it once it appears below.",
+                "Only add more drives, devices, and packages after the workspace itself makes sense."
+            ]
+        case .packagesAndServices:
+            return [
+                "Open SpiderApp once the first workspace and drive are working.",
+                "Use Capabilities to inspect installed packages and add only the next useful one.",
+                "When you see the word venom in older internal docs, read it as the older term for a package or capability."
+            ]
+        }
+    }
+
+    var primaryButtonTitle: String {
+        switch self {
+        case .mountExistingSpiderweb: return "Open Remote Drive Setup"
+        case .shareThisSpiderweb: return "Open Local Access"
+        case .provideThisMac: return "Open Pairing Setup"
+        case .setupUsefulWorkspace: return "Open Workspace Setup"
+        case .packagesAndServices: return "Open Next Step"
+        }
+    }
+
+    var secondaryButtonTitle: String? {
+        switch self {
+        case .mountExistingSpiderweb: return "Reveal Host Access"
+        case .shareThisSpiderweb: return "Open Remote Drives"
+        case .provideThisMac: return "Open System Settings"
+        case .setupUsefulWorkspace: return "Start Local Workspace"
+        case .packagesAndServices: return "Back to Overview"
+        }
+    }
+
+    func progress(using controller: SpiderwebAppController) -> RecipeProgress {
+        switch self {
+        case .mountExistingSpiderweb:
+            return controller.savedMounts.contains(where: { $0.kind == .remote }) ? .done : .guide
+        case .shareThisSpiderweb:
+            if controller.serviceStatus?.loaded == true,
+               controller.authStatus?.accessPresent == true,
+               controller.serviceStatus?.remoteReachable != false {
+                return .done
+            }
+            if controller.serviceStatus?.loaded == true, controller.authStatus?.accessPresent == true {
+                return .ready
+            }
+            return .guide
+        case .provideThisMac:
+            if controller.pairedRemoteNode != nil {
+                return .done
+            }
+            if controller.serviceStatus?.loaded == true {
+                return .ready
+            }
+            return .guide
+        case .setupUsefulWorkspace:
+            if !controller.mountableLocalWorkspaces.isEmpty {
+                return .done
+            }
+            if controller.serviceStatus?.loaded == true {
+                return .ready
+            }
+            return .guide
+        case .packagesAndServices:
+            if controller.quickstartState?.isComplete == true, controller.quickstartCanOpenSpiderApp {
+                return .done
+            }
+            if controller.quickstartState?.isComplete == true {
+                return .ready
+            }
+            return .guide
+        }
+    }
+}
+
+private struct SpiderwebRecipeSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var controller: SpiderwebAppController
+
+    let recipe: SpiderwebRecipe
+    let primaryAction: () -> Void
+    let secondaryAction: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text(recipe.eyebrow)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                RecipeProgressBadge(progress: recipe.progress(using: controller))
+            }
+
+            Text(recipe.title)
+                .font(.title2.weight(.bold))
+
+            Text(recipe.summary)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("What to do")
+                    .font(.headline)
+                ForEach(Array(recipe.steps.enumerated()), id: \.offset) { index, step in
+                    Text("\(index + 1). \(step)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(14)
+            .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+            if recipe == .packagesAndServices {
+                Text(controller.quickstartCanOpenSpiderApp
+                    ? "SpiderApp is available, so that is the best place to continue into packages, devices, and recipes."
+                    : "If SpiderApp is not available yet, continue from the mounted drive and come back to package setup later.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            HStack(spacing: 10) {
+                Button(recipe.primaryButtonTitle) {
+                    primaryAction()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+
+                if let secondaryAction, let secondaryButtonTitle = recipe.secondaryButtonTitle {
+                    Button(secondaryButtonTitle) {
+                        secondaryAction()
+                        dismiss()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Spacer()
+
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 520, minHeight: 360)
+    }
+}
+
+private struct RecipeProgressBadge: View {
+    let progress: RecipeProgress
+
+    var body: some View {
+        Text(progress.label)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(progress.tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(progress.tint.opacity(0.12), in: Capsule())
+    }
+}
+
 private struct InlineBanner: View {
     let text: String
     let tint: Color
@@ -763,6 +1398,71 @@ private struct StatusCard: View {
                 .foregroundStyle(.secondary)
         }
         .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct HeroFactCard: View {
+    let title: String
+    let value: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline)
+                .textSelection(.enabled)
+            Text(detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(NSColor.textBackgroundColor).opacity(0.85), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct OnboardingRecipeCard: View {
+    let eyebrow: String
+    let title: String
+    let summary: String
+    let steps: [String]
+    let progress: RecipeProgress
+    let buttonTitle: String?
+    let action: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(eyebrow.uppercased())
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                RecipeProgressBadge(progress: progress)
+            }
+            Text(title)
+                .font(.headline)
+            Text(summary)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                    Text("\(index + 1). \(step)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let buttonTitle, let action {
+                Button(buttonTitle, action: action)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        }
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
@@ -850,6 +1550,27 @@ private struct SecretValueRow: View {
         .padding(12)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
+}
+
+@ViewBuilder
+private func actionCard(title: String, detail: String, buttonTitle: String, action: @escaping () -> Void) -> some View {
+    HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+
+        Spacer()
+
+        Button(buttonTitle, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+    }
+    .padding(14)
+    .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 }
 
 #Preview {

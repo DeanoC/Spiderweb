@@ -66,7 +66,7 @@ pub fn runFirstRun(allocator: std.mem.Allocator, args: []const []const u8) !void
     try std.fs.File.stdout().writeAll("  Worker model: external filesystem agents\n");
     try std.fs.File.stdout().writeAll("\nHost flow:\n");
     try std.fs.File.stdout().writeAll("  1. Start Spiderweb: spiderweb\n");
-    try std.fs.File.stdout().writeAll("  2. Create a mountable workspace: spiderweb-control workspace_up '{\"name\":\"Demo\",\"vision\":\"Mounted workspace\",\"template_id\":\"dev\",\"activate\":false}'\n");
+    try std.fs.File.stdout().writeAll("  2. Create a mountable workspace: spiderweb-control workspace_up '{\"name\":\"Demo\",\"vision\":\"Mounted workspace\",\"template_id\":\"just_try_it\",\"activate\":false}'\n");
     if (builtin.os.tag == .macos) {
         try std.fs.File.stdout().writeAll("  3. Open the Spiderweb macOS app and choose either:\n");
         try std.fs.File.stdout().writeAll("     - Run Spiderweb on this Mac\n");

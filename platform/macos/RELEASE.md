@@ -77,6 +77,7 @@ Optional flags:
 By default the script:
 
 - builds the Zig CLI payload for the current host architecture
+- runs the macOS quickstart regression harness
 - archives and exports `Spiderweb.app` for `developer-id` distribution
 - builds a signed `spiderweb.fs` wrapper bundle
 - builds a signed flat installer package

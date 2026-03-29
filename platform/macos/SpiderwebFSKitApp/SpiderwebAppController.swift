@@ -225,6 +225,103 @@ struct SpiderwebWorkspaceSummary: Identifiable, Hashable {
     var isMountable: Bool { mountCount > 0 }
 }
 
+enum QuickstartPreset: String, Codable, CaseIterable, Identifiable {
+    case justTryIt = "just_try_it"
+    case connectMachines = "connect_machines"
+    case agentLab = "agent_lab"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .justTryIt: return "Just Try It"
+        case .connectMachines: return "Connect Machines"
+        case .agentLab: return "Agent Lab"
+        }
+    }
+
+    var workspaceName: String {
+        switch self {
+        case .justTryIt: return "My Workspace"
+        case .connectMachines: return "Shared Workspace"
+        case .agentLab: return "Agent Lab"
+        }
+    }
+
+    var workspaceVision: String {
+        switch self {
+        case .justTryIt:
+            return "A simple local workspace mounted on this Mac."
+        case .connectMachines:
+            return "A starter workspace for connecting a second machine."
+        case .agentLab:
+            return "A starter workspace for trying packages and agent workflows."
+        }
+    }
+
+    var templateID: String {
+        switch self {
+        case .justTryIt:
+            return "just_try_it"
+        case .connectMachines, .agentLab:
+            return "dev"
+        }
+    }
+}
+
+enum QuickstartStep: String, Codable, CaseIterable {
+    case installService = "install_service"
+    case installFileSystem = "install_file_system"
+    case enableFileSystem = "enable_file_system"
+    case ensureWorkspace = "ensure_workspace"
+    case ensureMount = "ensure_mount"
+    case mountDrive = "mount_drive"
+    case revealDrive = "reveal_drive"
+    case complete = "complete"
+
+    var title: String {
+        switch self {
+        case .installService: return "Install background service"
+        case .installFileSystem: return "Install file system support"
+        case .enableFileSystem: return "Enable file system support"
+        case .ensureWorkspace: return "Create or reuse workspace"
+        case .ensureMount: return "Create or reuse drive"
+        case .mountDrive: return "Mount drive"
+        case .revealDrive: return "Reveal drive"
+        case .complete: return "Ready"
+        }
+    }
+}
+
+struct QuickstartResult: Codable {
+    var workspaceID: String
+    var workspaceName: String
+    var mountID: String
+    var mountpoint: String
+    var createdWorkspace: Bool
+    var createdMount: Bool
+    var mountedNow: Bool
+    var driveAvailable: Bool? = nil
+    var driveIssueSummary: String? = nil
+}
+
+struct QuickstartState: Codable {
+    var preset: QuickstartPreset
+    var currentStep: QuickstartStep
+    var workspaceID: String?
+    var workspaceName: String?
+    var mountID: String?
+    var mountpoint: String?
+    var lastMessage: String?
+    var blockedReason: String?
+    var updatedAt: Date
+    var result: QuickstartResult?
+
+    var isComplete: Bool {
+        currentStep == .complete && result != nil
+    }
+}
+
 struct SpiderwebMountEditorDraft {
     var editingID: String?
     var name: String = ""
@@ -302,13 +399,17 @@ struct SpiderwebAccessEndpoint: Identifiable, Hashable {
 
 final class SpiderwebAppController: ObservableObject {
     static let localServerURL = "ws://127.0.0.1:18790/"
+    private static let spiderAppBundleIdentifier = "com.deanocalver.spiderapp"
     private static let appGroupIdentifier = "group.com.deanoc.spiderweb.fskit"
     private static let savedMountsFilename = "saved-mounts.json"
     private static let pairedNodeFilename = "paired-node.json"
+    private static let quickstartStateFilename = "quickstart-state.json"
     private static let remoteMountSecretService = "com.deanoc.spiderweb.saved-mount"
     private static let spiderwebCredentialService = "spiderweb"
     private static let systemSettingsURL = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!
     private static let nativeMountActionTimeout: TimeInterval = 20
+    private static let quickstartMountTimeoutRecoveryWindow: TimeInterval = 10
+    private static let quickstartMountTimeoutRecoveryPollIntervalUS: useconds_t = 500_000
 
     @Published var selectedSection: SpiderwebAppSection = .overview
     @Published var highlightedOnboardingPath: SpiderwebOnboardingPath = .localHost
@@ -324,6 +425,7 @@ final class SpiderwebAppController: ObservableObject {
     @Published var activeMountpoints: Set<String> = []
     @Published var extensionRegistrationPaths: [String] = []
     @Published var launchAtLoginEnabled = false
+    @Published var quickstartState: QuickstartState?
     @Published var statusMessage: String?
     @Published var lastError: String?
     @Published var isBusy = false
@@ -359,6 +461,73 @@ final class SpiderwebAppController: ObservableObject {
 
     var nonMountableLocalWorkspaces: [SpiderwebWorkspaceSummary] {
         localWorkspaces.filter { $0.kind != "system_builtin" && !$0.isMountable }
+    }
+
+    var quickstartButtonTitle: String {
+        if isBusy {
+            return "Working..."
+        }
+        if quickstartState?.isComplete == true {
+            return "Ready"
+        }
+        if quickstartState != nil {
+            return "Resume Local Workspace"
+        }
+        return "Start Local Workspace"
+    }
+
+    var quickstartPrimaryButtonTitle: String {
+        if quickstartState?.isComplete == true, quickstartCanOpenSpiderApp {
+            return "Open SpiderApp"
+        }
+        return quickstartButtonTitle
+    }
+
+    var quickstartStepTitle: String {
+        quickstartState?.currentStep.title ?? QuickstartStep.installService.title
+    }
+
+    var quickstartDetail: String {
+        if let driveIssueSummary = quickstartState?.result?.driveIssueSummary, !driveIssueSummary.isEmpty {
+            return driveIssueSummary
+        }
+        if let blockedReason = quickstartState?.blockedReason, !blockedReason.isEmpty {
+            return blockedReason
+        }
+        if let lastMessage = quickstartState?.lastMessage, !lastMessage.isEmpty {
+            return lastMessage
+        }
+        return "Install Spiderweb, create a local workspace, mount it as a drive, and reveal it in Finder."
+    }
+
+    var quickstartDrivePath: String? {
+        if let mountpoint = quickstartState?.result?.mountpoint {
+            return mountpoint
+        }
+        return quickstartState?.mountpoint
+    }
+
+    var quickstartCanRevealDrive: Bool {
+        guard let mountpoint = quickstartDrivePath else { return false }
+        return activeMountpoints.contains(mountpoint)
+    }
+
+    var quickstartCanOpenSpiderApp: Bool {
+        Self.findSpiderAppApplicationURL() != nil || Self.findSpiderAppExecutablePath() != nil
+    }
+
+    var quickstartNextStepDetail: String {
+        if let driveIssueSummary = quickstartState?.result?.driveIssueSummary, !driveIssueSummary.isEmpty {
+            return "Open SpiderApp to keep working while the drive mount is blocked, then retry the drive from Spiderweb after macOS clears the stuck FSKit state."
+        }
+        if quickstartCanOpenSpiderApp {
+            return "Open SpiderApp’s workspace shell and keep Devices, Capabilities, Explore, and Settings close by."
+        }
+        return "SpiderApp is not available on this Mac yet, so the mounted drive remains the fastest next step."
+    }
+
+    var quickstartNeedsSystemApproval: Bool {
+        quickstartState?.currentStep == .enableFileSystem && nativeStatus?.ready != true
     }
 
     var hasSetupIssue: Bool {
@@ -539,6 +708,13 @@ final class SpiderwebAppController: ObservableObject {
                 self.localWorkspaces = workspaces
                 self.launchAtLoginEnabled = launchAtLoginEnabled
                 self.buildInfo = buildInfo
+                self.reconcileQuickstartState(
+                    serviceStatus: serviceStatus,
+                    nativeStatus: nativeStatus,
+                    workspaces: workspaces,
+                    mounts: mergedMounts,
+                    activeMountpoints: activeMountpoints
+                )
                 if Self.shouldAutofillRemoteNodePublicBaseURL(current: self.remoteNodeDraft.publicBaseURL),
                    let suggested = Self.preferredRemoteNodePublicBaseURL(from: serviceStatus) {
                     self.remoteNodeDraft.publicBaseURL = suggested
@@ -1203,13 +1379,725 @@ final class SpiderwebAppController: ObservableObject {
         }
     }
 
+    func startLocalWorkspaceQuickstart(preset: QuickstartPreset = .justTryIt) {
+        isBusy = true
+        lastError = nil
+
+        let nextState = Self.initialQuickstartState(currentState: quickstartState, preset: preset)
+
+        quickstartState = nextState
+        persistQuickstartState()
+        statusMessage = nextState.lastMessage
+
+        Task.detached(priority: .userInitiated) {
+            var quickstart = nextState
+            do {
+                try Self.logQuickstartMilestone(
+                    preset: quickstart.preset,
+                    step: quickstart.currentStep,
+                    status: "started",
+                    detail: quickstart.lastMessage
+                )
+
+                if Self.fetchServiceStatus()?.loaded != true {
+                    quickstart.currentStep = .installService
+                    quickstart.blockedReason = nil
+                    quickstart.lastMessage = "Installing Spiderweb background service..."
+                    quickstart.updatedAt = Date()
+                    await self.applyQuickstartProgress(quickstart)
+                    _ = try Self.runCLI("spiderweb-config", arguments: ["config", "install-service"])
+                    try Self.logQuickstartMilestone(
+                        preset: quickstart.preset,
+                        step: .installService,
+                        status: "completed",
+                        detail: "Background service installed"
+                    )
+                } else {
+                    try Self.logQuickstartMilestone(
+                        preset: quickstart.preset,
+                        step: .installService,
+                        status: "reused",
+                        detail: "Background service already running"
+                    )
+                }
+
+                let nativeAfterService = Self.fetchNativeStatus()
+                if nativeAfterService?.registered != true {
+                    quickstart.currentStep = .installFileSystem
+                    quickstart.lastMessage = "Installing Spiderweb file system support..."
+                    quickstart.blockedReason = nil
+                    quickstart.updatedAt = Date()
+                    await self.applyQuickstartProgress(quickstart)
+                    _ = try Self.runCLI("spiderweb-config", arguments: ["config", "install-fs-extension"])
+                    try Self.logQuickstartMilestone(
+                        preset: quickstart.preset,
+                        step: .installFileSystem,
+                        status: "completed",
+                        detail: "File system support installed"
+                    )
+                } else {
+                    try Self.logQuickstartMilestone(
+                        preset: quickstart.preset,
+                        step: .installFileSystem,
+                        status: "reused",
+                        detail: "File system support already installed"
+                    )
+                }
+
+                let nativeStatus = Self.fetchNativeStatus()
+                if nativeStatus?.ready != true {
+                    quickstart.currentStep = .enableFileSystem
+                    quickstart.lastMessage = "Enable “Spiderweb file system” in System Settings, then resume."
+                    quickstart.blockedReason = "Open System Settings -> General -> Login Items & Extensions -> File System Extensions, enable “Spiderweb file system”, then return and resume."
+                    quickstart.updatedAt = Date()
+                    await self.applyQuickstartProgress(quickstart, isBusy: false)
+                    try Self.logQuickstartMilestone(
+                        preset: quickstart.preset,
+                        step: .enableFileSystem,
+                        status: "blocked",
+                        detail: quickstart.blockedReason
+                    )
+                    return
+                }
+                try Self.logQuickstartMilestone(
+                    preset: quickstart.preset,
+                    step: .enableFileSystem,
+                    status: "completed",
+                    detail: "File system support is ready"
+                )
+
+                guard let auth = Self.fetchAuthStatus(revealTokens: true), let accessToken = auth.accessToken else {
+                    throw SpiderwebAppError.message("Spiderweb auth token is unavailable after service setup.")
+                }
+
+                let savedMountsBefore = Self.loadSavedMounts()
+                let workspacesBefore = Self.fetchLocalWorkspaces(using: auth)
+
+                quickstart.currentStep = .ensureWorkspace
+                quickstart.lastMessage = "Creating or reusing a local workspace..."
+                quickstart.blockedReason = nil
+                quickstart.updatedAt = Date()
+                await self.applyQuickstartProgress(quickstart)
+
+                let workspace = try Self.ensureQuickstartWorkspace(
+                    state: &quickstart,
+                    preset: preset,
+                    accessToken: accessToken,
+                    existingWorkspaces: workspacesBefore
+                )
+                try Self.logQuickstartMilestone(
+                    preset: quickstart.preset,
+                    step: .ensureWorkspace,
+                    status: workspace.created ? "completed" : "reused",
+                    detail: workspace.summary.id
+                )
+
+                quickstart.currentStep = .ensureMount
+                quickstart.lastMessage = "Creating or reusing a saved drive..."
+                quickstart.mountpoint = workspace.mountpoint
+                quickstart.updatedAt = Date()
+                await self.applyQuickstartProgress(quickstart)
+
+                let mount = Self.ensureQuickstartSavedMount(
+                    state: &quickstart,
+                    workspace: workspace.summary,
+                    mountpoint: workspace.mountpoint,
+                    existingMounts: savedMountsBefore
+                )
+                try Self.logQuickstartMilestone(
+                    preset: quickstart.preset,
+                    step: .ensureMount,
+                    status: mount.created ? "completed" : "reused",
+                    detail: mount.savedMount.mountpoint
+                )
+
+                let activeMountpoints = Self.fetchActiveMountpoints()
+                var mountedNow: Bool
+                var driveIssueSummary: String? = nil
+                if activeMountpoints.contains(mount.savedMount.mountpoint) {
+                    mountedNow = false
+                    try Self.logQuickstartMilestone(
+                        preset: quickstart.preset,
+                        step: .mountDrive,
+                        status: "reused",
+                        detail: "Drive already mounted"
+                    )
+                } else {
+                    quickstart.currentStep = .mountDrive
+                    quickstart.lastMessage = "Mounting your local drive..."
+                    quickstart.updatedAt = Date()
+                    await self.applyQuickstartProgress(quickstart)
+                    do {
+                        mountedNow = try Self.mountSavedMountForQuickstart(mount.savedMount, authStatus: auth)
+                        try Self.logQuickstartMilestone(
+                            preset: quickstart.preset,
+                            step: .mountDrive,
+                            status: mountedNow ? "completed" : "reused",
+                            detail: mountedNow ? mount.savedMount.mountpoint : "Drive was already mounted while mounting"
+                        )
+                    } catch {
+                        let errorDescription = Self.describe(error: error)
+                        let refreshedActiveMountpoints = Self.fetchActiveMountpoints()
+                        if Self.shouldCompleteQuickstartWithoutMountedDrive(
+                            errorMessage: errorDescription,
+                            mountpoint: mount.savedMount.mountpoint,
+                            activeMountpoints: refreshedActiveMountpoints
+                        ) {
+                            mountedNow = false
+                            driveIssueSummary = Self.quickstartMountBlockedSummary(mountpoint: mount.savedMount.mountpoint)
+                            try Self.logQuickstartMilestone(
+                                preset: quickstart.preset,
+                                step: .mountDrive,
+                                status: "blocked",
+                                detail: errorDescription
+                            )
+                        } else {
+                            throw error
+                        }
+                    }
+                }
+
+                if driveIssueSummary == nil {
+                    quickstart.currentStep = .revealDrive
+                    quickstart.lastMessage = "Revealing your local drive in Finder..."
+                    quickstart.updatedAt = Date()
+                    await self.applyQuickstartProgress(quickstart)
+                    await MainActor.run {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: mount.savedMount.mountpoint)])
+                    }
+                    try Self.logQuickstartMilestone(
+                        preset: quickstart.preset,
+                        step: .revealDrive,
+                        status: "completed",
+                        detail: mount.savedMount.mountpoint
+                    )
+                }
+
+                quickstart.currentStep = .complete
+                quickstart.result = QuickstartResult(
+                    workspaceID: workspace.summary.id,
+                    workspaceName: workspace.summary.name,
+                    mountID: mount.savedMount.id,
+                    mountpoint: mount.savedMount.mountpoint,
+                    createdWorkspace: workspace.created,
+                    createdMount: mount.created,
+                    mountedNow: mountedNow,
+                    driveAvailable: driveIssueSummary == nil,
+                    driveIssueSummary: driveIssueSummary
+                )
+                quickstart.lastMessage = driveIssueSummary == nil
+                    ? "Workspace ready at \(mount.savedMount.mountpoint)"
+                    : "Workspace ready. Native drive mount is blocked on this Mac."
+                quickstart.blockedReason = nil
+                quickstart.updatedAt = Date()
+
+                let refreshedMounts = Self.loadSavedMounts()
+                let pairedNode = Self.loadPairedRemoteNode()
+                let serviceStatus = Self.fetchServiceStatus()
+                let refreshedNativeStatus = Self.fetchNativeStatus()
+                let refreshedAuthStatus = Self.fetchAuthStatus(revealTokens: true)
+                let remoteNodeStatus = Self.fetchRemoteNodeStatus()
+                let refreshedActiveMountpoints = Self.fetchActiveMountpoints()
+                let extensionRegistrationPaths = Self.fetchExtensionRegistrationPaths()
+                let refreshedWorkspaces = Self.fetchLocalWorkspaces(using: refreshedAuthStatus)
+                let mergedMounts = refreshedMounts.map { mount in
+                    var next = mount
+                    next.lastMountState = refreshedActiveMountpoints.contains(mount.mountpoint) ? .mounted : .idle
+                    return next
+                }
+                let completedState = quickstart
+
+                await MainActor.run {
+                    self.savedMounts = mergedMounts
+                    self.pairedRemoteNode = pairedNode
+                    self.serviceStatus = serviceStatus
+                    self.nativeStatus = refreshedNativeStatus
+                    self.authStatus = refreshedAuthStatus
+                    self.remoteNodeStatus = remoteNodeStatus
+                    self.activeMountpoints = refreshedActiveMountpoints
+                    self.extensionRegistrationPaths = extensionRegistrationPaths
+                    self.localWorkspaces = refreshedWorkspaces
+                    self.quickstartState = completedState
+                    self.persistQuickstartState()
+                    self.isBusy = false
+                    self.statusMessage = completedState.lastMessage
+                    self.selectedSection = .overview
+                }
+                try Self.logQuickstartMilestone(
+                    preset: quickstart.preset,
+                    step: .complete,
+                    status: "completed",
+                    detail: driveIssueSummary == nil ? mount.savedMount.mountpoint : "workspace ready without mounted drive"
+                )
+            } catch {
+                quickstart.lastMessage = nil
+                quickstart.blockedReason = nil
+                quickstart.updatedAt = Date()
+                let errorDescription = Self.describe(error: error)
+                await self.applyQuickstartFailure(quickstart, errorDescription: errorDescription)
+                try? Self.logQuickstartMilestone(
+                    preset: quickstart.preset,
+                    step: quickstart.currentStep,
+                    status: "failed",
+                    detail: Self.describe(error: error)
+                )
+            }
+        }
+    }
+
+    func revealQuickstartDrive() {
+        guard let mountpoint = quickstartDrivePath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: mountpoint)])
+        statusMessage = "Revealed \(mountpoint)"
+    }
+
+    @MainActor
+    func openSpiderApp() {
+        lastError = nil
+
+        if let appURL = Self.findSpiderAppApplicationURL() {
+            statusMessage = "Opening SpiderApp..."
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            let applyOpenResult: @MainActor (String?) -> Void = { [weak self] errorDescription in
+                guard let self else { return }
+                if let errorDescription {
+                    self.lastError = errorDescription
+                } else {
+                    self.statusMessage = "Opened SpiderApp"
+                }
+            }
+            NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { _, error in
+                let errorDescription = error.map { Self.describe(error: $0) }
+                Task { @MainActor in
+                    applyOpenResult(errorDescription)
+                }
+            }
+            return
+        }
+
+        if let executablePath = Self.findSpiderAppExecutablePath() {
+            statusMessage = "Opening SpiderApp..."
+            Task.detached(priority: .userInitiated) {
+                do {
+                    try Self.launchDetachedProcess(executableURL: URL(fileURLWithPath: executablePath), arguments: [])
+                    await MainActor.run {
+                        self.statusMessage = "Opened SpiderApp"
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.lastError = Self.describe(error: error)
+                    }
+                }
+            }
+            return
+        }
+
+        lastError = Self.spiderAppInstallHint()
+    }
+
+    @MainActor
+    private func applyQuickstartProgress(_ state: QuickstartState, isBusy: Bool? = nil) {
+        quickstartState = state
+        persistQuickstartState()
+        statusMessage = state.lastMessage
+        if let isBusy {
+            self.isBusy = isBusy
+        }
+    }
+
+    @MainActor
+    private func applyQuickstartFailure(_ state: QuickstartState, errorDescription: String) {
+        quickstartState = state
+        persistQuickstartState()
+        isBusy = false
+        lastError = errorDescription
+    }
+
+    private func reconcileQuickstartState(
+        serviceStatus: SpiderwebServiceStatusSnapshot?,
+        nativeStatus: SpiderwebNativeStatusSnapshot?,
+        workspaces: [SpiderwebWorkspaceSummary],
+        mounts: [SpiderwebSavedMount],
+        activeMountpoints: Set<String>
+    ) {
+        guard let quickstartState else { return }
+        if let reconciled = Self.reconciledQuickstartState(
+            from: quickstartState,
+            serviceStatus: serviceStatus,
+            nativeStatus: nativeStatus,
+            workspaces: workspaces,
+            mounts: mounts,
+            activeMountpoints: activeMountpoints
+        ) {
+            self.quickstartState = reconciled
+            persistQuickstartState()
+        }
+    }
+
+    private static func logQuickstartMilestone(
+        preset: QuickstartPreset,
+        step: QuickstartStep,
+        status: String,
+        detail: String?
+    ) throws {
+        let detailText = detail ?? ""
+        NSLog("[SpiderwebQuickstart] preset=%@ step=%@ status=%@ detail=%@", preset.rawValue, step.rawValue, status, detailText)
+    }
+
+    static func initialQuickstartState(
+        currentState: QuickstartState?,
+        preset: QuickstartPreset,
+        now: Date = Date()
+    ) -> QuickstartState {
+        var nextState = currentState ?? makeQuickstartState(
+            for: preset,
+            message: "Starting \(preset.title.lowercased())...",
+            now: now
+        )
+
+        if nextState.isComplete {
+            return makeQuickstartState(
+                for: preset,
+                message: "Restarting \(preset.title.lowercased())...",
+                now: now
+            )
+        }
+        if nextState.preset != preset {
+            return makeQuickstartState(
+                for: preset,
+                message: "Switching to \(preset.title.lowercased())...",
+                now: now
+            )
+        }
+
+        nextState.preset = preset
+        if nextState.workspaceName?.isEmpty != false {
+            nextState.workspaceName = preset.workspaceName
+        }
+        if nextState.mountpoint?.isEmpty != false {
+            nextState.mountpoint = quickstartMountpoint(for: nextState.workspaceName ?? preset.workspaceName)
+        }
+        nextState.lastMessage = "Continuing \(preset.title.lowercased())..."
+        nextState.blockedReason = nil
+        nextState.updatedAt = now
+        return nextState
+    }
+
+    static func reconciledQuickstartState(
+        from state: QuickstartState,
+        serviceStatus: SpiderwebServiceStatusSnapshot?,
+        nativeStatus: SpiderwebNativeStatusSnapshot?,
+        workspaces: [SpiderwebWorkspaceSummary],
+        mounts: [SpiderwebSavedMount],
+        activeMountpoints: Set<String>,
+        now: Date = Date()
+    ) -> QuickstartState? {
+        var quickstartState = state
+        var changed = false
+
+        if quickstartState.workspaceName?.isEmpty != false {
+            quickstartState.workspaceName = quickstartState.preset.workspaceName
+            changed = true
+        }
+        if quickstartState.mountpoint?.isEmpty != false {
+            quickstartState.mountpoint = quickstartMountpoint(for: quickstartState.workspaceName ?? quickstartState.preset.workspaceName)
+            changed = true
+        }
+
+        switch quickstartState.currentStep {
+        case .installService where serviceStatus?.loaded == true:
+            quickstartState.currentStep = .installFileSystem
+            quickstartState.blockedReason = nil
+            quickstartState.lastMessage = "Background service is ready."
+            changed = true
+        case .installFileSystem where nativeStatus?.registered == true:
+            quickstartState.currentStep = nativeStatus?.ready == true ? .ensureWorkspace : .enableFileSystem
+            quickstartState.blockedReason = nil
+            quickstartState.lastMessage = nativeStatus?.ready == true ? "File system support is ready." : quickstartState.lastMessage
+            changed = true
+        case .enableFileSystem where nativeStatus?.ready == true:
+            quickstartState.currentStep = .ensureWorkspace
+            quickstartState.blockedReason = nil
+            quickstartState.lastMessage = "File system support is enabled. Resume to finish setup."
+            changed = true
+        case .ensureWorkspace:
+            if let workspace = quickstartWorkspaceCandidate(state: quickstartState, workspaces: workspaces) {
+                quickstartState.workspaceID = workspace.id
+                quickstartState.workspaceName = workspace.name
+                quickstartState.mountpoint = quickstartMountpoint(for: workspace.name)
+                quickstartState.currentStep = .ensureMount
+                quickstartState.lastMessage = "Workspace ready. Resume to create or reuse a drive."
+                changed = true
+            }
+        case .ensureMount:
+            if let workspace = quickstartWorkspaceCandidate(state: quickstartState, workspaces: workspaces),
+               let mount = quickstartMountCandidate(state: quickstartState, workspace: workspace, mounts: mounts)
+            {
+                quickstartState.workspaceID = workspace.id
+                quickstartState.workspaceName = workspace.name
+                quickstartState.mountID = mount.id
+                quickstartState.mountpoint = mount.mountpoint
+                quickstartState.currentStep = activeMountpoints.contains(mount.mountpoint) ? .revealDrive : .mountDrive
+                quickstartState.lastMessage = activeMountpoints.contains(mount.mountpoint)
+                    ? "Drive is mounted. Resume to reveal it in Finder."
+                    : "Drive is saved. Resume to mount it."
+                changed = true
+            }
+        case .mountDrive:
+            if let mountpoint = quickstartState.mountpoint, activeMountpoints.contains(mountpoint) {
+                quickstartState.currentStep = .revealDrive
+                quickstartState.lastMessage = "Drive is mounted. Resume to reveal it in Finder."
+                changed = true
+            }
+        case .complete:
+            if let mountpoint = quickstartState.result?.mountpoint {
+                quickstartState.lastMessage = activeMountpoints.contains(mountpoint)
+                    ? "Workspace ready at \(mountpoint)"
+                    : "Workspace ready. Mount again from the saved drive list."
+            }
+        default:
+            break
+        }
+
+        guard changed else { return nil }
+        quickstartState.updatedAt = now
+        return quickstartState
+    }
+
+    static func shouldTreatQuickstartMountFailureAsSatisfied(
+        errorMessage: String,
+        mountpoint: String,
+        activeMountpoints: Set<String>
+    ) -> Bool {
+        guard activeMountpoints.contains(mountpoint) else { return false }
+        let normalized = errorMessage.lowercased()
+        return normalized.contains("already mounted")
+            || normalized.contains("a file with the same name already exists")
+            || normalized.contains("resource busy")
+            || normalized.contains("native mount timed out after")
+    }
+
+    static func shouldCompleteQuickstartWithoutMountedDrive(
+        errorMessage: String,
+        mountpoint: String,
+        activeMountpoints: Set<String>
+    ) -> Bool {
+        guard !activeMountpoints.contains(mountpoint) else { return false }
+        return errorMessage.lowercased().contains("native mount timed out after")
+    }
+
+    static func quickstartMountBlockedSummary(mountpoint: String) -> String {
+        "Workspace setup finished, but macOS did not attach the Spiderweb drive at \(mountpoint). This Mac is stuck in Apple's FSKit mount path. Open SpiderApp to keep working, then retry the drive later. Rebooting often clears the stuck FSKit state."
+    }
+
+    private static func shouldAttemptQuickstartMountTimeoutRecovery(errorMessage: String) -> Bool {
+        errorMessage.lowercased().contains("native mount timed out after")
+    }
+
+    private static func waitForQuickstartMountActivation(_ mountpoint: String) -> Bool {
+        let deadline = Date().addingTimeInterval(quickstartMountTimeoutRecoveryWindow)
+        while Date() < deadline {
+            if fetchActiveMountpoints().contains(mountpoint) {
+                return true
+            }
+            usleep(quickstartMountTimeoutRecoveryPollIntervalUS)
+        }
+        return fetchActiveMountpoints().contains(mountpoint)
+    }
+
+    private static func makeQuickstartState(for preset: QuickstartPreset, message: String, now: Date = Date()) -> QuickstartState {
+        QuickstartState(
+            preset: preset,
+            currentStep: .installService,
+            workspaceID: nil,
+            workspaceName: preset.workspaceName,
+            mountID: nil,
+            mountpoint: quickstartMountpoint(for: preset.workspaceName),
+            lastMessage: message,
+            blockedReason: nil,
+            updatedAt: now,
+            result: nil
+        )
+    }
+
+    static func quickstartMountpoint(for workspaceName: String) -> String {
+        let component = sanitizedMountComponent(workspaceName)
+        return "\(NSHomeDirectory())/Spiderweb/\(component.isEmpty ? "workspace" : component)"
+    }
+
+    static func quickstartWorkspaceCandidate(
+        state: QuickstartState,
+        workspaces: [SpiderwebWorkspaceSummary]
+    ) -> SpiderwebWorkspaceSummary? {
+        if let workspaceID = state.workspaceID,
+           let workspace = workspaces.first(where: { $0.id == workspaceID && $0.kind != "system_builtin" }) {
+            return workspace
+        }
+        if let workspaceName = state.workspaceName,
+           let workspace = workspaces.first(where: { $0.name == workspaceName && $0.kind != "system_builtin" }) {
+            return workspace
+        }
+        return nil
+    }
+
+    static func quickstartMountCandidate(
+        state: QuickstartState,
+        workspace: SpiderwebWorkspaceSummary,
+        mounts: [SpiderwebSavedMount]
+    ) -> SpiderwebSavedMount? {
+        if let mountID = state.mountID,
+           let mount = mounts.first(where: { $0.id == mountID }) {
+            return mount
+        }
+        if let mount = mounts.first(where: { $0.kind == .local && $0.workspaceID == workspace.id }) {
+            return mount
+        }
+        if let mountpoint = state.mountpoint,
+           let mount = mounts.first(where: { $0.kind == .local && $0.mountpoint == mountpoint }) {
+            return mount
+        }
+        return nil
+    }
+
+    private static func ensureQuickstartWorkspace(
+        state: inout QuickstartState,
+        preset: QuickstartPreset,
+        accessToken: String,
+        existingWorkspaces: [SpiderwebWorkspaceSummary]
+    ) throws -> (summary: SpiderwebWorkspaceSummary, created: Bool, mountpoint: String) {
+        if let existing = quickstartWorkspaceCandidate(state: state, workspaces: existingWorkspaces) {
+            state.workspaceID = existing.id
+            state.workspaceName = existing.name
+            let mountpoint = quickstartMountpoint(for: existing.name)
+            state.mountpoint = mountpoint
+            return (existing, false, mountpoint)
+        }
+
+        let payload = try jsonString([
+            "name": preset.workspaceName,
+            "vision": preset.workspaceVision,
+            "template_id": preset.templateID,
+            "activate": false,
+        ])
+        let result = try runCLI(
+            "spiderweb-control",
+            arguments: ["--url", localServerURL, "--auth-token", accessToken, "workspace_up", payload]
+        )
+        let response = try extractControlPayloadObject(from: result.stdout)
+        let workspaceID = (response["workspace_id"] as? String) ??
+            (response["project_id"] as? String) ??
+            ((response["workspace"] as? [String: Any])?["workspace_id"] as? String) ??
+            ((response["workspace"] as? [String: Any])?["project_id"] as? String)
+
+        let refreshedAuth = fetchAuthStatus(revealTokens: true)
+        let refreshedWorkspaces = fetchLocalWorkspaces(using: refreshedAuth)
+        let summary = if let workspaceID, let workspace = refreshedWorkspaces.first(where: { $0.id == workspaceID }) {
+            workspace
+        } else if let workspace = refreshedWorkspaces.first(where: { $0.name == preset.workspaceName && $0.kind != "system_builtin" }) {
+            workspace
+        } else {
+            throw SpiderwebAppError.message("Spiderweb created a workspace, but it could not be loaded back into the app.")
+        }
+
+        if !summary.isMountable {
+            throw SpiderwebAppError.message("Spiderweb created the workspace, but it is not mountable yet. Refresh the local service and try again.")
+        }
+
+        state.workspaceID = summary.id
+        state.workspaceName = summary.name
+        let mountpoint = quickstartMountpoint(for: summary.name)
+        state.mountpoint = mountpoint
+        return (summary, true, mountpoint)
+    }
+
+    private static func ensureQuickstartSavedMount(
+        state: inout QuickstartState,
+        workspace: SpiderwebWorkspaceSummary,
+        mountpoint: String,
+        existingMounts: [SpiderwebSavedMount]
+    ) -> (savedMount: SpiderwebSavedMount, created: Bool) {
+        if let existing = quickstartMountCandidate(state: state, workspace: workspace, mounts: existingMounts) {
+            state.mountID = existing.id
+            state.mountpoint = existing.mountpoint
+            return (existing, false)
+        }
+
+        var next = SpiderwebSavedMount.makeDraft(kind: .local, homeDirectory: NSHomeDirectory())
+        next.name = workspace.name
+        next.kind = .local
+        next.serverURL = localServerURL
+        next.workspaceID = workspace.id
+        next.authSource = .localRuntime
+        next.mountpoint = mountpoint
+        next.updatedAt = Date()
+        next.lastError = nil
+        next.lastMountState = .idle
+
+        var refreshedMounts = existingMounts
+        refreshedMounts.append(next)
+        persistSavedMounts(refreshedMounts)
+
+        state.mountID = next.id
+        state.mountpoint = next.mountpoint
+        return (next, true)
+    }
+
+    private static func mountSavedMountForQuickstart(
+        _ mount: SpiderwebSavedMount,
+        authStatus: SpiderwebAuthStatusSnapshot?
+    ) throws -> Bool {
+        guard mount.kind == .local else {
+            throw SpiderwebAppError.message("Quickstart only supports local drives.")
+        }
+        guard let accessToken = authStatus?.accessToken else {
+            throw SpiderwebAppError.message("Spiderweb auth token is unavailable.")
+        }
+        do {
+            _ = try runCLI(
+                "spiderweb-fs-mount",
+                arguments: [
+                    "--workspace-url", mount.serverURL,
+                    "--mount-backend", "native",
+                    "--workspace-id", mount.workspaceID,
+                    "mount",
+                    mount.mountpoint,
+                ],
+                environment: ["SPIDERWEB_AUTH_TOKEN": accessToken],
+                timeout: nativeMountActionTimeout,
+                timeoutBehavior: .terminateProcessTree
+            )
+            return true
+        } catch {
+            let errorMessage = describe(error: error)
+            let activeMountpoints = fetchActiveMountpoints()
+            if shouldTreatQuickstartMountFailureAsSatisfied(
+                errorMessage: errorMessage,
+                mountpoint: mount.mountpoint,
+                activeMountpoints: activeMountpoints
+            ) {
+                return false
+            }
+            if shouldAttemptQuickstartMountTimeoutRecovery(errorMessage: errorMessage),
+               waitForQuickstartMountActivation(mount.mountpoint) {
+                return false
+            }
+            throw error
+        }
+    }
+
     private func loadPersistedState() {
         savedMounts = Self.loadSavedMounts()
         pairedRemoteNode = Self.loadPairedRemoteNode()
+        quickstartState = Self.loadQuickstartState()
     }
 
     private func persistSavedMounts() {
         Self.persistSavedMounts(savedMounts)
+    }
+
+    private func persistQuickstartState() {
+        Self.persistQuickstartState(quickstartState)
     }
 
     private static func relativeTimestampLabel() -> String {
@@ -1374,6 +2262,15 @@ final class SpiderwebAppController: ObservableObject {
         return base.appendingPathComponent(pairedNodeFilename)
     }
 
+    private static func deriveQuickstartStateURL() -> URL {
+        let base = appGroupContainerURL() ?? URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("Spiderweb", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent(quickstartStateFilename)
+    }
+
     private static func remoteNodeSecretAccount(for nodeID: String) -> String {
         "remote_node_secret:\(nodeID)"
     }
@@ -1406,6 +2303,25 @@ final class SpiderwebAppController: ObservableObject {
 
     private static func deletePairedRemoteNode() {
         try? FileManager.default.removeItem(at: derivePairedNodeURL())
+    }
+
+    private static func loadQuickstartState() -> QuickstartState? {
+        let url = deriveQuickstartStateURL()
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(QuickstartState.self, from: data)
+    }
+
+    private static func persistQuickstartState(_ quickstartState: QuickstartState?) {
+        let url = deriveQuickstartStateURL()
+        guard let quickstartState else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(quickstartState) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     private static func fetchBuildInfo() -> SpiderwebBuildInfo {
@@ -1510,6 +2426,79 @@ final class SpiderwebAppController: ObservableObject {
             return "ws://\(hostname):\(port)"
         }
         return "ws://127.0.0.1:\(port)"
+    }
+
+    private static func spiderAppInstallHint() -> String {
+        if let packageScript = spiderAppSourceCheckoutCandidates().first(where: {
+            $0.lastPathComponent == "package-macos-app.sh" && FileManager.default.isExecutableFile(atPath: $0.path)
+        }) {
+            return "SpiderApp is not available yet. Build it with \(packageScript.path), then try again."
+        }
+        return "SpiderApp is not installed on this Mac yet. Install SpiderApp.app or make `spider-gui` available, then try again."
+    }
+
+    private static func findSpiderAppApplicationURL() -> URL? {
+        if let resolved = NSWorkspace.shared.urlForApplication(withBundleIdentifier: spiderAppBundleIdentifier) {
+            return resolved
+        }
+
+        let candidates = [
+            URL(fileURLWithPath: "/Applications/SpiderApp.app"),
+            URL(fileURLWithPath: "\(NSHomeDirectory())/Applications/SpiderApp.app"),
+        ] + spiderAppSourceCheckoutCandidates().filter { $0.pathExtension == "app" }
+
+        for candidate in candidates {
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func findSpiderAppExecutablePath() -> String? {
+        let resolved = resolveExecutable(named: "spider-gui")
+        if resolved != "spider-gui", FileManager.default.isExecutableFile(atPath: resolved) {
+            return resolved
+        }
+
+        for candidate in spiderAppSourceCheckoutCandidates() where candidate.pathExtension != "app" {
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate.path
+            }
+        }
+        return nil
+    }
+
+    private static func spiderAppSourceCheckoutCandidates() -> [URL] {
+        var candidates: [URL] = []
+        var seen: Set<String> = []
+        var current = Bundle.main.bundleURL.resolvingSymlinksInPath()
+
+        while true {
+            if current.lastPathComponent == "Spiderweb" {
+                let spiderAppRoot = current.deletingLastPathComponent().appendingPathComponent("SpiderApp", isDirectory: true)
+                let appCandidate = spiderAppRoot.appendingPathComponent("zig-out/SpiderApp.app")
+                if seen.insert(appCandidate.path).inserted {
+                    candidates.append(appCandidate)
+                }
+                let binaryCandidate = spiderAppRoot.appendingPathComponent("zig-out/bin/spider-gui")
+                if seen.insert(binaryCandidate.path).inserted {
+                    candidates.append(binaryCandidate)
+                }
+                let packageScript = spiderAppRoot.appendingPathComponent("scripts/package-macos-app.sh")
+                if seen.insert(packageScript.path).inserted {
+                    candidates.append(packageScript)
+                }
+            }
+
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path {
+                break
+            }
+            current = parent
+        }
+
+        return candidates
     }
 
     private static func installFileSystemStatusMessage(

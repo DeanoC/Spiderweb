@@ -379,6 +379,9 @@ write_export_options "$export_options_plist" "$app_profile_name" "$extension_pro
 echo "==> Building Spiderweb CLI binaries for host architecture ($HOST_ARCH)"
 build_host_zig_binaries "$work_root/zig-host" "$payload_root"
 
+echo "==> Running macOS quickstart regression"
+bash "$MACOS_DIR/scripts/quickstart-regression.sh"
+
 echo "==> Archiving Spiderweb.app"
 xcodebuild \
   -project "$PROJECT_PATH" \

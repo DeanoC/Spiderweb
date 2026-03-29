@@ -68,3 +68,20 @@ For background on Apple’s starting point, see [Building a passthrough file sys
 
 For shipping Spiderweb to a normal SIP-enabled Mac, see the release packaging guide in [RELEASE.md](/Users/deanocalver/Documents/Spider/Spiderweb/platform/macos/RELEASE.md).
 For the planned end-user installer and first-run flow, see [INSTALLER_UX.md](/Users/deanocalver/Documents/Spider/Spiderweb/platform/macos/INSTALLER_UX.md).
+
+## Quickstart Regression
+
+Run the onboarding regression checks with:
+
+```bash
+./platform/macos/scripts/quickstart-regression.sh
+```
+
+That script compiles a temporary Swift harness against `SpiderwebAppController.swift` and verifies the quickstart state machine behaviors that are easy to regress:
+
+- switching presets resets the targeted workspace and drive
+- persisted blocked quickstart state resumes cleanly on relaunch
+- unrelated workspaces are not accidentally adopted during resume
+- already-mounted native drive errors are treated as satisfied only when the drive is actually active
+
+The default Spiderweb first-run preset now uses the dedicated `just_try_it` workspace template instead of the broader `dev` template, so onboarding stays intentionally minimal even if the development template grows over time.

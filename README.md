@@ -51,7 +51,7 @@ zig build
 ./zig-out/bin/spiderweb-control \
   --auth-token <admin-token> \
   workspace_up \
-  '{"name":"Demo","vision":"Mounted workspace demo","template_id":"dev","activate":false}'
+  '{"name":"Demo","vision":"Mounted workspace demo","template_id":"just_try_it","activate":false}'
 
 # Mount that workspace into the local filesystem
 ./zig-out/bin/spiderweb-fs-mount \

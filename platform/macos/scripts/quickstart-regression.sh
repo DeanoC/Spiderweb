@@ -8,6 +8,7 @@ TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 cp "$APP_DIR/SpiderwebAppController.swift" "$TMPDIR/SpiderwebAppController.swift"
+cp "$APP_DIR/SpiderAppWorkflowStore.swift" "$TMPDIR/SpiderAppWorkflowStore.swift"
 cp "$APP_DIR/SpiderwebSetupModel.swift" "$TMPDIR/SpiderwebSetupModel.swift"
 
 python3 - <<'PY' "$TMPDIR/SpiderwebAppController.swift"
@@ -274,6 +275,7 @@ SWIFT
 swiftc \
   -o "$TMPDIR/quickstart-regression" \
   "$TMPDIR/QuickstartRegression.swift" \
+  "$TMPDIR/SpiderAppWorkflowStore.swift" \
   "$TMPDIR/SpiderwebAppController.swift" \
   "$TMPDIR/SpiderwebSetupModel.swift"
 

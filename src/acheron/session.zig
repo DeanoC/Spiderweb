@@ -2311,16 +2311,16 @@ pub const Session = struct {
     pub fn resolveManagedCapabilityVenomTargetPath(self: *Session, venom_id: []const u8) !?[]u8 {
         if (!venom_model.isCapabilityVenomId(venom_id)) return null;
 
-        if (try self.resolveLocalCapabilityVenom(venom_id)) |resolved_value| {
-            var resolved = resolved_value;
-            defer resolved.deinit(self.allocator);
-            return try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/{s}", .{resolved.venom_id});
-        }
-
         const canonical_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/venoms/{s}", .{venom_id});
         defer self.allocator.free(canonical_path);
         if (try self.resolveBoundPathOnce(canonical_path)) |target_path| {
             return target_path;
+        }
+
+        if (try self.resolveLocalCapabilityVenom(venom_id)) |resolved_value| {
+            var resolved = resolved_value;
+            defer resolved.deinit(self.allocator);
+            return try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/{s}", .{resolved.venom_id});
         }
 
         const global_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/_compat/global/{s}", .{venom_id});
@@ -6315,12 +6315,10 @@ pub const Session = struct {
     fn buildNamespaceRoutedNodeFsUrl(self: *Session, node_id: []const u8) !?[]u8 {
         const namespace_mount_url = self.namespace_mount_url orelse return null;
         const namespace_url = parseWsUrlParts(namespace_mount_url) orelse return null;
-        const routed_path = try joinControlPath(self.allocator, namespace_url.path, "/v2/fs/node");
-        defer self.allocator.free(routed_path);
         const routed = try std.fmt.allocPrint(
             self.allocator,
-            "{s}://{s}{s}/{s}",
-            .{ namespace_url.scheme, namespace_url.authority, routed_path, node_id },
+            "{s}://{s}/fs/node/{s}",
+            .{ namespace_url.scheme, namespace_url.authority, node_id },
         );
         return routed;
     }
@@ -6483,6 +6481,33 @@ pub const Session = struct {
             .{
                 .project_id = "proj-1",
                 .namespace_mount_url = "wss://namespace.example.test:4443/",
+                .agents_dir = ".does-not-exist",
+                .projects_dir = ".does-not-exist",
+            },
+        );
+        defer session.deinit();
+
+        const routed = (try session.buildNamespaceRoutedNodeFsUrl("node-3")) orelse return error.TestExpectedResponse;
+        defer allocator.free(routed);
+        try std.testing.expectEqualStrings("wss://namespace.example.test:4443/fs/node/node-3", routed);
+    }
+
+    test "acheron_session: buildNamespaceRoutedNodeFsUrl ignores namespace path prefixes" {
+        const allocator = std.testing.allocator;
+        const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+            allocator,
+            "execution_failed",
+            "runtime unavailable",
+        );
+        defer runtime_handle.destroy();
+
+        var session = try Session.initWithOptions(
+            allocator,
+            runtime_handle,
+            "codex",
+            .{
+                .project_id = "proj-1",
+                .namespace_mount_url = "wss://namespace.example.test:4443/v2/node",
                 .agents_dir = ".does-not-exist",
                 .projects_dir = ".does-not-exist",
             },

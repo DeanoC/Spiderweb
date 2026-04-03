@@ -234,7 +234,7 @@ enum QuickstartPreset: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .justTryIt: return "Just Try It"
+        case .justTryIt: return "Start Local Workspace"
         case .connectMachines: return "Connect Machines"
         case .agentLab: return "Agent Lab"
         }

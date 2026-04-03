@@ -203,8 +203,8 @@ struct ContentView: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 HeroFactCard(
                     title: "Default Path",
-                    value: "Just Try It",
-                    detail: "The fastest way to see Spiderweb as a drive on this Mac."
+                    value: "Start Local Workspace",
+                    detail: "The fastest way to create a local workspace and see it as a drive on this Mac."
                 )
                 HeroFactCard(
                     title: "Drive Location",

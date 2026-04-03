@@ -234,7 +234,7 @@ enum QuickstartPreset: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .justTryIt: return "Just Try It"
+        case .justTryIt: return "Start Local Workspace"
         case .connectMachines: return "Connect Machines"
         case .agentLab: return "Agent Lab"
         }
@@ -516,12 +516,36 @@ final class SpiderwebAppController: ObservableObject {
         Self.findSpiderAppApplicationURL() != nil || Self.findSpiderAppExecutablePath() != nil
     }
 
+    func hasCompletedSpiderAppWorkflow(_ workflowID: SpiderAppWorkflowID, workspaceID: String? = nil) -> Bool {
+        SpiderAppWorkflowStore.hasCompletion(workflowID, workspaceID: workspaceID)
+    }
+
+    func hasCompletedAnySpiderAppWorkflow(_ workflowID: SpiderAppWorkflowID) -> Bool {
+        SpiderAppWorkflowStore.hasAnyCompletion(workflowID)
+    }
+
+    private func preferredSpiderAppLaunchURL() -> URL? {
+        let workspaceID = quickstartState?.result?.workspaceID ?? quickstartState?.workspaceID
+        let mountpoint = quickstartState?.result?.mountpoint ?? quickstartState?.mountpoint
+        let degraded = quickstartState?.result?.driveAvailable == false || quickstartState?.result?.driveIssueSummary != nil
+        let handoff = quickstartState?.isComplete == true
+
+        return SpiderAppWorkflowStore.deepLinkURL(
+            workspaceID: workspaceID,
+            route: .workspace,
+            action: nil,
+            mountpoint: mountpoint,
+            degraded: degraded,
+            handoff: handoff
+        )
+    }
+
     var quickstartNextStepDetail: String {
         if let driveIssueSummary = quickstartState?.result?.driveIssueSummary, !driveIssueSummary.isEmpty {
-            return "Open SpiderApp to keep working while the drive mount is blocked, then retry the drive from Spiderweb after macOS clears the stuck FSKit state."
+            return "Open SpiderApp to keep working while the drive mount is blocked, then use Remote Terminal or the workspace shell until macOS clears the stuck FSKit state."
         }
         if quickstartCanOpenSpiderApp {
-            return "Open SpiderApp’s workspace shell and keep Devices, Capabilities, Explore, and Settings close by."
+            return "Open SpiderApp’s native shell, then jump into Remote Terminal, Devices, Capabilities, Explore, or Settings from a cleaner Mac-first starting point."
         }
         return "SpiderApp is not available on this Mac yet, so the mounted drive remains the fastest next step."
     }
@@ -1606,6 +1630,7 @@ final class SpiderwebAppController: ObservableObject {
                     return next
                 }
                 let completedState = quickstart
+                SpiderAppWorkflowStore.markCompleted(.startLocalWorkspace, workspaceID: workspace.summary.id)
 
                 await MainActor.run {
                     self.savedMounts = mergedMounts
@@ -1655,8 +1680,18 @@ final class SpiderwebAppController: ObservableObject {
     func openSpiderApp() {
         lastError = nil
 
+        statusMessage = "Opening SpiderApp..."
+
+        if let deepLinkURL = preferredSpiderAppLaunchURL(),
+           NSWorkspace.shared.open(deepLinkURL) {
+            if quickstartState?.isComplete == true {
+                SpiderAppWorkflowStore.markCompleted(.spiderwebHandoffCompleted)
+            }
+            statusMessage = "Opened SpiderApp"
+            return
+        }
+
         if let appURL = Self.findSpiderAppApplicationURL() {
-            statusMessage = "Opening SpiderApp..."
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             let applyOpenResult: @MainActor (String?) -> Void = { [weak self] errorDescription in
@@ -1677,7 +1712,6 @@ final class SpiderwebAppController: ObservableObject {
         }
 
         if let executablePath = Self.findSpiderAppExecutablePath() {
-            statusMessage = "Opening SpiderApp..."
             Task.detached(priority: .userInitiated) {
                 do {
                     try Self.launchDetachedProcess(executableURL: URL(fileURLWithPath: executablePath), arguments: [])

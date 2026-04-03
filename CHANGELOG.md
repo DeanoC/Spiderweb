@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.5.7 - 2026-04-01
+
+### Native macOS SpiderApp Support
+- Fixed Spiderweb’s workspace-capability routing so the new native macOS SpiderApp can load packages, binds, and terminal capabilities through the same shared-core backend path as the CLI.
+- Corrected local capability binding resolution and stale bind refresh behavior so workspace aliases track the real local venom directories instead of getting stuck on outdated short names.
+
+### Native Terminal Routing
+- Fixed terminal venom namespace seeding and control-file routing so native SpiderApp terminal exec reaches the real local terminal service instead of dead-ending on missing or misrouted control files.
+- Added explicit host-versus-workspace shell support in the terminal backend so SpiderApp can steer agents and users into the correct execution root.
+
+### macOS Runtime Packaging
+- Hardened the signed macOS release path around the bundled native SpiderApp/Spiderweb tools, including notarized package validation for the updated suite packaging flow.
+- Fixed the macOS terminal runtime to avoid assuming GNU `timeout` is present on user machines.
+
 ## 0.5.6 - 2026-03-27
 
 ### Hosted Registry E2E

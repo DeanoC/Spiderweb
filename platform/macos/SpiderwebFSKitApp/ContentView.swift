@@ -203,8 +203,8 @@ struct ContentView: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 HeroFactCard(
                     title: "Default Path",
-                    value: "Just Try It",
-                    detail: "The fastest way to see Spiderweb as a drive on this Mac."
+                    value: "Start Local Workspace",
+                    detail: "The fastest way to create a local workspace and see it as a drive on this Mac."
                 )
                 HeroFactCard(
                     title: "Drive Location",
@@ -1225,10 +1225,13 @@ private enum SpiderwebRecipe: String, Identifiable {
         case .mountExistingSpiderweb:
             return controller.savedMounts.contains(where: { $0.kind == .remote }) ? .done : .guide
         case .shareThisSpiderweb:
+            if controller.hasCompletedAnySpiderAppWorkflow(.addSecondDevice) {
+                return .done
+            }
             if controller.serviceStatus?.loaded == true,
                controller.authStatus?.accessPresent == true,
                controller.serviceStatus?.remoteReachable != false {
-                return .done
+                return .ready
             }
             if controller.serviceStatus?.loaded == true, controller.authStatus?.accessPresent == true {
                 return .ready
@@ -1243,6 +1246,9 @@ private enum SpiderwebRecipe: String, Identifiable {
             }
             return .guide
         case .setupUsefulWorkspace:
+            if controller.hasCompletedAnySpiderAppWorkflow(.startLocalWorkspace) {
+                return .done
+            }
             if !controller.mountableLocalWorkspaces.isEmpty {
                 return .done
             }
@@ -1251,6 +1257,10 @@ private enum SpiderwebRecipe: String, Identifiable {
             }
             return .guide
         case .packagesAndServices:
+            if controller.hasCompletedAnySpiderAppWorkflow(.installPackage) ||
+                controller.hasCompletedAnySpiderAppWorkflow(.runRemoteService) {
+                return .done
+            }
             if controller.quickstartState?.isComplete == true, controller.quickstartCanOpenSpiderApp {
                 return .done
             }

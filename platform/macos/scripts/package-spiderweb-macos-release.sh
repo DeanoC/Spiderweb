@@ -189,13 +189,85 @@ profile_field() {
   rm -f "$plist_path"
 }
 
+profile_bundle_id() {
+  local profile_path="$1"
+  local app_identifier
+  app_identifier="$(profile_field "$profile_path" 'Entitlements:com.apple.application-identifier' 2>/dev/null || true)"
+  app_identifier="${app_identifier#*.}"
+  printf '%s' "$app_identifier"
+}
+
+profile_name_lower() {
+  local profile_path="$1"
+  profile_field "$profile_path" Name 2>/dev/null | tr '[:upper:]' '[:lower:]'
+}
+
+find_installed_profile_for_bundle_id() {
+  local bundle_id="$1"
+  local profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+  local profile_path
+  local best_path=""
+  local fallback_path=""
+
+  [[ -d "$profiles_dir" ]] || return 1
+
+  while IFS= read -r profile_path; do
+    [[ -n "$profile_path" ]] || continue
+    if [[ "$(profile_bundle_id "$profile_path")" != "$bundle_id" ]]; then
+      continue
+    fi
+
+    if [[ -z "$fallback_path" ]]; then
+      fallback_path="$profile_path"
+    fi
+
+    local lowered_name
+    lowered_name="$(profile_name_lower "$profile_path")"
+    if [[ "$lowered_name" == *devid* || "$lowered_name" == *"developer id"* ]]; then
+      best_path="$profile_path"
+      break
+    fi
+  done < <(find "$profiles_dir" -maxdepth 1 -name '*.provisionprofile' | sort)
+
+  if [[ -n "$best_path" ]]; then
+    printf '%s\n' "$best_path"
+    return 0
+  fi
+  if [[ -n "$fallback_path" ]]; then
+    printf '%s\n' "$fallback_path"
+    return 0
+  fi
+  return 1
+}
+
+resolve_profile_path() {
+  local explicit_path="${1:-}"
+  local bundle_id="$2"
+  local env_name="$3"
+
+  if [[ -n "$explicit_path" ]]; then
+    printf '%s\n' "$explicit_path"
+    return 0
+  fi
+
+  if resolved="$(find_installed_profile_for_bundle_id "$bundle_id")"; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+
+  fail "no provisioning profile found for ${bundle_id}; set ${env_name} explicitly if auto-discovery is insufficient"
+}
+
 install_profile() {
   local profile_path="$1"
   local uuid
   uuid="$(profile_field "$profile_path" UUID)"
   local dest_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+  local dest_path="$dest_dir/$uuid.provisionprofile"
   mkdir -p "$dest_dir"
-  cp "$profile_path" "$dest_dir/$uuid.provisionprofile"
+  if [[ "$profile_path" != "$dest_path" ]]; then
+    cp "$profile_path" "$dest_path"
+  fi
   profile_field "$profile_path" Name
 }
 
@@ -368,12 +440,18 @@ fi
 if [[ -z "${SPIDERWEB_MACOS_APP_PROFILE:-}" && -n "${SPIDERWEB_MACOS_EXTENSION_PROFILE:-}" ]]; then
   fail "SPIDERWEB_MACOS_APP_PROFILE is required when SPIDERWEB_MACOS_EXTENSION_PROFILE is set"
 fi
-if [[ -n "${SPIDERWEB_MACOS_APP_PROFILE:-}" ]]; then
-  app_profile_name="$(install_profile "$SPIDERWEB_MACOS_APP_PROFILE")"
+if [[ -n "${SPIDERWEB_MACOS_APP_PROFILE:-}" || -n "${SPIDERWEB_MACOS_EXTENSION_PROFILE:-}" ]]; then
+  app_profile_path="$(resolve_profile_path "${SPIDERWEB_MACOS_APP_PROFILE:-}" "$APP_BUNDLE_ID" SPIDERWEB_MACOS_APP_PROFILE)"
+  extension_profile_path="$(resolve_profile_path "${SPIDERWEB_MACOS_EXTENSION_PROFILE:-}" "$EXTENSION_BUNDLE_ID" SPIDERWEB_MACOS_EXTENSION_PROFILE)"
+else
+  app_profile_path="$(resolve_profile_path "" "$APP_BUNDLE_ID" SPIDERWEB_MACOS_APP_PROFILE)"
+  extension_profile_path="$(resolve_profile_path "" "$EXTENSION_BUNDLE_ID" SPIDERWEB_MACOS_EXTENSION_PROFILE)"
 fi
-if [[ -n "${SPIDERWEB_MACOS_EXTENSION_PROFILE:-}" ]]; then
-  extension_profile_name="$(install_profile "$SPIDERWEB_MACOS_EXTENSION_PROFILE")"
-fi
+app_profile_name="$(install_profile "$app_profile_path")"
+extension_profile_name="$(install_profile "$extension_profile_path")"
+echo "==> Using provisioning profiles"
+echo "    App: $app_profile_name"
+echo "    Extension: $extension_profile_name"
 write_export_options "$export_options_plist" "$app_profile_name" "$extension_profile_name"
 
 echo "==> Building Spiderweb CLI binaries for host architecture ($HOST_ARCH)"

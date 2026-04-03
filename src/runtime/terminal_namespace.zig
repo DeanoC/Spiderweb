@@ -74,12 +74,12 @@ pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) 
     const capabilities_json = if (supports_interactive_sessions)
         try self.allocator.dupe(
             u8,
-            "{\"invoke\":true,\"operations\":[\"terminal_session_create\",\"terminal_session_resume\",\"terminal_session_close\",\"terminal_session_write\",\"terminal_session_read\",\"terminal_session_resize\",\"shell_exec\"],\"discoverable\":true,\"interactive\":true,\"sessionized\":true,\"pty\":true}",
+            "{\"invoke\":true,\"operations\":[\"terminal_session_create\",\"terminal_session_resume\",\"terminal_session_close\",\"terminal_session_write\",\"terminal_session_read\",\"terminal_session_resize\",\"shell_exec\"],\"discoverable\":true,\"interactive\":true,\"sessionized\":true,\"pty\":true,\"shell_modes\":[\"workspace\",\"host\"],\"preferred_shell_mode\":\"workspace\"}",
         )
     else
         try self.allocator.dupe(
             u8,
-            "{\"invoke\":true,\"operations\":[\"shell_exec\"],\"discoverable\":true,\"interactive\":false,\"sessionized\":false,\"pty\":false}",
+            "{\"invoke\":true,\"operations\":[\"shell_exec\"],\"discoverable\":true,\"interactive\":false,\"sessionized\":false,\"pty\":false,\"shell_modes\":[\"workspace\",\"host\"],\"preferred_shell_mode\":\"workspace\"}",
         );
     defer self.allocator.free(capabilities_json);
     try self.addDirectoryDescriptors(
@@ -90,7 +90,7 @@ pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) 
         if (supports_interactive_sessions)
             "Sessionized terminal namespace. Create/resume/close PTY sessions and use write/read/resize for interactive workflows."
         else
-            "Command execution namespace. Use exec for non-interactive workflows; interactive PTY sessions are currently supported on Linux only.",
+            "Command execution namespace. Prefer workspace shell for agent and workspace tasks, and host shell for machine-level inspection. Interactive PTY sessions are currently supported on Linux only.",
     );
     const namespace_mode = self.terminalNamespaceMode();
     const path_model = self.terminalPathModel();
@@ -126,7 +126,7 @@ pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) 
     );
     const status_descriptor_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"venom_id\":\"terminal\",\"state\":\"namespace\",\"has_invoke\":true,\"interactive\":{s},\"sessionized\":{s},\"pty\":{s},\"namespace_mode\":\"{s}\",\"path_model\":\"{s}\"}}",
+        "{{\"venom_id\":\"terminal\",\"state\":\"namespace\",\"has_invoke\":true,\"interactive\":{s},\"sessionized\":{s},\"pty\":{s},\"namespace_mode\":\"{s}\",\"path_model\":\"{s}\",\"shell_modes\":[\"workspace\",\"host\"],\"preferred_shell_mode\":\"workspace\"}}",
         .{
             if (supports_interactive_sessions) "true" else "false",
             if (supports_interactive_sessions) "true" else "false",
@@ -145,7 +145,7 @@ pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) 
     );
     const status_json = try std.fmt.allocPrint(
         self.allocator,
-        "{{\"state\":\"idle\",\"tool\":null,\"session_id\":null,\"updated_at_ms\":0,\"error\":null,\"interactive\":{s},\"sessionized\":{s},\"pty\":{s},\"namespace_mode\":\"{s}\",\"path_model\":\"{s}\"}}",
+        "{{\"state\":\"idle\",\"tool\":null,\"session_id\":null,\"updated_at_ms\":0,\"error\":null,\"interactive\":{s},\"sessionized\":{s},\"pty\":{s},\"namespace_mode\":\"{s}\",\"path_model\":\"{s}\",\"shell_modes\":[\"workspace\",\"host\"],\"preferred_shell_mode\":\"workspace\"}}",
         .{
             if (supports_interactive_sessions) "true" else "false",
             if (supports_interactive_sessions) "true" else "false",
@@ -191,7 +191,7 @@ pub fn seedNamespaceAt(self: anytype, terminal_dir: u32, base_path: []const u8) 
         if (supports_interactive_sessions)
             "Use create/resume/close to manage PTY sessions. Use write/read/resize for interactive I/O. exec is a convenience write+read command path. invoke.json accepts op=create|resume|close|write|read|resize|exec envelopes.\n"
         else
-            "Use exec.json for non-interactive shell execution. Interactive PTY session controls (create/resume/close/write/read/resize) are currently supported on Linux only. invoke.json accepts op=exec everywhere and the PTY session ops on Linux.\n",
+            "Use exec.json for non-interactive shell execution. Prefer workspace shell mode for agent and workspace tasks so commands start in the mounted Spiderweb workspace when that root is available. Use host shell mode for machine-level inspection or service debugging. Interactive PTY session controls (create/resume/close/write/read/resize) are currently supported on Linux only. invoke.json accepts op=exec everywhere and the PTY session ops on Linux.\n",
         false,
         .none,
     );

@@ -8,6 +8,7 @@ TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 cp "$APP_DIR/SpiderwebAppController.swift" "$TMPDIR/SpiderwebAppController.swift"
+cp "$APP_DIR/SpiderAppWorkflowStore.swift" "$TMPDIR/SpiderAppWorkflowStore.swift"
 cp "$APP_DIR/SpiderwebSetupModel.swift" "$TMPDIR/SpiderwebSetupModel.swift"
 
 python3 - <<'PY' "$TMPDIR/SpiderwebAppController.swift"
@@ -143,7 +144,7 @@ struct QuickstartRegression {
         expect(resumed.currentStep == .ensureWorkspace, "same-preset resume should keep the current step")
         expect(resumed.blockedReason == nil, "same-preset resume should clear the blocked reason")
         expect(resumed.mountpoint == SpiderwebAppController.quickstartMountpoint(for: "My Workspace"), "same-preset resume should fill a missing mountpoint")
-        expect(resumed.lastMessage == "Continuing just try it...", "same-preset resume should use the continuing status message")
+        expect(resumed.lastMessage == "Continuing start local workspace...", "same-preset resume should use the continuing status message")
 
         let encoder = JSONEncoder()
         let persisted = QuickstartState(
@@ -274,6 +275,7 @@ SWIFT
 swiftc \
   -o "$TMPDIR/quickstart-regression" \
   "$TMPDIR/QuickstartRegression.swift" \
+  "$TMPDIR/SpiderAppWorkflowStore.swift" \
   "$TMPDIR/SpiderwebAppController.swift" \
   "$TMPDIR/SpiderwebSetupModel.swift"
 

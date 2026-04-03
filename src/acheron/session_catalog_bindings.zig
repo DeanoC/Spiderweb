@@ -14,9 +14,10 @@ fn resolvePreferredLocalCatalogProviderNodeId(session: anytype, venom_id: []cons
 }
 
 pub fn registerLocalCatalogVenomBinding(session: anytype, venom_id: []const u8, scope: []const u8) !void {
-    const local_venoms_root = lookupLocalNodeVenomsRoot(session) orelse return;
-    const venom_dir_id = session.lookupChild(local_venoms_root, venom_id) orelse return;
-    const venom_path = try std.fmt.allocPrint(session.allocator, "/nodes/local/venoms/{s}", .{venom_id});
+    var resolved = (try session.resolveLocalCapabilityVenom(venom_id)) orelse return;
+    defer resolved.deinit(session.allocator);
+    const venom_dir_id = resolved.dir_id;
+    const venom_path = try std.fmt.allocPrint(session.allocator, "/nodes/local/venoms/{s}", .{resolved.venom_id});
     defer session.allocator.free(venom_path);
     const endpoint_path = blk: {
         if (try session.firstVenomMountPath(venom_dir_id)) |value| break :blk value;
@@ -27,7 +28,7 @@ pub fn registerLocalCatalogVenomBinding(session: anytype, venom_id: []const u8, 
     defer if (preferred_provider_node_id) |value| session.allocator.free(value);
     const provider_node_id = preferred_provider_node_id orelse "local";
     const provider_venom_path = if (preferred_provider_node_id) |value|
-        try std.fmt.allocPrint(session.allocator, "/nodes/{s}/venoms/{s}", .{ value, venom_id })
+        try std.fmt.allocPrint(session.allocator, "/nodes/{s}/venoms/{s}", .{ value, resolved.venom_id })
     else
         try session.allocator.dupe(u8, venom_path);
     defer session.allocator.free(provider_venom_path);

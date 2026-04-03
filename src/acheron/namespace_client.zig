@@ -927,7 +927,7 @@ pub const NamespaceClient = struct {
         };
     }
 
-    fn waitForSessionReady(self: *NamespaceClient, session_key: []const u8) !void {
+    pub fn waitForSessionReady(self: *NamespaceClient, session_key: []const u8) !void {
         const deadline_ms = std.time.milliTimestamp() + @as(i64, control_reply_timeout_ms);
         while (true) {
             var status = try self.controlSessionStatus(session_key, true);

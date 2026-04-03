@@ -2,6 +2,7 @@ const std = @import("std");
 const unified = @import("spider-protocol").unified;
 const shared_node = @import("spiderweb_node");
 const venom_model = @import("../venom_model.zig");
+const terminal_namespace = @import("../runtime/terminal_namespace.zig");
 const workspace_policy = @import("../workspaces/policy.zig");
 
 pub const NodeResourceView = struct {
@@ -187,6 +188,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                     venom.schema_json,
                     venom.invoke_template_json,
                     venom.help_md,
+                    null,
                 );
                 try view.observe(
                     session.allocator,
@@ -256,6 +258,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"filesystem\"}",
                 null,
                 "Workspace node filesystem export.",
+                null,
             );
             try addNodeVenomEntry(
                 session,
@@ -280,6 +283,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"filesystem\"}",
                 null,
                 "Workspace node filesystem export.",
+                null,
             );
             try view.observe(session.allocator, node.id, "fs", "fs", endpoint, mounts);
             try session.appendVenomIndexEntry(&services_index, &services_index_first, "fs", "fs", "online", endpoint);
@@ -320,6 +324,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"camera\"}",
                 null,
                 "Camera capture namespace.",
+                null,
             );
             try addNodeVenomEntry(
                 session,
@@ -344,6 +349,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"camera\"}",
                 null,
                 "Camera capture namespace.",
+                null,
             );
             try view.observe(session.allocator, node.id, "camera", "camera", endpoint, mounts);
             try session.appendVenomIndexEntry(&services_index, &services_index_first, "camera", "camera", "online", endpoint);
@@ -384,6 +390,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"screen\"}",
                 null,
                 "Screen capture namespace.",
+                null,
             );
             try addNodeVenomEntry(
                 session,
@@ -408,6 +415,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"screen\"}",
                 null,
                 "Screen capture namespace.",
+                null,
             );
             try view.observe(session.allocator, node.id, "screen", "screen", endpoint, mounts);
             try session.appendVenomIndexEntry(&services_index, &services_index_first, "screen", "screen", "online", endpoint);
@@ -448,6 +456,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"user\"}",
                 null,
                 "User interaction namespace.",
+                null,
             );
             try addNodeVenomEntry(
                 session,
@@ -472,6 +481,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"user\"}",
                 null,
                 "User interaction namespace.",
+                null,
             );
             try view.observe(session.allocator, node.id, "user", "user", endpoint, mounts);
             try session.appendVenomIndexEntry(&services_index, &services_index_first, "user", "user", "online", endpoint);
@@ -483,6 +493,8 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
         defer session.allocator.free(venom_id);
         const endpoint = try std.fmt.allocPrint(session.allocator, "/nodes/{s}/terminal/{s}", .{ node.id, terminal_id });
         defer session.allocator.free(endpoint);
+        const namespace_base_path = try std.fmt.allocPrint(session.allocator, "/nodes/{s}/venoms/{s}", .{ node.id, venom_id });
+        defer session.allocator.free(namespace_base_path);
         const escaped_terminal_id = try unified.jsonEscape(session.allocator, terminal_id);
         defer session.allocator.free(escaped_terminal_id);
         const caps = try std.fmt.allocPrint(
@@ -522,6 +534,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"terminal\"}",
                 null,
                 "Interactive terminal namespace.",
+                namespace_base_path,
             );
             try addNodeVenomEntry(
                 session,
@@ -546,6 +559,7 @@ pub fn addNodeVenoms(session: anytype, node_dir: u32, node: workspace_policy.Wor
                 "{\"model\":\"terminal\"}",
                 null,
                 "Interactive terminal namespace.",
+                namespace_base_path,
             );
             try view.observe(session.allocator, node.id, "terminal", venom_id, endpoint, mounts);
             try session.appendVenomIndexEntry(&services_index, &services_index_first, venom_id, "terminal", "online", endpoint);
@@ -891,6 +905,7 @@ fn addNodeVenomEntry(
     schema_json: []const u8,
     invoke_template_json: ?[]const u8,
     help_md: ?[]const u8,
+    namespace_base_path: ?[]const u8,
 ) !void {
     const venom_dir = try session.addDir(services_root, venom_id, false);
 
@@ -938,6 +953,11 @@ fn addNodeVenomEntry(
     const host_json = try renderNodeVenomHostJson(session, runtime_json);
     defer session.allocator.free(host_json);
     _ = try session.addFile(venom_dir, "HOST.json", host_json, false, .none);
+    if (namespace_base_path) |base_path| {
+        try terminal_namespace.seedNamespaceAt(session, venom_dir, base_path);
+        return;
+    }
+
     _ = try session.addFile(venom_dir, "PERMISSIONS.json", permissions_json, false, .none);
 
     const escaped_package_id = try unified.jsonEscape(session.allocator, package_id);

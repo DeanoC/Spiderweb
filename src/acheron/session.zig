@@ -2036,7 +2036,9 @@ pub const Session = struct {
             const target_path = bind_value.object.get("target_path") orelse continue;
             if (bind_path != .string or bind_path.string.len == 0) continue;
             if (target_path != .string or target_path.string.len == 0) continue;
-            try self.appendProjectBind(.workspace, bind_path.string, target_path.string);
+            const normalized_target_path = try self.normalizeWorkspaceBindTargetPath(bind_path.string, target_path.string);
+            defer self.allocator.free(normalized_target_path);
+            try self.appendProjectBind(.workspace, bind_path.string, normalized_target_path);
             if (session_service_discovery.parseTargetBindingForSession(bind_path.string)) |_| {
                 const projected_bind_path = try std.fmt.allocPrint(
                     self.allocator,
@@ -2044,10 +2046,37 @@ pub const Session = struct {
                     .{ local_fs_world_prefix, bind_path.string },
                 );
                 defer self.allocator.free(projected_bind_path);
-                try self.appendProjectBind(.workspace_projected, projected_bind_path, target_path.string);
+                try self.appendProjectBind(.workspace_projected, projected_bind_path, normalized_target_path);
             }
         }
         try self.appendManagedWorkspaceEntrypointBinds();
+    }
+
+    fn normalizeWorkspaceBindTargetPath(self: *Session, bind_path: []const u8, target_path: []const u8) ![]u8 {
+        if (!std.mem.startsWith(u8, bind_path, "/.spiderweb/venoms/")) {
+            return try self.allocator.dupe(u8, target_path);
+        }
+
+        const alias = bind_path["/.spiderweb/venoms/".len..];
+        if (alias.len == 0 or std.mem.indexOfScalar(u8, alias, '/') != null) {
+            return try self.allocator.dupe(u8, target_path);
+        }
+        if (!std.mem.startsWith(u8, target_path, "/nodes/local/venoms/")) {
+            return try self.allocator.dupe(u8, target_path);
+        }
+
+        const target_alias = target_path["/nodes/local/venoms/".len..];
+        if (!std.mem.eql(u8, target_alias, alias)) {
+            return try self.allocator.dupe(u8, target_path);
+        }
+
+        if (try self.resolveLocalCapabilityVenom(alias)) |resolved_value| {
+            var resolved = resolved_value;
+            defer resolved.deinit(self.allocator);
+            return try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/{s}", .{resolved.venom_id});
+        }
+
+        return try self.allocator.dupe(u8, target_path);
     }
 
     fn clearProjectBindsByKind(self: *Session, kind: PathBindKind) void {
@@ -2099,9 +2128,6 @@ pub const Session = struct {
     }
 
     fn appendProjectBindIfMissing(self: *Session, kind: PathBindKind, bind_path: []const u8, target_path: []const u8) !void {
-        for (self.workspace_binds.items) |existing| {
-            if (std.mem.eql(u8, existing.bind_path, bind_path)) return;
-        }
         try self.appendProjectBind(kind, bind_path, target_path);
     }
 
@@ -2176,7 +2202,10 @@ pub const Session = struct {
                 const preferred_provider_node_id = try self.resolvePreferredBoundVenomNodeId(venom_id);
                 defer if (preferred_provider_node_id) |value| self.allocator.free(value);
                 const provider_path = if (preferred_provider_node_id) |value|
-                    try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ value, venom_id })
+                    if (std.mem.startsWith(u8, target_path, "/nodes/"))
+                        try self.allocator.dupe(u8, target_path)
+                    else
+                        try std.fmt.allocPrint(self.allocator, "/nodes/{s}/venoms/{s}", .{ value, venom_id })
                 else
                     try self.allocator.dupe(u8, target_path);
                 defer self.allocator.free(provider_path);
@@ -2288,6 +2317,12 @@ pub const Session = struct {
             return target_path;
         }
 
+        if (try self.resolveLocalCapabilityVenom(venom_id)) |resolved_value| {
+            var resolved = resolved_value;
+            defer resolved.deinit(self.allocator);
+            return try std.fmt.allocPrint(self.allocator, "/nodes/local/venoms/{s}", .{resolved.venom_id});
+        }
+
         const global_path = try std.fmt.allocPrint(self.allocator, "/.spiderweb/_compat/global/{s}", .{venom_id});
         defer self.allocator.free(global_path);
         if (self.resolveAbsolutePathNoBinds(global_path) != null) {
@@ -2307,6 +2342,60 @@ pub const Session = struct {
         }
 
         return null;
+    }
+
+    const ResolvedLocalCapabilityVenom = struct {
+        venom_id: []u8,
+        dir_id: u32,
+
+        pub fn deinit(self: *ResolvedLocalCapabilityVenom, allocator: std.mem.Allocator) void {
+            allocator.free(self.venom_id);
+            self.* = undefined;
+        }
+    };
+
+    fn localNodeVenomsRootId(self: *Session) ?u32 {
+        const nodes_root = self.lookupChild(self.root_id, "nodes") orelse return null;
+        const local_node_dir = self.lookupChild(nodes_root, "local") orelse return null;
+        return self.lookupChild(local_node_dir, "venoms");
+    }
+
+    pub fn resolveLocalCapabilityVenom(self: *Session, capability_id: []const u8) !?ResolvedLocalCapabilityVenom {
+        const venoms_root = self.localNodeVenomsRootId() orelse return null;
+        const root_node = self.nodes.get(venoms_root) orelse return null;
+        var it = root_node.children.iterator();
+        while (it.next()) |entry| {
+            const venom_name = entry.key_ptr.*;
+            const dir_id = entry.value_ptr.*;
+            const node = self.nodes.get(dir_id) orelse continue;
+            if (node.kind != .dir) continue;
+            if (!self.venomDirMatchesCapabilityId(dir_id, capability_id)) continue;
+            return .{
+                .venom_id = try self.allocator.dupe(u8, venom_name),
+                .dir_id = dir_id,
+            };
+        }
+
+        if (self.lookupChild(venoms_root, capability_id)) |dir_id| {
+            return .{
+                .venom_id = try self.allocator.dupe(u8, capability_id),
+                .dir_id = dir_id,
+            };
+        }
+        return null;
+    }
+
+    fn venomDirMatchesCapabilityId(self: *Session, dir_id: u32, capability_id: []const u8) bool {
+        const package_id_node = self.lookupChild(dir_id, "PACKAGE.json") orelse return false;
+        const node = self.nodes.get(package_id_node) orelse return false;
+        if (node.kind != .file) return false;
+
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, node.content, .{}) catch return false;
+        defer parsed.deinit();
+        if (parsed.value != .object) return false;
+        const package_value = parsed.value.object.get("package_id") orelse parsed.value.object.get("venom_id") orelse return false;
+        if (package_value != .string or package_value.string.len == 0) return false;
+        return std.mem.eql(u8, package_value.string, capability_id);
     }
 
     fn materializeProjectBindPrefixDirectories(self: *Session) !void {
@@ -4127,6 +4216,17 @@ pub const Session = struct {
             try self.allocator.dupe(u8, absolute_path);
         defer self.allocator.free(resolved_path);
 
+        // Local terminal namespaces are seeded as real special nodes in the
+        // session tree. When those control files exist locally, prefer the
+        // internal special write path instead of proxying back out through the
+        // mounted bound-venom router. The proxy route is for remote/provider
+        // services; local terminal control writes should execute directly.
+        if (try self.resolveAbsolutePathForMountGraphNoBinds(resolved_path)) |resolved_id| {
+            if (self.nodes.get(resolved_id)) |resolved_node| {
+                if (isTerminalSpecial(resolved_node.special)) return false;
+            }
+        }
+
         const proxy = (try self.boundVenomProxyPathForAbsolutePath(resolved_path)) orelse return false;
         defer self.allocator.free(proxy.remote_path);
         if (std.mem.eql(u8, proxy.remote_path, "/")) return false;
@@ -4354,13 +4454,13 @@ pub const Session = struct {
 
         if (binding.provider_node_id) |node_id| {
             proxy.provider_node_id = node_id;
-            if (!std.mem.eql(u8, node_id, "local")) {
-                if (binding.provider_venom_path) |provider_path| {
-                    if (parseNodeVenomServicePath(provider_path)) |provider_service| {
-                        proxy.venom_id = provider_service.venom_id;
-                        proxy.provider_export_name = provider_service.venom_id;
-                    }
+            if (binding.provider_venom_path) |provider_path| {
+                if (parseNodeVenomServicePath(provider_path)) |provider_service| {
+                    proxy.venom_id = provider_service.venom_id;
+                    proxy.provider_export_name = provider_service.venom_id;
                 }
+            } else if (!std.mem.eql(u8, node_id, "local")) {
+                proxy.provider_export_name = binding.venom_id;
             }
         }
         return proxy;
@@ -4637,10 +4737,11 @@ pub const Session = struct {
         defer if (routed_fs_url) |value| self.allocator.free(value);
         const fs_url = blk: {
             // Clients should always stay on Spiderweb's routed authority.
-            // Server-internal namespace refreshes can talk to mounted export
-            // endpoints directly so Spiderweb does not deadlock routing back
-            // through itself while composing the namespace view.
-            if (route_mode == .server_internal and export_name != null) {
+            // Server-internal mounted export refreshes can talk directly to
+            // mounted node filesystem exports, but capability venoms still
+            // need Spiderweb's routed node filesystem path so control writes
+            // land on the correct export instead of the workspace mount.
+            if (route_mode == .server_internal and export_name != null and std.mem.eql(u8, venom_id, "fs")) {
                 if (workspace_mount_fs_url) |value| break :blk value;
                 if (routed_fs_url) |value| break :blk value;
             } else {
@@ -4673,7 +4774,10 @@ pub const Session = struct {
                 },
             );
         }
-        const selected_export_name = if (std.mem.eql(u8, venom_id, "fs")) export_name else venom_id;
+        const selected_export_name = if (std.mem.eql(u8, venom_id, "fs"))
+            export_name
+        else
+            export_name orelse venom_id;
 
         return try acheron_router.Router.init(self.allocator, &[_]acheron_router.EndpointConfig{.{
             .name = node_id,
@@ -6219,6 +6323,16 @@ pub const Session = struct {
         return routed;
     }
 
+    fn joinControlPath(self_allocator: std.mem.Allocator, base_path: []const u8, suffix: []const u8) ![]u8 {
+        const trimmed_base = std.mem.trimRight(u8, base_path, "/");
+        const normalized_base = if (trimmed_base.len == 0) "/" else trimmed_base;
+        const trimmed_suffix = std.mem.trimLeft(u8, suffix, "/");
+        if (std.mem.eql(u8, normalized_base, "/")) {
+            return std.fmt.allocPrint(self_allocator, "/{s}", .{trimmed_suffix});
+        }
+        return std.fmt.allocPrint(self_allocator, "{s}/{s}", .{ normalized_base, trimmed_suffix });
+    }
+
     const ParsedWsUrl = struct {
         scheme: []const u8,
         authority: []const u8,
@@ -6367,6 +6481,33 @@ pub const Session = struct {
             .{
                 .project_id = "proj-1",
                 .namespace_mount_url = "wss://namespace.example.test:4443/",
+                .agents_dir = ".does-not-exist",
+                .projects_dir = ".does-not-exist",
+            },
+        );
+        defer session.deinit();
+
+        const routed = (try session.buildNamespaceRoutedNodeFsUrl("node-3")) orelse return error.TestExpectedResponse;
+        defer allocator.free(routed);
+        try std.testing.expectEqualStrings("wss://namespace.example.test:4443/fs/node/node-3", routed);
+    }
+
+    test "acheron_session: buildNamespaceRoutedNodeFsUrl ignores namespace path prefixes" {
+        const allocator = std.testing.allocator;
+        const runtime_handle = try runtime_handle_mod.RuntimeHandle.createUnavailable(
+            allocator,
+            "execution_failed",
+            "runtime unavailable",
+        );
+        defer runtime_handle.destroy();
+
+        var session = try Session.initWithOptions(
+            allocator,
+            runtime_handle,
+            "codex",
+            .{
+                .project_id = "proj-1",
+                .namespace_mount_url = "wss://namespace.example.test:4443/v2/node",
                 .agents_dir = ".does-not-exist",
                 .projects_dir = ".does-not-exist",
             },
@@ -7193,12 +7334,20 @@ pub const Session = struct {
             null;
 
         const direct_workspace_root = if (cwd) |value| blk: {
-            if (!pathMatchesPrefixBoundary(value, local_fs_world_prefix)) break :blk null;
-            break :blk try self.resolveWorkspaceHostPath(local_fs_world_prefix);
+            if (pathMatchesPrefixBoundary(value, local_fs_world_prefix)) {
+                break :blk try self.resolveWorkspaceHostPath(local_fs_world_prefix);
+            }
+            if (std.fs.path.isAbsolute(value) and pathExistsAbsolute(value)) {
+                break :blk try self.allocator.dupe(u8, value);
+            }
+            break :blk null;
         } else null;
         defer if (direct_workspace_root) |value| self.allocator.free(value);
 
         const resolved_cwd = if (cwd) |value| blk: {
+            if (direct_workspace_root != null and std.fs.path.isAbsolute(value)) {
+                break :blk try self.allocator.dupe(u8, ".");
+            }
             if (!pathMatchesPrefixBoundary(value, local_fs_world_prefix)) {
                 break :blk try self.allocator.dupe(u8, value);
             }

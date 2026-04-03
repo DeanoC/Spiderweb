@@ -1,5 +1,31 @@
 const std = @import("std");
 
+fn resolveNodeVenomDir(session: anytype, node_name: []const u8, venom_id: []const u8) !?struct { dir_id: u32, actual_venom_id: []u8 } {
+    const nodes_root = session.lookupChild(session.root_id, "nodes") orelse return null;
+    const node_dir_id = session.lookupChild(nodes_root, node_name) orelse return null;
+    const venoms_root_id = session.lookupChild(node_dir_id, "venoms") orelse return null;
+
+    if (session.lookupChild(venoms_root_id, venom_id)) |venom_dir_id| {
+        return .{
+            .dir_id = venom_dir_id,
+            .actual_venom_id = try session.allocator.dupe(u8, venom_id),
+        };
+    }
+
+    if (std.mem.eql(u8, node_name, "local")) {
+        if (try session.resolveLocalCapabilityVenom(venom_id)) |resolved_value| {
+            var resolved = resolved_value;
+            defer resolved.deinit(session.allocator);
+            return .{
+                .dir_id = resolved.dir_id,
+                .actual_venom_id = try session.allocator.dupe(u8, resolved.venom_id),
+            };
+        }
+    }
+
+    return null;
+}
+
 pub fn seedActiveScopedVenomBindings(
     session: anytype,
     active_agent_venoms_dir: u32,
@@ -79,15 +105,13 @@ pub fn seedBoundNodeVenomNamespaceAt(
     var selected_node_id: ?[]const u8 = null;
     var selected_venom_dir_id: ?u32 = null;
 
+    var selected_actual_venom_id: ?[]u8 = null;
+
     if (preferred_node_id) |selected| {
-        const preferred_node_dir_id = session.lookupChild(nodes_root, selected);
-        if (preferred_node_dir_id) |node_dir_id| {
-            if (session.lookupChild(node_dir_id, "venoms")) |venoms_root_id| {
-                if (session.lookupChild(venoms_root_id, venom_id)) |venom_dir_id| {
-                    selected_node_id = selected;
-                    selected_venom_dir_id = venom_dir_id;
-                }
-            }
+        if (try resolveNodeVenomDir(session, selected, venom_id)) |resolved| {
+            selected_node_id = selected;
+            selected_venom_dir_id = resolved.dir_id;
+            selected_actual_venom_id = resolved.actual_venom_id;
         }
     }
 
@@ -96,17 +120,18 @@ pub fn seedBoundNodeVenomNamespaceAt(
         var node_it = nodes_root_node.children.iterator();
         while (node_it.next()) |entry| {
             const node_name = entry.key_ptr.*;
-            const node_dir_id = entry.value_ptr.*;
-            const venoms_root_id = session.lookupChild(node_dir_id, "venoms") orelse continue;
-            const venom_dir_id = session.lookupChild(venoms_root_id, venom_id) orelse continue;
+            const resolved = (try resolveNodeVenomDir(session, node_name, venom_id)) orelse continue;
             selected_node_id = node_name;
-            selected_venom_dir_id = venom_dir_id;
+            selected_venom_dir_id = resolved.dir_id;
+            selected_actual_venom_id = resolved.actual_venom_id;
             break;
         }
     }
 
     const provider_node_id = selected_node_id orelse return false;
     const provider_dir_id = selected_venom_dir_id orelse return false;
+    const provider_venom_id = selected_actual_venom_id orelse return false;
+    defer session.allocator.free(provider_venom_id);
 
     const alias_dir_id = try session.addDir(alias_root, venom_id, false);
     try session.copyOptionalServiceFile(provider_dir_id, alias_dir_id, "README.md");
@@ -125,7 +150,7 @@ pub fn seedBoundNodeVenomNamespaceAt(
     const provider_venom_path = try std.fmt.allocPrint(
         session.allocator,
         "/nodes/{s}/venoms/{s}",
-        .{ provider_node_id, venom_id },
+        .{ provider_node_id, provider_venom_id },
     );
     defer session.allocator.free(provider_venom_path);
     const endpoint_path = blk: {
@@ -133,7 +158,7 @@ pub fn seedBoundNodeVenomNamespaceAt(
         break :blk try session.venomEndpointPath(provider_dir_id);
     };
     defer if (endpoint_path) |value| session.allocator.free(value);
-    const invoke_path = try session.deriveVenomInvokePath(provider_node_id, venom_id, provider_dir_id);
+    const invoke_path = try session.deriveVenomInvokePath(provider_node_id, provider_venom_id, provider_dir_id);
     defer if (invoke_path) |value| session.allocator.free(value);
 
     try session.registerScopedVenomBinding(
@@ -201,16 +226,16 @@ pub fn registerBoundVenomAliasOnly(
     var selected_node_id: ?[]const u8 = null;
     var selected_venom_dir_id: ?u32 = null;
 
+    var selected_actual_venom_id: ?[]u8 = null;
+
     if (preferred_node_id) |selected| {
-        const preferred_node_dir_id = session.lookupChild(nodes_root, selected);
-        if (preferred_node_dir_id) |node_dir_id| {
-            if (session.lookupChild(node_dir_id, "venoms")) |venoms_root_id| {
-                if (session.lookupChild(venoms_root_id, venom_id)) |venom_dir_id| {
-                    if (isBoundVenomNodeAllowed(session, workspace_id, agent_id, selected)) {
-                        selected_node_id = selected;
-                        selected_venom_dir_id = venom_dir_id;
-                    }
-                }
+        if (try resolveNodeVenomDir(session, selected, venom_id)) |resolved| {
+            if (isBoundVenomNodeAllowed(session, workspace_id, agent_id, selected)) {
+                selected_node_id = selected;
+                selected_venom_dir_id = resolved.dir_id;
+                selected_actual_venom_id = resolved.actual_venom_id;
+            } else {
+                session.allocator.free(resolved.actual_venom_id);
             }
         }
     }
@@ -220,24 +245,28 @@ pub fn registerBoundVenomAliasOnly(
         var node_it = nodes_root_node.children.iterator();
         while (node_it.next()) |entry| {
             const node_name = entry.key_ptr.*;
-            const node_dir_id = entry.value_ptr.*;
-            const venoms_root_id = session.lookupChild(node_dir_id, "venoms") orelse continue;
-            const venom_dir_id = session.lookupChild(venoms_root_id, venom_id) orelse continue;
-            if (!isBoundVenomNodeAllowed(session, workspace_id, agent_id, node_name)) continue;
+            const resolved = (try resolveNodeVenomDir(session, node_name, venom_id)) orelse continue;
+            if (!isBoundVenomNodeAllowed(session, workspace_id, agent_id, node_name)) {
+                session.allocator.free(resolved.actual_venom_id);
+                continue;
+            }
             selected_node_id = node_name;
-            selected_venom_dir_id = venom_dir_id;
+            selected_venom_dir_id = resolved.dir_id;
+            selected_actual_venom_id = resolved.actual_venom_id;
             break;
         }
     }
 
     const provider_node_id = selected_node_id orelse return false;
     const provider_dir_id = selected_venom_dir_id orelse return false;
+    const provider_venom_id = selected_actual_venom_id orelse return false;
+    defer session.allocator.free(provider_venom_id);
     const venom_path = try std.fmt.allocPrint(session.allocator, "{s}/{s}", .{ alias_base_path, venom_id });
     defer session.allocator.free(venom_path);
     const provider_venom_path = try std.fmt.allocPrint(
         session.allocator,
         "/nodes/{s}/venoms/{s}",
-        .{ provider_node_id, venom_id },
+        .{ provider_node_id, provider_venom_id },
     );
     defer session.allocator.free(provider_venom_path);
     const endpoint_path = blk: {
@@ -245,7 +274,7 @@ pub fn registerBoundVenomAliasOnly(
         break :blk try session.venomEndpointPath(provider_dir_id);
     };
     defer if (endpoint_path) |value| session.allocator.free(value);
-    const invoke_path = try session.deriveVenomInvokePath(provider_node_id, venom_id, provider_dir_id);
+    const invoke_path = try session.deriveVenomInvokePath(provider_node_id, provider_venom_id, provider_dir_id);
     defer if (invoke_path) |value| session.allocator.free(value);
 
     try session.registerScopedVenomBinding(
